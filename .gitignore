@@ -1,0 +1,30 @@
+test_snapshots/
+
+# Deployment info
+deployment.json
+
+# Environment
+.env
+.env.local
+
+# Dependencies
+node_modules/
+bun.lockb
+
+# Frontend build
+dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+.claude/
+CLAUDE.md
+development/
+*.bak

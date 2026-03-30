@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 750" font-family="Inter, -apple-system, system-ui, sans-serif">
+  <defs>
+    <marker id="a3" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#ccc"/>
+    </marker>
+    <marker id="a3b" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#378ADD"/>
+    </marker>
+    <marker id="a3t" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#1D9E75"/>
+    </marker>
+    <marker id="a3c" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#D85A30"/>
+    </marker>
+    <marker id="a3g" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#888780"/>
+    </marker>
+  </defs>
+
+  <rect width="900" height="750" rx="12" fill="#1a1a1a"/>
+
+  <text x="450" y="38" text-anchor="middle" fill="#fff" font-size="18" font-weight="600">Flow 3: AI Agent Advisory and Execution</text>
+
+  <!-- Column headers -->
+  <rect x="50" y="58" width="120" height="40" rx="8" fill="#378ADD"/>
+  <text x="110" y="83" text-anchor="middle" fill="#fff" font-size="13" font-weight="600">Investor</text>
+
+  <rect x="270" y="58" width="120" height="40" rx="8" fill="#D85A30"/>
+  <text x="330" y="83" text-anchor="middle" fill="#fff" font-size="13" font-weight="600">AI Agent</text>
+
+  <rect x="500" y="58" width="120" height="40" rx="8" fill="#1D9E75"/>
+  <text x="560" y="83" text-anchor="middle" fill="#fff" font-size="13" font-weight="600">SDK Tools</text>
+
+  <rect x="730" y="58" width="120" height="40" rx="8" fill="#888780"/>
+  <text x="790" y="83" text-anchor="middle" fill="#fff" font-size="13" font-weight="600">Blockchain</text>
+
+  <!-- Lifelines -->
+  <line x1="110" y1="98" x2="110" y2="710" stroke="#378ADD" stroke-width="1.5" stroke-dasharray="6,4" opacity="0.4"/>
+  <line x1="330" y1="98" x2="330" y2="710" stroke="#D85A30" stroke-width="1.5" stroke-dasharray="6,4" opacity="0.4"/>
+  <line x1="560" y1="98" x2="560" y2="710" stroke="#1D9E75" stroke-width="1.5" stroke-dasharray="6,4" opacity="0.4"/>
+  <line x1="790" y1="98" x2="790" y2="710" stroke="#888780" stroke-width="1.5" stroke-dasharray="6,4" opacity="0.4"/>
+
+  <!-- Chat bubble: user request -->
+  <rect x="120" y="118" width="195" height="36" rx="10" fill="#2a3a4a"/>
+  <text x="218" y="133" text-anchor="middle" fill="#7abfff" font-size="11">"I want steady income,</text>
+  <text x="218" y="147" text-anchor="middle" fill="#7abfff" font-size="11">low risk, $50K"</text>
+  <line x1="110" y1="136" x2="322" y2="136" stroke="#378ADD" stroke-width="2" marker-end="url(#a3c)" opacity="0.6"/>
+
+  <!-- Step 1: get_yields -->
+  <line x1="330" y1="175" x2="552" y2="175" stroke="#1D9E75" stroke-width="2" marker-end="url(#a3t)"/>
+  <rect x="360" y="157" width="140" height="22" rx="4" fill="#1a1a1a"/>
+  <text x="430" y="173" text-anchor="middle" fill="#1D9E75" font-size="12" font-weight="500">1. get_yields()</text>
+
+  <!-- Return yields -->
+  <line x1="552" y1="210" x2="338" y2="210" stroke="#D85A30" stroke-width="2" marker-end="url(#a3c)" stroke-dasharray="5,3"/>
+  <rect x="355" y="192" width="190" height="22" rx="4" fill="#1a1a1a"/>
+  <text x="450" y="208" text-anchor="middle" fill="#888780" font-size="11">TB: 4.8%  MM: 5.2%  PC: 8.1%</text>
+
+  <!-- Agent recommends -->
+  <rect x="120" y="240" width="200" height="55" rx="10" fill="#2a2828"/>
+  <text x="220" y="256" text-anchor="middle" fill="#D85A30" font-size="11" font-weight="500">Agent recommends:</text>
+  <text x="220" y="270" text-anchor="middle" fill="#ccc" font-size="10">70% treasury, 20% MMF,</text>
+  <text x="220" y="283" text-anchor="middle" fill="#ccc" font-size="10">10% cash. ~5% yield. Proceed?</text>
+  <line x1="322" y1="268" x2="118" y2="268" stroke="#D85A30" stroke-width="2" marker-end="url(#a3b)" opacity="0.6"/>
+
+  <!-- User confirms -->
+  <rect x="130" y="310" width="120" height="28" rx="10" fill="#2a3a4a"/>
+  <text x="190" y="329" text-anchor="middle" fill="#7abfff" font-size="11">"Yes, go ahead"</text>
+  <line x1="110" y1="324" x2="322" y2="324" stroke="#378ADD" stroke-width="2" marker-end="url(#a3c)" opacity="0.6"/>
+
+  <!-- Execution phase label -->
+  <rect x="20" y="355" width="860" height="1" fill="#444"/>
+  <rect x="370" y="348" width="160" height="18" rx="4" fill="#1a1a1a"/>
+  <text x="450" y="361" text-anchor="middle" fill="#EF9F27" font-size="11" font-weight="600">EXECUTION PHASE</text>
+
+  <!-- Step 2: deposit -->
+  <line x1="330" y1="390" x2="552" y2="390" stroke="#1D9E75" stroke-width="2" marker-end="url(#a3t)"/>
+  <rect x="355" y="372" width="170" height="22" rx="4" fill="#1a1a1a"/>
+  <text x="440" y="388" text-anchor="middle" fill="#1D9E75" font-size="12" font-weight="500">2. deposit(50000)</text>
+
+  <line x1="560" y1="405" x2="782" y2="405" stroke="#888780" stroke-width="2" marker-end="url(#a3g)"/>
+  <rect x="600" y="393" width="130" height="18" rx="4" fill="#1a1a1a"/>
+  <text x="665" y="406" text-anchor="middle" fill="#888780" font-size="10">Privara encrypt</text>
+
+  <!-- Step 3: buy treasury -->
+  <line x1="330" y1="445" x2="552" y2="445" stroke="#1D9E75" stroke-width="2" marker-end="url(#a3t)"/>
+  <rect x="345" y="427" width="200" height="22" rx="4" fill="#1a1a1a"/>
+  <text x="445" y="443" text-anchor="middle" fill="#1D9E75" font-size="12" font-weight="500">3. buy_rwa(TB, $35K)</text>
+
+  <line x1="560" y1="460" x2="782" y2="460" stroke="#888780" stroke-width="2" marker-end="url(#a3g)"/>
+  <rect x="600" y="448" width="130" height="18" rx="4" fill="#1a1a1a"/>
+  <text x="665" y="461" text-anchor="middle" fill="#888780" font-size="10">Mint fhERC-20</text>
+
+  <!-- Step 4: buy MMF -->
+  <line x1="330" y1="500" x2="552" y2="500" stroke="#1D9E75" stroke-width="2" marker-end="url(#a3t)"/>
+  <rect x="345" y="482" width="200" height="22" rx="4" fill="#1a1a1a"/>
+  <text x="445" y="498" text-anchor="middle" fill="#1D9E75" font-size="12" font-weight="500">4. buy_rwa(MM, $10K)</text>
+
+  <line x1="560" y1="515" x2="782" y2="515" stroke="#888780" stroke-width="2" marker-end="url(#a3g)"/>
+  <rect x="600" y="503" width="130" height="18" rx="4" fill="#1a1a1a"/>
+  <text x="665" y="516" text-anchor="middle" fill="#888780" font-size="10">Mint fhERC-20</text>
+
+  <!-- Step 5: risk params -->
+  <line x1="330" y1="555" x2="552" y2="555" stroke="#1D9E75" stroke-width="2" marker-end="url(#a3t)"/>
+  <rect x="345" y="537" width="200" height="22" rx="4" fill="#1a1a1a"/>
+  <text x="445" y="553" text-anchor="middle" fill="#1D9E75" font-size="12" font-weight="500">5. set_risk_params()</text>
+
+  <line x1="560" y1="570" x2="782" y2="570" stroke="#888780" stroke-width="2" marker-end="url(#a3g)"/>
+  <rect x="600" y="558" width="140" height="18" rx="4" fill="#1a1a1a"/>
+  <text x="670" y="571" text-anchor="middle" fill="#888780" font-size="10">Store encrypted</text>
+
+  <!-- Done message -->
+  <rect x="120" y="605" width="200" height="36" rx="10" fill="#2a2828"/>
+  <text x="220" y="621" text-anchor="middle" fill="#D85A30" font-size="11">"Done. Portfolio active.</text>
+  <text x="220" y="634" text-anchor="middle" fill="#D85A30" font-size="11">All encrypted."</text>
+  <line x1="322" y1="623" x2="118" y2="623" stroke="#D85A30" stroke-width="2" marker-end="url(#a3b)" opacity="0.6"/>
+
+  <!-- Bottom note -->
+  <rect x="100" y="665" width="700" height="40" rx="8" fill="#222" stroke="#1D9E75" stroke-width="1"/>
+  <text x="450" y="682" text-anchor="middle" fill="#1D9E75" font-size="12" font-weight="500">🔒 All transactions encrypted via CoFHE — strategy invisible on-chain</text>
+  <text x="450" y="697" text-anchor="middle" fill="#888780" font-size="11">Agent never sees plaintext amounts — only handles ciphertext via SDK tools</text>
+</svg>

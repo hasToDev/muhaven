@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 620" font-family="Inter, -apple-system, system-ui, sans-serif">
+  <defs>
+    <marker id="arrow1" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#ccc"/>
+    </marker>
+    <marker id="arrow1t" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#1D9E75"/>
+    </marker>
+    <marker id="arrow1c" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#D85A30"/>
+    </marker>
+    <marker id="arrow1g" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#888780"/>
+    </marker>
+  </defs>
+
+  <rect width="900" height="620" rx="12" fill="#1a1a1a"/>
+
+  <text x="450" y="38" text-anchor="middle" fill="#fff" font-size="18" font-weight="600">Flow 1: Investor Deposits and Buys RWA Tokens</text>
+
+  <!-- Column headers -->
+  <rect x="60" y="58" width="130" height="40" rx="8" fill="#378ADD"/>
+  <text x="125" y="83" text-anchor="middle" fill="#fff" font-size="13" font-weight="600">Investor</text>
+
+  <rect x="270" y="58" width="130" height="40" rx="8" fill="#1D9E75"/>
+  <text x="335" y="83" text-anchor="middle" fill="#fff" font-size="13" font-weight="600">Privara</text>
+
+  <rect x="490" y="58" width="150" height="40" rx="8" fill="#D85A30"/>
+  <text x="565" y="83" text-anchor="middle" fill="#fff" font-size="13" font-weight="600">MuHavenToken</text>
+
+  <rect x="720" y="58" width="120" height="40" rx="8" fill="#888780"/>
+  <text x="780" y="83" text-anchor="middle" fill="#fff" font-size="13" font-weight="600">CoFHE</text>
+
+  <!-- Lifelines -->
+  <line x1="125" y1="98" x2="125" y2="580" stroke="#378ADD" stroke-width="1.5" stroke-dasharray="6,4" opacity="0.5"/>
+  <line x1="335" y1="98" x2="335" y2="580" stroke="#1D9E75" stroke-width="1.5" stroke-dasharray="6,4" opacity="0.5"/>
+  <line x1="565" y1="98" x2="565" y2="580" stroke="#D85A30" stroke-width="1.5" stroke-dasharray="6,4" opacity="0.5"/>
+  <line x1="780" y1="98" x2="780" y2="580" stroke="#888780" stroke-width="1.5" stroke-dasharray="6,4" opacity="0.5"/>
+
+  <!-- Step 1: deposit -->
+  <line x1="125" y1="140" x2="327" y2="140" stroke="#1D9E75" stroke-width="2" marker-end="url(#arrow1t)"/>
+  <rect x="155" y="122" width="140" height="22" rx="4" fill="#1a1a1a"/>
+  <text x="225" y="138" text-anchor="middle" fill="#1D9E75" font-size="12" font-weight="500">1. deposit($10K)</text>
+
+  <!-- Step 2: encrypt -->
+  <line x1="335" y1="190" x2="557" y2="190" stroke="#ccc" stroke-width="2" marker-end="url(#arrow1)"/>
+  <rect x="370" y="172" width="150" height="22" rx="4" fill="#1a1a1a"/>
+  <text x="445" y="188" text-anchor="middle" fill="#ccc" font-size="12" font-weight="500">2. Encrypt amount</text>
+
+  <!-- Step 3: FHE -->
+  <line x1="565" y1="240" x2="772" y2="240" stroke="#888780" stroke-width="2" marker-end="url(#arrow1g)"/>
+  <rect x="590" y="222" width="155" height="22" rx="4" fill="#1a1a1a"/>
+  <text x="668" y="238" text-anchor="middle" fill="#888780" font-size="12" font-weight="500">3. FHE.asEuint128()</text>
+
+  <!-- Step 4: store -->
+  <line x1="772" y1="290" x2="573" y2="290" stroke="#D85A30" stroke-width="2" marker-end="url(#arrow1c)"/>
+  <rect x="600" y="272" width="155" height="22" rx="4" fill="#1a1a1a"/>
+  <text x="678" y="288" text-anchor="middle" fill="#D85A30" font-size="12" font-weight="500">4. Store encrypted</text>
+
+  <!-- Step 5: buy_rwa -->
+  <line x1="125" y1="350" x2="557" y2="350" stroke="#D85A30" stroke-width="2" marker-end="url(#arrow1c)"/>
+  <rect x="220" y="332" width="200" height="22" rx="4" fill="#1a1a1a"/>
+  <text x="320" y="348" text-anchor="middle" fill="#D85A30" font-size="12" font-weight="500">5. buy_rwa(MHRWA-TB, $7K)</text>
+
+  <!-- Step 6: mint -->
+  <line x1="565" y1="400" x2="772" y2="400" stroke="#888780" stroke-width="2" marker-end="url(#arrow1g)"/>
+  <rect x="600" y="382" width="140" height="22" rx="4" fill="#1a1a1a"/>
+  <text x="670" y="398" text-anchor="middle" fill="#888780" font-size="12" font-weight="500">6. Mint fhERC-20</text>
+
+  <!-- Step 7: FHE.add -->
+  <line x1="772" y1="450" x2="573" y2="450" stroke="#D85A30" stroke-width="2" marker-end="url(#arrow1c)"/>
+  <rect x="600" y="432" width="155" height="22" rx="4" fill="#1a1a1a"/>
+  <text x="678" y="448" text-anchor="middle" fill="#D85A30" font-size="12" font-weight="500">7. FHE.add(balance)</text>
+
+  <!-- Bottom note -->
+  <rect x="100" y="510" width="700" height="50" rx="8" fill="#222" stroke="#1D9E75" stroke-width="1"/>
+  <text x="450" y="530" text-anchor="middle" fill="#1D9E75" font-size="13" font-weight="500">🔒 Encrypted balance stored on-chain</text>
+  <text x="450" y="548" text-anchor="middle" fill="#888780" font-size="12">Only the investor can decrypt via sealed output (PermissionedV2)</text>
+</svg>
