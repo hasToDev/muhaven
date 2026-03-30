@@ -21,6 +21,8 @@ MuHaven sits at the intersection of three markets. No existing project occupies 
       SingularityDAO ●  │        ● Securitize
 ```
 
+<img src="./docs/images/competitive-matrix.jpg" alt="Competitive Positioning" width="850" />
+
 ---
 
 ## Dimension 1: RWA privacy
@@ -167,5 +169,3 @@ Unlike privacy-focused projects that treat compliance as an afterthought, MuHave
 All of these signals converged in the 6 months before MuHaven was conceived. The timing is not coincidental — the infrastructure layer is finally mature enough to build Confidential DeFAI.
 
 ---
-
-> **Image prompt for competitive positioning**: "Create a 2x2 matrix diagram. X-axis: 'Transparent state' (left) to 'Encrypted state' (right). Y-axis: 'Manual management' (bottom) to 'AI-managed' (top). Bottom-left quadrant: standard RWA platforms (Securitize, Ondo). Bottom-right quadrant: Inco/Zama, Canton. Top-left quadrant: DeFAI agents (Virtuals, SingularityDAO). Top-right quadrant: MuHaven (highlighted, with a star). Clean minimal style, dark background."

@@ -23,22 +23,22 @@ User says something
        │
        ▼
 ┌─────────────┐
-│  LLM thinks  │ ← "User wants low-risk investment"
+│  LLM thinks │ ← "User wants low-risk investment"
 └──────┬──────┘
        │
        ▼
 ┌─────────────┐
-│  Call tool    │ ← get_yields() → returns current rates
+│  Call tool  │ ← get_yields() → returns current rates
 └──────┬──────┘
        │
        ▼
 ┌─────────────┐
-│  LLM thinks  │ ← "Treasury at 4.8% fits their risk profile"
+│  LLM thinks │ ← "Treasury at 4.8% fits their risk profile"
 └──────┬──────┘
        │
        ▼
 ┌─────────────┐
-│  Respond     │ ← "I recommend 70% treasuries. Shall I proceed?"
+│  Respond    │ ← "I recommend 70% treasuries. Shall I proceed?"
 └──────┬──────┘
        │
        ▼
@@ -535,4 +535,4 @@ This is simple, safe, and sufficient to demonstrate the concept. The agent's max
 
 ---
 
-> **Image prompt for agent flow**: "Create a conversation flow diagram showing an investor chatting with an AI agent. Left side shows chat bubbles (user: 'I want steady income', agent: 'What's your horizon?', user: '1 year', agent: 'I recommend 70/20/10 split'). Right side shows the agent calling tools in sequence: get_yields → deposit → buy_rwa → set_risk_params. Below the tools, show encrypted transactions flowing to the blockchain (represented as blocks with lock icons). Clean minimal style, dark background, teal and coral accents."
+<img src="./docs/images/agent-flow-diagram.jpg" alt="Agent Flow Diagram" width="850" />

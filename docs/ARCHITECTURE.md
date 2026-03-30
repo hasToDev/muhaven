@@ -81,7 +81,7 @@ The **supply side** (issuers) creates and manages RWA tokens, deposits yield, an
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-> **Image prompt**: "Create a layered architecture diagram with three horizontal tiers. Top tier labeled 'Presentation' contains three boxes: 'Issuer Dashboard' (coral fill, with sub-items: 'Token management', 'Yield distribution', 'Investor mgmt', 'Compliance'), 'Vue 3 Dashboard' (teal fill), and 'AI Agent' (teal fill). Middle tier labeled 'Application' contains five boxes: 'Privara SDK', 'MuHaven Contracts' (with sub-items: 'MuHavenToken', 'MuHavenVault', 'YieldDistributor'), 'ReineiraOS SDK'. Bottom tier labeled 'Encryption' contains one wide box: 'Fhenix CoFHE Coprocessor' with 'Arbitrum' and 'CCTP V2' below it. Arrows flow downward between tiers — both issuer and investor sides converge at the Application layer. Use a clean, minimal style with dark background and teal/coral/purple accent colors."
+<img src="./docs/images/system-layer.jpg" alt="System Layer" width="850" />
 
 ---
 
@@ -297,4 +297,4 @@ Investor Wallet (full control)
 
 ---
 
-> **Image prompt for architecture overview**: "Create a clean system architecture diagram showing a two-sided platform. LEFT: 'Issuer Dashboard' (coral accent) with sub-items: 'Create token', 'Deposit yield', 'Manage investors', 'Compliance'. RIGHT: 'AI Agent' (teal accent) with sub-items: 'Advisory', 'Portfolio mgmt', 'Yield claiming'. CENTER: Three connected platforms — MuHaven contracts (center, containing MuHavenToken, MuHavenVault, YieldDistributor), Privara (left, teal accent), and ReineiraOS (right, purple accent) — all sitting on top of a shared foundation labeled 'Fhenix CoFHE' (gray). Arrows show data flow from both issuer and investor sides down to shared contracts. Use a dark background with minimal style, no gradients. Include the Arbitrum logo on the foundation layer."
+<img src="./docs/images/architecture-overview.jpg" alt="Architecture Overview" width="850" />

@@ -32,11 +32,11 @@ External RWA token              MuHaven
        │  Investor deposits
        │  standard ERC-20
        ▼
-┌──────────────┐         ┌──────────────────┐
+┌───────────────┐         ┌──────────────────┐
 │ Lock in vault │────────>│ Mint fhERC-20    │
 │ (custodied)   │         │ (encrypted       │
 │               │         │  balance)        │
-└──────────────┘         └──────────────────┘
+└───────────────┘         └──────────────────┘
        │
        │  1:1 backing
        │  Investor can unwrap anytime
@@ -65,7 +65,7 @@ RWA Issuer                    MuHaven
        │  Creates token via
        │  issuer dashboard
        ▼
-┌──────────────────────┐
+┌───────────────────────┐
 │ Configure token:      │
 │ - Name, symbol        │
 │ - Asset class         │
@@ -73,7 +73,7 @@ RWA Issuer                    MuHaven
 │ - KYC tier required   │
 │ - Max investors       │
 │ - Jurisdiction rules  │
-└──────────┬───────────┘
+└──────────┬────────────┘
            │
            ▼
 ┌──────────────────────┐
@@ -261,18 +261,6 @@ For the hackathon, we need to demonstrate the two-sided flow end-to-end:
 | `MuHavenVault.sol` (new) | `wrap()`, `unwrap()` | Lock ERC-20, mint fhERC-20 (wrapper model) |
 | `YieldDistributor.sol` (new) | `distributeYield()` | Read all holder balances, create proportional escrows |
 
-### Wave plan impact
-
-| Wave | Addition | Hours |
-|------|---------|-------|
-| Wave 2 | Add `onlyIssuer` + `onlyMinter` modifiers, MINTER_ROLE, `mint()` to MuHavenToken | +2h |
-| Wave 2 | Create `MuHavenVault.sol` (simple wrap/unwrap) | +4h |
-| Wave 3 | Build `YieldDistributor.sol` with ReineiraOS integration | +6h |
-| Wave 3 | Build 4 issuer dashboard pages in Vue 3 | +12h |
-| Wave 5 | Include issuer flow in demo video | +1h |
-
-**Total additional: ~25 hours** — fits within Wave 3's 120h budget with some reallocation.
-
 ---
 
 ## Revenue model (for judges)
@@ -292,30 +280,30 @@ All fees are encrypted — competitors can't reverse-engineer MuHaven's revenue 
 ## How this fits the existing architecture
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  ISSUER SIDE (new)                    INVESTOR SIDE (existing)│
+┌────────────────────────────────────────────────────────────────┐
+│  ISSUER SIDE (new)                    INVESTOR SIDE (existing) │
 │                                                                │
-│  ┌─────────────────┐                 ┌────────────────────┐  │
-│  │ Issuer Dashboard │                 │ AI Agent + Chat     │  │
-│  │ - Create token   │                 │ - Advisory          │  │
-│  │ - Deposit yield  │                 │ - Portfolio mgmt    │  │
-│  │ - Manage investors│                │ - Yield claiming    │  │
-│  └────────┬────────┘                 └─────────┬──────────┘  │
-│           │                                     │              │
-│           ▼                                     ▼              │
-│  ┌──────────────────────────────────────────────────────────┐│
-│  │                   MuHaven Contracts                       ││
-│  │                                                            ││
-│  │  MuHavenToken (fhERC-20)  ←──── shared ────→  IKYCGate  ││
-│  │  MuHavenVault (wrap/unwrap)                    YieldGate  ││
-│  │  YieldDistributor (proportional escrow creation)          ││
-│  └──────────────────────────────────────────────────────────┘│
+│  ┌───────────────────┐                 ┌────────────────────┐  │
+│  │ Issuer Dashboard  │                 │ AI Agent + Chat    │  │
+│  │ - Create token    │                 │ - Advisory         │  │
+│  │ - Deposit yield   │                 │ - Portfolio mgmt   │  │
+│  │ - Manage investors│                 │ - Yield claiming   │  │
+│  └────────┬──────────┘                 └─────────┬──────────┘  │
+│           │                                      │             │
+│           ▼                                      ▼             │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │                   MuHaven Contracts                      │  │
+│  │                                                          │  │
+│  │  MuHavenToken (fhERC-20)  ←──── shared ────→  IKYCGate   │  │
+│  │  MuHavenVault (wrap/unwrap)                    YieldGate │  │
+│  │  YieldDistributor (proportional escrow creation)         │  │
+│  └──────────────────────────────────────────────────────────┘  │
 │                              │                                 │
 │                              ▼                                 │
-│  ┌──────────────────────────────────────────────────────────┐│
-│  │  Privara (payments) + ReineiraOS (escrow) + CoFHE (FHE)  ││
-│  └──────────────────────────────────────────────────────────┘│
-└──────────────────────────────────────────────────────────────┘
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  Privara (payments) + ReineiraOS (escrow) + CoFHE (FHE)  │  │
+│  └──────────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────┘
 ```
 
 The key insight: issuers and investors share the same smart contracts but interact through different interfaces. The fhERC-20 token, KYC gate, and yield gate serve both sides. The issuer dashboard and investor AI agent are just different UX layers on top of the same protocol.
@@ -336,6 +324,6 @@ The key insight: issuers and investors share the same smart contracts but intera
 
 The differentiator: on existing platforms, the issuer can see every investor's exact position. On MuHaven, the issuer can see aggregate metrics (total supply, investor count) but not individual balances. This is confidential distribution — the privacy property institutions actually want.
 
----
+<img src="./docs/images/issuer-model.jpg" alt="Issuer Model" width="850" />
 
-> **Image prompt for issuer flow**: "Create a vertical flow diagram on dark background showing the issuer journey. Top: 'RWA Issuer' (blue box) with arrow down to 'MuHaven Issuer Dashboard' (coral box) with four sub-items: 'Create token', 'Set yield', 'Deposit yield', 'Manage investors'. Arrow down to 'MuHaven Contracts' (gray wide box). Two arrows out: left arrow to 'ReineiraOS Escrow' (purple) labeled 'yield distribution', right arrow to 'Investor Agent' (teal) labeled 'auto-claim'. Bottom note: 'Issuer sees aggregates. Investor sees own position. Nobody sees others.' Clean minimal style."
+---
