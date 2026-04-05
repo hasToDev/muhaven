@@ -1,3 +1,2 @@
-export * from './deploy-counter'
-export * from './increment-counter'
-export * from './reset-counter'
+// MuHaven Hardhat tasks
+// Task files will be exported here as they are created (Phase 9)

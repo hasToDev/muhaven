@@ -13,12 +13,13 @@ import {
 } from "@fhenixprotocol/cofhe-contracts/FHE.sol";
 import {IKYCGate} from "./interfaces/IKYCGate.sol";
 import {IInvestorRegistry} from "./interfaces/IInvestorRegistry.sol";
+import {IMuHavenToken} from "./interfaces/IMuHavenToken.sol";
 
 /// @title MuHavenToken
 /// @notice fhERC-20 RWA token with encrypted balances, transfers, and approvals.
 ///         Uses Fhenix CoFHE for all balance/amount operations.
 ///         Deployed behind an OZ Transparent Proxy.
-contract MuHavenToken is Initializable {
+contract MuHavenToken is Initializable, IMuHavenToken {
 
     // ── Storage ──────────────────────────────────────────────────────────
 
@@ -50,6 +51,7 @@ contract MuHavenToken is Initializable {
     event MinterGranted(address indexed minter);
     event MinterRevoked(address indexed minter);
     event BalanceDecryptRequested(address indexed account);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
     // ── Errors ───────────────────────────────────────────────────────────
 
@@ -312,5 +314,12 @@ contract MuHavenToken is Initializable {
         if (newRegistry == address(0)) revert ZeroAddress();
         registry = IInvestorRegistry(newRegistry);
         emit RegistryUpdated(newRegistry);
+    }
+
+    function transferOwnership(address newOwner) external onlyOwner {
+        if (newOwner == address(0)) revert ZeroAddress();
+        address previousOwner = owner;
+        owner = newOwner;
+        emit OwnershipTransferred(previousOwner, newOwner);
     }
 }
