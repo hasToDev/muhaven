@@ -303,20 +303,20 @@ Every existing DeFAI agent operates on transparent state — strategies are visi
 
 ## Tech Stack
 
-| Layer | Technology | Version |
-|-------|-----------|---------|
-| Blockchain | Arbitrum Sepolia (testnet) → Arbitrum One (production) | — |
-| FHE contracts | `@fhenixprotocol/cofhe-contracts` | `v0.1.1` |
+| Layer | Technology | Version  |
+|-------|-----------|----------|
+| Blockchain | Arbitrum Sepolia (testnet) → Arbitrum One (production) | —        |
+| FHE contracts | `@fhenixprotocol/cofhe-contracts` | `v0.1.3` |
 | FHE client SDK | `cofhejs` / `@cofhe/sdk` | `v0.4.0` |
-| Dev starter | `cofhe-hardhat-starter` (branch: `sdk-migration`) | — |
-| Token standard | FHERC-20 (max type: `euint128`) | — |
-| KYC framework | ERC-3643 / ONCHAINID (swappable via IKYCGate) | — |
-| Payment rails | Privara SDK (encrypted stablecoin transfers) | — |
-| Escrow + yields | ReineiraOS SDK (conditional settlement) | — |
-| Cross-chain | Circle CCTP V2 (via ReineiraOS operators) | — |
-| Frontend | Vue 3 + Vite + Bun | — |
-| AI agent | LLM (Claude/OpenAI) + function calling | — |
-| Package manager | pnpm (Fhenix recommended) | v9+ |
+| Dev starter | `cofhe-hardhat-starter` (branch: `sdk-migration`) | —        |
+| Token standard | FHERC-20 (max type: `euint128`) | —        |
+| KYC framework | ERC-3643 / ONCHAINID (swappable via IKYCGate) | —        |
+| Payment rails | Privara SDK (encrypted stablecoin transfers) | —        |
+| Escrow + yields | ReineiraOS SDK (conditional settlement) | —        |
+| Cross-chain | Circle CCTP V2 (via ReineiraOS operators) | —        |
+| Frontend | Vue 3 + Vite + Bun | —        |
+| AI agent | LLM (Claude/OpenAI) + function calling | —        |
+| Package manager | pnpm (Fhenix recommended) | v9+      |
 
 > **SDK stability warning**: Fhenix `cofhe-contracts` is under active development. The team warns it "will be changing frequently." MuHaven contracts are built against `v0.1.1` with `cofhejs v0.4.0`. Check [compatibility docs](https://cofhe-docs.fhenix.zone/get-started/introduction/compatibility) before updating. See [SMART_CONTRACTS.md](./docs/SMART_CONTRACTS.md) for a checklist of what to verify if the SDK updates.
 

@@ -11,6 +11,14 @@ deployment.json
 node_modules/
 bun.lockb
 
+# Hardhat artifacts
+artifacts/
+cache/
+typechain-types/
+coverage/
+coverage.json
+deployments/localcofhe/
+
 # Frontend build
 dist/
 

@@ -8,10 +8,10 @@
 
 > **WARNING**: The Fhenix CoFHE SDK (`cofhe-contracts`) is under active development and changes frequently. Pin your contracts to a specific version.
 
-| Component | Pinned version | Package |
-|-----------|---------------|---------|
-| cofhe-contracts | [`v0.1.1`](https://github.com/FhenixProtocol/cofhe-contracts) | `@fhenixprotocol/cofhe-contracts` |
-| cofhejs (client SDK) | [`v0.4.0`](https://github.com/FhenixProtocol/cofhesdk) | `cofhejs` or `@cofhe/sdk` |
+| Component | Pinned version                                                                                | Package |
+|-----------|-----------------------------------------------------------------------------------------------|---------|
+| cofhe-contracts | [`v0.1.3`](https://github.com/FhenixProtocol/cofhe-contracts)                                 | `@fhenixprotocol/cofhe-contracts` |
+| cofhejs (client SDK) | [`v0.4.0`](https://github.com/FhenixProtocol/cofhesdk)                                        | `cofhejs` or `@cofhe/sdk` |
 | cofhe-hardhat-starter | [`sdk-migration`](https://github.com/FhenixProtocol/cofhe-hardhat-starter/tree/sdk-migration) | Clone + `pnpm install` |
 
 **Development setup**: Clone `cofhe-hardhat-starter` (branch `sdk-migration`) as your starting point. It bundles the Hardhat config, mock contracts, and deployment tasks — replacing the older `cofhe-hardhat-plugin`.
