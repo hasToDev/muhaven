@@ -307,7 +307,7 @@ Every existing DeFAI agent operates on transparent state — strategies are visi
 |-------|-----------|----------|
 | Blockchain | Arbitrum Sepolia (testnet) → Arbitrum One (production) | —        |
 | FHE contracts | `@fhenixprotocol/cofhe-contracts` | `v0.1.3` |
-| FHE client SDK | `cofhejs` / `@cofhe/sdk` | `v0.4.0` |
+| FHE client SDK | `@cofhe/sdk` + `@cofhe/hardhat-plugin` + `@cofhe/mock-contracts` | `v0.4.0` |
 | Dev starter | `cofhe-hardhat-starter` (branch: `sdk-migration`) | —        |
 | Token standard | FHERC-20 (max type: `euint128`) | —        |
 | KYC framework | ERC-3643 / ONCHAINID (swappable via IKYCGate) | —        |
@@ -318,7 +318,7 @@ Every existing DeFAI agent operates on transparent state — strategies are visi
 | AI agent | LLM (Claude/OpenAI) + function calling | —        |
 | Package manager | pnpm (Fhenix recommended) | v9+      |
 
-> **SDK stability warning**: Fhenix `cofhe-contracts` is under active development. The team warns it "will be changing frequently." MuHaven contracts are built against `v0.1.1` with `cofhejs v0.4.0`. Check [compatibility docs](https://cofhe-docs.fhenix.zone/get-started/introduction/compatibility) before updating. See [SMART_CONTRACTS.md](./docs/SMART_CONTRACTS.md) for a checklist of what to verify if the SDK updates.
+> **SDK stability warning**: Fhenix `cofhe-contracts` is under active development. The team warns it "will be changing frequently." MuHaven contracts are built against `v0.1.3` with `@cofhe/sdk v0.4.0`. Check [compatibility docs](https://cofhe-docs.fhenix.zone/get-started/introduction/compatibility) before updating. See [SMART_CONTRACTS.md](./docs/SMART_CONTRACTS.md) for a checklist of what to verify if the SDK updates.
 
 ---
 
@@ -437,7 +437,7 @@ muhaven/
 ## Links
 
 - **Fhenix**: [fhenix.io](https://www.fhenix.io/) | [CoFHE Docs](https://cofhe-docs.fhenix.zone/)
-- **CoFHE repos**: [cofhe-contracts](https://github.com/FhenixProtocol/cofhe-contracts) | [cofhejs SDK](https://github.com/FhenixProtocol/cofhesdk) | [hardhat-starter (sdk-migration)](https://github.com/FhenixProtocol/cofhe-hardhat-starter/tree/sdk-migration)
+- **CoFHE repos**: [cofhe-contracts](https://github.com/FhenixProtocol/cofhe-contracts) | [@cofhe/sdk](https://github.com/FhenixProtocol/cofhesdk) | [cofhe-hardhat-starter](https://github.com/FhenixProtocol/cofhe-hardhat-starter)
 - **Privara**: [privara.xyz](https://privara.xyz/) | [GitHub](https://github.com/PrivaraXYZ)
 - **ReineiraOS**: [Docs](https://docs.reineira.xyz/)
 - **ERC-3643**: [erc3643.org](https://www.erc3643.org/) | [GitHub](https://github.com/ERC-3643/ERC-3643)

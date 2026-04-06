@@ -11,6 +11,7 @@ interface IYieldDistributor {
         uint256 perInvestorYield,
         uint256 investorCount,
         uint256 processedCount,
+        uint256 escrowsCreated,
         uint8 status
     );
 }

@@ -2,7 +2,7 @@
 
 > Architecture, tool definitions, and step-by-step implementation guide for the MuHaven AI agent. Written for builders new to agentic AI.
 
-> **SDK note**: All tool handlers use `cofhejs` (Fhenix client SDK v0.4.0) with `Encryptable.uint64()` / `Encryptable.uint128()` for encryption and the `PermissionedV2` permit system for decryption. See [SMART_CONTRACTS.md](./SMART_CONTRACTS.md) for SDK compatibility details.
+> **SDK note**: All tool handlers use `@cofhe/sdk` (v0.4.0) with `Encryptable.uint64()` / `Encryptable.uint128()` for encryption and the async decrypt pattern (`requestBalanceDecrypt` → `getBalanceDecryptResult`) for reading balances. Import from `@cofhe/sdk/node` in Node.js agent contexts. See [SMART_CONTRACTS.md](./SMART_CONTRACTS.md) for SDK compatibility details.
 
 ---
 
@@ -161,11 +161,10 @@ interface Tool {
     required: ["token_symbol", "amount"]
   },
   handler: async ({ token_symbol, amount }) => {
-    // Encrypt amount using cofhejs (Fhenix client SDK)
-    const [encrypted] = await cofhejs.encrypt(
-      (step) => console.log(`Encrypt: ${step}`),
-      [Encryptable.uint128(BigInt(amount * 1e6))]  // USDC has 6 decimals
-    );
+    // Encrypt amount using @cofhe/sdk
+    const [encrypted] = await client.encryptInputs([
+      Encryptable.uint128(BigInt(amount * 1e6))  // USDC has 6 decimals
+    ]).execute();
     const tx = await muhavenToken.mint(walletAddress, encrypted);
     return { success: true, txHash: tx.hash, message: `Bought $${amount} of ${token_symbol} (encrypted)` };
   }
@@ -183,18 +182,23 @@ interface Tool {
     properties: {},
   },
   handler: async () => {
-    // Use cofhejs permit system to read sealed balance
-    const permit = cofhejs.getPermit();
-    const permission = permit.getPermission();
+    // Request async decryption of balance (investor signs their own balance task)
+    await muhavenToken.requestBalanceDecrypt();
+    let balance = 0n;
+    for (let i = 0; i < 30; i++) {
+      const [val, ready] = await muhavenToken.getBalanceDecryptResult(walletAddress);
+      if (ready) { balance = val; break; }
+      await new Promise(r => setTimeout(r, 2000));
+    }
 
-    // Get sealed balance from contract
-    const sealedBalance = await muhavenToken.balanceOfSealed(permission);
-    const balance = await cofhejs.unseal(sealedBalance, FheTypes.Uint128);
-
-    // Get sealed risk params
-    const sealedParams = await riskParamsContract.getRiskParamsSealed(permission);
-    const maxDrawdown = await cofhejs.unseal(sealedParams[0], FheTypes.Uint64);
-    const minYield = await cofhejs.unseal(sealedParams[1], FheTypes.Uint64);
+    // Request async decryption of risk params
+    await riskParamsContract.requestRiskParamsDecrypt(walletAddress);
+    let maxDrawdown = 0n, minYield = 0n;
+    for (let i = 0; i < 30; i++) {
+      const [md, my, , , mdReady] = await riskParamsContract.getRiskParamsDecryptResult(walletAddress);
+      if (mdReady) { maxDrawdown = md; minYield = my; break; }
+      await new Promise(r => setTimeout(r, 2000));
+    }
 
     return {
       total_value_usd: Number(balance) / 1e6, // Convert from 6 decimals
@@ -252,16 +256,13 @@ interface Tool {
     required: ["max_drawdown_percent", "min_yield_percent", "max_daily_spend"]
   },
   handler: async (params) => {
-    // Encrypt risk params using cofhejs before sending to contract
-    const [encMaxDrawdown, encMinYield, encDrift, encMaxSpend] = await cofhejs.encrypt(
-      (step) => console.log(`Encrypt: ${step}`),
-      [
-        Encryptable.uint64(BigInt(params.max_drawdown_percent * 100)),   // basis points
-        Encryptable.uint64(BigInt(params.min_yield_percent * 100)),      // basis points
-        Encryptable.uint64(BigInt((params.drift_tolerance_percent || 5) * 100)),
-        Encryptable.uint64(BigInt(params.max_daily_spend * 1e6)),        // USDC 6 decimals
-      ]
-    );
+    // Encrypt risk params using @cofhe/sdk before sending to contract
+    const [encMaxDrawdown, encMinYield, encDrift, encMaxSpend] = await client.encryptInputs([
+      Encryptable.uint64(BigInt(params.max_drawdown_percent * 100)),   // basis points
+      Encryptable.uint64(BigInt(params.min_yield_percent * 100)),      // basis points
+      Encryptable.uint64(BigInt((params.drift_tolerance_percent || 5) * 100)),
+      Encryptable.uint64(BigInt(params.max_daily_spend * 1e6)),        // USDC 6 decimals
+    ]).execute();
     const tx = await riskParamsContract.setRiskParams(
       encMaxDrawdown,
       encMinYield,
@@ -446,22 +447,23 @@ Each tool handler calls the actual SDKs:
 ```typescript
 // agent/toolHandlers.ts
 import { ethers } from 'ethers';
-import { cofhejs, Encryptable, FheTypes } from 'cofhejs/node';
+import { createCofheClient, createCofheConfig, Encryptable, FheTypes } from '@cofhe/sdk/node';
+import { Ethers6Adapter } from '@cofhe/sdk/adapters';
+import { arbSepolia } from '@cofhe/sdk/chains';
 import { ReineiraSDK } from '@reineira-os/sdk';
 
-// Initialize provider and contracts
+// Initialize provider and contracts (ethers for contract interaction)
 const provider = new ethers.JsonRpcProvider(process.env.RPC_URL);
 const wallet = new ethers.Wallet(process.env.AGENT_WALLET_KEY, provider);
 const muhavenToken = new ethers.Contract(TOKEN_ADDRESS, TOKEN_ABI, wallet);
 const riskParams = new ethers.Contract(RISK_ADDRESS, RISK_ABI, wallet);
 
-// Initialize cofhejs for the agent wallet
-await cofhejs.initialize({
-    provider,
-    signer: wallet,
-    projects: ["MuHaven"],
-});
-await cofhejs.createPermit({ type: "self", issuer: wallet.address, projects: ["MuHaven"] });
+// Initialize @cofhe/sdk client (Ethers6Adapter bridges ethers → viem for CoFHE)
+const { publicClient, walletClient } = await Ethers6Adapter(provider, wallet);
+const config = createCofheConfig({ supportedChains: [arbSepolia] });
+const client = createCofheClient(config);
+await client.connect(publicClient, walletClient);
+await client.permits.createSelf({ issuer: wallet.address });
 
 // Tool handler dispatcher
 async function executeToolHandler(toolName: string, params: any) {

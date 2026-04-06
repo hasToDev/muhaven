@@ -11,7 +11,7 @@
 | Component | Pinned version                                                                                | Package |
 |-----------|-----------------------------------------------------------------------------------------------|---------|
 | cofhe-contracts | [`v0.1.3`](https://github.com/FhenixProtocol/cofhe-contracts)                                 | `@fhenixprotocol/cofhe-contracts` |
-| cofhejs (client SDK) | [`v0.4.0`](https://github.com/FhenixProtocol/cofhesdk)                                        | `cofhejs` or `@cofhe/sdk` |
+| @cofhe/sdk (client SDK) | [`v0.4.0`](https://github.com/FhenixProtocol/cofhesdk)                                    | `@cofhe/sdk`, `@cofhe/hardhat-plugin`, `@cofhe/mock-contracts` |
 | cofhe-hardhat-starter | [`sdk-migration`](https://github.com/FhenixProtocol/cofhe-hardhat-starter/tree/sdk-migration) | Clone + `pnpm install` |
 
 **Development setup**: Clone `cofhe-hardhat-starter` (branch `sdk-migration`) as your starting point. It bundles the Hardhat config, mock contracts, and deployment tasks — replacing the older `cofhe-hardhat-plugin`.
@@ -325,30 +325,41 @@ function totalYieldDistributed() external view returns (uint256) {
 }
 ```
 
-### Reading balance (client-side with cofhejs)
+### Reading balance (client-side with @cofhe/sdk)
+
+MuHavenToken uses the **async decrypt pattern** (`requestBalanceDecrypt` → `getBalanceDecryptResult`).
+The SDK is needed to encrypt inputs for transfers/mints; decryption is polled on-chain.
 
 ```typescript
-import { cofhejs, Encryptable, FheTypes } from 'cofhejs/node';
+import { createCofheClient, createCofheConfig, Encryptable } from '@cofhe/sdk/node';
+import { Ethers6Adapter } from '@cofhe/sdk/adapters';
+import { arbSepolia } from '@cofhe/sdk/chains';
+import { ethers } from 'ethers';
 
-// Initialize
-await cofhejs.initialize({
-    provider: userProvider,
-    signer: userSigner,
-    projects: ["MuHaven"],
-});
+// Initialize provider + signer
+const provider = new ethers.JsonRpcProvider(process.env.RPC_URL);
+const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
 
-// Create permit
-await cofhejs.createPermit({
-    type: "self",
-    issuer: userAddress,
-    projects: ["MuHaven"],
-});
-const permit = cofhejs.getPermit();
-const permission = permit.getPermission();
+// Build CoFHE client (Ethers6Adapter bridges ethers → viem internally)
+const { publicClient, walletClient } = await Ethers6Adapter(provider, wallet);
+const config = createCofheConfig({ supportedChains: [arbSepolia] });
+const client = createCofheClient(config);
+await client.connect(publicClient, walletClient);
 
-// Call contract and unseal
-const sealedBalance = await muhavenToken.balanceOfSealed(permission);
-const balance = await cofhejs.unseal(sealedBalance, FheTypes.Uint128);
+// Step 1: request on-chain decryption task (investor signs their own balance)
+await muhavenToken.requestBalanceDecrypt();
+
+// Step 2: poll until result is ready (TN processes the task off-chain)
+let balance: bigint | undefined;
+for (let i = 0; i < 30; i++) {
+    const [value, ready] = await muhavenToken.getBalanceDecryptResult(wallet.address);
+    if (ready) { balance = value; break; }
+    await new Promise(r => setTimeout(r, 2000));
+}
+
+// Step 3: encrypt an input (needed for transfer/mint calls)
+const [encAmount] = await client.encryptInputs([Encryptable.uint128(1000n * 10n ** 18n)]).execute();
+await muhavenToken.transfer(recipientAddress, encAmount);
 ```
 
 ---

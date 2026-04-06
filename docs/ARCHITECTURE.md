@@ -217,7 +217,7 @@ contract MuHavenToken {
 ### MuHaven ↔ Fhenix CoFHE
 
 - **What**: All encrypted types (`euint8` through `euint128`, `eaddress`, `ebool`) and FHE operations.
-- **How**: Import `@fhenixprotocol/cofhe-contracts/FHE.sol` in Solidity. SDK uses `cofhejs` for client-side encryption.
+- **How**: Import `@fhenixprotocol/cofhe-contracts/FHE.sol` in Solidity. SDK uses `@cofhe/sdk` for client-side encryption.
 - **Where**: Every contract that handles amounts, balances, or sensitive state.
 
 ### MuHaven ↔ Privara
