@@ -35,4 +35,5 @@ Thumbs.db
 .claude/
 CLAUDE.md
 development/
+deployments/
 *.bak

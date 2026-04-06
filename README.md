@@ -135,13 +135,14 @@ MuHaven is a **two-sided platform** — issuers create and manage RWA tokens on 
 
 | Contract | Purpose | Details |
 |----------|---------|---------|
-| `MuHavenToken.sol` | fhERC-20 RWA token | Encrypted balances (`euint128`), encrypted transfers, sealed outputs, `onlyMinter`/`onlyIssuer` modifiers, MINTER_ROLE, `depositYield()` |
-| `MuHavenVault.sol` | Wrap/unwrap existing ERC-20 RWAs | Lock external ERC-20 (e.g., BUIDL), mint fhERC-20 wrapper; burn to unwrap |
-| `YieldDistributor.sol` | Proportional yield escrow creation | Reads all holder encrypted balances, creates ReineiraOS escrows proportionally |
-| `IKYCGate.sol` | Modular KYC interface | Swappable adapters — ERC-3643, zkMe, future Privara compliance |
-| `ERC3643KYCAdapter.sol` | KYC implementation | Checks ONCHAINID claims from trusted issuers |
-| `YieldGate.sol` | ReineiraOS Gate plugin | `IConditionResolver` — verifies investor eligibility for yield distribution |
-| `RiskParams.sol` | Encrypted risk guardrails | Stores investor risk preferences (`euint64`) — max drawdown, min yield, drift tolerance |
+| `MuHavenToken.sol` | fhERC-20 RWA token | Encrypted balances (`euint128`), encrypted transfers, async decrypt balance viewing, `onlyMinter` access control |
+| `MuHavenVault.sol` | Wrap/unwrap existing ERC-20 RWAs | Lock external ERC-20 (e.g., BUIDL), mint fhERC-20 wrapper; per-user locked balance tracking; burn to unwrap |
+| `InvestorRegistry.sol` | Investor address registry | Tracks all token holders; paginated reads; used by YieldDistributor for batch iteration |
+| `YieldDistributor.sol` | Proportional yield escrow creation | Batched push model (`startDistribution` + `processBatch`); creates ReineiraOS escrows proportionally |
+| `interfaces/IKYCGate.sol` | Modular KYC interface | Swappable adapters — ERC-3643, zkMe, future Privara compliance |
+| `ERC3643KYCAdapter.sol` | KYC implementation | Whitelist + accredited investor tiers; structured for ONCHAINID swap |
+| `YieldGate.sol` | ReineiraOS gate plugin | `IConditionResolver` — verifies investor KYC + token balance eligibility for yield settlement |
+| `RiskParams.sol` | Encrypted risk guardrails | Stores investor risk preferences (`euint64`) — max drawdown, min yield, drift tolerance, max daily spend |
 
 > See [SMART_CONTRACTS.md](./docs/SMART_CONTRACTS.md) for full contract specifications.
 
@@ -353,22 +354,21 @@ Required variables:
 
 ```bash
 # Wallet & chain
-DEPLOYER_PRIVATE_KEY=          # Private key for contract deployment
-RPC_URL=                       # Arbitrum Sepolia RPC endpoint
+PRIVATE_KEY=                  # Deployer wallet private key
+ARB_SEPOLIA_RPC_URL=          # Arbitrum Sepolia RPC URL
 
-# Issuer
-ISSUER_ADDRESS=                # RWA issuer wallet address (gets MINTER_ROLE)
+# API keys
+FHENIX_API_KEY=               # Fhenix CoFHE API key
+PRIVARA_API_KEY=              # Privara SDK key
+REINEIRA_API_KEY=             # ReineiraOS key
+ETHERSCAN_API_KEY=            # For contract verification
+ARBISCAN_API_KEY=             # For contract verification
 
-# External contracts (testnet addresses)
-USDC_ADDRESS=                  # USDC token address on Arbitrum Sepolia
-UNDERLYING_TOKEN_ADDRESS=      # Mock ERC-20 RWA token (TestTreasury) for vault demo
-REINEIRA_ESCROW_ADDRESS=       # ReineiraOS escrow contract on Arbitrum Sepolia
-IDENTITY_REGISTRY=             # ERC-3643 identity registry (or mock)
-TRUSTED_ISSUERS=               # Comma-separated list of trusted KYC claim issuers
-
-# AI agent
-ANTHROPIC_API_KEY=             # For Claude-based agent (or OPENAI_API_KEY for GPT-4)
-AGENT_WALLET_KEY=              # Private key for the agent's dedicated wallet
+# Deploy script variables (testnet only — local uses auto-deployed mocks)
+ISSUER_ADDRESS=               # Address to grant minter + distribution rights (default: deployer)
+USDC_ADDRESS=                 # Stablecoin address passed to MuHavenToken (default: zero)
+UNDERLYING_TOKEN_ADDRESS=     # ERC-20 RWA token address for MuHavenVault (required on testnet)
+REINEIRA_ESCROW_ADDRESS=      # Deployed ReineiraOS escrow address (required on testnet)
 ```
 
 ### Run tests
@@ -380,7 +380,7 @@ pnpm test
 ### Deploy to testnet
 
 ```bash
-pnpm task:deploy --network arb-sepolia
+pnpm run deploy:testnet
 ```
 
 ### Run the frontend
@@ -405,30 +405,46 @@ muhaven/
 │   ├── ISSUER_MODEL.md          # Supply side: issuer model, yield flow, dashboard
 │   ├── COMPETITIVE_ANALYSIS.md  # Market positioning
 ├── contracts/
-│   ├── MuHavenToken.sol         # fhERC-20 RWA token (issuer + investor functions)
+│   ├── MuHavenToken.sol         # fhERC-20 RWA token
 │   ├── MuHavenVault.sol         # Wrap/unwrap ERC-20 ↔ fhERC-20
-│   ├── YieldDistributor.sol     # Proportional yield escrow creation
-│   ├── IKYCGate.sol             # KYC gate interface
-│   ├── ERC3643KYCAdapter.sol    # ERC-3643 adapter
+│   ├── InvestorRegistry.sol     # Investor address registry
+│   ├── ERC3643KYCAdapter.sol    # ERC-3643 KYC adapter (whitelist + accredited)
+│   ├── YieldDistributor.sol     # Batched proportional yield escrow creation
 │   ├── YieldGate.sol            # ReineiraOS condition resolver
-│   └── RiskParams.sol           # Encrypted investor risk guardrails
+│   ├── RiskParams.sol           # Encrypted investor risk guardrails
+│   ├── interfaces/
+│   │   ├── IKYCGate.sol         # Swappable KYC gate interface
+│   │   ├── IMuHavenToken.sol
+│   │   ├── IInvestorRegistry.sol
+│   │   ├── IYieldDistributor.sol
+│   │   └── IReineiraEscrow.sol
+│   └── mocks/
+│       ├── TestTreasury.sol     # Mock ERC-20 for local vault testing
+│       └── MockReineiraEscrow.sol
 ├── test/
-│   └── MuHavenToken.test.ts     # FHE-enabled tests
+│   ├── MuHavenToken.test.ts
+│   ├── AccessControl.test.ts
+│   ├── InvestorRegistry.test.ts
+│   ├── KYCGate.test.ts
+│   ├── MuHavenVault.test.ts
+│   ├── RiskParams.test.ts
+│   ├── YieldDistribution.test.ts
+│   ├── VaultInvariant.test.ts
+│   ├── RegistryInvariant.test.ts
+│   └── helpers/setup.ts         # Shared fixtures + CoFHE client helpers
 ├── scripts/
-│   └── deploy.ts                # Deployment scripts
+│   ├── deploy.ts                # Full deployment (all 9 contracts, local + testnet)
+│   └── deploy-mocks.ts          # Standalone TestTreasury deploy utility
+├── deployments/                 # Saved deployment addresses (JSON, gitignored for localcofhe)
 ├── frontend/
 │   ├── src/
 │   │   ├── views/
 │   │   │   ├── investor/        # Investor dashboard pages
 │   │   │   └── issuer/          # Issuer dashboard pages
-│   │   │       ├── TokensPage.vue
-│   │   │       ├── DistributePage.vue
-│   │   │       ├── InvestorsPage.vue
-│   │   │       └── CompliancePage.vue
 │   │   └── ...
 │   └── ...                      # Vue 3 application
 ├── agent/
-│   └── ...                      # AI agent implementation
+│   └── ...                      # AI agent implementation (Wave 3)
 └── hardhat.config.ts
 ```
 
