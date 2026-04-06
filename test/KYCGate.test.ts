@@ -1,4 +1,5 @@
 import { loadFixture } from "@nomicfoundation/hardhat-toolbox/network-helpers";
+import hre from "hardhat";
 import { expect } from "chai";
 import { deployMuHavenFixture, ZERO_ADDRESS } from "./helpers/setup";
 
@@ -11,7 +12,7 @@ describe("ERC3643KYCAdapter", function () {
 
     it("should return false for non-whitelisted address", async function () {
       const { kyc } = await loadFixture(deployMuHavenFixture);
-      const [, , , , nonKyc] = await (await import("hardhat")).ethers.getSigners();
+      const [, , , , nonKyc] = await hre.ethers.getSigners();
       expect(await kyc.isEligible(nonKyc.address)).to.be.false;
     });
   });
@@ -47,7 +48,7 @@ describe("ERC3643KYCAdapter", function () {
   describe("batchAddToWhitelist()", function () {
     it("should whitelist multiple addresses in one call", async function () {
       const { kyc, deployer } = await loadFixture(deployMuHavenFixture);
-      const signers = await (await import("hardhat")).ethers.getSigners();
+      const signers = await hre.ethers.getSigners();
       const addresses = signers.slice(5, 8).map((s: any) => s.address);
       await kyc.connect(deployer).batchAddToWhitelist(addresses);
       for (const addr of addresses) {

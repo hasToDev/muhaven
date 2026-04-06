@@ -2,7 +2,7 @@
 pragma solidity ^0.8.28;
 
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {
@@ -25,7 +25,7 @@ import {IYieldDistributor} from "./interfaces/IYieldDistributor.sol";
 ///         and equal split with real ReineiraOS SDK + FHE proportional math.
 ///
 ///         Deployed behind an OZ Transparent Proxy.
-contract YieldDistributor is Initializable, ReentrancyGuard, IYieldDistributor {
+contract YieldDistributor is Initializable, ReentrancyGuardTransient, IYieldDistributor {
     using SafeERC20 for IERC20;
 
     // ── Enums / structs ───────────────────────────────────────────────────

@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IMuHavenToken} from "./interfaces/IMuHavenToken.sol";
@@ -14,7 +14,7 @@ import {IMuHavenToken} from "./interfaces/IMuHavenToken.sol";
 ///         Per-user `_lockedBalances` tracking bounds unwrap to deposited amount, preventing
 ///         drain if the FHE burn silently fails on insufficient encrypted balance.
 ///         Deployed behind an OZ Transparent Proxy.
-contract MuHavenVault is Initializable, PausableUpgradeable, ReentrancyGuard {
+contract MuHavenVault is Initializable, PausableUpgradeable, ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
 
     // ── Storage ──────────────────────────────────────────────────────────

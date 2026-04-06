@@ -109,7 +109,7 @@ describe("YieldDistributor + YieldGate", function () {
 
       // Create an escrow entry so the gate has a stored beneficiary
       const data = hre.ethers.AbiCoder.defaultAbiCoder().encode(["address"], [investor.address]);
-      const createTx = await escrow.create(investor.address, 0n, await yieldGate.getAddress());
+      const createTx = await escrow.create(investor.address, hre.ethers.ZeroHash, await yieldGate.getAddress());
       await createTx.wait();
       const escrowId = await escrow.escrowCount();
 
