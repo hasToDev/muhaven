@@ -1,4 +1,4 @@
-import { loadFixture } from "@nomicfoundation/hardhat-toolbox/network-helpers";
+import { loadFixture, time } from "@nomicfoundation/hardhat-toolbox/network-helpers";
 import hre from "hardhat";
 import { Encryptable } from "@cofhe/sdk";
 import { expect } from "chai";
@@ -6,6 +6,7 @@ import {
   deployMuHavenFixture,
   deployMockReineiraEscrow,
   ONE_TOKEN,
+  waitForDecrypt,
 } from "./helpers/setup";
 import { upgrades } from "hardhat";
 
@@ -57,7 +58,12 @@ describe("YieldDistributor + YieldGate", function () {
 
       const dist = await distributor.getDistribution(1);
       expect(dist.investorCount).to.equal(1n);
-      expect(dist.totalYield).to.equal(10n * ONE_TOKEN);
+      // totalYield is now encrypted — verify via the ciphertext mock
+      hre.cofhe.mocks.expectPlaintext(dist.encTotalYield, 10n * ONE_TOKEN);
+      // perInvestorYield = totalYield / investorCount = 10 * ONE_TOKEN
+      hre.cofhe.mocks.expectPlaintext(dist.encPerInvestorYield, 10n * ONE_TOKEN);
+      // status should be PENDING (0)
+      expect(dist.status).to.equal(0n);
     });
 
     it("should revert startDistribution with zero yield", async function () {
@@ -86,6 +92,31 @@ describe("YieldDistributor + YieldGate", function () {
 
       expect(await distributor.isDistributionComplete(1)).to.be.true;
       expect(await escrow.escrowCount()).to.equal(1n);
+    });
+  });
+
+  describe("requestYieldDecrypt() + getYieldDecryptResult()", function () {
+    it("should return decrypted yield amounts after time.increase(11)", async function () {
+      const { distributor, deployer, issuer, investor, token, treasury } =
+        await loadFixture(deployYieldFixture);
+      const issuerClient = await hre.cofhe.createClientWithBatteries(issuer);
+
+      const [encMint] = await issuerClient.encryptInputs([Encryptable.uint128(ONE_TOKEN)]).execute();
+      await token.connect(issuer).mint(investor.address, encMint);
+
+      await treasury.mint(deployer.address, 100n * ONE_TOKEN);
+      await treasury.approve(await distributor.getAddress(), 100n * ONE_TOKEN);
+      await distributor.startDistribution(await treasury.getAddress(), 10n * ONE_TOKEN);
+
+      // Request async decrypt of yield amounts
+      await distributor.connect(deployer).requestYieldDecrypt(1);
+      await waitForDecrypt();
+
+      const result = await distributor.getYieldDecryptResult(1);
+      expect(result.totalYieldDecrypted).to.be.true;
+      expect(result.totalYield).to.equal(10n * ONE_TOKEN);
+      expect(result.perInvestorYieldDecrypted).to.be.true;
+      expect(result.perInvestorYield).to.equal(10n * ONE_TOKEN); // 1 investor
     });
   });
 

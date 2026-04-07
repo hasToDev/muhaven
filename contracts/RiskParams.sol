@@ -17,6 +17,21 @@ import {
 ///         The platform owner (AI agent) can request async decryption to read
 ///         params off-chain and enforce portfolio constraints.
 ///         Deployed behind an OZ Transparent Proxy.
+///
+/// @dev Privacy architecture:
+///   - All four risk parameters are stored as `euint64` — never visible on-chain.
+///   - `FHE.allowSender()` at store time grants the investor permit-based
+///     decryption of their own params via client-side `decryptForView()`.
+///   - `FHE.allow(param, msg.sender)` in `requestRiskParamsDecrypt()` grants
+///     the platform owner (AI agent) decrypt access dynamically — not hardcoded
+///     at store time, so ownership transfers don't break ACLs.
+///   - Async decrypt via `createDecryptTask` is the alternative path for callers
+///     that need on-chain decrypted values (e.g., for future on-chain enforcement).
+///
+///   Known leakage:
+///   - `_hasParams[investor]` is a cleartext boolean — reveals whether an investor
+///     has configured risk preferences, but not what those preferences are.
+///   - `RiskParamsUpdated` event reveals the investor address and that params changed.
 contract RiskParams is Initializable {
 
     // ── Storage ──────────────────────────────────────────────────────────

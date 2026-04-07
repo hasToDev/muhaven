@@ -19,6 +19,28 @@ import {IMuHavenToken} from "./interfaces/IMuHavenToken.sol";
 /// @notice fhERC-20 RWA token with encrypted balances, transfers, and approvals.
 ///         Uses Fhenix CoFHE for all balance/amount operations.
 ///         Deployed behind an OZ Transparent Proxy.
+///
+/// @dev Privacy architecture:
+///   - Balances stored as `euint128` — never visible on-chain in plaintext.
+///   - Transfer amounts are encrypted client-side via `InEuint128` — calldata
+///     contains only a ciphertext hash, security zone, and ZK proof.
+///   - `FHE.allow(balance, investor)` grants permit-based decryption: only the
+///     balance owner can call `decryptForView()` client-side with an EIP-712
+///     permit. No on-chain decryption needed for investor balance viewing.
+///   - `FHE.select()` silent failure ensures that insufficient-balance transfers
+///     execute an identical code path (same gas, same trace) as valid transfers —
+///     an observer cannot distinguish success from failure.
+///   - Total supply is encrypted by default. The issuer can optionally reveal it
+///     via `setTotalSupplyPublic()` (one-way toggle using `FHE.allowPublic`).
+///
+///   Known leakage (by design):
+///   - `Transfer(from, to)` events expose participant addresses. This is
+///     intentional: addresses are already visible in transaction calldata
+///     (`msg.sender`, `to` parameter). The event adds no new information.
+///     Transfer *amounts* are never emitted.
+///   - `MinterGranted`/`MinterRevoked` events expose role assignments.
+///   - KYC eligibility check (`kycGate.isEligible`) is a cleartext boolean —
+///     the result (revert or proceed) is observable, but no private data leaks.
 contract MuHavenToken is Initializable, IMuHavenToken {
 
     // ── Storage ──────────────────────────────────────────────────────────
@@ -38,6 +60,11 @@ contract MuHavenToken is Initializable, IMuHavenToken {
 
     mapping(address => bool) public minters;
 
+    /// @dev Once set to true via setTotalSupplyPublic(), the encrypted total
+    ///      supply becomes publicly decryptable via threshold decryption.
+    ///      One-way toggle: FHE.allowPublic() is irreversible for that handle.
+    bool public totalSupplyPublic;
+
     /// @dev Reserved storage for future upgrades
     uint256[50] private __gap;
 
@@ -51,6 +78,7 @@ contract MuHavenToken is Initializable, IMuHavenToken {
     event MinterGranted(address indexed minter);
     event MinterRevoked(address indexed minter);
     event BalanceDecryptRequested(address indexed account);
+    event TotalSupplyMadePublic();
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
     // ── Errors ───────────────────────────────────────────────────────────
@@ -60,6 +88,7 @@ contract MuHavenToken is Initializable, IMuHavenToken {
     error RecipientNotKYC();
     error NoBalance();
     error ZeroAddress();
+    error AlreadyPublic();
 
     // ── Modifiers ────────────────────────────────────────────────────────
 
@@ -138,6 +167,9 @@ contract MuHavenToken is Initializable, IMuHavenToken {
             _balances[to] = amount;
         }
         FHE.allowThis(_balances[to]);
+        // Grant the investor permit-based decryption of their own balance.
+        // Client calls: cofheClient.decryptForView(ctHash).withPermit().execute()
+        FHE.allow(_balances[to], to);
 
         if (Common.isInitialized(_encryptedTotalSupply)) {
             _encryptedTotalSupply = FHE.add(_encryptedTotalSupply, amount);
@@ -145,6 +177,11 @@ contract MuHavenToken is Initializable, IMuHavenToken {
             _encryptedTotalSupply = amount;
         }
         FHE.allowThis(_encryptedTotalSupply);
+        // If issuer opted into public total supply, re-grant public access
+        // on the new handle (FHE.add creates a new handle each time).
+        if (totalSupplyPublic) {
+            FHE.allowPublic(_encryptedTotalSupply);
+        }
 
         registry.register(to);
         emit Transfer(address(0), to);
@@ -187,6 +224,11 @@ contract MuHavenToken is Initializable, IMuHavenToken {
 
     /// @dev Internal transfer with silent-failure pattern (Pattern 3).
     ///      If sender balance < amount, transfers zero instead of reverting.
+    ///
+    ///      Side-channel resistance: FHE.select() executes an identical code path
+    ///      regardless of whether the balance check passes. Gas cost and execution
+    ///      trace are the same for valid and invalid transfers — an observer cannot
+    ///      distinguish "transferred 100" from "transferred 0 (insufficient balance)".
     function _transfer(address from, address to, euint128 amount) internal {
         if (!Common.isInitialized(_balances[from])) revert NoBalance();
 
@@ -200,6 +242,8 @@ contract MuHavenToken is Initializable, IMuHavenToken {
         // Update sender balance
         _balances[from] = FHE.sub(_balances[from], transferAmount);
         FHE.allowThis(_balances[from]);
+        // Re-grant sender permit-based decrypt access on new balance handle
+        FHE.allow(_balances[from], from);
 
         // Update recipient balance
         if (Common.isInitialized(_balances[to])) {
@@ -208,6 +252,8 @@ contract MuHavenToken is Initializable, IMuHavenToken {
             _balances[to] = transferAmount;
         }
         FHE.allowThis(_balances[to]);
+        // Grant recipient permit-based decrypt access
+        FHE.allow(_balances[to], to);
 
         registry.register(to);
         emit Transfer(from, to);
@@ -244,9 +290,13 @@ contract MuHavenToken is Initializable, IMuHavenToken {
 
         _balances[from] = FHE.sub(_balances[from], burnAmount);
         FHE.allowThis(_balances[from]);
+        FHE.allow(_balances[from], from);
 
         _encryptedTotalSupply = FHE.sub(_encryptedTotalSupply, burnAmount);
         FHE.allowThis(_encryptedTotalSupply);
+        if (totalSupplyPublic) {
+            FHE.allowPublic(_encryptedTotalSupply);
+        }
 
         emit Transfer(from, address(0));
     }
@@ -283,6 +333,24 @@ contract MuHavenToken is Initializable, IMuHavenToken {
         returns (uint128 result, bool decrypted)
     {
         return FHE.getDecryptResultSafe(_balances[account]);
+    }
+
+    // ── Total supply visibility toggle ─────────────────────────────────
+
+    /// @notice Make the encrypted total supply publicly decryptable via
+    ///         threshold decryption. One-way: once public, it cannot be
+    ///         re-encrypted. Subsequent mint/burn operations re-grant public
+    ///         access on the new total supply handle automatically.
+    ///
+    ///         Use case: securities tokens where regulators or the public need
+    ///         to verify aggregate supply, while individual balances stay private.
+    function setTotalSupplyPublic() external onlyOwner {
+        if (totalSupplyPublic) revert AlreadyPublic();
+        totalSupplyPublic = true;
+        if (Common.isInitialized(_encryptedTotalSupply)) {
+            FHE.allowPublic(_encryptedTotalSupply);
+        }
+        emit TotalSupplyMadePublic();
     }
 
     // ── Access control — owner functions ────────────────────────────���────

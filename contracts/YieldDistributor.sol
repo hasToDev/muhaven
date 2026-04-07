@@ -8,7 +8,9 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {
     FHE,
     euint128,
-    Common
+    Common,
+    ITaskManager,
+    TASK_MANAGER_ADDRESS
 } from "@fhenixprotocol/cofhe-contracts/FHE.sol";
 import {IInvestorRegistry} from "./interfaces/IInvestorRegistry.sol";
 import {IReineiraEscrow} from "./interfaces/IReineiraEscrow.sol";
@@ -25,6 +27,24 @@ import {IYieldDistributor} from "./interfaces/IYieldDistributor.sol";
 ///         and equal split with real ReineiraOS SDK + FHE proportional math.
 ///
 ///         Deployed behind an OZ Transparent Proxy.
+///
+/// @dev Privacy architecture:
+///   - `totalYield` and `perInvestorYield` are stored as `euint128` — the yield
+///     amounts are encrypted in contract state. Observers cannot see how much
+///     yield was deposited or what each investor's share is.
+///   - `FHE.allow(encAmount, investor)` grants each investor permit-based
+///     decryption of their own yield share via client-side `decryptForView`.
+///   - `investorCount` remains cleartext (already public via InvestorRegistry).
+///   - `totalYieldDistributed` is encrypted — aggregate yield history is private.
+///
+///   Known leakage:
+///   - The ERC-20 `safeTransferFrom` in `startDistribution` is a cleartext
+///     token transfer — the yield amount is visible in the ERC-20 Transfer event.
+///     This is a known tradeoff: when Privara encrypted payment rails are
+///     integrated, this transfer will also be encrypted. The encrypted struct
+///     fields ensure our contract state is private regardless.
+///   - `DistributionStarted` emits `investorCount` (already public).
+///   - `processedCount` and `escrowsCreated` are cleartext progress counters.
 contract YieldDistributor is Initializable, ReentrancyGuardTransient, IYieldDistributor {
     using SafeERC20 for IERC20;
 
@@ -34,11 +54,11 @@ contract YieldDistributor is Initializable, ReentrancyGuardTransient, IYieldDist
 
     struct Distribution {
         address token;
-        uint256 totalYield;
-        uint256 perInvestorYield;   // equal split: totalYield / investorCount
-        uint256 investorCount;      // snapshot at startDistribution time
-        uint256 processedCount;     // investors processed so far
-        uint256 escrowsCreated;     // escrows successfully created
+        euint128 encTotalYield;         // encrypted total yield deposited
+        euint128 encPerInvestorYield;   // encrypted equal split: FHE.div(total, count)
+        uint256 investorCount;          // snapshot at startDistribution time (public)
+        uint256 processedCount;         // investors processed so far (public progress)
+        uint256 escrowsCreated;         // escrows successfully created (public progress)
         DistributionStatus status;
     }
 
@@ -47,7 +67,7 @@ contract YieldDistributor is Initializable, ReentrancyGuardTransient, IYieldDist
     /// @dev Distribution IDs start at 1. ID 0 is reserved / uninitialized.
     mapping(uint256 => Distribution) public distributions;
     uint256 public distributionCount;
-    uint256 public totalYieldDistributed;
+    euint128 private _encTotalYieldDistributed;
 
     IInvestorRegistry public registry;
     IReineiraEscrow public reineiraEscrow;
@@ -68,7 +88,6 @@ contract YieldDistributor is Initializable, ReentrancyGuardTransient, IYieldDist
     event DistributionStarted(
         uint256 indexed distributionId,
         address indexed token,
-        uint256 totalYield,
         uint256 investorCount
     );
     event BatchProcessed(
@@ -138,6 +157,9 @@ contract YieldDistributor is Initializable, ReentrancyGuardTransient, IYieldDist
     ///         Transfers `totalYield` of `token` from the caller to this contract.
     ///         Snapshots the current investor count for batched processing.
     ///
+    ///         The cleartext `totalYield` is used for the ERC-20 transfer then
+    ///         immediately encrypted. Contract state stores only ciphertext.
+    ///
     /// @param token       ERC-20 token used for yield (e.g. USDC)
     /// @param totalYield  Total amount to distribute, in token's smallest unit
     /// @return distributionId  Starts at 1
@@ -150,22 +172,29 @@ contract YieldDistributor is Initializable, ReentrancyGuardTransient, IYieldDist
         uint256 count = registry.investorCount();
         if (count == 0) revert NoInvestors();
 
-        uint256 perInvestor = totalYield / count;
-
+        // Transfer cleartext ERC-20 (known leakage — see NatSpec above)
         IERC20(token).safeTransferFrom(msg.sender, address(this), totalYield);
+
+        // Encrypt yield amounts for private storage
+        euint128 encTotal = FHE.asEuint128(totalYield);
+        FHE.allowThis(encTotal);
+        euint128 encCount = FHE.asEuint128(count);
+        FHE.allowThis(encCount);
+        euint128 encPerInvestor = FHE.div(encTotal, encCount);
+        FHE.allowThis(encPerInvestor);
 
         distributionId = ++distributionCount;
         distributions[distributionId] = Distribution({
-            token:            token,
-            totalYield:       totalYield,
-            perInvestorYield: perInvestor,
-            investorCount:    count,
-            processedCount:   0,
-            escrowsCreated:   0,
-            status:           DistributionStatus.PENDING
+            token:                token,
+            encTotalYield:        encTotal,
+            encPerInvestorYield:  encPerInvestor,
+            investorCount:        count,
+            processedCount:       0,
+            escrowsCreated:       0,
+            status:               DistributionStatus.PENDING
         });
 
-        emit DistributionStarted(distributionId, token, totalYield, count);
+        emit DistributionStarted(distributionId, token, count);
     }
 
     // ── Distribution: batch processing ───────────────────────────────────
@@ -174,10 +203,12 @@ contract YieldDistributor is Initializable, ReentrancyGuardTransient, IYieldDist
     ///         Permissionless — anyone (issuer, agent, relayer) can call this.
     ///         Call repeatedly until isDistributionComplete() returns true.
     ///
-    ///         FHE pattern: per-investor yield is encrypted once per batch call
-    ///         and the handle is reused across all investors in that batch.
-    ///         In production, each investor should get a unique ciphertext;
-    ///         for equal-split distributions sharing one handle is equivalent.
+    ///         FHE patterns applied:
+    ///         - `encPerInvestorYield` handle is reused across investors in the batch.
+    ///           For equal-split distributions sharing one handle is equivalent.
+    ///           Production upgrade: create a unique ciphertext per investor for unlinkability.
+    ///         - `FHE.allow(encAmount, investor)` grants each investor permit-based
+    ///           decryption of their own yield share via client-side `decryptForView`.
     ///
     /// @param distributionId  ID returned by startDistribution()
     /// @param batchSize       Max investors to process in this call
@@ -198,13 +229,12 @@ contract YieldDistributor is Initializable, ReentrancyGuardTransient, IYieldDist
         uint256 actualBatch = investors.length;
 
         if (actualBatch > 0) {
-            // Encrypt the per-investor yield amount once; handle reused across batch.
-            // Production upgrade: create a unique ciphertext per investor for unlinkability.
-            euint128 encAmount = FHE.asEuint128(d.perInvestorYield);
-            FHE.allowThis(encAmount);
+            euint128 encAmount = d.encPerInvestorYield;
             FHE.allow(encAmount, address(reineiraEscrow));
 
             for (uint256 i = 0; i < actualBatch; i++) {
+                // Grant investor permit-based decryption of their yield share
+                FHE.allow(encAmount, investors[i]);
                 reineiraEscrow.create(investors[i], encAmount, yieldGate);
                 d.escrowsCreated++;
             }
@@ -216,7 +246,13 @@ contract YieldDistributor is Initializable, ReentrancyGuardTransient, IYieldDist
 
         if (d.processedCount >= d.investorCount) {
             d.status = DistributionStatus.COMPLETED;
-            totalYieldDistributed += d.totalYield;
+            // Accumulate encrypted aggregate
+            if (Common.isInitialized(_encTotalYieldDistributed)) {
+                _encTotalYieldDistributed = FHE.add(_encTotalYieldDistributed, d.encTotalYield);
+            } else {
+                _encTotalYieldDistributed = d.encTotalYield;
+            }
+            FHE.allowThis(_encTotalYieldDistributed);
             emit DistributionCompleted(distributionId);
         }
     }
@@ -227,10 +263,13 @@ contract YieldDistributor is Initializable, ReentrancyGuardTransient, IYieldDist
         return distributions[distributionId].status == DistributionStatus.COMPLETED;
     }
 
+    /// @notice Returns cleartext metadata + encrypted yield handles for a distribution.
+    ///         Encrypted fields (`encTotalYield`, `encPerInvestorYield`) are ciphertext
+    ///         handles — authorized callers decrypt client-side via permits.
     function getDistribution(uint256 distributionId) external view returns (
         address token,
-        uint256 totalYield,
-        uint256 perInvestorYield,
+        euint128 encTotalYield,
+        euint128 encPerInvestorYield,
         uint256 investorCount,
         uint256 processedCount,
         uint256 escrowsCreated,
@@ -239,13 +278,50 @@ contract YieldDistributor is Initializable, ReentrancyGuardTransient, IYieldDist
         Distribution storage d = distributions[distributionId];
         return (
             d.token,
-            d.totalYield,
-            d.perInvestorYield,
+            d.encTotalYield,
+            d.encPerInvestorYield,
             d.investorCount,
             d.processedCount,
             d.escrowsCreated,
             uint8(d.status)
         );
+    }
+
+    /// @notice Returns the encrypted aggregate of all completed distributions.
+    function encryptedTotalYieldDistributed() external view returns (euint128) {
+        return _encTotalYieldDistributed;
+    }
+
+    // ── Async decrypt for yield data ─────────────────────────────────────
+
+    /// @notice Request async decryption of a distribution's yield amounts.
+    ///         Only the owner or authorized callers can decrypt yield data.
+    function requestYieldDecrypt(uint256 distributionId) external onlyAuthorized {
+        if (distributionId == 0 || distributionId > distributionCount) revert InvalidDistribution();
+        Distribution storage d = distributions[distributionId];
+
+        FHE.allow(d.encTotalYield, msg.sender);
+        FHE.allow(d.encPerInvestorYield, msg.sender);
+
+        ITaskManager(TASK_MANAGER_ADDRESS).createDecryptTask(
+            uint256(euint128.unwrap(d.encTotalYield)), msg.sender
+        );
+        ITaskManager(TASK_MANAGER_ADDRESS).createDecryptTask(
+            uint256(euint128.unwrap(d.encPerInvestorYield)), msg.sender
+        );
+    }
+
+    /// @notice Read async-decrypted yield amounts for a distribution.
+    function getYieldDecryptResult(uint256 distributionId) external view returns (
+        uint128 totalYield,
+        bool totalYieldDecrypted,
+        uint128 perInvestorYield,
+        bool perInvestorYieldDecrypted
+    ) {
+        if (distributionId == 0 || distributionId > distributionCount) revert InvalidDistribution();
+        Distribution storage d = distributions[distributionId];
+        (totalYield, totalYieldDecrypted) = FHE.getDecryptResultSafe(d.encTotalYield);
+        (perInvestorYield, perInvestorYieldDecrypted) = FHE.getDecryptResultSafe(d.encPerInvestorYield);
     }
 
     // ── Admin ─────────────────────────────────────────────────────────────

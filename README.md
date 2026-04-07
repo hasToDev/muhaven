@@ -178,6 +178,60 @@ The agent interacts with the protocol through defined tools (function calls):
 
 ---
 
+## Privacy Boundary
+
+MuHaven's privacy guarantee is **balance and yield privacy** — not transaction graph privacy. The table below documents exactly what is encrypted vs. public, and why.
+
+| Data | Visibility | Rationale |
+|------|-----------|-----------|
+| **Investor balances** | **Encrypted** (`euint128`) | Core privacy guarantee. Only the investor can decrypt via EIP-712 permit. |
+| **Transfer amounts** | **Encrypted** (`InEuint128`) | Client-encrypts before submission. Calldata contains ciphertext hash + ZK proof, never plaintext. |
+| **Yield per investor** | **Encrypted** (`euint128`) | Each investor's share is FHE-encrypted. Investors decrypt their own share via permits. |
+| **Total yield deposited** | **Encrypted** (`euint128`) | Encrypted in contract state. Note: the ERC-20 transfer in `startDistribution` is cleartext (known tradeoff — resolved when Privara encrypted payment rails integrate). |
+| **Risk parameters** | **Encrypted** (4x `euint64`) | Investor-encrypted client-side. AI agent decrypts via async decrypt with dynamic `FHE.allow`. |
+| **Total supply** | **Encrypted** (default) / **Public** (opt-in) | Issuer can toggle `setTotalSupplyPublic()` — one-way, uses `FHE.allowPublic`. Useful for regulated securities requiring public supply. |
+| **Aggregate yield distributed** | **Encrypted** (`euint128`) | Running total across all distributions. Owner can async-decrypt for reporting. |
+| Investor addresses | Public | Stored in InvestorRegistry. Addresses are inherently public on EVM (visible in tx calldata). |
+| Transfer from/to addresses | Public | Emitted in `Transfer(from, to)` event. No new info leaked — addresses already visible in calldata. |
+| KYC eligibility | Public | Boolean per address. Revert on `isEligible()==false` is observable, but no private data leaks. |
+| Transaction timing | Public | Block timestamps visible on-chain. |
+| Minter/issuer roles | Public | Role assignments emitted in events. |
+| Distribution progress | Public | `processedCount`, `escrowsCreated` are cleartext counters for batch progress tracking. |
+
+### Side-channel resistance
+
+All `FHE.select()` operations execute an **identical code path** regardless of the encrypted condition result:
+
+```solidity
+// Transfer: same gas cost whether balance is sufficient or not
+euint128 transferAmount = FHE.select(hasEnough, amount, zero);
+```
+
+An observer watching gas costs or execution traces cannot distinguish a successful transfer from a failed (zero-amount) one. This is the "silent failure" pattern applied consistently across `MuHavenToken`, `YieldDistributor`, and `MuHavenVault`.
+
+### FHE operations used
+
+| Operation | Where | Purpose |
+|-----------|-------|---------|
+| `FHE.asEuint128(InEuint128)` | Token, Vault | Convert client-encrypted input to on-chain ciphertext |
+| `FHE.asEuint128(uint256)` | Token, Vault, YieldDistributor | Trivial encrypt cleartext for on-chain computation |
+| `FHE.add` | Token, YieldDistributor | Balance increment, yield accumulation |
+| `FHE.sub` | Token | Balance decrement |
+| `FHE.div` | YieldDistributor | Per-investor yield = total / count |
+| `FHE.gte` | Token | Balance sufficiency check (returns `ebool`) |
+| `FHE.select` | Token | Silent failure — conditional zero on insufficient balance |
+| `FHE.allow(ct, address)` | Token, YieldDistributor, RiskParams | Grant permit-based `decryptForView` to specific address |
+| `FHE.allowThis` | All contracts | Contract retains access to its own ciphertext handles |
+| `FHE.allowSender` | RiskParams | Investor retains read access to own risk params |
+| `FHE.allowPublic` | Token | Optional public total supply via threshold decryption |
+| `Common.isInitialized` | Token, YieldGate | Guard against FHE ops on uninitialized (zero-hash) ciphertext |
+| `ITaskManager.createDecryptTask` | Token, RiskParams, YieldDistributor | Async decrypt for on-chain result reading |
+| `FHE.getDecryptResultSafe` | Token, RiskParams, YieldDistributor | Read async-decrypted plaintext result |
+
+> Full threat model: [THREAT_MODEL.md](./docs/THREAT_MODEL.md)
+
+---
+
 ## Why Fhenix + Privara + ReineiraOS
 
 ### Why FHE, not just ZK?

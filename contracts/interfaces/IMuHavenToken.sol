@@ -9,4 +9,6 @@ interface IMuHavenToken {
     function burnFromVault(address from, uint256 amount) external;
     function encryptedBalanceOf(address account) external view returns (euint128);
     function encryptedTotalSupply() external view returns (euint128);
+    function setTotalSupplyPublic() external;
+    function totalSupplyPublic() external view returns (bool);
 }

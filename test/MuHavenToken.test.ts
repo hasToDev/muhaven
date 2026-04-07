@@ -82,6 +82,41 @@ describe("MuHavenToken", function () {
     });
   });
 
+  // ── Total supply visibility toggle ──────────────────────────────────────────
+
+  describe("setTotalSupplyPublic()", function () {
+    it("should toggle totalSupplyPublic to true", async function () {
+      const { token, deployer, issuer, investor } = await loadFixture(deployMuHavenFixture);
+      const issuerClient = await hre.cofhe.createClientWithBatteries(issuer);
+
+      // Mint so there is a non-zero total supply
+      const [encAmount] = await issuerClient.encryptInputs([Encryptable.uint128(ONE_TOKEN)]).execute();
+      await token.connect(issuer).mint(investor.address, encAmount);
+
+      expect(await token.totalSupplyPublic()).to.be.false;
+
+      await expect(token.connect(deployer).setTotalSupplyPublic())
+        .to.emit(token, "TotalSupplyMadePublic");
+
+      expect(await token.totalSupplyPublic()).to.be.true;
+    });
+
+    it("should revert if already public", async function () {
+      const { token, deployer } = await loadFixture(deployMuHavenFixture);
+      await token.connect(deployer).setTotalSupplyPublic();
+      await expect(
+        token.connect(deployer).setTotalSupplyPublic()
+      ).to.be.revertedWithCustomError(token, "AlreadyPublic");
+    });
+
+    it("should revert if called by non-owner", async function () {
+      const { token, investor } = await loadFixture(deployMuHavenFixture);
+      await expect(
+        token.connect(investor).setTotalSupplyPublic()
+      ).to.be.revertedWithCustomError(token, "OnlyOwner");
+    });
+  });
+
   // ── Async decrypt ────────────────────────────────────────────────────────────
 
   describe("requestBalanceDecrypt() + getBalanceDecryptResult()", function () {
