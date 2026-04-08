@@ -38,16 +38,15 @@ The **supply side** (issuers) creates and manages RWA tokens, deposits yield, an
 ┌──────────────────────────▼──────────────────────────────────────────────┐
 │  APPLICATION LAYER                                                      │
 │                                                                         │
-│  ┌──────────────┐  ┌─────────────────────┐  ┌────────────────────────┐  │
-│  │ Privara SDK  │  │ MuHaven             │  │ ReineiraOS SDK         │  │
-│  │              │  │ Contracts           │  │                        │  │
-│  │ - deposit()  │  │                     │  │ - escrow.create()      │  │
-│  │ - withdraw() │  │ - transfer()        │  │ - escrow.redeem()      │  │
-│  │ - invoice()  │  │ - mint()            │  │ - insurance.purchase() │  │
-│  │              │  │ - mint()            │  │                        │  │
-│  │              │  │ - depositYield()    │  │                        │  │
-│  │              │  │ - balanceOfSealed() │  │                        │  │
-│  └──────┬───────┘  └──────┬──────────────┘  └──────────┬─────────────┘  │
+│  ┌──────────────────────┐  ┌─────────────────────┐  ┌────────────────────────┐  │
+│  │ ReineiraOS SDK       │  │ MuHaven             │  │ ReineiraOS Escrow      │  │
+│  │                      │  │ Contracts           │  │                        │  │
+│  │ - pusdc.wrap()       │  │                     │  │ - escrow.create()      │  │
+│  │ - pusdc.unwrap()     │  │ - transfer()        │  │ - escrow.redeem()      │  │
+│  │ - stablecoin()       │  │ - mint()            │  │ - insurance.purchase() │  │
+│  │                      │  │ - depositYield()    │  │                        │  │
+│  │                      │  │ - balanceOfSealed() │  │                        │  │
+│  └──────────┬───────────┘  └──────┬──────────────┘  └──────────┬─────────────┘  │
 │         │                 │                            │                │
 │         │         ┌───────┴────────┐                   │                │
 │         │         │ MuHavenVault   │                   │                │
@@ -103,11 +102,11 @@ MuHavenToken (fhERC-20)
 │         ├── ERC3643KYCAdapter (implementation)
 │         │   └── reads: ONCHAINID claims from trusted issuers
 │         │
-│         └── [Future] PrivaraKYCAdapter (implementation)
-│             └── reads: Privara ZK compliance proofs
+│         └── [Future] ReineiraOSKYCAdapter (implementation)
+│             └── reads: ReineiraOS compliance proofs
 │
-├── interacts with: ConfidentialUSDC (Privara)
-│                   └── encrypted deposit/withdrawal
+├── interacts with: PUSDC (ReineiraOS confidential stablecoin)
+│                   └── encrypted deposit/withdrawal via PUSDC wrapper
 │
 ├── interacts with: YieldDistributor (new)
 │                   │
@@ -220,26 +219,20 @@ contract MuHavenToken {
 - **How**: Import `@fhenixprotocol/cofhe-contracts/FHE.sol` in Solidity. SDK uses `@cofhe/sdk` for client-side encryption.
 - **Where**: Every contract that handles amounts, balances, or sensitive state.
 
-### MuHaven ↔ Privara
-
-- **What**: Encrypted stablecoin deposit and withdrawal.
-- **How**: Privara SDK (`@privara/sdk`) for payment link creation and settlement.
-- **Where**: Investor onboarding (deposit) and exit (withdrawal) flows.
-- **Limitation**: Compliance features (OFAC, KYT) not yet in codebase — using IKYCGate adapter instead.
-
 ### MuHaven ↔ ReineiraOS
 
-- **What**: Encrypted escrow for yield distribution + insurance pools.
-- **How**: ReineiraOS SDK (`@reineira-os/sdk`) for escrow creation. Custom `IConditionResolver` (YieldGate) for release logic.
-- **Where**: Yield distribution pipeline, insurance purchasing.
-- **Key integration**: YieldGate reads MuHavenToken's encrypted balances to verify eligibility.
+- **What**: Confidential stablecoin (PUSDC) for deposits/withdrawals + encrypted escrow for yield distribution + insurance pools.
+- **How**: ReineiraOS SDK (`@reineira-os/sdk`) for PUSDC wrapping/unwrapping and escrow creation. Custom `IConditionResolver` (YieldGate) for release logic.
+- **Where**: Investor deposit/withdrawal (PUSDC wrapper), yield distribution pipeline (ConfidentialEscrow), insurance purchasing.
+- **Key integration**: PUSDC replaces cleartext USDC transfers — deposit amounts are encrypted. YieldGate reads MuHavenToken's encrypted balances to verify eligibility.
+- **Note**: Privara is ReineiraOS's consumer application layer — MuHaven uses ReineiraOS directly via Platform Modules instead of integrating Privara as a separate SDK.
 
 ### MuHaven ↔ ERC-3643
 
 - **What**: KYC/AML compliance via ONCHAINID and verifiable claims.
 - **How**: ERC3643KYCAdapter implements IKYCGate, checks ONCHAINID claims from trusted issuers.
 - **Where**: Token transfer hook (`_beforeTokenTransfer`).
-- **Swap path**: IKYCGate interface allows hot-swapping to zkMe, Privara, or any future provider.
+- **Swap path**: IKYCGate interface allows hot-swapping to zkMe, ReineiraOS, or any future provider.
 
 ---
 
@@ -250,8 +243,7 @@ contract MuHavenToken {
 | Component | Trust level | Mitigation |
 |-----------|------------|------------|
 | Fhenix CoFHE | External dependency — FHE key compromise would expose all encrypted state | Threshold decryption distributes key across multiple parties |
-| Privara | Non-custodial — never holds funds | Investor wallet signs all transactions |
-| ReineiraOS | Non-custodial escrow — funds in smart contract | Gate plugin controls release; escrow isolation prevents cross-contamination |
+| ReineiraOS | Non-custodial — PUSDC wrapper + escrow in smart contracts | Gate plugin controls release; escrow isolation prevents cross-contamination; investor wallet signs all transactions |
 | AI Agent | Agent wallet — funded with capped balance, revocable | Investor controls the cap; can drain wallet anytime; session keys in production |
 | ERC-3643 Claims | Trusted issuers vouch for KYC status | Multiple issuers can be required; issuer registry is on-chain |
 
@@ -262,7 +254,7 @@ Investor Wallet (full control)
 │
 ├── Funds a dedicated agent wallet with:
 │   ├── Max USDC balance: $X (investor chooses the cap)
-│   ├── Whitelisted contracts: [MuHavenToken, Privara, ReineiraOS]
+│   ├── Whitelisted contracts: [MuHavenToken, PUSDC, ReineiraOS Escrow]
 │   └── Revocable: investor can drain the agent wallet anytime
 │
 └── Agent wallet used by AI Agent
@@ -285,8 +277,7 @@ Investor Wallet (full control)
 
 - **Chain**: Arbitrum Sepolia
 - **CoFHE**: Fhenix testnet coprocessor
-- **ReineiraOS**: Deployed on Arbitrum Sepolia (live)
-- **Privara**: Testnet demo available at app.privara.dev
+- **ReineiraOS**: Deployed on Arbitrum Sepolia (live) — PUSDC wrapper + ConfidentialEscrow
 
 ### Production (post-hackathon)
 

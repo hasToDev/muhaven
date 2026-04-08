@@ -40,9 +40,9 @@ import {IYieldDistributor} from "./interfaces/IYieldDistributor.sol";
 ///   Known leakage:
 ///   - The ERC-20 `safeTransferFrom` in `startDistribution` is a cleartext
 ///     token transfer — the yield amount is visible in the ERC-20 Transfer event.
-///     This is a known tradeoff: when Privara encrypted payment rails are
-///     integrated, this transfer will also be encrypted. The encrypted struct
-///     fields ensure our contract state is private regardless.
+///     This is a known tradeoff: when PUSDC (ReineiraOS confidential stablecoin)
+///     replaces the cleartext ERC-20, this transfer will also be encrypted.
+///     The encrypted struct fields ensure our contract state is private regardless.
 ///   - `DistributionStarted` emits `investorCount` (already public).
 ///   - `processedCount` and `escrowsCreated` are cleartext progress counters.
 contract YieldDistributor is Initializable, ReentrancyGuardTransient, IYieldDistributor {

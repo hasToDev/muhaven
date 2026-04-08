@@ -39,7 +39,7 @@ export const PORTFOLIO = {
     { type: 'yield', desc: 'Yield claimed', amount: '$201.34', token: 'Treasury Fund', time: '2h ago' },
     { type: 'rebalance', desc: 'Rebalanced', amount: '+$500 Treasury', token: '−$500 Cash', time: '1d ago' },
     { type: 'yield', desc: 'Yield claimed', amount: '$43.72', token: 'Money Market', time: '3d ago' },
-    { type: 'deposit', desc: 'Deposited', amount: '$5,000.00', token: 'via Privara', time: '1w ago' },
+    { type: 'deposit', desc: 'Deposited', amount: '$5,000.00', token: 'via PUSDC', time: '1w ago' },
   ],
 }
 

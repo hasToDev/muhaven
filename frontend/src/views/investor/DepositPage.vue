@@ -86,7 +86,7 @@ const amount = ref('')
         @mouseenter="($event.currentTarget as HTMLElement).style.background = COLORS.tealDark"
         @mouseleave="($event.currentTarget as HTMLElement).style.background = COLORS.teal"
       >
-        Deposit via Privara
+        Deposit via ReineiraOS
       </button>
       <PrivacyBanner text="Amount will be encrypted on-chain. Nobody can see how much you deposited." />
     </div>

@@ -45,7 +45,7 @@ MuHaven sits at the intersection of three markets. No existing project occupies 
 
 **Inco / Zama** are building the right primitive (confidential ERC-20 via FHE) but are infrastructure-only. They provide the encrypted token standard — they don't build the RWA-specific layer (yield distribution, compliance gating, portfolio management) on top.
 
-**MuHaven** combines FHE-encrypted balances (like Inco/Zama) with RWA-specific infrastructure (yield escrow via ReineiraOS, compliance gating via ERC-3643, payment rails via Privara) and adds an AI portfolio management layer. Nobody else does this.
+**MuHaven** combines FHE-encrypted balances (like Inco/Zama) with RWA-specific infrastructure (yield escrow + confidential stablecoin via ReineiraOS, compliance gating via ERC-3643) and adds an AI portfolio management layer. Nobody else does this.
 
 ---
 
@@ -85,7 +85,7 @@ This makes MuHaven the first **Confidential DeFAI** product — a category that 
 |----------|---------|-------------------|-------------------|
 | **ERC-3643 / T-REX** | ONCHAINID claims from trusted issuers | Transfer restrictions, investor caps | Partial — claims are hashed, not encrypted |
 | **zkMe zkKYC** | ZK proofs for FATF-compliant KYC | Reusable credentials | Yes — ZK proofs reveal nothing |
-| **Privara** | OFAC screening + KYT (claimed) | AI-powered monitoring (claimed) | Yes — ZK proofs (claimed, not shipped) |
+| **ReineiraOS** | AML screening on deposits (planned) | Compliance features in development | Yes — FHE-encrypted balances + transfers |
 | **Securitize** | Traditional KYC platform | Whitelist management | No — centralized |
 
 ### MuHaven's approach
@@ -93,7 +93,7 @@ This makes MuHaven the first **Confidential DeFAI** product — a category that 
 MuHaven doesn't compete with compliance providers — it integrates them via the modular `IKYCGate` interface. The design decision is deliberate:
 
 - **Now**: ERC-3643 ONCHAINID (most battle-tested, SEC-recognized)
-- **Future**: Add zkMe for ZK-native KYC, add Privara when their compliance code ships
+- **Future**: Add zkMe for ZK-native KYC, add ReineiraOS compliance when their features ship
 - **Architecture**: Any provider can be hot-swapped by deploying a new adapter contract
 
 This makes MuHaven compliance-agnostic — it works with whatever KYC standard the market converges on.
@@ -147,7 +147,7 @@ The DeFAI market is projected at $47B by 2034. Every current player operates on 
 
 ### 3. Three ecosystem integrations amplify each other
 
-Fhenix (encryption) + Privara (payments) + ReineiraOS (settlement) share the same CoFHE coprocessor. This isn't three separate integrations duct-taped together — it's one coherent encrypted compute layer used by three specialized protocols.
+Fhenix (encryption) + ReineiraOS (confidential stablecoin + escrow settlement) share the same CoFHE coprocessor. This isn't two separate integrations duct-taped together — it's one coherent encrypted compute layer where MuHaven's RWA tokens and ReineiraOS's payment infrastructure operate on the same encrypted state.
 
 ### 4. Compliance-forward, not compliance-avoiding
 

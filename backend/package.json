@@ -1,0 +1,45 @@
+{
+  "name": "@muhaven/backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MuHaven backend — adapted from ReineiraOS Platform Modules",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "dev": "tsx watch --env-file=.env src/dev-server.ts",
+    "start": "tsx src/dev-server.ts",
+    "build": "tsup && pnpm generate:openapi",
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint src/",
+    "typecheck": "tsc --noEmit",
+    "generate:openapi": "tsx scripts/generate-openapi.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.40",
+    "pg": "^8",
+    "tsx": "^4",
+    "jose": "^6",
+    "pino": "^9",
+    "siwe": "^2",
+    "viem": "^2",
+    "zod": "^3.24",
+    "zod-openapi": "^4"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/pg": "^8",
+    "drizzle-kit": "^0.30",
+    "tsup": "^8",
+    "typescript": "^5.7",
+    "vitest": "^3"
+  },
+  "license": "MIT"
+}

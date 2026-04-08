@@ -77,7 +77,7 @@
   <!-- Infrastructure box -->
   <rect x="80" y="465" width="720" height="55" rx="10" fill="#222" stroke="#555" stroke-width="1"/>
   <rect x="100" y="476" width="160" height="30" rx="6" fill="#1D9E75" opacity="0.2" stroke="#1D9E75" stroke-width="1"/>
-  <text x="180" y="496" text-anchor="middle" fill="#1D9E75" font-size="12" font-weight="500">Privara (payments)</text>
+  <text x="180" y="496" text-anchor="middle" fill="#1D9E75" font-size="12" font-weight="500">ReineiraOS (PUSDC)</text>
 
   <rect x="290" y="476" width="180" height="30" rx="6" fill="#7F77DD" opacity="0.2" stroke="#7F77DD" stroke-width="1"/>
   <text x="380" y="496" text-anchor="middle" fill="#7F77DD" font-size="12" font-weight="500">ReineiraOS (escrow)</text>

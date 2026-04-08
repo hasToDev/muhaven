@@ -78,7 +78,7 @@ MuHaven solves three RWA issues simultaneously — because solving them separate
 |-------|---------------------|----------------------|
 | **Balance privacy** | The core problem — holdings visible to everyone | fhERC-20 tokens with FHE-encrypted balances via Fhenix CoFHE |
 | **Yield distribution privacy** | Yields leak balance info — breaks balance privacy | Encrypted escrow via ReineiraOS — yields computed and distributed in ciphertext |
-| **KYC-gated access** | Securities require investor verification before any transfer | Modular IKYCGate interface — ERC-3643/zkMe now, Privara compliance when ready |
+| **KYC-gated access** | Securities require investor verification before any transfer | Modular IKYCGate interface — ERC-3643/zkMe now, ReineiraOS compliance when ready |
 
 ### The AI agent: three hats, one conversation
 
@@ -124,7 +124,7 @@ MuHaven is a **two-sided platform** — issuers create and manage RWA tokens on 
 │                              │                                │
 │                              ▼                                │
 │  ┌──────────────────────────────────────────────────────────┐ │
-│  │  Privara (payments) + ReineiraOS (escrow) + CoFHE (FHE)  │ │
+│  │  ReineiraOS (PUSDC + escrow) + CoFHE (FHE)               │ │
 │  └──────────────────────────────────────────────────────────┘ │
 └───────────────────────────────────────────────────────────────┘
 ```
@@ -139,7 +139,7 @@ MuHaven is a **two-sided platform** — issuers create and manage RWA tokens on 
 | `MuHavenVault.sol` | Wrap/unwrap existing ERC-20 RWAs | Lock external ERC-20 (e.g., BUIDL), mint fhERC-20 wrapper; per-user locked balance tracking; burn to unwrap |
 | `InvestorRegistry.sol` | Investor address registry | Tracks all token holders; paginated reads; used by YieldDistributor for batch iteration |
 | `YieldDistributor.sol` | Proportional yield escrow creation | Batched push model (`startDistribution` + `processBatch`); creates ReineiraOS escrows proportionally |
-| `interfaces/IKYCGate.sol` | Modular KYC interface | Swappable adapters — ERC-3643, zkMe, future Privara compliance |
+| `interfaces/IKYCGate.sol` | Modular KYC interface | Swappable adapters — ERC-3643, zkMe, future ReineiraOS compliance |
 | `ERC3643KYCAdapter.sol` | KYC implementation | Whitelist + accredited investor tiers; structured for ONCHAINID swap |
 | `YieldGate.sol` | ReineiraOS gate plugin | `IConditionResolver` — verifies investor KYC + token balance eligibility for yield settlement |
 | `RiskParams.sol` | Encrypted risk guardrails | Stores investor risk preferences (`euint64`) — max drawdown, min yield, drift tolerance, max daily spend |
@@ -154,8 +154,8 @@ The agent interacts with the protocol through defined tools (function calls):
 
 | Tool | What it does | SDK | Scope |
 |------|-------------|-----|-------|
-| `deposit` | Encrypted stablecoin deposit | Privara |
-| `withdraw` | Encrypted stablecoin withdrawal | Privara | Roadmap |
+| `deposit` | Encrypted stablecoin deposit (USDC → PUSDC) | ReineiraOS |
+| `withdraw` | Encrypted stablecoin withdrawal (PUSDC → USDC) | ReineiraOS | Roadmap |
 | `buy_rwa` | Purchase fhERC-20 RWA tokens | MuHaven Token |
 | `sell_rwa` | Sell fhERC-20 RWA tokens | MuHaven Token | Roadmap |
 | `claim_yield` | Redeem yield from escrow | ReineiraOS |
@@ -187,7 +187,7 @@ MuHaven's privacy guarantee is **balance and yield privacy** — not transaction
 | **Investor balances** | **Encrypted** (`euint128`) | Core privacy guarantee. Only the investor can decrypt via EIP-712 permit. |
 | **Transfer amounts** | **Encrypted** (`InEuint128`) | Client-encrypts before submission. Calldata contains ciphertext hash + ZK proof, never plaintext. |
 | **Yield per investor** | **Encrypted** (`euint128`) | Each investor's share is FHE-encrypted. Investors decrypt their own share via permits. |
-| **Total yield deposited** | **Encrypted** (`euint128`) | Encrypted in contract state. Note: the ERC-20 transfer in `startDistribution` is cleartext (known tradeoff — resolved when Privara encrypted payment rails integrate). |
+| **Total yield deposited** | **Encrypted** (`euint128`) | Encrypted in contract state. Note: the ERC-20 transfer in `startDistribution` is cleartext (known tradeoff — resolved when PUSDC replaces cleartext USDC). |
 | **Risk parameters** | **Encrypted** (4x `euint64`) | Investor-encrypted client-side. AI agent decrypts via async decrypt with dynamic `FHE.allow`. |
 | **Total supply** | **Encrypted** (default) / **Public** (opt-in) | Issuer can toggle `setTotalSupplyPublic()` — one-way, uses `FHE.allowPublic`. Useful for regulated securities requiring public supply. |
 | **Aggregate yield distributed** | **Encrypted** (`euint128`) | Running total across all distributions. Owner can async-decrypt for reporting. |
@@ -232,7 +232,7 @@ An observer watching gas costs or execution traces cannot distinguish a successf
 
 ---
 
-## Why Fhenix + Privara + ReineiraOS
+## Why Fhenix + ReineiraOS
 
 ### Why FHE, not just ZK?
 
@@ -255,22 +255,16 @@ ZK proves things about data. FHE computes on data. RWAs need ongoing computation
 - **Live on Arbitrum** — CoFHE is deployed on Arbitrum, not just testnet.
 - **Quantum-resistant** — Lattice-based cryptography, resistant to quantum attacks.
 
-### Why Privara?
-
-- **Encrypted payment rails** — USDC deposits and withdrawals without exposing amounts on-chain.
-- **Gasless transactions** — Users pay in stablecoins only. No ETH needed.
-- **20-chain support** — Investors can deposit from any supported chain.
-- **Yield on idle balances** — Up to 5% on stablecoin reserves waiting to be deployed.
-- **Same FHE ecosystem** — Built on Fhenix/Zama FHE, shares CoFHE infrastructure.
-
-> Note: Privara's compliance features (OFAC, KYT, ZK proofs) are listed on their website but not yet in their [GitHub codebase](https://github.com/PrivaraXYZ). MuHaven uses a modular `IKYCGate` interface so compliance providers can be swapped in once code ships.
-
 ### Why ReineiraOS?
 
+ReineiraOS is programmable infrastructure for stablecoins, built on Arbitrum and powered by Fhenix FHE. MuHaven uses ReineiraOS directly (not via Privara, which is ReineiraOS's consumer app layer) through the Platform Modules starter kit.
+
+- **Confidential stablecoin (PUSDC)** — FHE-encrypted wrapper around USDC/USDT. Deposits and withdrawals don't expose amounts on-chain. Replaces cleartext ERC-20 transfers in the yield pipeline.
 - **Encrypted conditional escrow** — Holds yield in FHE-encrypted state, releases when cryptographic conditions are met.
-- **Gate plugin system** — MuHaven deploys an `IConditionResolver` for yield eligibility checks.
+- **Gate plugin system** — MuHaven deploys an `IConditionResolver` (YieldGate) for yield eligibility checks.
 - **Insurance pools** — Encrypted risk scoring and coverage for yield delivery failures.
 - **Cross-chain settlement** — Circle CCTP V2 integration for native USDC transfers across chains.
+- **Platform Modules** — Plug-and-play backend (Clean Architecture, DB-agnostic) and app starter (ZeroDev smart accounts, passkey auth) for ventures building on ReineiraOS.
 - **Same CoFHE coprocessor** — Zero integration friction with MuHaven's token contracts.
 
 ---
@@ -349,7 +343,7 @@ Every existing DeFAI agent operates on transparent state — strategies are visi
 - Agent-to-agent coordination (x402 payments, ERC-8004 identity) — hackathon uses direct SDK calls; agent-to-agent is a production enhancement
 - Native token issuance via issuer dashboard (production issuer model)
 - Revenue model activation: wrapping fee (0.1%), issuance fee (0.2%), yield distribution fee (0.1%) — see [ISSUER_MODEL.md](./docs/ISSUER_MODEL.md)
-- Privara compliance integration (when their OFAC/KYT code ships)
+- ReineiraOS compliance integration (when OFAC/KYT features ship)
 - Multi-chain expansion beyond Arbitrum
 - Production security audit
 - Mainnet deployment
@@ -366,8 +360,8 @@ Every existing DeFAI agent operates on transparent state — strategies are visi
 | Dev starter | `cofhe-hardhat-starter` (branch: `sdk-migration`) | —        |
 | Token standard | FHERC-20 (max type: `euint128`) | —        |
 | KYC framework | ERC-3643 / ONCHAINID (swappable via IKYCGate) | —        |
-| Payment rails | Privara SDK (encrypted stablecoin transfers) | —        |
-| Escrow + yields | ReineiraOS SDK (conditional settlement) | —        |
+| Payments + Escrow | ReineiraOS (PUSDC confidential stablecoin + escrow settlement) | v0.1     |
+| Backend | Platform Modules (Clean Architecture, ZeroDev, passkey auth) | v0.1     |
 | Cross-chain | Circle CCTP V2 (via ReineiraOS operators) | —        |
 | Frontend | Vue 3 + Vite + Bun | —        |
 | AI agent | LLM (Claude/OpenAI) + function calling | —        |
@@ -413,7 +407,6 @@ ARB_SEPOLIA_RPC_URL=          # Arbitrum Sepolia RPC URL
 
 # API keys
 FHENIX_API_KEY=               # Fhenix CoFHE API key
-PRIVARA_API_KEY=              # Privara SDK key
 REINEIRA_API_KEY=             # ReineiraOS key
 ETHERSCAN_API_KEY=            # For contract verification
 ARBISCAN_API_KEY=             # For contract verification
@@ -508,8 +501,7 @@ muhaven/
 
 - **Fhenix**: [fhenix.io](https://www.fhenix.io/) | [CoFHE Docs](https://cofhe-docs.fhenix.zone/)
 - **CoFHE repos**: [cofhe-contracts](https://github.com/FhenixProtocol/cofhe-contracts) | [@cofhe/sdk](https://github.com/FhenixProtocol/cofhesdk) | [cofhe-hardhat-starter](https://github.com/FhenixProtocol/cofhe-hardhat-starter)
-- **Privara**: [privara.xyz](https://privara.xyz/) | [GitHub](https://github.com/PrivaraXYZ)
-- **ReineiraOS**: [Docs](https://docs.reineira.xyz/)
+- **ReineiraOS**: [Docs](https://docs.reineira.xyz/) | [Platform Modules](https://github.com/ReineiraOS/platform-modules) | [reineira-code](https://github.com/ReineiraOS/reineira-code)
 - **ERC-3643**: [erc3643.org](https://www.erc3643.org/) | [GitHub](https://github.com/ERC-3643/ERC-3643)
 
 ---

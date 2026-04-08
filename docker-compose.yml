@@ -1,0 +1,46 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      fhe-worker:
+        condition: service_started
+    env_file: ./backend/.env
+    environment:
+      DB_PROVIDER: postgres
+      DATABASE_URL: postgresql://muhaven:${DB_PASSWORD:-muhaven}@postgres:5432/muhaven
+      FHE_WORKER_URL: http://fhe-worker:3001
+      PORT: 3000
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: muhaven
+      POSTGRES_USER: muhaven
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-muhaven}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U muhaven"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  fhe-worker:
+    build: ./fhe-worker
+    ports:
+      - "3001:3001"
+    env_file: ./fhe-worker/.env
+    environment:
+      PORT: 3001
+    restart: unless-stopped
+
+volumes:
+  pgdata:

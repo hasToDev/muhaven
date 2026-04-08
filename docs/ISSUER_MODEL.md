@@ -121,7 +121,7 @@ This is the most common question. The answer: **MuHaven never decides yield. It 
    ▼
 3. Issuer deposits into MuHaven
    │
-   │  Calls depositYield() with USDC (via Privara for privacy)
+   │  Calls depositYield() with PUSDC (ReineiraOS confidential stablecoin)
    ▼
 4. MuHaven creates ReineiraOS escrows
    │
@@ -301,7 +301,7 @@ All fees are encrypted — competitors can't reverse-engineer MuHaven's revenue 
 │                              │                                 │
 │                              ▼                                 │
 │  ┌──────────────────────────────────────────────────────────┐  │
-│  │  Privara (payments) + ReineiraOS (escrow) + CoFHE (FHE)  │  │
+│  │  ReineiraOS (PUSDC + escrow) + CoFHE (FHE)               │  │
 │  └──────────────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────────────┘
 ```

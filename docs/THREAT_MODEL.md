@@ -49,9 +49,9 @@ MuHaven uses three distinct FHE access patterns:
 
 **What leaks:** When an issuer calls `startDistribution(token, totalYield)`, the `safeTransferFrom` is a standard ERC-20 transfer with the amount visible on-chain.
 
-**Why it's acceptable:** This is a transitional limitation. The ERC-20 transfer happens at the system boundary where Privara encrypted payment rails will replace cleartext transfers. MuHaven encrypts the yield amount in contract state immediately after the transfer — our internal accounting is private even though the deposit event is not.
+**Why it's acceptable:** This is a transitional limitation. The ERC-20 transfer happens at the system boundary where PUSDC (ReineiraOS confidential stablecoin) will replace cleartext transfers. MuHaven encrypts the yield amount in contract state immediately after the transfer — our internal accounting is private even though the deposit event is not.
 
-**Mitigation path:** Replace `safeTransferFrom` with Privara SDK encrypted deposit when Privara's code ships.
+**Mitigation path:** Replace `safeTransferFrom` with PUSDC deposit via ReineiraOS — PUSDC wraps USDC with FHE encryption, making the transfer confidential.
 
 ### 2.3 KYC eligibility boolean
 
@@ -164,7 +164,7 @@ Permissioned chains (Canton Network, JP Morgan's Onyx) provide privacy through a
 
 | Enhancement | Impact | Dependency |
 |------------|--------|------------|
-| Privara encrypted deposits | Eliminates ERC-20 transfer leakage in YieldDistributor | Privara SDK ships with encrypted transfer support |
+| PUSDC confidential deposits | Eliminates ERC-20 transfer leakage in YieldDistributor | Replace cleartext USDC with PUSDC (ReineiraOS confidential stablecoin) in depositYield flow |
 | Stealth addresses for investors | Hides investor identity from on-chain observer | Wallet-layer integration (e.g., ERC-5564/6538) |
 | Encrypted KYC claims (ONCHAINID) | Replaces cleartext whitelist with encrypted credential verification | ERC-3643 ONCHAINID integration |
 | Proportional yield with unique ciphertexts | Prevents correlation of equal-split yield shares | FHE proportional math (already possible with `FHE.mul`/`FHE.div`) |

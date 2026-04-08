@@ -57,7 +57,7 @@ The investor interacts with this agent through a chat interface. It wears three 
 |-----|-------------|---------|
 | **Advisor** | Asks questions, assesses risk, recommends allocation | "Based on your 1-year horizon and low risk tolerance, I recommend 70% treasuries, 20% money market, 10% cash buffer" |
 | **Risk manager** | Sets encrypted guardrails on-chain | Max drawdown: 5%, min yield alert: 4%, drift tolerance: 5% |
-| **Executor** | Deposits, buys tokens, claims yields — within guardrails | Calls Privara deposit → MuHaven mint → ReineiraOS claim |
+| **Executor** | Deposits, buys tokens, claims yields — within guardrails | Wraps USDC → PUSDC → MuHaven mint → ReineiraOS claim |
 
 ### Agent 2: Platform agent (backend operations)
 
@@ -130,7 +130,7 @@ interface Tool {
 ```typescript
 {
   name: "deposit",
-  description: "Deposit USDC into MuHaven via Privara (encrypted). Call this when the user confirms they want to invest a specific amount.",
+  description: "Deposit USDC into MuHaven via ReineiraOS PUSDC (encrypted). Call this when the user confirms they want to invest a specific amount.",
   parameters: {
     type: "object",
     properties: {
@@ -139,9 +139,10 @@ interface Tool {
     required: ["amount"]
   },
   handler: async ({ amount }) => {
-    // Call Privara SDK for encrypted deposit
-    const result = await privaraSDK.deposit(amount);
-    return { success: true, txHash: result.hash, message: `Deposited $${amount} USDC (encrypted)` };
+    // Wrap USDC → PUSDC via ReineiraOS confidential stablecoin wrapper
+    const sdk = ReineiraSDK.create({ network: 'testnet', privateKey: process.env.AGENT_WALLET_KEY });
+    const result = await sdk.stablecoin(amount).wrap();
+    return { success: true, txHash: result.hash, message: `Deposited $${amount} USDC → PUSDC (encrypted)` };
   }
 }
 ```
