@@ -149,6 +149,14 @@ async function main() {
     const pathname = parsed.pathname;
     const searchParams = parsed.searchParams;
 
+    // Health check — not file-routed because all api/ routes gain /api prefix
+    if (pathname === '/health') {
+      rawRes.statusCode = 200;
+      rawRes.setHeader('Content-Type', 'application/json');
+      rawRes.end(JSON.stringify({ status: 'ok', timestamp: new Date().toISOString() }));
+      return;
+    }
+
     const matched = routes.find((r) => r.pattern.test(pathname));
 
     if (!matched) {

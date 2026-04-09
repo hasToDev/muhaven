@@ -37,3 +37,5 @@ CLAUDE.md
 development/
 deployments/
 *.bak
+
+scripts/deploy-homelab.sh

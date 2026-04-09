@@ -14,7 +14,8 @@
 		"deploy:testnet": "hardhat run scripts/deploy.ts --network arb-sepolia",
 		"deploy:mocks": "hardhat run scripts/deploy-mocks.ts",
 		"deploy:mocks:testnet": "hardhat run scripts/deploy-mocks.ts --network arb-sepolia",
-		"validate:reineira": "hardhat run scripts/validate-reineira.ts --network arb-sepolia"
+		"validate:reineira": "hardhat run scripts/validate-reineira.ts --network arb-sepolia",
+		"deploy:homelab": "bash scripts/deploy-homelab.sh"
 	},
 	"author": "hasToDev",
 	"license": "MIT",
