@@ -11,6 +11,11 @@ import { ApplicationHttpError } from '../../../core/errors.js';
 import type { VerifyWalletDto } from '../../dto/auth/verify-wallet.dto.js';
 import type { TokenResponse } from '../../dto/auth/verify-wallet.dto.js';
 
+export interface SessionMetadata {
+  userAgent?: string;
+  ipAddress?: string;
+}
+
 export class VerifyWalletUseCase {
   constructor(
     private readonly siweVerifier: SiweVerifier,
@@ -20,10 +25,15 @@ export class VerifyWalletUseCase {
     private readonly jwtService: JwtService,
   ) {}
 
-  async execute(dto: VerifyWalletDto): Promise<TokenResponse> {
+  async execute(dto: VerifyWalletDto, meta?: SessionMetadata): Promise<TokenResponse> {
     const result = await this.siweVerifier.verify(dto.message, dto.signature);
     if (!result.valid) {
       throw ApplicationHttpError.unauthorized('Invalid SIWE signature');
+    }
+
+    // Defense-in-depth: ensure the SIWE message address matches the claimed wallet
+    if (result.address.toLowerCase() !== dto.wallet_address.toLowerCase()) {
+      throw ApplicationHttpError.unauthorized('SIWE address does not match wallet_address');
     }
 
     const siweMessage = new SiweMessage(dto.message);
@@ -37,7 +47,8 @@ export class VerifyWalletUseCase {
       user = new User({
         id: randomUUID(),
         walletAddress: dto.wallet_address,
-        walletProvider: 'walletconnect',
+        walletProvider: dto.wallet_provider ?? 'zerodev',
+        role: dto.role,
         email: dto.email,
         createdAt: new Date(),
       });
@@ -48,6 +59,7 @@ export class VerifyWalletUseCase {
       sub: user.id,
       walletAddress: user.walletAddress,
       walletProvider: user.walletProvider,
+      role: user.role,
       email: user.email,
     });
 
@@ -55,8 +67,10 @@ export class VerifyWalletUseCase {
       id: randomUUID(),
       userId: user.id,
       refreshToken: tokenPair.refreshToken,
-      expiresAt: new Date(Date.now() + tokenPair.expiresIn * 1000),
+      expiresAt: new Date(Date.now() + tokenPair.refreshExpiresIn * 1000),
       createdAt: new Date(),
+      userAgent: meta?.userAgent,
+      ipAddress: meta?.ipAddress,
     });
     await this.sessionRepository.save(session);
 

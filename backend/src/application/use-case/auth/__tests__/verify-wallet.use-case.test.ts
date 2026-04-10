@@ -62,6 +62,7 @@ describe('VerifyWalletUseCase', () => {
       wallet_address: WALLET,
       message,
       signature: '0xsig',
+      role: 'investor',
     });
 
     expect(result).toHaveProperty('access_token');
@@ -77,10 +78,10 @@ describe('VerifyWalletUseCase', () => {
     await seedNonce();
     const message = buildSiweMessage(NONCE);
 
-    await useCase.execute({ wallet_address: WALLET, message, signature: '0xsig' });
+    await useCase.execute({ wallet_address: WALLET, message, signature: '0xsig', role: 'investor' as const });
 
     await nonceRepo.save(WALLET, NONCE, 300);
-    await useCase.execute({ wallet_address: WALLET, message, signature: '0xsig' });
+    await useCase.execute({ wallet_address: WALLET, message, signature: '0xsig', role: 'investor' as const });
 
     const users = await userRepo.findByWalletAddress(WALLET);
     expect(users).not.toBeNull();
@@ -92,7 +93,7 @@ describe('VerifyWalletUseCase', () => {
     await seedNonce();
     const message = buildSiweMessage(NONCE);
 
-    const result = await useCase.execute({ wallet_address: WALLET, message, signature: '0xsig' });
+    const result = await useCase.execute({ wallet_address: WALLET, message, signature: '0xsig', role: 'investor' as const });
     const session = await sessionRepo.findByRefreshToken(result.refresh_token);
     expect(session).not.toBeNull();
   });
@@ -100,7 +101,7 @@ describe('VerifyWalletUseCase', () => {
   it('throws unauthorized when SIWE signature is invalid', async () => {
     vi.mocked(siweVerifier.verify).mockResolvedValue({ address: '', valid: false });
 
-    await expect(useCase.execute({ wallet_address: WALLET, message: 'msg', signature: '0xbad' })).rejects.toThrow(
+    await expect(useCase.execute({ wallet_address: WALLET, message: 'msg', signature: '0xbad', role: 'investor' as const })).rejects.toThrow(
       ApplicationHttpError,
     );
   });
@@ -108,8 +109,19 @@ describe('VerifyWalletUseCase', () => {
   it('throws unauthorized when nonce is invalid', async () => {
     const message = buildSiweMessage('wrongnonce');
 
-    await expect(useCase.execute({ wallet_address: WALLET, message, signature: '0xsig' })).rejects.toMatchObject({
+    await expect(useCase.execute({ wallet_address: WALLET, message, signature: '0xsig', role: 'investor' as const })).rejects.toMatchObject({
       statusCode: 401,
     });
+  });
+
+  it('throws unauthorized when SIWE address does not match wallet_address', async () => {
+    const otherAddress = '0x1111111111111111111111111111111111111111';
+    vi.mocked(siweVerifier.verify).mockResolvedValue({ address: otherAddress, valid: true });
+    await seedNonce();
+    const message = buildSiweMessage(NONCE);
+
+    await expect(
+      useCase.execute({ wallet_address: WALLET, message, signature: '0xsig', role: 'investor' as const }),
+    ).rejects.toMatchObject({ statusCode: 401 });
   });
 });

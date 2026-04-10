@@ -5,12 +5,14 @@ export interface JwtTokenPair {
   accessToken: string;
   refreshToken: string;
   expiresIn: number;
+  refreshExpiresIn: number;
 }
 
 export interface JwtPayload {
   sub: string;
   walletAddress: string;
   walletProvider: string;
+  role: string;
   email?: string;
 }
 
@@ -34,6 +36,7 @@ export class JwtService {
     const accessToken = await new SignJWT({
       walletAddress: payload.walletAddress,
       walletProvider: payload.walletProvider,
+      role: payload.role,
       email: payload.email,
     })
       .setProtectedHeader({ alg: 'HS256' })
@@ -55,6 +58,7 @@ export class JwtService {
       accessToken,
       refreshToken,
       expiresIn: this.accessTokenTtl,
+      refreshExpiresIn: this.refreshTokenTtl,
     };
   }
 
@@ -67,6 +71,7 @@ export class JwtService {
       sub: payload.sub!,
       walletAddress: payload.walletAddress as string,
       walletProvider: payload.walletProvider as string,
+      role: payload.role as string,
       email: payload.email as string | undefined,
     };
   }

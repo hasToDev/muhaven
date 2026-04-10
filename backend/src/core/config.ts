@@ -25,6 +25,13 @@ const EnvSchema = z.object({
   // FHE Worker
   FHE_WORKER_URL: z.string().default('http://localhost:3001'),
 
+  // ZeroDev (passkey smart accounts)
+  ZERODEV_BUNDLER_URL: z.string().optional(),
+  ZERODEV_PASSKEY_SERVER_URL: z.string().optional(),
+
+  // NAV Worker
+  NAV_WORKER_URL: z.string().default('http://localhost:3002'),
+
   // Webhooks
   QUICKNODE_WEBHOOK_SECRET: z.string().optional(),
   RELAY_WEBHOOK_SECRET: z.string().optional(),

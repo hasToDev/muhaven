@@ -15,11 +15,16 @@
 		"deploy:mocks": "hardhat run scripts/deploy-mocks.ts",
 		"deploy:mocks:testnet": "hardhat run scripts/deploy-mocks.ts --network arb-sepolia",
 		"validate:reineira": "hardhat run scripts/validate-reineira.ts --network arb-sepolia",
-		"deploy:homelab": "bash scripts/deploy-homelab.sh"
+		"deploy:homelab": "bash scripts/deploy-homelab.sh",
+		"test:auth": "tsx scripts/test-auth.ts",
+		"test:auth:homelab": "tsx scripts/test-auth.ts https://nagreg.hasto.dev"
 	},
 	"author": "hasToDev",
 	"license": "MIT",
 	"devDependencies": {
+		"@cofhe/hardhat-plugin": "^0.4.0",
+		"@cofhe/mock-contracts": "^0.4.0",
+		"@cofhe/sdk": "^0.4.0",
 		"@fhenixprotocol/cofhe-contracts": "^0.1.3",
 		"@nomicfoundation/hardhat-chai-matchers": "^2.0.0",
 		"@nomicfoundation/hardhat-ethers": "^3.0.0",
@@ -37,9 +42,6 @@
 		"@types/mocha": ">=9.1.0",
 		"@types/node": ">=18.0.0",
 		"chai": "^4.2.0",
-		"@cofhe/hardhat-plugin": "^0.4.0",
-		"@cofhe/sdk": "^0.4.0",
-		"@cofhe/mock-contracts": "^0.4.0",
 		"dotenv": "^16.4.7",
 		"ethers": "^6.4.0",
 		"hardhat": "^2.22.19",
@@ -47,6 +49,7 @@
 		"rimraf": "^5.0.0",
 		"solidity-coverage": "^0.8.0",
 		"ts-node": ">=8.0.0",
+		"tsx": "^4.21.0",
 		"typechain": "^8.3.0",
 		"typescript": ">=4.5.0"
 	}

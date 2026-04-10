@@ -3,6 +3,7 @@ import { RequestNonceUseCase } from '../../../../src/application/use-case/auth/r
 import { container } from '../../../../src/infrastructure/container.js';
 import { createHandler } from '../../../../src/interface/handler-factory.js';
 import { withCors } from '../../../../src/interface/middleware/with-cors.js';
+import { withRateLimit } from '../../../../src/interface/middleware/with-rate-limit.js';
 import { Response } from '../../../../src/interface/response.js';
 
 const useCase = new RequestNonceUseCase(container.nonceService);
@@ -16,4 +17,5 @@ const handler = createHandler({
   },
 });
 
-export default withCors(handler);
+// 20 nonce requests per minute per IP
+export default withCors(withRateLimit({ maxRequests: 20, windowSeconds: 60 }, handler));

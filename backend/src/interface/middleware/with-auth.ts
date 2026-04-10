@@ -31,7 +31,10 @@ export function withAuth(handler: VercelHandler): VercelHandler {
         issuer: JWT_ISSUER,
       });
 
-      (req as AuthenticatedRequest).authPayload = payload as unknown as AuthPayload;
+      (req as AuthenticatedRequest).authPayload = {
+        ...payload,
+        userId: payload.sub as string,
+      } as unknown as AuthPayload;
     } catch {
       sendResponse(res, Response.unauthorized('Invalid token', 'Token verification failed'));
       return;

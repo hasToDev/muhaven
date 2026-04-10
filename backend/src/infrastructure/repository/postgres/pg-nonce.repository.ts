@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, lt } from 'drizzle-orm';
 import type { INonceRepository } from '../../../domain/nonce/repository/nonce.repository.js';
 import { nonces } from './schema.js';
 import type { Db } from './db.js';
@@ -35,5 +35,14 @@ export class PgNonceRepository implements INonceRepository {
 
     if (deleted.length === 0) return false;
     return deleted[0]!.expiresAt > now;
+  }
+
+  async deleteExpired(): Promise<number> {
+    const now = Math.floor(Date.now() / 1000);
+    const deleted = await this.db
+      .delete(nonces)
+      .where(lt(nonces.expiresAt, now))
+      .returning();
+    return deleted.length;
   }
 }

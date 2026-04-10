@@ -32,6 +32,7 @@ export const withdrawalStatusEnum = pgEnum('withdrawal_status', [
 export const walletProviderEnum = pgEnum('wallet_provider', [
   'zerodev',
   'walletconnect',
+  'injected',
 ]);
 
 export const userRoleEnum = pgEnum('user_role', ['investor', 'issuer']);

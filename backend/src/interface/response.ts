@@ -73,6 +73,25 @@ export const Response = {
     };
   },
 
+  forbidden(title: string, detail?: string): HttpResponse {
+    return {
+      statusCode: 403,
+      headers: defaultHeaders(),
+      body: JSON.stringify(ErrorResponseDtoFactory.create(403, title, detail)),
+    };
+  },
+
+  tooManyRequests(title: string, retryAfterSeconds: number, detail?: string): HttpResponse {
+    return {
+      statusCode: 429,
+      headers: {
+        ...defaultHeaders(),
+        'Retry-After': String(retryAfterSeconds),
+      },
+      body: JSON.stringify(ErrorResponseDtoFactory.create(429, title, detail)),
+    };
+  },
+
   notFound(title: string, detail?: string): HttpResponse {
     return {
       statusCode: 404,

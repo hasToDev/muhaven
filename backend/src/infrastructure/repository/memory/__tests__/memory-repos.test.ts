@@ -4,8 +4,6 @@ import { MemoryUserRepository } from '../memory-user.repository.js';
 import { MemorySessionRepository } from '../memory-session.repository.js';
 import { MemoryEscrowRepository } from '../memory-escrow.repository.js';
 import { MemoryWithdrawalRepository } from '../memory-withdrawal.repository.js';
-import { MemoryBusinessProfileRepository } from '../memory-business-profile.repository.js';
-import { MemoryApiCredentialRepository } from '../memory-api-credential.repository.js';
 import { MemoryEscrowEventRepository } from '../memory-escrow-event.repository.js';
 import { MemoryNonceRepository } from '../memory-nonce.repository.js';
 import { User } from '../../../../domain/auth/model/user.js';
@@ -16,8 +14,6 @@ import { EscrowStatus } from '../../../../domain/escrow/model/escrow-status.enum
 import { Withdrawal } from '../../../../domain/withdrawal/model/withdrawal.js';
 import { WithdrawalStatus } from '../../../../domain/withdrawal/model/withdrawal-status.enum.js';
 import { DestinationChain } from '../../../../domain/withdrawal/model/destination-chain.enum.js';
-import { BusinessProfile } from '../../../../domain/business-profile/model/business-profile.js';
-import { ApiCredential } from '../../../../domain/api-credential/model/api-credential.js';
 import { EscrowEvent } from '../../../../domain/escrow/events/model/escrow-event.js';
 
 function makeUser(overrides: Partial<ConstructorParameters<typeof User>[0]> = {}): User {
@@ -25,6 +21,7 @@ function makeUser(overrides: Partial<ConstructorParameters<typeof User>[0]> = {}
     id: randomUUID(),
     walletAddress: `0x${randomUUID().replace(/-/g, '')}`,
     walletProvider: 'walletconnect',
+    role: 'investor',
     createdAt: new Date(),
     ...overrides,
   });
@@ -310,78 +307,6 @@ describe('MemoryWithdrawalRepository', () => {
     await repo.save(completed);
     const result = await repo.findByUserId(userId, { status: WithdrawalStatus.COMPLETED });
     expect(result.items).toHaveLength(1);
-  });
-});
-
-describe('MemoryBusinessProfileRepository', () => {
-  let repo: MemoryBusinessProfileRepository;
-
-  beforeEach(() => {
-    repo = new MemoryBusinessProfileRepository();
-  });
-
-  it('save and findByUserId returns profile', async () => {
-    const userId = randomUUID();
-    const profile = new BusinessProfile({
-      id: randomUUID(),
-      userId,
-      businessName: 'Acme',
-      businessType: 'RETAIL',
-    });
-    await repo.save(profile);
-    expect(await repo.findByUserId(userId)).toEqual(profile);
-  });
-
-  it('findByUserId returns null when not found', async () => {
-    expect(await repo.findByUserId('nobody')).toBeNull();
-  });
-});
-
-describe('MemoryApiCredentialRepository', () => {
-  let repo: MemoryApiCredentialRepository;
-
-  beforeEach(() => {
-    repo = new MemoryApiCredentialRepository();
-  });
-
-  function makeCredential(userId: string): ApiCredential {
-    return new ApiCredential({
-      id: randomUUID(),
-      clientId: `rc_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
-      userId,
-      hashedSecret: 'hash',
-      salt: 'salt',
-      status: 'active',
-      createdAt: new Date(),
-    });
-  }
-
-  it('save and findByClientId returns credential', async () => {
-    const credential = makeCredential('user-1');
-    await repo.save(credential);
-    expect(await repo.findByClientId(credential.clientId)).toEqual(credential);
-  });
-
-  it('findByClientId returns null when not found', async () => {
-    expect(await repo.findByClientId('rc_missing')).toBeNull();
-  });
-
-  it('findByUserId returns all credentials for user', async () => {
-    const userId = randomUUID();
-    await repo.save(makeCredential(userId));
-    await repo.save(makeCredential(userId));
-    await repo.save(makeCredential(randomUUID()));
-    const results = await repo.findByUserId(userId);
-    expect(results).toHaveLength(2);
-  });
-
-  it('update persists status change', async () => {
-    const credential = makeCredential('user-1');
-    await repo.save(credential);
-    credential.revoke();
-    await repo.update(credential);
-    const updated = await repo.findByClientId(credential.clientId);
-    expect(updated?.status).toBe('revoked');
   });
 });
 

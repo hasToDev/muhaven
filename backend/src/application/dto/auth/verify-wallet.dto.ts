@@ -5,6 +5,8 @@ export const VerifyWalletDtoSchema = z.object({
   wallet_address: ethAddressSchema,
   message: z.string().min(1),
   signature: z.string().regex(/^0x/, 'Signature must start with 0x'),
+  role: z.enum(['investor', 'issuer']),
+  wallet_provider: z.enum(['zerodev', 'walletconnect', 'injected']).optional(),
   email: z.string().email().optional(),
 });
 export type VerifyWalletDto = z.infer<typeof VerifyWalletDtoSchema>;

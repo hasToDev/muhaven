@@ -25,4 +25,16 @@ export class MemoryNonceRepository implements INonceRepository {
     this.store.delete(key);
     return true;
   }
+
+  async deleteExpired(): Promise<number> {
+    const now = Date.now();
+    let count = 0;
+    for (const [key, entry] of this.store) {
+      if (entry.expiresAt < now) {
+        this.store.delete(key);
+        count++;
+      }
+    }
+    return count;
+  }
 }

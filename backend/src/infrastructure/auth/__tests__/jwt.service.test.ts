@@ -5,6 +5,7 @@ const TEST_PAYLOAD = {
   sub: 'user-123',
   walletAddress: '0xabc123',
   walletProvider: 'walletconnect',
+  role: 'investor',
   email: 'test@example.com',
 };
 

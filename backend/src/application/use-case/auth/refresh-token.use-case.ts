@@ -35,6 +35,7 @@ export class RefreshTokenUseCase {
       sub: user.id,
       walletAddress: user.walletAddress,
       walletProvider: user.walletProvider,
+      role: user.role,
       email: user.email,
     });
 
@@ -42,7 +43,7 @@ export class RefreshTokenUseCase {
       id: randomUUID(),
       userId: user.id,
       refreshToken: tokenPair.refreshToken,
-      expiresAt: new Date(Date.now() + tokenPair.expiresIn * 1000),
+      expiresAt: new Date(Date.now() + tokenPair.refreshExpiresIn * 1000),
       createdAt: new Date(),
     });
     await this.sessionRepository.save(newSession);

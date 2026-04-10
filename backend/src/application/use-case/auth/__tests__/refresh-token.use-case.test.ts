@@ -29,6 +29,7 @@ describe('RefreshTokenUseCase', () => {
       id: randomUUID(),
       walletAddress: '0xuser',
       walletProvider: 'walletconnect',
+      role: 'investor',
       createdAt: new Date(),
     });
     await userRepo.save(user);
@@ -37,6 +38,7 @@ describe('RefreshTokenUseCase', () => {
       sub: user.id,
       walletAddress: user.walletAddress,
       walletProvider: user.walletProvider,
+      role: user.role,
     });
 
     const session = new Session({
@@ -94,6 +96,7 @@ describe('RefreshTokenUseCase', () => {
       id: randomUUID(),
       walletAddress: '0xexpired',
       walletProvider: 'walletconnect',
+      role: 'investor',
       createdAt: new Date(),
     });
     await userRepo.save(user);
@@ -102,6 +105,7 @@ describe('RefreshTokenUseCase', () => {
       sub: user.id,
       walletAddress: user.walletAddress,
       walletProvider: user.walletProvider,
+      role: user.role,
     });
 
     const expiredSession = new Session({

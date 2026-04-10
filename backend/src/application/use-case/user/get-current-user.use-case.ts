@@ -5,6 +5,7 @@ export interface UserResponse {
   id: string;
   wallet_address: string;
   wallet_provider: string;
+  role: string;
   email?: string;
   created_at: string;
 }
@@ -22,6 +23,7 @@ export class GetCurrentUserUseCase {
       id: user.id,
       wallet_address: user.walletAddress,
       wallet_provider: user.walletProvider,
+      role: user.role,
       email: user.email,
       created_at: user.createdAt.toISOString(),
     };

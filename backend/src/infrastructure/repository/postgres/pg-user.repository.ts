@@ -28,6 +28,7 @@ export class PgUserRepository implements IUserRepository {
         id: user.id,
         walletAddress: user.walletAddress,
         walletProvider: user.walletProvider,
+        role: user.role,
         email: user.email,
         createdAt: user.createdAt,
       })
@@ -36,6 +37,7 @@ export class PgUserRepository implements IUserRepository {
         set: {
           walletAddress: user.walletAddress,
           walletProvider: user.walletProvider,
+          role: user.role,
           email: user.email,
         },
       });
@@ -46,6 +48,7 @@ export class PgUserRepository implements IUserRepository {
       id: row.id,
       walletAddress: row.walletAddress,
       walletProvider: row.walletProvider,
+      role: row.role,
       email: row.email ?? undefined,
       createdAt: row.createdAt,
     });
