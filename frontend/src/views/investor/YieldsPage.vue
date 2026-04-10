@@ -1,105 +1,191 @@
 <script setup lang="ts">
-import { COLORS, YIELDS_DATA } from '@/data/constants'
-import SummaryCard from '@/components/SummaryCard.vue'
-import Badge from '@/components/Badge.vue'
+import { ref } from 'vue'
+import { YIELDS_DATA, PORTFOLIO, YIELD_BREAKDOWN } from '@/data/constants'
+import { toast } from 'vue-sonner'
+import { useAppStore } from '@/stores/app'
+import { formatUSD } from '@/lib/utils'
+import MCard from '@/components/ui/MCard.vue'
+import MButton from '@/components/ui/MButton.vue'
+import MBadge from '@/components/ui/MBadge.vue'
+import MSummaryCard from '@/components/ui/MSummaryCard.vue'
+import MGoldRule from '@/components/ui/MGoldRule.vue'
+import MProgressBar from '@/components/ui/MProgressBar.vue'
+import MSkeleton from '@/components/ui/MSkeleton.vue'
+import YieldLineChart from '@/components/charts/YieldLineChart.vue'
+import { DollarSign, Clock, CalendarDays, TrendingUp } from 'lucide-vue-next'
 
-function formatUsd(v: number) {
-  return v.toLocaleString('en-US', { minimumFractionDigits: 2 })
+const store = useAppStore()
+const activeRange = ref('6M')
+const ranges = ['1M', '3M', '6M', 'All'] as const
+
+function claimYield(token: string, amount: number) {
+  toast.success('Yield claimed', {
+    description: `$${amount.toFixed(2)} from ${token}`,
+  })
 }
 </script>
 
 <template>
-  <div :style="{ display: 'flex', flexDirection: 'column', gap: '28px' }">
-    <div :style="{ fontSize: '28px', fontWeight: 400, fontFamily: `'DM Serif Display', Georgia, serif`, color: COLORS.textPrimary }">
-      Yields
+  <div>
+  <!-- Skeleton -->
+  <div v-if="store.isLoading" class="flex flex-col gap-8">
+    <div>
+      <MSkeleton variant="title" width="120px" />
     </div>
-    <div :style="{ display: 'flex', gap: '16px' }">
-      <SummaryCard label="Total earned" :value="`$${formatUsd(YIELDS_DATA.totalEarned)}`" :accent="COLORS.teal" />
-      <SummaryCard label="Pending" :value="`$${formatUsd(YIELDS_DATA.pending)}`" :accent="COLORS.amber" />
-      <SummaryCard label="Next payout" :value="YIELDS_DATA.nextPayout" />
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <MSkeleton variant="card" class="md:col-span-2" height="120px" />
+      <MSkeleton variant="card" height="100px" />
+      <MSkeleton variant="card" height="100px" />
+    </div>
+    <MSkeleton variant="card" height="200px" />
+    <MSkeleton variant="chart" height="220px" />
+    <MSkeleton variant="card" height="180px" />
+  </div>
+
+  <!-- Content -->
+  <div v-else class="flex flex-col gap-10">
+    <div
+      v-motion
+      :initial="{ opacity: 0, y: 20 }"
+      :visible-once="{ opacity: 1, y: 0, transition: { duration: 500 } }"
+    >
+      <h1 class="text-4xl font-sans font-bold text-midnight dark:text-white tracking-tight">Yields</h1>
+      <MGoldRule />
     </div>
 
-    <!-- Pending Claims -->
-    <div
-      :style="{
-        background: COLORS.surface,
-        border: `1px solid ${COLORS.border}`,
-        borderRadius: '12px',
-        padding: '22px 24px',
-      }"
+    <!-- Summary cards — hero + secondary -->
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <MSummaryCard
+        class="md:col-span-2"
+        label="Total Earned"
+        :value="formatUSD(YIELDS_DATA.totalEarned)"
+        accent
+        size="lg"
+        :icon="DollarSign"
+        :trend="{ value: 4.2, direction: 'up' }"
+      />
+      <MSummaryCard
+        label="Pending"
+        :value="formatUSD(YIELDS_DATA.pending)"
+        accent
+        :icon="Clock"
+      />
+      <MSummaryCard
+        label="Next Payout"
+        :value="YIELDS_DATA.nextPayout"
+        :icon="CalendarDays"
+      />
+    </div>
+
+    <!-- Yield breakdown per token -->
+    <MCard
+      v-motion
+      :initial="{ opacity: 0, y: 16 }"
+      :visible-once="{ opacity: 1, y: 0, transition: { duration: 400, delay: 100 } }"
     >
-      <div :style="{ fontSize: '14px', fontWeight: 600, color: COLORS.textPrimary, marginBottom: '16px' }">Pending Claims</div>
+      <p class="text-base font-sans font-medium text-midnight dark:text-white mb-5">Yield Breakdown</p>
+      <div class="space-y-5">
+        <div v-for="h in PORTFOLIO.holdings" :key="h.symbol" class="flex items-center gap-4">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center justify-between mb-2">
+              <div class="flex items-center gap-2">
+                <span class="text-base font-medium text-midnight dark:text-white">{{ h.name }}</span>
+                <span class="font-mono text-xs text-cool">{{ h.symbol }}</span>
+              </div>
+              <span class="text-sm font-mono font-medium text-midnight dark:text-white">
+                {{ formatUSD(YIELD_BREAKDOWN[h.symbol] || 0) }}
+              </span>
+            </div>
+            <div class="flex items-center gap-3">
+              <MProgressBar :value="h.pct" color="bg-compute" class="flex-1" />
+              <span class="text-xs text-gold font-medium w-16 text-right">{{ h.apy }}% APY</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </MCard>
+
+    <!-- Yield trend chart with time range -->
+    <MCard
+      v-motion
+      :initial="{ opacity: 0, y: 16 }"
+      :visible-once="{ opacity: 1, y: 0, transition: { duration: 400, delay: 150 } }"
+    >
+      <div class="flex items-center justify-between mb-5">
+        <p class="text-base font-sans font-medium text-midnight dark:text-white">Yield Trend</p>
+        <div class="flex gap-1 bg-mist dark:bg-midnight rounded-lg p-0.5">
+          <button
+            v-for="r in ranges"
+            :key="r"
+            @click="activeRange = r"
+            :class="[
+              'px-3 py-1 text-xs font-medium rounded-md transition-all duration-200 cursor-pointer',
+              activeRange === r
+                ? 'bg-white dark:bg-midnight-mid shadow-sm text-compute'
+                : 'text-cool hover:text-midnight dark:hover:text-white',
+            ]"
+          >
+            {{ r }}
+          </button>
+        </div>
+      </div>
+      <YieldLineChart />
+    </MCard>
+
+    <!-- Pending claims -->
+    <MCard
+      v-motion
+      :initial="{ opacity: 0, y: 16 }"
+      :visible-once="{ opacity: 1, y: 0, transition: { duration: 400, delay: 200 } }"
+    >
+      <div class="flex items-center justify-between mb-5">
+        <p class="text-base font-sans font-medium text-midnight dark:text-white">Pending Claims</p>
+        <MBadge variant="teal" :pulse="true">{{ YIELDS_DATA.pendingClaims.length }} Claimable</MBadge>
+      </div>
       <div
         v-for="(c, i) in YIELDS_DATA.pendingClaims"
         :key="i"
-        :style="{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: '14px 0',
-          borderTop: i > 0 ? `1px solid ${COLORS.borderSubtle}` : 'none',
-        }"
+        :class="[
+          'flex items-center justify-between py-4',
+          i > 0 && 'border-t border-haze/50 dark:border-white/8',
+        ]"
       >
         <div>
-          <div :style="{ fontSize: '14px', fontWeight: 500, color: COLORS.textPrimary }">{{ c.token }}</div>
-          <div
-            :style="{
-              fontSize: '22px',
-              fontWeight: 700,
-              fontFamily: `'DM Serif Display', Georgia, serif`,
-              color: COLORS.textPrimary,
-              marginTop: '4px',
-            }"
-          >
-            ${{ c.amount.toFixed(2) }}
-          </div>
+          <p class="text-base font-sans font-medium text-midnight dark:text-white">{{ c.token }}</p>
+          <p class="text-xl font-accent italic text-midnight dark:text-white mt-1">
+            {{ formatUSD(c.amount) }}
+          </p>
         </div>
-        <button
-          :style="{
-            padding: '10px 28px',
-            background: COLORS.teal,
-            color: '#fff',
-            border: 'none',
-            borderRadius: '10px',
-            fontSize: '14px',
-            fontWeight: 600,
-            cursor: 'pointer',
-            transition: 'background 0.15s',
-          }"
-          @mouseenter="($event.currentTarget as HTMLElement).style.background = COLORS.tealDark"
-          @mouseleave="($event.currentTarget as HTMLElement).style.background = COLORS.teal"
-        >
+        <MButton size="sm" @click="claimYield(c.token, c.amount)">
           Claim
-        </button>
+        </MButton>
       </div>
-    </div>
+    </MCard>
 
     <!-- History -->
-    <div
-      :style="{
-        background: COLORS.surface,
-        border: `1px solid ${COLORS.border}`,
-        borderRadius: '12px',
-        padding: '22px 24px',
-      }"
+    <MCard
+      v-motion
+      :initial="{ opacity: 0, y: 16 }"
+      :visible-once="{ opacity: 1, y: 0, transition: { duration: 400, delay: 250 } }"
     >
-      <div :style="{ fontSize: '14px', fontWeight: 600, color: COLORS.textPrimary, marginBottom: '16px' }">History</div>
+      <p class="text-base font-sans font-medium text-midnight dark:text-white mb-5">History</p>
       <div
         v-for="(h, i) in YIELDS_DATA.history"
         :key="i"
-        :style="{
-          display: 'flex',
-          alignItems: 'center',
-          padding: '12px 0',
-          borderTop: i > 0 ? `1px solid ${COLORS.borderSubtle}` : 'none',
-          gap: '14px',
-        }"
+        :class="[
+          'flex items-center gap-3.5 py-4',
+          i > 0 && 'border-t border-haze/50 dark:border-white/8',
+        ]"
       >
-        <span :style="{ fontSize: '13px', color: COLORS.textTertiary, width: '56px' }">{{ h.date }}</span>
-        <span :style="{ flex: 1, fontSize: '14px', color: COLORS.textPrimary }">{{ h.token }}</span>
-        <span :style="{ fontSize: '14px', fontFamily: `'JetBrains Mono', monospace`, color: COLORS.textPrimary, fontWeight: 500 }">{{ h.amount }}</span>
-        <Badge variant="positive">Claimed &#10003;</Badge>
+        <div class="w-9 h-9 rounded-lg bg-gold/10 flex items-center justify-center">
+          <TrendingUp :size="14" class="text-gold" />
+        </div>
+        <span class="text-xs text-cool w-14 shrink-0">{{ h.date }}</span>
+        <span class="flex-1 text-base text-midnight dark:text-white">{{ h.token }}</span>
+        <span class="font-mono text-sm font-medium text-midnight dark:text-white">{{ h.amount }}</span>
+        <MBadge variant="positive">Claimed &#10003;</MBadge>
       </div>
-    </div>
+    </MCard>
+  </div>
   </div>
 </template>

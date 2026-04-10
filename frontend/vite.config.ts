@@ -1,9 +1,10 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import tailwindcss from '@tailwindcss/vite'
 import { resolve } from 'path'
 
 export default defineConfig(({ mode }) => ({
-  plugins: [vue()],
+  plugins: [vue(), tailwindcss()],
   base: mode === 'ghpages' ? '/muhaven/' : '/',
   server: {
     port: 7778,

@@ -1,170 +1,209 @@
 <script setup lang="ts">
-import { COLORS, PORTFOLIO } from '@/data/constants'
-import Badge from '@/components/Badge.vue'
-import Icon from '@/components/Icon.vue'
-import PrivacyBanner from '@/components/PrivacyBanner.vue'
+import { PORTFOLIO, YIELDS_DATA, YIELD_BREAKDOWN } from '@/data/constants'
+import { useAppStore } from '@/stores/app'
+import { useCountUp } from '@/composables/useCountUp'
+import MCard from '@/components/ui/MCard.vue'
+import MBadge from '@/components/ui/MBadge.vue'
+import MSummaryCard from '@/components/ui/MSummaryCard.vue'
+import MGoldRule from '@/components/ui/MGoldRule.vue'
+import MPrivacyBanner from '@/components/ui/MPrivacyBanner.vue'
+import MSkeleton from '@/components/ui/MSkeleton.vue'
+import InsightChip from '@/components/agent/InsightChip.vue'
+import PortfolioDonut from '@/components/charts/PortfolioDonut.vue'
+import { TrendingUp, ArrowDown, Activity, Shield, DollarSign, Percent } from 'lucide-vue-next'
+import { formatUSD } from '@/lib/utils'
 
-function formatUsd(v: number) {
-  return v.toLocaleString('en-US', { minimumFractionDigits: 2 })
+const store = useAppStore()
+const { target: heroRef, displayValue: heroValue } = useCountUp(PORTFOLIO.totalValue, 1500, 2)
+
+const weightedAPY = PORTFOLIO.holdings.reduce((acc, h) => acc + h.apy * h.pct / 100, 0)
+
+const activityMeta: Record<string, { icon: typeof TrendingUp; classes: string; bg: string }> = {
+  yield: { icon: TrendingUp, classes: 'text-gold', bg: 'bg-gold/10 dark:bg-gold/8' },
+  deposit: { icon: ArrowDown, classes: 'text-compute', bg: 'bg-compute/12 dark:bg-compute/8' },
+  rebalance: { icon: Activity, classes: 'text-cool', bg: 'bg-mist dark:bg-midnight' },
 }
 
-function activityIcon(type: string) {
-  if (type === 'yield') return 'trendingUp'
-  if (type === 'deposit') return 'arrowDown'
-  return 'activity'
-}
-
-function activityColor(type: string) {
-  return type === 'yield' || type === 'deposit' ? COLORS.teal : COLORS.textSecondary
-}
-
-function activityBg(type: string) {
-  return type === 'yield' || type === 'deposit' ? COLORS.tealLight : COLORS.bgSecondary
-}
+// Only show first 4 in recent activity
+const recentActivity = PORTFOLIO.activity.slice(0, 4)
 </script>
 
 <template>
-  <div :style="{ display: 'flex', flexDirection: 'column', gap: '28px' }">
-    <!-- Hero value -->
+  <div>
+  <!-- Skeleton -->
+  <div v-if="store.isLoading" class="flex flex-col gap-8">
     <div>
-      <div
-        :style="{
-          fontSize: '13px',
-          color: COLORS.textTertiary,
-          marginBottom: '4px',
-          fontWeight: 500,
-          letterSpacing: '0.03em',
-          textTransform: 'uppercase',
-        }"
-      >
-        Total Portfolio Value
-      </div>
-      <div :style="{ display: 'flex', alignItems: 'baseline', gap: '16px' }">
-        <span
-          :style="{
-            fontSize: '44px',
-            fontWeight: 400,
-            color: COLORS.textPrimary,
-            fontFamily: `'DM Serif Display', Georgia, serif`,
-            letterSpacing: '-0.02em',
-          }"
-        >
-          ${{ formatUsd(PORTFOLIO.totalValue) }}
-        </span>
-        <Badge variant="positive">&uarr; {{ PORTFOLIO.change }}% this month</Badge>
-      </div>
+      <MSkeleton variant="text" :lines="1" width="160px" />
+      <MSkeleton variant="title" width="320px" height="48px" class="mt-3" />
     </div>
-
-    <!-- Holdings cards -->
-    <div :style="{ display: 'flex', gap: '16px' }">
-      <div
-        v-for="h in PORTFOLIO.holdings"
-        :key="h.symbol"
-        :style="{
-          flex: 1,
-          background: COLORS.surface,
-          border: `1px solid ${COLORS.border}`,
-          borderRadius: '12px',
-          padding: '20px 22px',
-          transition: 'box-shadow 0.2s',
-          cursor: 'pointer',
-        }"
-        @mouseenter="($event.currentTarget as HTMLElement).style.boxShadow = '0 4px 16px rgba(0,0,0,0.06)'"
-        @mouseleave="($event.currentTarget as HTMLElement).style.boxShadow = 'none'"
-      >
-        <div :style="{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }">
-          <span :style="{ fontSize: '14px', fontWeight: 600, color: COLORS.textPrimary }">{{ h.name }}</span>
-          <span :style="{ fontSize: '12px', color: COLORS.textTertiary, fontFamily: `'JetBrains Mono', monospace` }">{{ h.symbol }}</span>
-        </div>
-        <div
-          :style="{
-            fontSize: '24px',
-            fontWeight: 700,
-            color: COLORS.textPrimary,
-            fontFamily: `'DM Serif Display', Georgia, serif`,
-            marginBottom: '8px',
-          }"
-        >
-          ${{ formatUsd(h.value) }}
-        </div>
-        <div :style="{ display: 'flex', gap: '12px', alignItems: 'center' }">
-          <span :style="{ fontSize: '13px', color: COLORS.textSecondary }">{{ h.pct }}% allocation</span>
-          <span :style="{ fontSize: '13px', color: COLORS.positive, fontWeight: 600 }">&uarr; {{ h.apy }}% APY</span>
-        </div>
-      </div>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <MSkeleton variant="card" v-for="i in 3" :key="i" height="100px" />
     </div>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <MSkeleton variant="card" v-for="i in 3" :key="i" height="150px" />
+    </div>
+    <MSkeleton variant="chart" height="220px" />
+    <MSkeleton variant="card" height="200px" />
+  </div>
 
-    <!-- Allocation bar -->
+  <!-- Content -->
+  <div v-else class="flex flex-col gap-10">
+    <!-- Hero value -->
     <div
-      :style="{
-        background: COLORS.surface,
-        border: `1px solid ${COLORS.border}`,
-        borderRadius: '12px',
-        padding: '22px 24px',
-      }"
+      v-motion
+      :initial="{ opacity: 0, y: 30, scale: 0.98 }"
+      :visible-once="{ opacity: 1, y: 0, scale: 1, transition: { duration: 600 } }"
     >
-      <div :style="{ fontSize: '14px', fontWeight: 600, color: COLORS.textPrimary, marginBottom: '16px' }">Allocation</div>
-      <div :style="{ display: 'flex', height: '14px', borderRadius: '7px', overflow: 'hidden', gap: '3px' }">
-        <div
-          v-for="h in PORTFOLIO.holdings"
-          :key="h.symbol"
-          :style="{ width: `${h.pct}%`, background: h.color, borderRadius: '7px', transition: 'width 0.5s ease' }"
-          :title="`${h.name}: ${h.pct}%`"
-        />
-      </div>
-      <div :style="{ display: 'flex', gap: '24px', marginTop: '14px' }">
-        <div v-for="h in PORTFOLIO.holdings" :key="h.symbol" :style="{ display: 'flex', alignItems: 'center', gap: '8px' }">
-          <div :style="{ width: '10px', height: '10px', borderRadius: '3px', background: h.color }" />
-          <span :style="{ fontSize: '13px', color: COLORS.textSecondary }">{{ h.name }} &middot; {{ h.pct }}%</span>
-        </div>
+      <p class="text-xs uppercase tracking-wider text-cool font-sans font-medium mb-1">
+        Total Portfolio Value
+      </p>
+      <MGoldRule />
+      <div class="flex items-baseline gap-4 mt-3">
+        <span ref="heroRef" class="text-5xl md:text-6xl font-accent italic text-midnight dark:text-white tracking-tight">
+          ${{ heroValue }}
+        </span>
+        <MBadge variant="positive" pulse>
+          &uarr; {{ PORTFOLIO.change }}% this month
+        </MBadge>
       </div>
     </div>
+
+    <!-- Secondary stats row -->
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <MSummaryCard
+        label="Total Earned"
+        :value="formatUSD(YIELDS_DATA.totalEarned)"
+        accent
+        :icon="DollarSign"
+        :trend="{ value: 4.2, direction: 'up' }"
+      />
+      <MSummaryCard
+        label="Weighted APY"
+        :value="`${weightedAPY.toFixed(2)}%`"
+        :icon="Percent"
+      />
+      <MSummaryCard
+        label="FHE Status"
+        value="Active"
+        sub="Balances encrypted (euint128)"
+        :icon="Shield"
+      />
+    </div>
+
+    <!-- Holdings cards — featured layout -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+      <MCard
+        v-for="(h, i) in PORTFOLIO.holdings"
+        :key="h.symbol"
+        hover
+        glow
+        :class="i === 0 ? 'md:col-span-2' : ''"
+        v-motion
+        :initial="{ opacity: 0, y: 20 }"
+        :visible-once="{ opacity: 1, y: 0, transition: { duration: 400, delay: i * 120 } }"
+      >
+        <div class="flex justify-between items-center mb-4">
+          <span :class="['font-sans font-medium text-midnight dark:text-white', i === 0 ? 'text-base' : 'text-base']">{{ h.name }}</span>
+          <span class="font-mono text-xs text-cool">{{ h.symbol }}</span>
+        </div>
+        <p :class="['font-accent italic text-midnight dark:text-white mb-3', i === 0 ? 'text-3xl' : 'text-2xl']">
+          {{ formatUSD(h.value) }}
+        </p>
+        <div class="flex gap-3 items-center text-base">
+          <span class="text-slate">{{ h.pct }}% allocation</span>
+          <span class="text-gold font-medium">&uarr; {{ h.apy }}% APY</span>
+        </div>
+        <div v-if="i === 0" class="mt-3">
+          <MBadge variant="privacy">FHE Encrypted</MBadge>
+        </div>
+      </MCard>
+    </div>
+
+    <!-- Allocation with donut chart -->
+    <MCard
+      v-motion
+      :initial="{ opacity: 0, y: 16 }"
+      :visible-once="{ opacity: 1, y: 0, transition: { duration: 400, delay: 200 } }"
+    >
+      <div class="flex items-center justify-between mb-5">
+        <p class="text-base font-sans font-medium text-midnight dark:text-white">Allocation</p>
+        <span class="text-xs text-cool">Combined APY: <span class="text-compute font-medium">{{ weightedAPY.toFixed(2) }}%</span></span>
+      </div>
+      <div class="flex flex-col md:flex-row gap-6 items-center">
+        <div class="w-40 md:w-52 flex-shrink-0">
+          <PortfolioDonut />
+        </div>
+        <div class="flex-1 w-full">
+          <div class="flex h-3 rounded-full overflow-hidden gap-0.5 mb-4">
+            <div
+              v-for="h in PORTFOLIO.holdings"
+              :key="h.symbol"
+              :class="[h.colorClass, 'rounded-full transition-all duration-1000 ease-out']"
+              :style="{ width: `${h.pct}%` }"
+            />
+          </div>
+          <div class="flex flex-wrap gap-5 mb-4">
+            <div v-for="h in PORTFOLIO.holdings" :key="h.symbol" class="flex items-center gap-2">
+              <div :class="['w-2.5 h-2.5 rounded-sm', h.colorClass]" />
+              <span class="text-xs text-slate">{{ h.name }} &middot; {{ h.pct }}%</span>
+            </div>
+          </div>
+          <!-- Yield breakdown per token -->
+          <div class="border-t border-haze/50 dark:border-white/8 pt-4 space-y-2">
+            <div v-for="h in PORTFOLIO.holdings" :key="h.symbol" class="flex items-center justify-between text-xs">
+              <span class="text-cool">{{ h.symbol }} earned</span>
+              <span class="font-mono text-midnight dark:text-white">{{ formatUSD(YIELD_BREAKDOWN[h.symbol] || 0) }}</span>
+            </div>
+          </div>
+          <div class="mt-4">
+            <InsightChip
+              text="Allocation optimal"
+              detail="Your treasury allocation at 70% is within the recommended range for your risk profile. Money market at 20% provides yield diversification."
+              agent-prompt="Is my current portfolio allocation optimal?"
+            />
+          </div>
+        </div>
+      </div>
+    </MCard>
 
     <!-- Recent activity -->
-    <div
-      :style="{
-        background: COLORS.surface,
-        border: `1px solid ${COLORS.border}`,
-        borderRadius: '12px',
-        padding: '22px 24px',
-      }"
+    <MCard
+      v-motion
+      :initial="{ opacity: 0, x: -16 }"
+      :visible-once="{ opacity: 1, x: 0, transition: { duration: 400, delay: 300 } }"
     >
-      <div :style="{ fontSize: '14px', fontWeight: 600, color: COLORS.textPrimary, marginBottom: '16px' }">Recent Activity</div>
+      <p class="text-base font-sans font-medium text-midnight dark:text-white mb-5">Recent Activity</p>
       <div
-        v-for="(a, i) in PORTFOLIO.activity"
+        v-for="(a, i) in recentActivity"
         :key="i"
-        :style="{
-          display: 'flex',
-          alignItems: 'center',
-          padding: '12px 0',
-          borderTop: i > 0 ? `1px solid ${COLORS.borderSubtle}` : 'none',
-          gap: '14px',
-        }"
+        :class="[
+          'flex items-center gap-4 py-4',
+          i > 0 && 'border-t border-haze/50 dark:border-white/8',
+        ]"
       >
-        <div
-          :style="{
-            width: '34px',
-            height: '34px',
-            borderRadius: '8px',
-            background: activityBg(a.type),
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }"
-        >
-          <Icon :name="activityIcon(a.type)" :size="16" :color="activityColor(a.type)" />
-        </div>
-        <div :style="{ flex: 1 }">
-          <div :style="{ fontSize: '14px', color: COLORS.textPrimary, fontWeight: 500 }">
-            {{ a.desc }} &middot;
-            <span :style="{ fontFamily: `'JetBrains Mono', monospace`, fontSize: '13px' }">{{ a.amount }}</span>
+        <div class="relative">
+          <!-- Timeline connector -->
+          <div v-if="i < recentActivity.length - 1" class="absolute top-10 left-1/2 -translate-x-1/2 w-px h-8 bg-haze/50 dark:bg-white/8" />
+          <div :class="['w-10 h-10 rounded-lg flex items-center justify-center', activityMeta[a.type]?.bg || 'bg-mist']">
+            <component
+              :is="activityMeta[a.type]?.icon || Activity"
+              :size="16"
+              :class="activityMeta[a.type]?.classes || 'text-cool'"
+            />
           </div>
-          <div :style="{ fontSize: '12px', color: COLORS.textTertiary, marginTop: '2px' }">{{ a.token }}</div>
         </div>
-        <div :style="{ fontSize: '12px', color: COLORS.textTertiary }">{{ a.time }}</div>
+        <div class="flex-1 min-w-0">
+          <p class="text-base font-sans font-medium text-midnight dark:text-white">
+            {{ a.desc }} &middot;
+            <span class="font-mono text-xs">{{ a.amount }}</span>
+          </p>
+          <p class="text-sm text-cool mt-1">{{ a.token }}</p>
+        </div>
+        <span class="text-xs text-cool whitespace-nowrap">{{ a.time }}</span>
       </div>
-    </div>
+    </MCard>
 
-    <PrivacyBanner text="All balances are encrypted on-chain. Only you can see this data." />
+    <MPrivacyBanner text="All balances are encrypted on-chain via Fhenix FHE. Only you can see this data." />
+  </div>
   </div>
 </template>

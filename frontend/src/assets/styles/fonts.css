@@ -1,55 +1,44 @@
+/* Inter Variable — primary UI font (all weights via single file) */
+@import '@fontsource-variable/inter';
+
+/* Epilogue — accent serif-like italic (portfolio values, hero accents) */
 @font-face {
-  font-family: 'DM Serif Display';
-  font-style: normal;
-  font-weight: 400;
-  src: url('@fontsource/dm-serif-display/files/dm-serif-display-latin-400-normal.woff2') format('woff2');
+  font-family: 'Epilogue';
+  font-style: italic;
+  font-weight: 300;
+  src: url('@fontsource/epilogue/files/epilogue-latin-300-italic.woff2') format('woff2');
   font-display: swap;
 }
 
 @font-face {
-  font-family: 'Source Sans 3';
-  font-style: normal;
+  font-family: 'Epilogue';
+  font-style: italic;
   font-weight: 400;
-  src: url('@fontsource/source-sans-3/files/source-sans-3-latin-400-normal.woff2') format('woff2');
+  src: url('@fontsource/epilogue/files/epilogue-latin-400-italic.woff2') format('woff2');
   font-display: swap;
 }
 
 @font-face {
-  font-family: 'Source Sans 3';
+  font-family: 'Epilogue';
+  font-style: normal;
+  font-weight: 400;
+  src: url('@fontsource/epilogue/files/epilogue-latin-400-normal.woff2') format('woff2');
+  font-display: swap;
+}
+
+/* DM Mono — monospace for code, FHE badges, hex addresses */
+@font-face {
+  font-family: 'DM Mono';
+  font-style: normal;
+  font-weight: 400;
+  src: url('@fontsource/dm-mono/files/dm-mono-latin-400-normal.woff2') format('woff2');
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'DM Mono';
   font-style: normal;
   font-weight: 500;
-  src: url('@fontsource/source-sans-3/files/source-sans-3-latin-500-normal.woff2') format('woff2');
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'Source Sans 3';
-  font-style: normal;
-  font-weight: 600;
-  src: url('@fontsource/source-sans-3/files/source-sans-3-latin-600-normal.woff2') format('woff2');
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'Source Sans 3';
-  font-style: normal;
-  font-weight: 700;
-  src: url('@fontsource/source-sans-3/files/source-sans-3-latin-700-normal.woff2') format('woff2');
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'JetBrains Mono';
-  font-style: normal;
-  font-weight: 400;
-  src: url('@fontsource/jetbrains-mono/files/jetbrains-mono-latin-400-normal.woff2') format('woff2');
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'JetBrains Mono';
-  font-style: normal;
-  font-weight: 500;
-  src: url('@fontsource/jetbrains-mono/files/jetbrains-mono-latin-500-normal.woff2') format('woff2');
+  src: url('@fontsource/dm-mono/files/dm-mono-latin-500-normal.woff2') format('woff2');
   font-display: swap;
 }

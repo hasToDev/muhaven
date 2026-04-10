@@ -1,0 +1,51 @@
+@import "tailwindcss";
+
+/* Dark mode via class strategy */
+@variant dark (&:where(.dark, .dark *));
+
+@theme {
+  /* ── Midnight Teal Palette ── */
+  --color-frost: #F0FDFB;
+  --color-mist: #E0F7F4;
+  --color-haze: #B2EBE6;
+  --color-cipher: #4DB8B0;
+  --color-compute: #1B9E8A;
+  --color-compute-hover: #158a78;
+  --color-signal: #A8F5EC;
+  --color-signal-hover: #c8fff8;
+  --color-midnight: #1A1A2E;
+  --color-midnight-mid: #2D2D46;
+  --color-slate: #2E524F;
+  --color-cool: #5E9490;
+  --color-gold: #C9A84C;
+  --color-positive: #1B9E8A;
+  --color-negative: #D44A3A;
+
+  /* ── Typography ── */
+  --font-sans: 'Inter Variable', 'Inter', system-ui, -apple-system, sans-serif;
+  --font-accent: 'Epilogue', Georgia, 'Times New Roman', serif;
+  --font-mono: 'DM Mono', 'Fira Code', 'Consolas', monospace;
+
+  /* ── Border radius (rounded, organic) ── */
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 18px;
+  --radius-2xl: 20px;
+  --radius-3xl: 24px;
+  --radius-full: 9999px;
+
+  /* ── Extra colors ── */
+  --color-midnight-deep: #121224;
+  --color-body-dark: #D1EDEA;
+
+  /* ── Shadows ── */
+  --shadow-card: 0 2px 12px rgba(15, 61, 58, 0.06);
+  --shadow-card-hover: 0 12px 40px rgba(26, 26, 46, 0.08);
+  --shadow-card-dark: 0 2px 12px rgba(168, 245, 236, 0.04);
+  --shadow-nav: 0 1px 4px rgba(15, 61, 58, 0.06);
+  --shadow-elevated: 0 16px 48px rgba(26, 26, 46, 0.12);
+  --shadow-fab: 0 6px 24px rgba(27, 158, 138, 0.3);
+  --shadow-button: 0 8px 28px rgba(27, 158, 138, 0.3);
+}

@@ -1,150 +1,109 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useRouter, useRoute } from 'vue-router'
-import { COLORS } from '@/data/constants'
-import Icon from './Icon.vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useAppStore } from '@/stores/app'
+import { useGlassNav } from '@/composables/useGlassNav'
+import { cn } from '@/lib/utils'
+import MDarkToggle from '@/components/ui/MDarkToggle.vue'
+import {
+  PieChart, ArrowDown, TrendingUp, Activity,
+  Coins, Share2, Users, ClipboardCheck, Wallet,
+} from 'lucide-vue-next'
 
-const router = useRouter()
 const route = useRoute()
-
-const role = defineModel<'investor' | 'issuer'>('role', { required: true })
-
-const accent = computed(() => (role.value === 'investor' ? COLORS.teal : COLORS.coral))
+const router = useRouter()
+const store = useAppStore()
+const { isScrolled } = useGlassNav(20)
 
 const investorNav = [
-  { id: 'portfolio', label: 'Portfolio', icon: 'pieChart', path: '/portfolio' },
-  { id: 'deposit', label: 'Deposit', icon: 'arrowDown', path: '/deposit' },
-  { id: 'yields', label: 'Yields', icon: 'trendingUp', path: '/yields' },
-  { id: 'activity', label: 'Activity', icon: 'activity', path: '/activity' },
+  { path: '/portfolio', label: 'Portfolio', icon: PieChart },
+  { path: '/deposit', label: 'Deposit', icon: ArrowDown },
+  { path: '/yields', label: 'Yields', icon: TrendingUp },
+  { path: '/activity', label: 'Activity', icon: Activity },
 ]
 
 const issuerNav = [
-  { id: 'tokens', label: 'Tokens', icon: 'coins', path: '/tokens' },
-  { id: 'distribute', label: 'Distribute', icon: 'share', path: '/distribute' },
-  { id: 'investors', label: 'Investors', icon: 'users', path: '/investors' },
-  { id: 'compliance', label: 'Compliance', icon: 'clipboardCheck', path: '/compliance' },
+  { path: '/tokens', label: 'Tokens', icon: Coins },
+  { path: '/distribute', label: 'Distribute', icon: Share2 },
+  { path: '/investors', label: 'Investors', icon: Users },
+  { path: '/compliance', label: 'Compliance', icon: ClipboardCheck },
 ]
 
-const navItems = computed(() => (role.value === 'investor' ? investorNav : issuerNav))
-
-function isActive(path: string) {
-  return route.path === path
-}
-
-function navigate(path: string) {
-  router.push(path)
-}
+const navItems = computed(() => store.role === 'investor' ? investorNav : issuerNav)
 
 function switchRole(r: 'investor' | 'issuer') {
-  role.value = r
-  if (r === 'investor') router.push('/portfolio')
-  else router.push('/tokens')
+  store.setRole(r)
+  router.push(r === 'investor' ? '/portfolio' : '/tokens')
 }
 </script>
 
 <template>
-  <nav
-    :style="{
-      height: '64px',
-      background: COLORS.surface,
-      borderBottom: `1px solid ${COLORS.border}`,
-      display: 'flex',
-      alignItems: 'center',
-      padding: '0 32px',
-      position: 'sticky',
-      top: 0,
-      zIndex: 50,
-    }"
+  <header
+    :class="cn(
+      'sticky top-0 z-50 transition-all duration-500',
+      isScrolled ? 'pt-1.5 px-3' : '',
+    )"
   >
-    <!-- Logo -->
-    <div :style="{ display: 'flex', alignItems: 'center', gap: '10px', marginRight: '48px' }">
-      <img
-        src="/logo.jpg"
-        alt="MuHaven logo"
-        :style="{
-          width: '36px',
-          height: '36px',
-          borderRadius: '8px',
-          mixBlendMode: 'multiply',
-          objectFit: 'contain',
-        }"
-      />
-      <span :style="{ fontSize: '18px', fontWeight: 700, color: COLORS.textPrimary, letterSpacing: '-0.02em' }">MuHaven</span>
-    </div>
+    <nav
+      :class="cn(
+        'flex items-center h-16 px-4 md:px-8 transition-all duration-500',
+        isScrolled
+          ? 'glass-panel mx-auto rounded-xl'
+          : 'bg-white dark:bg-midnight border-b border-haze dark:border-white/8',
+      )"
+    >
+      <!-- Logo -->
+      <router-link to="/" class="flex items-center gap-2.5 mr-6">
+        <img src="/logo.jpg" alt="MuHaven" class="w-8 h-8 rounded-lg" style="mix-blend-mode: multiply" />
+        <span class="text-lg font-sans font-bold text-midnight dark:text-white hidden sm:inline tracking-tight">MuHaven</span>
+      </router-link>
 
-    <!-- Nav items -->
-    <div :style="{ display: 'flex', gap: '4px', flex: 1 }">
-      <button
-        v-for="item in navItems"
-        :key="item.id"
-        @click="navigate(item.path)"
-        :style="{
-          padding: '8px 18px',
-          borderRadius: '8px',
-          border: 'none',
-          cursor: 'pointer',
-          fontSize: '14px',
-          fontWeight: 500,
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px',
-          transition: 'all 0.15s',
-          background: isActive(item.path)
-            ? (role === 'investor' ? COLORS.tealLight : COLORS.coralLight)
-            : 'transparent',
-          color: isActive(item.path) ? accent : COLORS.textSecondary,
-        }"
-        @mouseenter="(e: MouseEvent) => { if (!isActive(item.path)) (e.currentTarget as HTMLElement).style.background = COLORS.bgSecondary }"
-        @mouseleave="(e: MouseEvent) => { if (!isActive(item.path)) (e.currentTarget as HTMLElement).style.background = 'transparent' }"
-      >
-        <Icon :name="item.icon" :size="17" :color="isActive(item.path) ? accent : COLORS.textTertiary" />
-        {{ item.label }}
-      </button>
-    </div>
-
-    <!-- Right side -->
-    <div :style="{ display: 'flex', alignItems: 'center', gap: '16px' }">
-      <!-- Role toggle -->
-      <div :style="{ display: 'flex', background: COLORS.bgSecondary, borderRadius: '8px', padding: '3px', border: `1px solid ${COLORS.border}` }">
-        <button
-          v-for="r in (['investor', 'issuer'] as const)"
-          :key="r"
-          @click="switchRole(r)"
-          :style="{
-            padding: '6px 16px',
-            borderRadius: '6px',
-            border: 'none',
-            fontSize: '13px',
-            fontWeight: 600,
-            cursor: 'pointer',
-            transition: 'all 0.15s',
-            background: role === r ? COLORS.surface : 'transparent',
-            color: role === r ? (r === 'investor' ? COLORS.teal : COLORS.coral) : COLORS.textTertiary,
-            boxShadow: role === r ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
-          }"
+      <!-- Nav items (hidden on mobile — MMobileTabBar handles it) -->
+      <div class="hidden md:flex items-center gap-1">
+        <router-link
+          v-for="item in navItems"
+          :key="item.path"
+          :to="item.path"
+          :class="cn(
+            'flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-sans font-medium transition-all duration-200',
+            route.path === item.path
+              ? 'bg-compute/12 text-compute border border-compute/25'
+              : 'text-cool hover:bg-mist dark:hover:bg-midnight-mid hover:text-midnight dark:hover:text-white',
+          )"
         >
-          {{ r.charAt(0).toUpperCase() + r.slice(1) }}
-        </button>
+          <component :is="item.icon" :size="16" :stroke-width="1.8" />
+          <span>{{ item.label }}</span>
+        </router-link>
       </div>
 
-      <!-- Wallet -->
-      <div
-        :style="{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px',
-          padding: '8px 14px',
-          background: COLORS.bgSecondary,
-          borderRadius: '8px',
-          border: `1px solid ${COLORS.border}`,
-          fontSize: '13px',
-          fontFamily: `'JetBrains Mono', monospace`,
-          color: COLORS.textSecondary,
-        }"
-      >
-        <Icon name="wallet" :size="15" :color="COLORS.textTertiary" />
-        0x7a3f...b29e
+      <div class="flex-1" />
+
+      <div class="flex items-center gap-2">
+        <!-- Role toggle -->
+        <div class="flex bg-mist dark:bg-midnight-mid rounded-lg p-0.5 border border-haze dark:border-white/8">
+          <button
+            v-for="r in (['investor', 'issuer'] as const)"
+            :key="r"
+            @click="switchRole(r)"
+            :class="cn(
+              'px-3 py-1.5 text-xs font-sans font-medium rounded-md transition-all duration-200 capitalize cursor-pointer',
+              store.role === r
+                ? 'bg-white dark:bg-midnight shadow-sm text-compute'
+                : 'text-cool hover:text-midnight dark:hover:text-white',
+            )"
+          >
+            {{ r }}
+          </button>
+        </div>
+
+        <MDarkToggle />
+
+        <!-- Wallet -->
+        <div class="hidden sm:flex items-center gap-2 bg-mist dark:bg-midnight-mid rounded-lg px-3 py-2 border border-haze dark:border-white/8">
+          <Wallet :size="14" class="text-cool" />
+          <span class="font-mono text-xs text-slate dark:text-cool">0x7a3f...b29e</span>
+        </div>
       </div>
-    </div>
-  </nav>
+    </nav>
+  </header>
 </template>

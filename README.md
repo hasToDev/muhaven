@@ -363,7 +363,7 @@ Every existing DeFAI agent operates on transparent state — strategies are visi
 | Payments + Escrow | ReineiraOS (PUSDC confidential stablecoin + escrow settlement) | v0.1     |
 | Backend | Platform Modules (Clean Architecture, ZeroDev, passkey auth) | v0.1     |
 | Cross-chain | Circle CCTP V2 (via ReineiraOS operators) | —        |
-| Frontend | Vue 3 + Vite + Bun | —        |
+| Frontend | Vue 3 + Vite + Tailwind CSS v4 + pnpm | —        |
 | AI agent | LLM (Claude/OpenAI) + function calling | —        |
 | Package manager | pnpm (Fhenix recommended) | v9+      |
 
