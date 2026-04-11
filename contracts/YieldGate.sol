@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import {Common, euint128} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
+import {ERC165} from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
 import {IMuHavenToken} from "./interfaces/IMuHavenToken.sol";
 import {IKYCGate} from "./interfaces/IKYCGate.sol";
 
@@ -18,7 +19,7 @@ import {IKYCGate} from "./interfaces/IKYCGate.sol";
 ///         as a proxy for "has a balance". In production, this should use
 ///         async decryption to verify balance > 0 (FHE.gt cannot be read
 ///         synchronously as a plain bool).
-contract YieldGate {
+contract YieldGate is ERC165 {
 
     // ── Storage ───────────────────────────────────────────────────────────
 
@@ -89,5 +90,22 @@ contract YieldGate {
         if (!Common.isInitialized(encBalance)) return false;
 
         return true;
+    }
+
+    // ── EIP-165 ─────────────────────────────────────────────────────────
+
+    /// @dev IConditionResolver interfaceId = isConditionMet(uint256) ^ onConditionSet(uint256,bytes)
+    bytes4 private constant _ICONDITION_RESOLVER_ID =
+        bytes4(keccak256("isConditionMet(uint256)")) ^
+        bytes4(keccak256("onConditionSet(uint256,bytes)"));
+
+    function supportsInterface(bytes4 interfaceId)
+        public
+        view
+        override
+        returns (bool)
+    {
+        return interfaceId == _ICONDITION_RESOLVER_ID
+            || super.supportsInterface(interfaceId);
     }
 }

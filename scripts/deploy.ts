@@ -42,6 +42,7 @@ async function main() {
   // Testnet: both required; local: deployed inline below
   let underlyingTokenAddress: string;
   let reineiraEscrowAddress: string;
+  let pusdcAddress: string;
 
   if (!isLocal) {
     if (!process.env.UNDERLYING_TOKEN_ADDRESS) {
@@ -50,12 +51,17 @@ async function main() {
     if (!process.env.REINEIRA_ESCROW_ADDRESS) {
       throw new Error("REINEIRA_ESCROW_ADDRESS is required for non-local deploy");
     }
+    if (!process.env.PUSDC_ADDRESS) {
+      throw new Error("PUSDC_ADDRESS is required for non-local deploy");
+    }
     underlyingTokenAddress = process.env.UNDERLYING_TOKEN_ADDRESS;
     reineiraEscrowAddress = process.env.REINEIRA_ESCROW_ADDRESS;
+    pusdcAddress = process.env.PUSDC_ADDRESS;
   } else {
     // Will be assigned in the local-mocks block below; TS needs a definite value
     underlyingTokenAddress = ethers.ZeroAddress;
     reineiraEscrowAddress = ethers.ZeroAddress;
+    pusdcAddress = ethers.ZeroAddress;
   }
 
   console.log(`Owner/Deployer:  ${owner}`);
@@ -85,7 +91,15 @@ async function main() {
     await mockEscrow.waitForDeployment();
     reineiraEscrowAddress = await mockEscrow.getAddress();
     record["MockReineiraEscrow"] = { address: reineiraEscrowAddress };
-    console.log(`   MockReineiraEscrow: ${reineiraEscrowAddress}\n`);
+    console.log(`   MockReineiraEscrow: ${reineiraEscrowAddress}`);
+
+    console.log("0c. [local] Deploying MockPUSDC...");
+    const MockPUSDCFactory = await ethers.getContractFactory("MockPUSDC");
+    const mockPusdc = await MockPUSDCFactory.deploy();
+    await mockPusdc.waitForDeployment();
+    pusdcAddress = await mockPusdc.getAddress();
+    record["MockPUSDC"] = { address: pusdcAddress };
+    console.log(`   MockPUSDC: ${pusdcAddress}\n`);
   }
 
   // ── 1. ERC3643KYCAdapter (non-proxied — swap pattern) ───────────────────
@@ -157,7 +171,7 @@ async function main() {
   const DistFactory = await ethers.getContractFactory("YieldDistributor");
   const distributor = await upgrades.deployProxy(
     DistFactory,
-    [registryAddr, reineiraEscrowAddress, gateAddr, owner],
+    [registryAddr, reineiraEscrowAddress, gateAddr, owner, pusdcAddress],
     { kind: "transparent" },
   );
   await distributor.waitForDeployment();

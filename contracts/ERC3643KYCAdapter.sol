@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
+import {ERC165} from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
 import {IKYCGate} from "./interfaces/IKYCGate.sol";
 
 /// @title ERC3643KYCAdapter
@@ -11,7 +12,7 @@ import {IKYCGate} from "./interfaces/IKYCGate.sol";
 ///      1. Deploy new adapter implementing IKYCGate with full ONCHAINID logic
 ///      2. Call `MuHavenToken.setKYCGate(newAdapterAddress)` (onlyOwner)
 ///      3. All future transfers use the new adapter — zero changes to MuHavenToken
-contract ERC3643KYCAdapter is IKYCGate {
+contract ERC3643KYCAdapter is ERC165, IKYCGate {
 
     // ── Claim topic constants (ERC-3643 / ONCHAINID) ─────────────────────
     // PRODUCTION: These are the exact claim topic IDs queried via
@@ -152,5 +153,17 @@ contract ERC3643KYCAdapter is IKYCGate {
     /// @notice Returns true if `account` is on the tier 2 accredited list.
     function isAccredited(address account) external view returns (bool) {
         return _accreditedList[account];
+    }
+
+    // ── EIP-165 ─────────────────────────────────────────────────────────
+
+    function supportsInterface(bytes4 interfaceId)
+        public
+        view
+        override
+        returns (bool)
+    {
+        return interfaceId == type(IKYCGate).interfaceId
+            || super.supportsInterface(interfaceId);
     }
 }

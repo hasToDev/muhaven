@@ -88,5 +88,24 @@ describe("MuHavenVault", function () {
         vault.connect(investor).wrap(ONE_TOKEN)
       ).to.be.reverted;
     });
+
+    it("should allow unwrap when vault is paused (exit path preserved)", async function () {
+      const { vault, treasury, deployer, investor } = await loadFixture(deployMuHavenFixture);
+
+      // Wrap first
+      await treasury.mint(investor.address, 10n * ONE_TOKEN);
+      await treasury.connect(investor).approve(await vault.getAddress(), 10n * ONE_TOKEN);
+      await vault.connect(investor).wrap(5n * ONE_TOKEN);
+
+      // Pause the vault
+      await vault.connect(deployer).pause();
+
+      // Unwrap should still work
+      await expect(
+        vault.connect(investor).unwrap(3n * ONE_TOKEN)
+      ).to.not.be.reverted;
+
+      expect(await vault.getLockedBalance(investor.address)).to.equal(2n * ONE_TOKEN);
+    });
   });
 });

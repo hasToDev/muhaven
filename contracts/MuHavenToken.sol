@@ -2,6 +2,8 @@
 pragma solidity ^0.8.28;
 
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import {ERC165Upgradeable} from "@openzeppelin/contracts-upgradeable/utils/introspection/ERC165Upgradeable.sol";
 import {
     FHE,
     euint128,
@@ -41,7 +43,7 @@ import {IMuHavenToken} from "./interfaces/IMuHavenToken.sol";
 ///   - `MinterGranted`/`MinterRevoked` events expose role assignments.
 ///   - KYC eligibility check (`kycGate.isEligible`) is a cleartext boolean —
 ///     the result (revert or proceed) is observable, but no private data leaks.
-contract MuHavenToken is Initializable, IMuHavenToken {
+contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, IMuHavenToken {
 
     // ── Storage ──────────────────────────────────────────────────────────
 
@@ -120,6 +122,9 @@ contract MuHavenToken is Initializable, IMuHavenToken {
         if (_kycGate == address(0) || _registry == address(0) || _issuer == address(0))
             revert ZeroAddress();
 
+        __Pausable_init();
+        __ERC165_init();
+
         _name = name_;
         _symbol = symbol_;
         kycGate = IKYCGate(_kycGate);
@@ -140,7 +145,7 @@ contract MuHavenToken is Initializable, IMuHavenToken {
 
     // ── Mint (encrypted input — standard path) ───────────────────────────
 
-    function mint(address to, InEuint128 memory encryptedAmount) external onlyMinter {
+    function mint(address to, InEuint128 memory encryptedAmount) external onlyMinter whenNotPaused {
         if (!kycGate.isEligible(to)) revert RecipientNotKYC();
 
         euint128 amount = FHE.asEuint128(encryptedAmount);
@@ -151,7 +156,7 @@ contract MuHavenToken is Initializable, IMuHavenToken {
 
     // ── Mint (cleartext input — vault path) ──────────────────────────────
 
-    function mintFromVault(address to, uint256 amount) external onlyMinter {
+    function mintFromVault(address to, uint256 amount) external onlyMinter whenNotPaused {
         if (!kycGate.isEligible(to)) revert RecipientNotKYC();
 
         euint128 encAmount = FHE.asEuint128(amount);
@@ -189,7 +194,7 @@ contract MuHavenToken is Initializable, IMuHavenToken {
 
     // ── Transfer ─────────────────────────────────────────────────────────
 
-    function transfer(address to, InEuint128 memory encryptedAmount) external {
+    function transfer(address to, InEuint128 memory encryptedAmount) external whenNotPaused {
         if (!kycGate.isEligible(to)) revert RecipientNotKYC();
 
         euint128 amount = FHE.asEuint128(encryptedAmount);
@@ -202,7 +207,7 @@ contract MuHavenToken is Initializable, IMuHavenToken {
         address from,
         address to,
         InEuint128 memory encryptedAmount
-    ) external {
+    ) external whenNotPaused {
         if (!kycGate.isEligible(to)) revert RecipientNotKYC();
 
         euint128 amount = FHE.asEuint128(encryptedAmount);
@@ -353,7 +358,19 @@ contract MuHavenToken is Initializable, IMuHavenToken {
         emit TotalSupplyMadePublic();
     }
 
-    // ── Access control — owner functions ────────────────────────────���────
+    // ── Pausable ─────────────────────────────────────────────────────────
+
+    /// @notice Pause mint, transfer, and transferFrom. Exit path (burnFromVault)
+    ///         remains open so investors can always unwrap via MuHavenVault.
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    function unpause() external onlyOwner {
+        _unpause();
+    }
+
+    // ── Access control — owner functions ─────────────────────────────────
 
     function grantMinter(address minter) external onlyOwner {
         if (minter == address(0)) revert ZeroAddress();
@@ -389,5 +406,17 @@ contract MuHavenToken is Initializable, IMuHavenToken {
         address previousOwner = owner;
         owner = newOwner;
         emit OwnershipTransferred(previousOwner, newOwner);
+    }
+
+    // ── EIP-165 ─────────────────────────────────────────────────────────
+
+    function supportsInterface(bytes4 interfaceId)
+        public
+        view
+        override
+        returns (bool)
+    {
+        return interfaceId == type(IMuHavenToken).interfaceId
+            || super.supportsInterface(interfaceId);
     }
 }

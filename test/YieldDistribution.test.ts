@@ -5,10 +5,14 @@ import { expect } from "chai";
 import {
   deployMuHavenFixture,
   deployMockReineiraEscrow,
+  deployMockPUSDC,
   ONE_TOKEN,
   waitForDecrypt,
 } from "./helpers/setup";
 import { upgrades } from "hardhat";
+
+/// @dev PUSDC uses 6 decimals (like USDC). 1 PUSDC = 1_000_000 units.
+const ONE_PUSDC = 1_000_000n;
 
 describe("YieldDistributor + YieldGate", function () {
   async function deployYieldFixture() {
@@ -16,6 +20,7 @@ describe("YieldDistributor + YieldGate", function () {
     const { deployer, token, kyc, registry } = base;
 
     const escrow = await deployMockReineiraEscrow();
+    const pusdc = await deployMockPUSDC();
 
     // Deploy YieldGate
     const YieldGate = await hre.ethers.getContractFactory("YieldGate");
@@ -24,7 +29,7 @@ describe("YieldDistributor + YieldGate", function () {
       await kyc.getAddress()
     );
 
-    // Deploy YieldDistributor
+    // Deploy YieldDistributor with PUSDC
     const YieldDistributor = await hre.ethers.getContractFactory("YieldDistributor");
     const distributor = await upgrades.deployProxy(
       YieldDistributor,
@@ -33,16 +38,17 @@ describe("YieldDistributor + YieldGate", function () {
         await escrow.getAddress(),
         await yieldGate.getAddress(),
         deployer.address,
+        await pusdc.getAddress(),
       ],
       { kind: "transparent", initializer: "initialize" }
     );
 
-    return { ...base, escrow, yieldGate, distributor };
+    return { ...base, escrow, pusdc, yieldGate, distributor };
   }
 
   describe("startDistribution()", function () {
-    it("should start a distribution and create a PENDING entry", async function () {
-      const { distributor, deployer, issuer, investor, token, treasury } =
+    it("should start a distribution via PUSDC confidentialTransferFrom", async function () {
+      const { distributor, deployer, issuer, investor, token, pusdc } =
         await loadFixture(deployYieldFixture);
       const issuerClient = await hre.cofhe.createClientWithBatteries(issuer);
 
@@ -50,42 +56,55 @@ describe("YieldDistributor + YieldGate", function () {
       const [encMint] = await issuerClient.encryptInputs([Encryptable.uint128(ONE_TOKEN)]).execute();
       await token.connect(issuer).mint(investor.address, encMint);
 
-      // Authorize distributor to pull yield from deployer
-      await treasury.mint(deployer.address, 100n * ONE_TOKEN);
-      await treasury.approve(await distributor.getAddress(), 100n * ONE_TOKEN);
+      // Fund deployer with PUSDC and grant operator status to distributor
+      const yieldAmount = 10n * ONE_PUSDC;
+      await pusdc.mint(deployer.address, Number(yieldAmount));
+      const distributorAddr = await distributor.getAddress();
+      await pusdc.connect(deployer).setOperator(distributorAddr, 2000000000);
 
-      await distributor.startDistribution(await treasury.getAddress(), 10n * ONE_TOKEN);
+      // Pass deployer's encrypted PUSDC balance handle as the yield amount
+      const pusdcBalance = await pusdc.confidentialBalanceOf(deployer.address);
+      await distributor.startDistribution(pusdcBalance);
 
       const dist = await distributor.getDistribution(1);
       expect(dist.investorCount).to.equal(1n);
-      // totalYield is now encrypted — verify via the ciphertext mock
-      hre.cofhe.mocks.expectPlaintext(dist.encTotalYield, 10n * ONE_TOKEN);
-      // perInvestorYield = totalYield / investorCount = 10 * ONE_TOKEN
-      hre.cofhe.mocks.expectPlaintext(dist.encPerInvestorYield, 10n * ONE_TOKEN);
+      // totalYield is widened from euint64 (10 PUSDC) to euint128
+      hre.cofhe.mocks.expectPlaintext(dist.encTotalYield, yieldAmount);
+      // perInvestorYield = totalYield / investorCount = 10 PUSDC
+      hre.cofhe.mocks.expectPlaintext(dist.encPerInvestorYield, yieldAmount);
       // status should be PENDING (0)
       expect(dist.status).to.equal(0n);
     });
 
-    it("should revert startDistribution with zero yield", async function () {
-      const { distributor, treasury } = await loadFixture(deployYieldFixture);
+    it("should revert startDistribution when no investors registered", async function () {
+      const { distributor, deployer, pusdc } = await loadFixture(deployYieldFixture);
+
+      await pusdc.mint(deployer.address, Number(10n * ONE_PUSDC));
+      const distributorAddr = await distributor.getAddress();
+      await pusdc.connect(deployer).setOperator(distributorAddr, 2000000000);
+      const pusdcBalance = await pusdc.confidentialBalanceOf(deployer.address);
+
       await expect(
-        distributor.startDistribution(await treasury.getAddress(), 0n)
-      ).to.be.reverted;
+        distributor.startDistribution(pusdcBalance)
+      ).to.be.revertedWithCustomError(distributor, "NoInvestors");
     });
   });
 
   describe("processBatch()", function () {
     it("should process a batch and mark distribution COMPLETED", async function () {
-      const { distributor, deployer, issuer, investor, token, treasury, escrow } =
+      const { distributor, deployer, issuer, investor, token, pusdc, escrow } =
         await loadFixture(deployYieldFixture);
       const issuerClient = await hre.cofhe.createClientWithBatteries(issuer);
 
       const [encMint] = await issuerClient.encryptInputs([Encryptable.uint128(ONE_TOKEN)]).execute();
       await token.connect(issuer).mint(investor.address, encMint);
 
-      await treasury.mint(deployer.address, 100n * ONE_TOKEN);
-      await treasury.approve(await distributor.getAddress(), 100n * ONE_TOKEN);
-      await distributor.startDistribution(await treasury.getAddress(), 10n * ONE_TOKEN);
+      await pusdc.mint(deployer.address, Number(10n * ONE_PUSDC));
+      const distributorAddr = await distributor.getAddress();
+      await pusdc.connect(deployer).setOperator(distributorAddr, 2000000000);
+      const pusdcBalance = await pusdc.confidentialBalanceOf(deployer.address);
+
+      await distributor.startDistribution(pusdcBalance);
 
       // processBatch is permissionless
       await distributor.processBatch(1, 10);
@@ -97,16 +116,20 @@ describe("YieldDistributor + YieldGate", function () {
 
   describe("requestYieldDecrypt() + getYieldDecryptResult()", function () {
     it("should return decrypted yield amounts after time.increase(11)", async function () {
-      const { distributor, deployer, issuer, investor, token, treasury } =
+      const { distributor, deployer, issuer, investor, token, pusdc } =
         await loadFixture(deployYieldFixture);
       const issuerClient = await hre.cofhe.createClientWithBatteries(issuer);
 
       const [encMint] = await issuerClient.encryptInputs([Encryptable.uint128(ONE_TOKEN)]).execute();
       await token.connect(issuer).mint(investor.address, encMint);
 
-      await treasury.mint(deployer.address, 100n * ONE_TOKEN);
-      await treasury.approve(await distributor.getAddress(), 100n * ONE_TOKEN);
-      await distributor.startDistribution(await treasury.getAddress(), 10n * ONE_TOKEN);
+      const yieldAmount = 10n * ONE_PUSDC;
+      await pusdc.mint(deployer.address, Number(yieldAmount));
+      const distributorAddr = await distributor.getAddress();
+      await pusdc.connect(deployer).setOperator(distributorAddr, 2000000000);
+      const pusdcBalance = await pusdc.confidentialBalanceOf(deployer.address);
+
+      await distributor.startDistribution(pusdcBalance);
 
       // Request async decrypt of yield amounts
       await distributor.connect(deployer).requestYieldDecrypt(1);
@@ -114,18 +137,25 @@ describe("YieldDistributor + YieldGate", function () {
 
       const result = await distributor.getYieldDecryptResult(1);
       expect(result.totalYieldDecrypted).to.be.true;
-      expect(result.totalYield).to.equal(10n * ONE_TOKEN);
+      expect(result.totalYield).to.equal(yieldAmount);
       expect(result.perInvestorYieldDecrypted).to.be.true;
-      expect(result.perInvestorYield).to.equal(10n * ONE_TOKEN); // 1 investor
+      expect(result.perInvestorYield).to.equal(yieldAmount); // 1 investor
     });
   });
 
-  describe("setYieldGate() / setReineiraEscrow()", function () {
+  describe("setYieldGate() / setReineiraEscrow() / setPusdc()", function () {
     it("should allow owner to swap yield gate", async function () {
       const { distributor, deployer, yieldGate } = await loadFixture(deployYieldFixture);
       await expect(
         distributor.connect(deployer).setYieldGate(await yieldGate.getAddress())
       ).to.not.be.reverted;
+    });
+
+    it("should allow owner to swap PUSDC address", async function () {
+      const { distributor, deployer, pusdc } = await loadFixture(deployYieldFixture);
+      await expect(
+        distributor.connect(deployer).setPusdc(await pusdc.getAddress())
+      ).to.emit(distributor, "PusdcUpdated");
     });
   });
 

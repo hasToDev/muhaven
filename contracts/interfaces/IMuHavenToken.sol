@@ -11,4 +11,6 @@ interface IMuHavenToken {
     function encryptedTotalSupply() external view returns (euint128);
     function setTotalSupplyPublic() external;
     function totalSupplyPublic() external view returns (bool);
+    function pause() external;
+    function unpause() external;
 }

@@ -117,6 +117,76 @@ describe("MuHavenToken", function () {
     });
   });
 
+  // ── Pausable ────────────────────────────────────────────────────────────────
+
+  describe("pause() / unpause()", function () {
+    it("should revert mint when paused", async function () {
+      const { token, deployer, issuer, investor } = await loadFixture(deployMuHavenFixture);
+      const issuerClient = await hre.cofhe.createClientWithBatteries(issuer);
+      await token.connect(deployer).pause();
+
+      const [encAmount] = await issuerClient.encryptInputs([Encryptable.uint128(ONE_TOKEN)]).execute();
+      await expect(
+        token.connect(issuer).mint(investor.address, encAmount)
+      ).to.be.reverted;
+    });
+
+    it("should revert transfer when paused", async function () {
+      const { token, deployer, issuer, investor, alice } = await loadFixture(deployMuHavenFixture);
+      const issuerClient = await hre.cofhe.createClientWithBatteries(issuer);
+      const investorClient = await hre.cofhe.createClientWithBatteries(investor);
+
+      // Mint first (before pause)
+      const [encMint] = await issuerClient.encryptInputs([Encryptable.uint128(ONE_TOKEN)]).execute();
+      await token.connect(issuer).mint(investor.address, encMint);
+
+      await token.connect(deployer).pause();
+
+      const [encTransfer] = await investorClient.encryptInputs([Encryptable.uint128(ONE_TOKEN)]).execute();
+      await expect(
+        token.connect(investor).transfer(alice.address, encTransfer)
+      ).to.be.reverted;
+    });
+
+    it("should allow mint after unpause", async function () {
+      const { token, deployer, issuer, investor } = await loadFixture(deployMuHavenFixture);
+      const issuerClient = await hre.cofhe.createClientWithBatteries(issuer);
+
+      await token.connect(deployer).pause();
+      await token.connect(deployer).unpause();
+
+      const [encAmount] = await issuerClient.encryptInputs([Encryptable.uint128(ONE_TOKEN)]).execute();
+      await expect(
+        token.connect(issuer).mint(investor.address, encAmount)
+      ).to.not.be.reverted;
+    });
+
+    it("should NOT gate burnFromVault when paused (exit path preserved)", async function () {
+      const { token, deployer, vault, treasury, investor } = await loadFixture(deployMuHavenFixture);
+
+      // Fund investor and wrap (before pause)
+      await treasury.mint(investor.address, 10n * ONE_TOKEN);
+      await treasury.connect(investor).approve(await vault.getAddress(), 10n * ONE_TOKEN);
+      await vault.connect(investor).wrap(5n * ONE_TOKEN);
+
+      // Pause the TOKEN (not the vault)
+      await token.connect(deployer).pause();
+
+      // burnFromVault should still work — called by vault.unwrap()
+      // The vault calls token.burnFromVault() which is NOT gated by whenNotPaused
+      await expect(
+        vault.connect(investor).unwrap(3n * ONE_TOKEN)
+      ).to.not.be.reverted;
+    });
+
+    it("should revert pause from non-owner", async function () {
+      const { token, investor } = await loadFixture(deployMuHavenFixture);
+      await expect(
+        token.connect(investor).pause()
+      ).to.be.revertedWithCustomError(token, "OnlyOwner");
+    });
+  });
+
   // ── Async decrypt ────────────────────────────────────────────────────────────
 
   describe("requestBalanceDecrypt() + getBalanceDecryptResult()", function () {

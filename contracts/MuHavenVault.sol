@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import {ERC165Upgradeable} from "@openzeppelin/contracts-upgradeable/utils/introspection/ERC165Upgradeable.sol";
 import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -14,7 +15,7 @@ import {IMuHavenToken} from "./interfaces/IMuHavenToken.sol";
 ///         Per-user `_lockedBalances` tracking bounds unwrap to deposited amount, preventing
 ///         drain if the FHE burn silently fails on insufficient encrypted balance.
 ///         Deployed behind an OZ Transparent Proxy.
-contract MuHavenVault is Initializable, PausableUpgradeable, ReentrancyGuardTransient {
+contract MuHavenVault is Initializable, PausableUpgradeable, ERC165Upgradeable, ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
 
     // ── Storage ──────────────────────────────────────────────────────────
@@ -67,6 +68,7 @@ contract MuHavenVault is Initializable, PausableUpgradeable, ReentrancyGuardTran
     ) external initializer {
         if (_underlyingToken == address(0) || _muhavenToken == address(0)) revert ZeroAddress();
         __Pausable_init();
+        __ERC165_init();
         underlyingToken = IERC20(_underlyingToken);
         muhavenToken = IMuHavenToken(_muhavenToken);
         minInvestment = _minInvestment;
@@ -95,7 +97,7 @@ contract MuHavenVault is Initializable, PausableUpgradeable, ReentrancyGuardTran
     ///         The FHE burn uses a silent-failure pattern — it will not revert
     ///         even if the encrypted balance is inconsistent. The vault relies on
     ///         _lockedBalances as the sole source of truth for unwrap eligibility.
-    function unwrap(uint256 amount) external nonReentrant whenNotPaused {
+    function unwrap(uint256 amount) external nonReentrant {
         if (amount == 0) revert ZeroAmount();
         if (amount > _lockedBalances[msg.sender]) revert ExceedsLockedBalance();
 
@@ -136,4 +138,5 @@ contract MuHavenVault is Initializable, PausableUpgradeable, ReentrancyGuardTran
         owner = newOwner;
         emit OwnershipTransferred(previousOwner, newOwner);
     }
+
 }

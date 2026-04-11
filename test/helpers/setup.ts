@@ -87,6 +87,12 @@ export async function deployMockReineiraEscrow() {
   return mock;
 }
 
+export async function deployMockPUSDC() {
+  const Mock = await hre.ethers.getContractFactory("MockPUSDC");
+  const mock = await Mock.deploy();
+  return mock;
+}
+
 // ── Full system fixture ───────────────────────────────────────────────────────
 
 /**

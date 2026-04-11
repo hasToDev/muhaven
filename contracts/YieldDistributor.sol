@@ -2,25 +2,28 @@
 pragma solidity ^0.8.28;
 
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {ERC165Upgradeable} from "@openzeppelin/contracts-upgradeable/utils/introspection/ERC165Upgradeable.sol";
 import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {
     FHE,
+    euint64,
     euint128,
     Common,
     ITaskManager,
     TASK_MANAGER_ADDRESS
 } from "@fhenixprotocol/cofhe-contracts/FHE.sol";
+import {IFHERC20} from "./interfaces/IFHERC20.sol";
 import {IInvestorRegistry} from "./interfaces/IInvestorRegistry.sol";
 import {IReineiraEscrow} from "./interfaces/IReineiraEscrow.sol";
 import {IYieldDistributor} from "./interfaces/IYieldDistributor.sol";
 
 /// @title YieldDistributor
-/// @notice Batched proportional yield distributor. Issuers deposit a yield amount,
-///         which is split equally among all registered investors. Distribution is
-///         split into startDistribution() + processBatch() to handle arbitrarily
-///         large investor sets without hitting block gas limits.
+/// @notice Batched proportional yield distributor using PUSDC (ReineiraOS
+///         confidential stablecoin). Issuers deposit yield via encrypted
+///         `confidentialTransferFrom` — amounts are never visible on-chain.
+///         Distribution is split into startDistribution() + processBatch()
+///         to handle arbitrarily large investor sets without hitting block
+///         gas limits.
 ///
 ///         Each investor's share is encrypted and placed into a ReineiraOS escrow
 ///         with a YieldGate condition. In production, replace MockReineiraEscrow
@@ -29,24 +32,21 @@ import {IYieldDistributor} from "./interfaces/IYieldDistributor.sol";
 ///         Deployed behind an OZ Transparent Proxy.
 ///
 /// @dev Privacy architecture:
-///   - `totalYield` and `perInvestorYield` are stored as `euint128` — the yield
-///     amounts are encrypted in contract state. Observers cannot see how much
-///     yield was deposited or what each investor's share is.
+///   - Yield is deposited as PUSDC (`euint64`) via the IFHERC20 operator model.
+///     The issuer grants this contract operator status, then `startDistribution`
+///     calls `confidentialTransferFrom` — no cleartext amounts are ever emitted.
+///   - PUSDC amounts (`euint64`, 6 decimals) are widened to `euint128` via
+///     `FHE.asEuint128(euint64)` for internal accounting consistency with
+///     MuHavenToken balances (which use `euint128`).
 ///   - `FHE.allow(encAmount, investor)` grants each investor permit-based
 ///     decryption of their own yield share via client-side `decryptForView`.
 ///   - `investorCount` remains cleartext (already public via InvestorRegistry).
 ///   - `totalYieldDistributed` is encrypted — aggregate yield history is private.
 ///
 ///   Known leakage:
-///   - The ERC-20 `safeTransferFrom` in `startDistribution` is a cleartext
-///     token transfer — the yield amount is visible in the ERC-20 Transfer event.
-///     This is a known tradeoff: when PUSDC (ReineiraOS confidential stablecoin)
-///     replaces the cleartext ERC-20, this transfer will also be encrypted.
-///     The encrypted struct fields ensure our contract state is private regardless.
 ///   - `DistributionStarted` emits `investorCount` (already public).
 ///   - `processedCount` and `escrowsCreated` are cleartext progress counters.
-contract YieldDistributor is Initializable, ReentrancyGuardTransient, IYieldDistributor {
-    using SafeERC20 for IERC20;
+contract YieldDistributor is Initializable, ERC165Upgradeable, ReentrancyGuardTransient, IYieldDistributor {
 
     // ── Enums / structs ───────────────────────────────────────────────────
 
@@ -73,6 +73,7 @@ contract YieldDistributor is Initializable, ReentrancyGuardTransient, IYieldDist
     IReineiraEscrow public reineiraEscrow;
     address public yieldGate;
     address public owner;
+    IFHERC20 public pusdc;
 
     /// @dev Issuers and AI agent addresses authorized to start distributions.
     mapping(address => bool) public authorizedCallers;
@@ -100,6 +101,7 @@ contract YieldDistributor is Initializable, ReentrancyGuardTransient, IYieldDist
     event YieldGateUpdated(address indexed newGate);
     event ReineiraEscrowUpdated(address indexed newEscrow);
     event YieldScheduleUpdated(uint256 intervalSeconds);
+    event PusdcUpdated(address indexed newPusdc);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
     // ── Errors ────────────────────────────────────────────────────────────
@@ -107,7 +109,6 @@ contract YieldDistributor is Initializable, ReentrancyGuardTransient, IYieldDist
     error OnlyOwner();
     error Unauthorized();
     error NoInvestors();
-    error ZeroYield();
     error AlreadyCompleted();
     error InvalidDistribution();
     error ZeroAddress();
@@ -136,46 +137,61 @@ contract YieldDistributor is Initializable, ReentrancyGuardTransient, IYieldDist
     /// @param _reineiraEscrow ReineiraOS escrow contract (or mock for testing)
     /// @param _yieldGate      YieldGate contract address used as escrow condition
     /// @param _owner          Initial owner (deploy script / multisig)
+    /// @param _pusdc          PUSDC (ConfidentialUSDC) address — IFHERC20 token used for yield
     function initialize(
         address _registry,
         address _reineiraEscrow,
         address _yieldGate,
-        address _owner
+        address _owner,
+        address _pusdc
     ) external initializer {
         if (_registry == address(0) || _reineiraEscrow == address(0) ||
-            _yieldGate == address(0) || _owner == address(0)) revert ZeroAddress();
+            _yieldGate == address(0) || _owner == address(0) ||
+            _pusdc == address(0)) revert ZeroAddress();
 
+        __ERC165_init();
         registry = IInvestorRegistry(_registry);
         reineiraEscrow = IReineiraEscrow(_reineiraEscrow);
         yieldGate = _yieldGate;
         owner = _owner;
+        pusdc = IFHERC20(_pusdc);
     }
 
     // ── Distribution: start ───────────────────────────────────────────────
 
-    /// @notice Issuer or authorized agent deposits yield and initiates a distribution.
-    ///         Transfers `totalYield` of `token` from the caller to this contract.
-    ///         Snapshots the current investor count for batched processing.
+    /// @notice Issuer or authorized agent deposits yield via PUSDC and initiates
+    ///         a distribution. Pulls encrypted PUSDC from the caller using the
+    ///         IFHERC20 operator model (`confidentialTransferFrom`).
     ///
-    ///         The cleartext `totalYield` is used for the ERC-20 transfer then
-    ///         immediately encrypted. Contract state stores only ciphertext.
+    ///         The caller must have granted this contract operator status on PUSDC
+    ///         via `pusdc.setOperator(address(this), expiry)` before calling.
     ///
-    /// @param token       ERC-20 token used for yield (e.g. USDC)
-    /// @param totalYield  Total amount to distribute, in token's smallest unit
+    ///         PUSDC amounts are `euint64` (6-decimal stablecoin). These are widened
+    ///         to `euint128` via `FHE.asEuint128(euint64)` for consistency with
+    ///         MuHavenToken balances. The widening is lossless.
+    ///
+    /// @param totalYield  Encrypted yield amount in PUSDC (euint64 handle).
+    ///                    Must be a valid ciphertext handle that this contract
+    ///                    has been granted transient access to.
     /// @return distributionId  Starts at 1
     function startDistribution(
-        address token,
-        uint256 totalYield
+        euint64 totalYield
     ) external onlyAuthorized returns (uint256 distributionId) {
-        if (totalYield == 0) revert ZeroYield();
-
         uint256 count = registry.investorCount();
         if (count == 0) revert NoInvestors();
 
-        // Transfer cleartext ERC-20 (known leakage — see NatSpec above)
-        IERC20(token).safeTransferFrom(msg.sender, address(this), totalYield);
+        // Pull encrypted PUSDC from caller via operator model.
+        // Caller must have called pusdc.setOperator(address(this), expiry).
+        //
+        // ACL note: the `totalYield` handle is owned by the caller. We pass it
+        // to PUSDC (which operates on it internally) and then widen it via
+        // `FHE.asEuint128(totalYield)` which creates a new handle that this
+        // contract owns. On testnet, the caller may need to grant this contract
+        // transient access via `FHE.allowTransient(handle, address(distributor))`
+        // before calling. The mock ACL permits the cast without explicit access.
+        pusdc.confidentialTransferFrom(msg.sender, address(this), totalYield);
 
-        // Encrypt yield amounts for private storage
+        // Widen euint64 → euint128 for internal accounting consistency
         euint128 encTotal = FHE.asEuint128(totalYield);
         FHE.allowThis(encTotal);
         euint128 encCount = FHE.asEuint128(count);
@@ -185,7 +201,7 @@ contract YieldDistributor is Initializable, ReentrancyGuardTransient, IYieldDist
 
         distributionId = ++distributionCount;
         distributions[distributionId] = Distribution({
-            token:                token,
+            token:                address(pusdc),
             encTotalYield:        encTotal,
             encPerInvestorYield:  encPerInvestor,
             investorCount:        count,
@@ -194,7 +210,7 @@ contract YieldDistributor is Initializable, ReentrancyGuardTransient, IYieldDist
             status:               DistributionStatus.PENDING
         });
 
-        emit DistributionStarted(distributionId, token, count);
+        emit DistributionStarted(distributionId, address(pusdc), count);
     }
 
     // ── Distribution: batch processing ───────────────────────────────────
@@ -354,10 +370,29 @@ contract YieldDistributor is Initializable, ReentrancyGuardTransient, IYieldDist
         emit YieldScheduleUpdated(intervalSeconds);
     }
 
+    /// @notice Update the PUSDC (ConfidentialUSDC) address.
+    function setPusdc(address newPusdc) external onlyOwner {
+        if (newPusdc == address(0)) revert ZeroAddress();
+        pusdc = IFHERC20(newPusdc);
+        emit PusdcUpdated(newPusdc);
+    }
+
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert ZeroAddress();
         address previous = owner;
         owner = newOwner;
         emit OwnershipTransferred(previous, newOwner);
+    }
+
+    // ── EIP-165 ─────────────────────────────────────────────────────────
+
+    function supportsInterface(bytes4 interfaceId)
+        public
+        view
+        override
+        returns (bool)
+    {
+        return interfaceId == type(IYieldDistributor).interfaceId
+            || super.supportsInterface(interfaceId);
     }
 }
