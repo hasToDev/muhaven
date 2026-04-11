@@ -46,6 +46,7 @@ export class CreateTokenUseCase {
       status: token.status,
       created_at: token.createdAt.toISOString(),
       updated_at: token.updatedAt.toISOString(),
+      latest_nav: null,
     };
   }
 }

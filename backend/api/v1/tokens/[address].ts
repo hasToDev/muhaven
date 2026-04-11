@@ -4,7 +4,7 @@ import { createGetHandler } from '../../../src/interface/handler-factory.js';
 import { withCors } from '../../../src/interface/middleware/with-cors.js';
 import { Response } from '../../../src/interface/response.js';
 
-const useCase = new GetTokenByAddressUseCase(container.rwaTokenRepo);
+const useCase = new GetTokenByAddressUseCase(container.rwaTokenRepo, container.navHistoryRepo);
 
 const handler = createGetHandler({
   operationName: 'GetTokenByAddress',

@@ -13,6 +13,7 @@ services:
       DB_PROVIDER: postgres
       DATABASE_URL: postgresql://muhaven:${DB_PASSWORD:-muhaven}@postgres:5432/muhaven
       FHE_WORKER_URL: http://fhe-worker:3001
+      NAV_WORKER_URL: http://nav-worker:3002
       PORT: 3000
     restart: unless-stopped
 
@@ -40,6 +41,22 @@ services:
     env_file: ./fhe-worker/.env
     environment:
       PORT: 3001
+    restart: unless-stopped
+
+  nav-worker:
+    build: ./nav-worker
+    ports:
+      - "3002:3002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: 3002
+      DATABASE_URL: postgresql://muhaven:${DB_PASSWORD:-muhaven}@postgres:5432/muhaven
+      NAV_FETCH_INTERVAL_MS: ${NAV_FETCH_INTERVAL_MS:-3600000}
+      FRED_API_KEY: ${FRED_API_KEY:-}
+      ETH_MAINNET_RPC_URL: ${ETH_MAINNET_RPC_URL:-}
+      ARB_RPC_URL: ${ARB_RPC_URL:-}
     restart: unless-stopped
 
 volumes:

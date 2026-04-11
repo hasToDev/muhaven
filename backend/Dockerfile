@@ -13,5 +13,6 @@ COPY --from=deps /app/node_modules node_modules/
 COPY package.json tsconfig.json drizzle.config.ts ./
 COPY src/ src/
 COPY api/ api/
+COPY scripts/ scripts/
 EXPOSE 3000
 CMD ["node_modules/.bin/tsx", "src/dev-server.ts"]

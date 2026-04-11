@@ -13,6 +13,17 @@ export const CreateTokenDtoSchema = z.object({
 
 export type CreateTokenDto = z.infer<typeof CreateTokenDtoSchema>;
 
+export interface LatestNavDto {
+  nav: string;
+  apy: string | null;
+  total_aum: string | null;
+  yield_rate: string | null;
+  source: string;
+  source_type: string;
+  source_timestamp: string | null;
+  fetched_at: string;
+}
+
 export interface TokenResponseDto {
   id: string;
   address: string;
@@ -27,4 +38,5 @@ export interface TokenResponseDto {
   status: string;
   created_at: string;
   updated_at: string;
+  latest_nav: LatestNavDto | null;
 }

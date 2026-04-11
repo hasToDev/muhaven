@@ -1,0 +1,26 @@
+{
+  "name": "@muhaven/nav-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MuHaven NAV worker — fetches real RWA market data (treasury yields, fund NAVs) and stores in Postgres",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch --env-file=.env src/index.ts",
+    "build": "tsup src/index.ts --format esm --outDir dist",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.39",
+    "pg": "^8",
+    "viem": "^2"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/pg": "^8",
+    "tsup": "^8",
+    "tsx": "^4",
+    "typescript": "^5.7"
+  },
+  "license": "MIT"
+}
