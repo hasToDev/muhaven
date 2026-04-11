@@ -1,6 +1,6 @@
 {
   "network": "arb-sepolia",
-  "timestamp": "2026-04-11T08:35:04.188Z",
+  "timestamp": "2026-04-11T09:46:44.951Z",
   "deployer": "0xe11E83398C33A37CaC02C01c43F14A7f95876986",
   "contracts": {
     "ERC3643KYCAdapter": {
@@ -23,7 +23,7 @@
     },
     "YieldDistributor": {
       "proxy": "0x15F7Da3E0CbBEF587314d4a2e73cc81Ead0f3218",
-      "implementation": "0xF99AA280E0dd228a0e7a95E41E1Cc36f3E01279E"
+      "implementation": "0x336cf2D6cB630789CC1d476f2Ff00c20698bF7ba"
     },
     "MuHavenVault": {
       "proxy": "0x513A6Fe54c0b640e16d79CC20787421c17b16Db9",

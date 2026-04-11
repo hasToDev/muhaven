@@ -26,6 +26,10 @@
 
 Always check: [cofhe-docs.fhenix.zone/get-started/introduction/compatibility](https://cofhe-docs.fhenix.zone/get-started/introduction/compatibility)
 
+> **`euint64` underlying type breaking change (v0.1.0):** cofhe-contracts v0.1.0 changed `type euint64` from wrapping `uint256` to wrapping `bytes32` (same for all encrypted types). This changes ABI function selectors for any function with `euint64` parameters — e.g., `confidentialTransferFrom(address,address,uint256)` became `confidentialTransferFrom(address,address,bytes32)`. The 32-byte handle values are identical; only the 4-byte selector differs.
+>
+> **Impact:** If you call an FHERC20 contract deployed with pre-v0.1.0 cofhe-contracts from code compiled with v0.1.0+, the call will revert with empty data (`0x`) because no matching function exists. MuHaven encountered this with the deployed ConfidentialUSDC on Arb Sepolia. Fix: use a low-level call with the correct selector, or deploy your own FHERC20. See `development/DEV_WAVE_3/PUSDC_TRANSFER_ISSUE.md` for the full diagnosis and resolution.
+
 ---
 
 ## Encrypted type reference (CoFHE v0.1.1)

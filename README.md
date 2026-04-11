@@ -214,7 +214,7 @@ MuHaven's privacy guarantee is **balance and yield privacy** — not transaction
 | **Investor balances** | **Encrypted** (`euint128`) | Core privacy guarantee. Only the investor can decrypt via EIP-712 permit. |
 | **Transfer amounts** | **Encrypted** (`InEuint128`) | Client-encrypts before submission. Calldata contains ciphertext hash + ZK proof, never plaintext. |
 | **Yield per investor** | **Encrypted** (`euint128`) | Each investor's share is FHE-encrypted. Investors decrypt their own share via permits. |
-| **Total yield deposited** | **Encrypted** (`euint128`) | Encrypted in contract state. Note: the ERC-20 transfer in `startDistribution` is cleartext (known tradeoff — resolved when PUSDC replaces cleartext USDC). |
+| **Total yield deposited** | **Encrypted** (`euint128`) | Encrypted in contract state. Yield is deposited via encrypted PUSDC `confidentialTransferFrom` — no cleartext amounts on-chain. |
 | **Risk parameters** | **Encrypted** (4x `euint64`) | Investor-encrypted client-side. AI agent decrypts via async decrypt with dynamic `FHE.allow`. |
 | **Total supply** | **Encrypted** (default) / **Public** (opt-in) | Issuer can toggle `setTotalSupplyPublic()` — one-way, uses `FHE.allowPublic`. Useful for regulated securities requiring public supply. |
 | **Aggregate yield distributed** | **Encrypted** (`euint128`) | Running total across all distributions. Owner can async-decrypt for reporting. |
@@ -395,6 +395,8 @@ Every existing DeFAI agent operates on transparent state — strategies are visi
 | Package manager | pnpm (Fhenix recommended) | v9+      |
 
 > **SDK stability warning**: Fhenix `cofhe-contracts` is under active development. The team warns it "will be changing frequently." MuHaven contracts are built against `v0.1.3` with `@cofhe/sdk v0.4.0`. Check [compatibility docs](https://cofhe-docs.fhenix.zone/get-started/introduction/compatibility) before updating. See [SMART_CONTRACTS.md](./docs/SMART_CONTRACTS.md) for a checklist of what to verify if the SDK updates.
+>
+> **`euint64` type breaking change (v0.1.0)**: cofhe-contracts v0.1.0 changed `euint64` from `uint256` to `bytes32`. This changes the ABI selector for any function with `euint64` parameters (e.g., `confidentialTransferFrom(address,address,uint256)` became `confidentialTransferFrom(address,address,bytes32)`). The deployed ConfidentialUSDC on Arb Sepolia predates this change and uses `uint256` selectors. MuHaven's `YieldDistributor` handles this with a low-level call using the `uint256` selector. See `development/DEV_WAVE_3/PUSDC_TRANSFER_ISSUE.md` for full analysis.
 
 ---
 

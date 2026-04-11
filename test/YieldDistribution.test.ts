@@ -77,6 +77,30 @@ describe("YieldDistributor + YieldGate", function () {
       expect(dist.status).to.equal(0n);
     });
 
+    it("should start a distribution from contract balance (two-step workaround)", async function () {
+      const { distributor, deployer, issuer, investor, token, pusdc } =
+        await loadFixture(deployYieldFixture);
+      const issuerClient = await hre.cofhe.createClientWithBatteries(issuer);
+
+      // Mint tokens so there is at least 1 investor
+      const [encMint] = await issuerClient.encryptInputs([Encryptable.uint128(ONE_TOKEN)]).execute();
+      await token.connect(issuer).mint(investor.address, encMint);
+
+      // Step 1: Transfer PUSDC directly to distributor (simulating EOA confidentialTransfer)
+      const yieldAmount = 5n * ONE_PUSDC;
+      const distributorAddr = await distributor.getAddress();
+      await pusdc.mint(distributorAddr, Number(yieldAmount));
+
+      // Step 2: Start distribution from balance
+      await distributor.startDistributionFromBalance();
+
+      const dist = await distributor.getDistribution(1);
+      expect(dist.investorCount).to.equal(1n);
+      hre.cofhe.mocks.expectPlaintext(dist.encTotalYield, yieldAmount);
+      hre.cofhe.mocks.expectPlaintext(dist.encPerInvestorYield, yieldAmount);
+      expect(dist.status).to.equal(0n); // PENDING
+    });
+
     it("should revert startDistribution when no investors registered", async function () {
       const { distributor, deployer, pusdc } = await loadFixture(deployYieldFixture);
 

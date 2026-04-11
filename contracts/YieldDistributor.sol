@@ -85,6 +85,15 @@ contract YieldDistributor is Initializable, ERC165Upgradeable, ReentrancyGuardTr
     /// @dev Reserved storage for future upgrades (proxy-safe gap)
     uint256[50] private __gap;
 
+    // ── Constants ─────────────────────────────────────────────────────────
+
+    /// @dev Selector for confidentialTransferFrom(address,address,uint256).
+    ///      The deployed ConfidentialUSDC uses cofhe-contracts < v0.1.0 where
+    ///      euint64 wraps uint256. Our v0.1.3 uses bytes32, producing a different
+    ///      selector. Pre-computed here to avoid runtime keccak256 on every call.
+    bytes4 private constant _TRANSFER_FROM_UINT256 =
+        bytes4(keccak256("confidentialTransferFrom(address,address,uint256)"));
+
     // ── Events ────────────────────────────────────────────────────────────
 
     event DistributionStarted(
@@ -113,6 +122,7 @@ contract YieldDistributor is Initializable, ERC165Upgradeable, ReentrancyGuardTr
     error AlreadyCompleted();
     error InvalidDistribution();
     error ZeroAddress();
+    error PusdcTransferFailed();
 
     // ── Modifiers ─────────────────────────────────────────────────────────
 
@@ -185,16 +195,84 @@ contract YieldDistributor is Initializable, ERC165Upgradeable, ReentrancyGuardTr
         // The signature is bound to msg.sender, so FHE.asEuint64 must run here,
         // not inside PUSDC (where msg.sender would be this contract).
         euint64 totalYield = FHE.asEuint64(encryptedTotalYield);
+
+        // Grant PUSDC contract ACL access to the handle so it can perform
+        // FHE operations (sub, add, select) inside _transfer / _update.
+        // Pattern matches MockFherc20Vault from fhenix-confidential-contracts.
+        FHE.allow(totalYield, address(pusdc));
+
+        // The deployed ConfidentialUSDC was compiled with an older cofhe-contracts
+        // where euint64 wraps uint256, producing selector confidentialTransferFrom(address,address,uint256).
+        // Our cofhe-contracts v0.1.3 uses euint64=bytes32, producing a different selector.
+        // Use a low-level call with the uint256 selector for compatibility.
+        (bool ok, ) = address(pusdc).call(
+            abi.encodeWithSelector(
+                _TRANSFER_FROM_UINT256,
+                msg.sender,
+                address(this),
+                uint256(euint64.unwrap(totalYield))
+            )
+        );
+        if (!ok) revert PusdcTransferFailed();
+
+        // Ensure persistent ACL for the widening step below.
+        // verifyInput granted transient access, but FHE.asEuint128 calls
+        // TaskManager.cast which checks isAllowed. Persistent is safer
+        // than relying on transient surviving across external calls.
         FHE.allowThis(totalYield);
 
-        // NOTE: PUSDC confidentialTransferFrom is disabled for testnet.
-        // The real ConfidentialUSDC's euint64 variant requires ACL grants
-        // that the current CoFHE testnet ACL flow doesn't support from
-        // contract-to-contract calls. The FHE input verification, yield
-        // math, and escrow creation all work correctly.
-        // Production: uncomment the next 2 lines when ReineiraOS ACL is resolved.
-        // FHE.allow(totalYield, address(pusdc));
-        // pusdc.confidentialTransferFrom(msg.sender, address(this), totalYield);
+        // Widen euint64 → euint128 for internal accounting consistency
+        euint128 encTotal = FHE.asEuint128(totalYield);
+        FHE.allowThis(encTotal);
+        euint128 encCount = FHE.asEuint128(count);
+        FHE.allowThis(encCount);
+        euint128 encPerInvestor = FHE.div(encTotal, encCount);
+        FHE.allowThis(encPerInvestor);
+
+        distributionId = ++distributionCount;
+        distributions[distributionId] = Distribution({
+            token:                address(pusdc),
+            encTotalYield:        encTotal,
+            encPerInvestorYield:  encPerInvestor,
+            investorCount:        count,
+            processedCount:       0,
+            escrowsCreated:       0,
+            status:               DistributionStatus.PENDING
+        });
+
+        emit DistributionStarted(distributionId, address(pusdc), count);
+    }
+
+    // ── Distribution: start from balance (two-step workaround) ──────────
+
+    /// @notice Two-step workaround for when cross-contract confidentialTransferFrom
+    ///         is unavailable (e.g., CoFHE testnet ACL limitation or selector mismatch).
+    ///
+    ///         Step 1: Issuer calls `pusdc.confidentialTransfer(address(this), inYield)`
+    ///                 directly from their EOA — transfers PUSDC to this contract.
+    ///                 This uses the InEuint64 overload which doesn't need cross-contract ACL.
+    ///
+    ///         Step 2: Issuer calls this function. It reads the contract's current PUSDC
+    ///                 balance as the total yield and creates the distribution.
+    ///
+    ///         Trust assumption: the issuer deposited at least as much as the balance
+    ///         reflects. Acceptable for hackathon; production would add verification.
+    ///
+    ///         Known limitation: uses the contract's entire PUSDC balance, which
+    ///         could include undistributed funds from previous distributions.
+    ///         Production: track per-distribution deposits or use a fresh escrow.
+    ///
+    /// @return distributionId  Starts at 1
+    function startDistributionFromBalance()
+        external onlyAuthorized returns (uint256 distributionId)
+    {
+        uint256 count = registry.investorCount();
+        if (count == 0) revert NoInvestors();
+
+        // Read our PUSDC balance — the FHERC20 _update function grants
+        // FHE.allow(newBalance, address(this)) after each transfer to us,
+        // so this contract has ACL access to the balance handle.
+        euint64 totalYield = pusdc.confidentialBalanceOf(address(this));
 
         // Widen euint64 → euint128 for internal accounting consistency
         euint128 encTotal = FHE.asEuint128(totalYield);

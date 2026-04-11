@@ -5,6 +5,7 @@ import {euint64, InEuint64, euint128} from "@fhenixprotocol/cofhe-contracts/FHE.
 
 interface IYieldDistributor {
     function startDistribution(InEuint64 memory encryptedTotalYield) external returns (uint256 distributionId);
+    function startDistributionFromBalance() external returns (uint256 distributionId);
     function processBatch(uint256 distributionId, uint256 batchSize) external;
     function isDistributionComplete(uint256 distributionId) external view returns (bool);
     function getDistribution(uint256 distributionId) external view returns (
