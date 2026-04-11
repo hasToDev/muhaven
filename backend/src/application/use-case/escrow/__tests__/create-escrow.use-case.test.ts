@@ -60,7 +60,7 @@ describe('CreateEscrowUseCase', () => {
   beforeEach(() => {
     process.env.JWT_SECRET = 'test-secret-that-is-at-least-32-chars-long';
     process.env.JWT_ISSUER = 'test-issuer';
-    process.env.ESCROW_CONTRACT_ADDRESS = ESCROW_CONTRACT;
+    process.env.REINEIRA_ESCROW_ADDRESS = ESCROW_CONTRACT;
 
     escrowRepo = new MemoryEscrowRepository();
     fheService = makeMockFheService();

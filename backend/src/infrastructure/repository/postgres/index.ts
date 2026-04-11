@@ -4,3 +4,7 @@ export { PgNonceRepository } from './pg-nonce.repository.js';
 export { PgEscrowRepository } from './pg-escrow.repository.js';
 export { PgWithdrawalRepository } from './pg-withdrawal.repository.js';
 export { PgEscrowEventRepository } from './pg-escrow-event.repository.js';
+export { PgPortfolioRepository } from './pg-portfolio.repository.js';
+export { PgYieldRecordRepository } from './pg-yield-record.repository.js';
+export { PgRwaTokenRepository } from './pg-rwa-token.repository.js';
+export { PgNavHistoryRepository } from './pg-nav-history.repository.js';

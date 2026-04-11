@@ -16,6 +16,9 @@ export interface EscrowParams {
   metadata?: Record<string, unknown>;
   onChainEscrowId?: string;
   txHash?: string;
+  distributionId?: number;
+  tokenAddress?: string;
+  beneficiary?: string;
   createdAt: Date;
 }
 
@@ -34,6 +37,9 @@ export class Escrow {
   readonly metadata?: Record<string, unknown>;
   onChainEscrowId?: string;
   txHash?: string;
+  readonly distributionId?: number;
+  readonly tokenAddress?: string;
+  readonly beneficiary?: string;
   readonly createdAt: Date;
 
   constructor(params: EscrowParams) {
@@ -51,6 +57,9 @@ export class Escrow {
     this.metadata = params.metadata;
     this.onChainEscrowId = params.onChainEscrowId;
     this.txHash = params.txHash;
+    this.distributionId = params.distributionId;
+    this.tokenAddress = params.tokenAddress;
+    this.beneficiary = params.beneficiary;
     this.createdAt = params.createdAt;
   }
 

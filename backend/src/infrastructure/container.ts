@@ -13,6 +13,10 @@ import {
   PgEscrowRepository,
   PgWithdrawalRepository,
   PgEscrowEventRepository,
+  PgPortfolioRepository,
+  PgYieldRecordRepository,
+  PgRwaTokenRepository,
+  PgNavHistoryRepository,
 } from './repository/postgres/index.js';
 import { getDb } from './repository/postgres/db.js';
 import { JwtService } from './auth/jwt.service.js';
@@ -27,6 +31,10 @@ import type { ISessionRepository } from '../domain/auth/repository/session.repos
 import type { IEscrowRepository } from '../domain/escrow/repository/escrow.repository.js';
 import type { IWithdrawalRepository } from '../domain/withdrawal/repository/withdrawal.repository.js';
 import type { IEscrowEventRepository } from '../domain/escrow/events/repository/escrow-event.repository.js';
+import type { IPortfolioRepository } from '../domain/portfolio/repository/portfolio.repository.js';
+import type { IYieldRecordRepository } from '../domain/yield-history/repository/yield-record.repository.js';
+import type { IRwaTokenRepository } from '../domain/token-registry/repository/rwa-token.repository.js';
+import type { INavHistoryRepository } from '../domain/nav-history/repository/nav-history.repository.js';
 
 interface Repositories {
   nonceRepo: INonceRepository;
@@ -35,6 +43,13 @@ interface Repositories {
   escrowRepo: IEscrowRepository;
   withdrawalRepo: IWithdrawalRepository;
   escrowEventRepo: IEscrowEventRepository;
+}
+
+interface MuHavenRepositories {
+  portfolioRepo: IPortfolioRepository;
+  yieldRecordRepo: IYieldRecordRepository;
+  rwaTokenRepo: IRwaTokenRepository;
+  navHistoryRepo: INavHistoryRepository;
 }
 
 function createMemoryRepos(): Repositories {
@@ -60,7 +75,18 @@ function createPostgresRepos(): Repositories {
   };
 }
 
+function createMuHavenRepos(): MuHavenRepositories {
+  const db = getDb();
+  return {
+    portfolioRepo: new PgPortfolioRepository(db),
+    yieldRecordRepo: new PgYieldRecordRepository(db),
+    rwaTokenRepo: new PgRwaTokenRepository(db),
+    navHistoryRepo: new PgNavHistoryRepository(db),
+  };
+}
+
 let _repos: Repositories | null = null;
+let _muhavenRepos: MuHavenRepositories | null = null;
 
 function getRepos(): Repositories {
   if (!_repos) {
@@ -68,6 +94,13 @@ function getRepos(): Repositories {
     _repos = provider === 'postgres' ? createPostgresRepos() : createMemoryRepos();
   }
   return _repos;
+}
+
+function getMuHavenRepos(): MuHavenRepositories {
+  if (!_muhavenRepos) {
+    _muhavenRepos = createMuHavenRepos();
+  }
+  return _muhavenRepos;
 }
 
 const jwtService = new JwtService();
@@ -97,6 +130,18 @@ export const container = {
   },
   get escrowEventRepo() {
     return getRepos().escrowEventRepo;
+  },
+  get portfolioRepo() {
+    return getMuHavenRepos().portfolioRepo;
+  },
+  get yieldRecordRepo() {
+    return getMuHavenRepos().yieldRecordRepo;
+  },
+  get rwaTokenRepo() {
+    return getMuHavenRepos().rwaTokenRepo;
+  },
+  get navHistoryRepo() {
+    return getMuHavenRepos().navHistoryRepo;
   },
   get nonceService() {
     return new NonceService(getRepos().nonceRepo);

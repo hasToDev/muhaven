@@ -109,6 +109,9 @@ export class PgEscrowRepository implements IEscrowRepository {
       metadata: escrow.metadata,
       onChainEscrowId: escrow.onChainEscrowId,
       txHash: escrow.txHash,
+      distributionId: escrow.distributionId,
+      tokenAddress: escrow.tokenAddress,
+      beneficiary: escrow.beneficiary,
       createdAt: escrow.createdAt,
     };
   }
@@ -132,6 +135,9 @@ export class PgEscrowRepository implements IEscrowRepository {
       metadata: (row.metadata as Record<string, unknown>) ?? undefined,
       onChainEscrowId: row.onChainEscrowId ?? undefined,
       txHash: row.txHash ?? undefined,
+      distributionId: row.distributionId ?? undefined,
+      tokenAddress: row.tokenAddress ?? undefined,
+      beneficiary: row.beneficiary ?? undefined,
       createdAt: row.createdAt,
     });
   }

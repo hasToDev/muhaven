@@ -7,6 +7,7 @@ import {
   numeric,
   jsonb,
   index,
+  uniqueIndex,
   primaryKey,
 } from 'drizzle-orm/pg-core';
 
@@ -104,6 +105,9 @@ export const escrows = pgTable(
     metadata: jsonb('metadata'),
     onChainEscrowId: text('on_chain_escrow_id'),
     txHash: text('tx_hash'),
+    distributionId: integer('distribution_id'),
+    tokenAddress: text('token_address'),
+    beneficiary: text('beneficiary'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },
   (t) => [
@@ -154,6 +158,19 @@ export const assetClassEnum = pgEnum('asset_class', [
   'other',
 ]);
 
+export const tokenStatusEnum = pgEnum('token_status', [
+  'active',
+  'paused',
+  'winding_down',
+  'archived',
+]);
+
+export const navSourceTypeEnum = pgEnum('nav_source_type', [
+  'on_chain',
+  'api',
+  'manual',
+]);
+
 export const yieldStatusEnum = pgEnum('yield_status', [
   'pending',
   'claimable',
@@ -174,11 +191,17 @@ export const rwaTokens = pgTable(
     kycTier: integer('kyc_tier').notNull().default(1),
     assetClass: assetClassEnum('asset_class').notNull().default('other'),
     minInvestment: numeric('min_investment'),
+    status: tokenStatusEnum('status').notNull().default('active'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+    pausedAt: timestamp('paused_at'),
+    windingDownAt: timestamp('winding_down_at'),
+    archivedAt: timestamp('archived_at'),
   },
   (t) => [
     index('rwa_tokens_address_idx').on(t.address),
     index('rwa_tokens_issuer_address_idx').on(t.issuerAddress),
+    index('rwa_tokens_status_idx').on(t.status),
   ],
 );
 
@@ -193,7 +216,10 @@ export const portfolios = pgTable(
     tokenSymbol: text('token_symbol').notNull(),
     lastSyncedAt: timestamp('last_synced_at'),
   },
-  (t) => [index('portfolios_user_id_idx').on(t.userId)],
+  (t) => [
+    index('portfolios_user_id_idx').on(t.userId),
+    uniqueIndex('portfolios_user_token_idx').on(t.userId, t.tokenAddress),
+  ],
 );
 
 export const yieldRecords = pgTable(
@@ -230,4 +256,25 @@ export const escrowEvents = pgTable(
     amount: text('amount'),
   },
   (t) => [index('escrow_events_escrow_id_idx').on(t.escrowId)],
+);
+
+export const tokenNavHistory = pgTable(
+  'token_nav_history',
+  {
+    id: text('id').primaryKey(),
+    tokenAddress: text('token_address').notNull(),
+    nav: numeric('nav').notNull(),
+    apy: numeric('apy'),
+    totalAum: numeric('total_aum'),
+    yieldRate: numeric('yield_rate'),
+    source: text('source').notNull(),
+    sourceType: navSourceTypeEnum('source_type').notNull(),
+    sourceTimestamp: timestamp('source_timestamp'),
+    fetchedAt: timestamp('fetched_at').notNull().defaultNow(),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('token_nav_history_token_address_idx').on(t.tokenAddress),
+    index('token_nav_history_fetched_at_idx').on(t.fetchedAt),
+  ],
 );

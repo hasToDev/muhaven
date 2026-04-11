@@ -58,7 +58,7 @@ export class CreateEscrowUseCase {
 
     await this.escrowRepository.save(escrow);
 
-    const contractAddress = getEnv().ESCROW_CONTRACT_ADDRESS ?? '';
+    const contractAddress = getEnv().REINEIRA_ESCROW_ADDRESS ?? '';
 
     if (encryptionMode === 'client') {
       return {
