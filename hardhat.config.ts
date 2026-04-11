@@ -39,11 +39,25 @@ const config: HardhatUserConfig = {
     },
   },
   etherscan: {
-    apiKey: {
-      "eth-sepolia": process.env.ETHERSCAN_API_KEY || "",
-      "arb-sepolia": process.env.ARBISCAN_API_KEY || "",
-      "base-sepolia": process.env.BASESCAN_API_KEY || "",
-    },
+    apiKey: process.env.ETHERSCAN_API_KEY || "",
+    customChains: [
+      {
+        network: "arb-sepolia",
+        chainId: 421614,
+        urls: {
+          apiURL: "https://api.etherscan.io/v2/api?chainid=421614",
+          browserURL: "https://sepolia.arbiscan.io",
+        },
+      },
+      {
+        network: "base-sepolia",
+        chainId: 84532,
+        urls: {
+          apiURL: "https://api.etherscan.io/v2/api?chainid=84532",
+          browserURL: "https://sepolia.basescan.org",
+        },
+      },
+    ],
   },
 };
 

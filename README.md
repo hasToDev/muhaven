@@ -15,6 +15,7 @@
 | [AI Agent Design](./docs/AGENT_DESIGN.md) | Agent architecture, tool definitions, implementation guide |
 | [Issuer Model](./docs/ISSUER_MODEL.md) | Supply side: how RWA tokens enter MuHaven, yield flow, issuer experience |
 | [Competitive Analysis](./docs/COMPETITIVE_ANALYSIS.md) | Market positioning vs. Canton, Silent Data, DeFAI |
+| [Testnet Deployment](./docs/TESTNET_DEPLOY.md) | Step-by-step guide: env setup, deploy, verify, test |
 
 ---
 
@@ -145,6 +146,32 @@ MuHaven is a **two-sided platform** — issuers create and manage RWA tokens on 
 | `RiskParams.sol` | Encrypted risk guardrails | Stores investor risk preferences (`euint64`) — max drawdown, min yield, drift tolerance, max daily spend |
 
 > See [SMART_CONTRACTS.md](./docs/SMART_CONTRACTS.md) for full contract specifications.
+
+### Deployed contracts (Arbitrum Sepolia)
+
+All contracts are verified on [Arbiscan](https://sepolia.arbiscan.io). Proxied contracts use OpenZeppelin Transparent Proxy.
+
+| Contract | Address | Type |
+|----------|---------|------|
+| ERC3643KYCAdapter | [`0xdF7Cf475ceC7c6691f6c0776ed6Ed05AAa9bec77`](https://sepolia.arbiscan.io/address/0xdF7Cf475ceC7c6691f6c0776ed6Ed05AAa9bec77) | standalone |
+| InvestorRegistry | [`0x189D3BF72DB3b6b13E275e9Dce7cAAfFEBEeD40B`](https://sepolia.arbiscan.io/address/0x189D3BF72DB3b6b13E275e9Dce7cAAfFEBEeD40B) | proxy |
+| MuHavenToken | [`0x05519F5c6b0b0626ACd5d7099efC91d9D8367c73`](https://sepolia.arbiscan.io/address/0x05519F5c6b0b0626ACd5d7099efC91d9D8367c73) | proxy |
+| RiskParams | [`0xE8C2C6a7A60C31f34a7735e70aa3C99eCC2ef145`](https://sepolia.arbiscan.io/address/0xE8C2C6a7A60C31f34a7735e70aa3C99eCC2ef145) | proxy |
+| YieldGate | [`0x2de30627Cf17b973A0c1d01cfe665d2954A76B39`](https://sepolia.arbiscan.io/address/0x2de30627Cf17b973A0c1d01cfe665d2954A76B39) | standalone |
+| YieldDistributor | [`0x15F7Da3E0CbBEF587314d4a2e73cc81Ead0f3218`](https://sepolia.arbiscan.io/address/0x15F7Da3E0CbBEF587314d4a2e73cc81Ead0f3218) | proxy |
+| MuHavenVault | [`0x513A6Fe54c0b640e16d79CC20787421c17b16Db9`](https://sepolia.arbiscan.io/address/0x513A6Fe54c0b640e16d79CC20787421c17b16Db9) | proxy |
+| TestTreasury | [`0x580621f5FC5fF3d7912a570839AC1eb55F44a999`](https://sepolia.arbiscan.io/address/0x580621f5FC5fF3d7912a570839AC1eb55F44a999) | standalone (mock ERC-20) |
+
+**External contracts (ReineiraOS on Arb Sepolia):**
+
+| Contract | Address |
+|----------|---------|
+| Circle USDC | [`0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d`](https://sepolia.arbiscan.io/address/0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d) |
+| ConfidentialUSDC (PUSDC) | [`0x6b6e6479b8b3237933c3ab9d8be969862d4ed89f`](https://sepolia.arbiscan.io/address/0x6b6e6479b8b3237933c3ab9d8be969862d4ed89f) |
+| ConfidentialEscrow | [`0xC4333F84F5034D8691CB95f068def2e3B6DC60Fa`](https://sepolia.arbiscan.io/address/0xC4333F84F5034D8691CB95f068def2e3B6DC60Fa) |
+| SimpleCondition | [`0x9817DA50DB5CE4316D2f0fF6bb6DBfe252C29593`](https://sepolia.arbiscan.io/address/0x9817DA50DB5CE4316D2f0fF6bb6DBfe252C29593) |
+
+> Full deployment data: [`deployments/arb-sepolia.json`](./deployments/arb-sepolia.json)
 
 ### AI agent tools
 

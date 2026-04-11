@@ -62,9 +62,10 @@ describe("YieldDistributor + YieldGate", function () {
       const distributorAddr = await distributor.getAddress();
       await pusdc.connect(deployer).setOperator(distributorAddr, 2000000000);
 
-      // Pass deployer's encrypted PUSDC balance handle as the yield amount
-      const pusdcBalance = await pusdc.confidentialBalanceOf(deployer.address);
-      await distributor.startDistribution(pusdcBalance);
+      // Encrypt yield amount and pass as InEuint64
+      const deployerClient = await hre.cofhe.createClientWithBatteries(deployer);
+      const [encYield] = await deployerClient.encryptInputs([Encryptable.uint64(yieldAmount)]).execute();
+      await distributor.startDistribution(encYield);
 
       const dist = await distributor.getDistribution(1);
       expect(dist.investorCount).to.equal(1n);
@@ -82,10 +83,12 @@ describe("YieldDistributor + YieldGate", function () {
       await pusdc.mint(deployer.address, Number(10n * ONE_PUSDC));
       const distributorAddr = await distributor.getAddress();
       await pusdc.connect(deployer).setOperator(distributorAddr, 2000000000);
-      const pusdcBalance = await pusdc.confidentialBalanceOf(deployer.address);
+
+      const deployerClient = await hre.cofhe.createClientWithBatteries(deployer);
+      const [encYield] = await deployerClient.encryptInputs([Encryptable.uint64(10n * ONE_PUSDC)]).execute();
 
       await expect(
-        distributor.startDistribution(pusdcBalance)
+        distributor.startDistribution(encYield)
       ).to.be.revertedWithCustomError(distributor, "NoInvestors");
     });
   });
@@ -102,9 +105,10 @@ describe("YieldDistributor + YieldGate", function () {
       await pusdc.mint(deployer.address, Number(10n * ONE_PUSDC));
       const distributorAddr = await distributor.getAddress();
       await pusdc.connect(deployer).setOperator(distributorAddr, 2000000000);
-      const pusdcBalance = await pusdc.confidentialBalanceOf(deployer.address);
 
-      await distributor.startDistribution(pusdcBalance);
+      const deployerClient = await hre.cofhe.createClientWithBatteries(deployer);
+      const [encYield] = await deployerClient.encryptInputs([Encryptable.uint64(10n * ONE_PUSDC)]).execute();
+      await distributor.startDistribution(encYield);
 
       // processBatch is permissionless
       await distributor.processBatch(1, 10);
@@ -127,9 +131,10 @@ describe("YieldDistributor + YieldGate", function () {
       await pusdc.mint(deployer.address, Number(yieldAmount));
       const distributorAddr = await distributor.getAddress();
       await pusdc.connect(deployer).setOperator(distributorAddr, 2000000000);
-      const pusdcBalance = await pusdc.confidentialBalanceOf(deployer.address);
 
-      await distributor.startDistribution(pusdcBalance);
+      const deployerClient = await hre.cofhe.createClientWithBatteries(deployer);
+      const [encYield] = await deployerClient.encryptInputs([Encryptable.uint64(yieldAmount)]).execute();
+      await distributor.startDistribution(encYield);
 
       // Request async decrypt of yield amounts
       await distributor.connect(deployer).requestYieldDecrypt(1);

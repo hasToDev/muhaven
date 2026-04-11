@@ -17,7 +17,9 @@
 		"validate:reineira": "hardhat run scripts/validate-reineira.ts --network arb-sepolia",
 		"deploy:homelab": "bash scripts/deploy-homelab.sh",
 		"test:auth": "tsx scripts/test-auth.ts",
-		"test:auth:homelab": "tsx scripts/test-auth.ts https://nagreg.hasto.dev"
+		"test:auth:homelab": "tsx scripts/test-auth.ts https://nagreg.hasto.dev",
+		"test:testnet": "hardhat run scripts/test-testnet.ts --network arb-sepolia",
+		"test:yield:testnet": "hardhat run scripts/test-yield-testnet.ts --network arb-sepolia"
 	},
 	"author": "hasToDev",
 	"license": "MIT",

@@ -15,7 +15,7 @@
  */
 
 import { ethers, network } from "hardhat";
-import { writeFileSync, mkdirSync } from "fs";
+import { writeFileSync, mkdirSync, existsSync, copyFileSync } from "fs";
 import { join } from "path";
 
 async function main() {
@@ -37,6 +37,16 @@ async function main() {
   const outDir = join(__dirname, "..", "deployments");
   mkdirSync(outDir, { recursive: true });
   const outPath = join(outDir, `${net}.mocks.json`);
+
+  if (existsSync(outPath)) {
+    const historyDir = join(outDir, "history");
+    mkdirSync(historyDir, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const archivePath = join(historyDir, `${net}.mocks.${ts}.json`);
+    copyFileSync(outPath, archivePath);
+    console.log(`\nArchived previous mocks → deployments/history/${net}.mocks.${ts}.json`);
+  }
+
   writeFileSync(
     outPath,
     JSON.stringify(

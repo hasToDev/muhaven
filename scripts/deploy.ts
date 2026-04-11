@@ -9,13 +9,13 @@
  *
  * Testnet (Arbitrum Sepolia):
  *   pnpm run deploy:testnet
- *   → Requires UNDERLYING_TOKEN_ADDRESS and REINEIRA_ESCROW_ADDRESS in .env.
+ *   → Requires UNDERLYING_TOKEN_ADDRESS, REINEIRA_ESCROW_ADDRESS, and PUSDC_ADDRESS in .env.
  *
  * Output: deployments/{network}.json (proxy + implementation addresses)
  */
 
 import { ethers, upgrades, network } from "hardhat";
-import { writeFileSync, mkdirSync } from "fs";
+import { writeFileSync, mkdirSync, existsSync, copyFileSync } from "fs";
 import { join } from "path";
 
 type DeployEntry = {
@@ -34,8 +34,8 @@ async function main() {
 
   // ── Config ──────────────────────────────────────────────────────────────
   const owner = deployer.address;
-  const issuer = process.env.ISSUER_ADDRESS ?? deployer.address;
-  const usdcAddress = process.env.USDC_ADDRESS ?? ethers.ZeroAddress;
+  const issuer = process.env.ISSUER_ADDRESS || deployer.address;
+  const usdcAddress = process.env.USDC_ADDRESS || ethers.ZeroAddress;
   // 100 underlying tokens (18 decimals) as minimum vault investment
   const minInvestment = ethers.parseUnits("100", 18);
 
@@ -219,10 +219,19 @@ async function main() {
   await (await distContract.setAuthorizedCaller(issuer, true)).wait();
   console.log("   distributor.setAuthorizedCaller(issuer) ✓");
 
-  // ── Save deployments ─────────────────────────────────────────────────────
+  // ── Save deployments (archive previous if exists) ────────────────────────
   const outDir = join(__dirname, "..", "deployments");
   mkdirSync(outDir, { recursive: true });
   const outPath = join(outDir, `${net}.json`);
+
+  if (existsSync(outPath)) {
+    const historyDir = join(outDir, "history");
+    mkdirSync(historyDir, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const archivePath = join(historyDir, `${net}.${ts}.json`);
+    copyFileSync(outPath, archivePath);
+    console.log(`\nArchived previous deployment → deployments/history/${net}.${ts}.json`);
+  }
   writeFileSync(
     outPath,
     JSON.stringify(

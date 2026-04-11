@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import {euint64, euint128} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
+import {euint64, InEuint64, euint128} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
 
 interface IYieldDistributor {
-    function startDistribution(euint64 totalYield) external returns (uint256 distributionId);
+    function startDistribution(InEuint64 memory encryptedTotalYield) external returns (uint256 distributionId);
     function processBatch(uint256 distributionId, uint256 batchSize) external;
     function isDistributionComplete(uint256 distributionId) external view returns (bool);
     function getDistribution(uint256 distributionId) external view returns (

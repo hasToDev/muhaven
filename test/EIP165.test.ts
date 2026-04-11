@@ -113,8 +113,8 @@ describe("EIP-165 supportsInterface", function () {
 
     it("should support IYieldDistributor", async function () {
       const { distributor } = await loadFixture(deployAllFixture);
-      // Computed from compiled ABI (FHE types have specific ABI encodings)
-      expect(await distributor.supportsInterface("0x8157df9c")).to.be.true;
+      // Computed from compiled ABI (InEuint64 struct changes the selector)
+      expect(await distributor.supportsInterface("0x2c7ed9a5")).to.be.true;
     });
 
     it("should NOT support invalid interfaceId", async function () {

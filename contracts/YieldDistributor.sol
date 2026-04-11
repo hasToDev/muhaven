@@ -7,6 +7,7 @@ import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/Reentrancy
 import {
     FHE,
     euint64,
+    InEuint64,
     euint128,
     Common,
     ITaskManager,
@@ -170,26 +171,30 @@ contract YieldDistributor is Initializable, ERC165Upgradeable, ReentrancyGuardTr
     ///         to `euint128` via `FHE.asEuint128(euint64)` for consistency with
     ///         MuHavenToken balances. The widening is lossless.
     ///
-    /// @param totalYield  Encrypted yield amount in PUSDC (euint64 handle).
-    ///                    Must be a valid ciphertext handle that this contract
-    ///                    has been granted transient access to.
+    /// @param encryptedTotalYield  Client-encrypted yield amount in PUSDC.
+    ///                             Caller encrypts via `Encryptable.uint64(amount)`
+    ///                             and passes the InEuint64 struct (ctHash + proof).
     /// @return distributionId  Starts at 1
     function startDistribution(
-        euint64 totalYield
+        InEuint64 memory encryptedTotalYield
     ) external onlyAuthorized returns (uint256 distributionId) {
         uint256 count = registry.investorCount();
         if (count == 0) revert NoInvestors();
 
-        // Pull encrypted PUSDC from caller via operator model.
-        // Caller must have called pusdc.setOperator(address(this), expiry).
-        //
-        // ACL note: the `totalYield` handle is owned by the caller. We pass it
-        // to PUSDC (which operates on it internally) and then widen it via
-        // `FHE.asEuint128(totalYield)` which creates a new handle that this
-        // contract owns. On testnet, the caller may need to grant this contract
-        // transient access via `FHE.allowTransient(handle, address(distributor))`
-        // before calling. The mock ACL permits the cast without explicit access.
-        pusdc.confidentialTransferFrom(msg.sender, address(this), totalYield);
+        // Convert client-encrypted input inside THIS contract (where msg.sender = EOA).
+        // The signature is bound to msg.sender, so FHE.asEuint64 must run here,
+        // not inside PUSDC (where msg.sender would be this contract).
+        euint64 totalYield = FHE.asEuint64(encryptedTotalYield);
+        FHE.allowThis(totalYield);
+
+        // NOTE: PUSDC confidentialTransferFrom is disabled for testnet.
+        // The real ConfidentialUSDC's euint64 variant requires ACL grants
+        // that the current CoFHE testnet ACL flow doesn't support from
+        // contract-to-contract calls. The FHE input verification, yield
+        // math, and escrow creation all work correctly.
+        // Production: uncomment the next 2 lines when ReineiraOS ACL is resolved.
+        // FHE.allow(totalYield, address(pusdc));
+        // pusdc.confidentialTransferFrom(msg.sender, address(this), totalYield);
 
         // Widen euint64 → euint128 for internal accounting consistency
         euint128 encTotal = FHE.asEuint128(totalYield);
