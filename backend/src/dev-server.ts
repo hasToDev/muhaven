@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getHealthStatus } from './infrastructure/health.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const API_DIR = join(__dirname, '..', 'api');
@@ -151,9 +152,16 @@ async function main() {
 
     // Health check — not file-routed because all api/ routes gain /api prefix
     if (pathname === '/health') {
-      rawRes.statusCode = 200;
-      rawRes.setHeader('Content-Type', 'application/json');
-      rawRes.end(JSON.stringify({ status: 'ok', timestamp: new Date().toISOString() }));
+      try {
+        const health = await getHealthStatus();
+        rawRes.statusCode = health.status === 'ok' ? 200 : 503;
+        rawRes.setHeader('Content-Type', 'application/json');
+        rawRes.end(JSON.stringify(health));
+      } catch {
+        rawRes.statusCode = 503;
+        rawRes.setHeader('Content-Type', 'application/json');
+        rawRes.end(JSON.stringify({ status: 'degraded', timestamp: new Date().toISOString() }));
+      }
       return;
     }
 
