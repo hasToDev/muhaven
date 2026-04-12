@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { ZeroDevProvider } from '@/providers/zerodev/zerodev.provider'
-import type { IWalletProvider, Call } from '@/providers/wallet-provider.interface'
+import type { IWalletProvider, Call, ViemClients } from '@/providers/wallet-provider.interface'
 
 const STORAGE_KEY = 'muhaven-wallet'
 
@@ -130,6 +130,11 @@ export const useWalletStore = defineStore('wallet', () => {
     }
   }
 
+  function getViemClients(): ViemClients | null {
+    if (!provider) return null
+    return provider.getViemClients()
+  }
+
   return {
     // state
     address,
@@ -142,6 +147,7 @@ export const useWalletStore = defineStore('wallet', () => {
     disconnect,
     signMessage,
     sendUserOperation,
+    getViemClients,
     tryReconnect,
   }
 })

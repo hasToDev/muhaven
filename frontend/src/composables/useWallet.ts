@@ -21,6 +21,7 @@ export function useWallet() {
     disconnect: store.disconnect,
     signMessage: store.signMessage,
     sendUserOperation: store.sendUserOperation,
+    getViemClients: store.getViemClients,
     tryReconnect: store.tryReconnect,
   }
 }

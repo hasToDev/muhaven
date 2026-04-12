@@ -1,4 +1,4 @@
-import type { IWalletProvider, Call } from '../wallet-provider.interface';
+import type { IWalletProvider, Call, ViemClients } from '../wallet-provider.interface';
 import { toWebAuthnKey, WebAuthnMode, type WebAuthnKey } from '@zerodev/webauthn-key';
 import { toPasskeyValidator, PasskeyValidatorContractVersion } from '@zerodev/passkey-validator';
 import {
@@ -8,7 +8,7 @@ import {
   constants,
 } from '@zerodev/sdk';
 import type { KernelAccountClient } from '@zerodev/sdk';
-import { createPublicClient, http, type Hex } from 'viem';
+import { createPublicClient, createWalletClient, http, type Hex } from 'viem';
 import { signMessage as viemSignMessage } from 'viem/actions';
 import { arbitrumSepolia } from 'viem/chains';
 import { entryPoint07Address } from 'viem/account-abstraction';
@@ -66,10 +66,15 @@ async function buildKernelClient(webAuthnKey: WebAuthnKey): Promise<KernelAccoun
   });
 }
 
+function getRpcUrl(): string {
+  return import.meta.env.VITE_RPC_URL || 'https://sepolia-rollup.arbitrum.io/rpc';
+}
+
 export class ZeroDevProvider implements IWalletProvider {
   private kernelClient: KernelAccountClient | null = null;
   private webAuthnKeyRef: WebAuthnKey | null = null;
   private _address: string | null = null;
+  private _viemClients: ViemClients | null = null;
 
   async connect(): Promise<string> {
     return this.login();
@@ -119,6 +124,7 @@ export class ZeroDevProvider implements IWalletProvider {
     this.kernelClient = null;
     this.webAuthnKeyRef = null;
     this._address = null;
+    this._viemClients = null;
   }
 
   async signMessage(message: string): Promise<string> {
@@ -136,6 +142,28 @@ export class ZeroDevProvider implements IWalletProvider {
 
   isConnected(): boolean {
     return this._address !== null && this.kernelClient !== null;
+  }
+
+  getViemClients(): ViemClients | null {
+    if (!this.kernelClient?.account) return null;
+    if (this._viemClients) return this._viemClients;
+
+    // Use standard RPC for publicClient (not the bundler URL) —
+    // the cofhe SDK needs standard eth_call, eth_getCode, etc.
+    const publicClient = createPublicClient({
+      chain: arbitrumSepolia,
+      transport: http(getRpcUrl()),
+    });
+
+    // Create a wallet client backed by the kernel account's signing capability
+    const walletClient = createWalletClient({
+      account: this.kernelClient.account,
+      chain: arbitrumSepolia,
+      transport: http(getRpcUrl()),
+    });
+
+    this._viemClients = { publicClient, walletClient };
+    return this._viemClients;
   }
 
   async sendUserOperation(calls: Call[]): Promise<string> {
