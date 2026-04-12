@@ -1,63 +1,17 @@
 import { defineStore } from 'pinia'
-import { ref, nextTick } from 'vue'
+import { ref } from 'vue'
+import { agentApi, type AgentHistoryMessage, type AgentCardType } from '@/services/api'
 
 export interface AgentMessage {
   id: number
   role: 'user' | 'agent'
   text: string
-  cardType?: 'action' | 'data' | 'form' | 'status' | 'insight'
+  cardType?: AgentCardType
   cardData?: Record<string, unknown>
   timestamp: Date
 }
 
-const MOCK_RESPONSES: AgentMessage[] = [
-  {
-    id: 0, role: 'agent', timestamp: new Date(),
-    text: 'Your portfolio is well diversified. Treasury bonds (70%) provide stability while money market (20%) offers higher yield. Your cash buffer at 10% is healthy.',
-    cardType: 'insight',
-    cardData: {
-      title: 'Portfolio Health',
-      body: 'Allocation is within target ranges. Treasury yield is competitive at 4.8% APY.',
-      suggestions: ['Optimize allocation', 'Show yield forecast'],
-    },
-  },
-  {
-    id: 0, role: 'agent', timestamp: new Date(),
-    text: 'I can help rebalance your portfolio. Based on current rates, here\'s my recommendation:',
-    cardType: 'action',
-    cardData: {
-      title: 'Suggested Rebalance',
-      description: 'Move 5% from Cash Buffer to Money Market Fund for +0.3% portfolio APY',
-      actions: [
-        { label: 'Approve', variant: 'primary' },
-        { label: 'Modify', variant: 'secondary' },
-        { label: 'Reject', variant: 'ghost' },
-      ],
-    },
-  },
-  {
-    id: 0, role: 'agent', timestamp: new Date(),
-    text: 'Here\'s your yield summary for this quarter:',
-    cardType: 'data',
-    cardData: {
-      title: 'Quarterly Yield',
-      chartType: 'line',
-    },
-  },
-  {
-    id: 0, role: 'agent', timestamp: new Date(),
-    text: 'I\'ve checked the current rates. Treasury bonds are yielding 4.8% and money market is at 5.2%. Would you like me to adjust your allocation?',
-  },
-  {
-    id: 0, role: 'agent', timestamp: new Date(),
-    text: 'Your next yield distribution is in approximately 3 days. You have $201.34 in pending claims across 2 tokens.',
-    cardType: 'status',
-    cardData: {
-      status: 'pending',
-      description: 'Yield distribution processing — estimated 3 days',
-    },
-  },
-]
+const MAX_HISTORY = 10
 
 let nextId = 2
 
@@ -74,7 +28,17 @@ export const useAgentStore = defineStore('agent', () => {
   const isTyping = ref(false)
   const pendingPrompt = ref('')
 
-  function sendMessage(text: string) {
+  function buildHistory(): AgentHistoryMessage[] {
+    return messages.value
+      .slice(-MAX_HISTORY)
+      .map(m => ({ role: m.role, text: m.text }))
+  }
+
+  async function sendMessage(text: string) {
+    // Build history BEFORE pushing the new message to avoid duplicating
+    // the current message in both `message` and `history`
+    const history = buildHistory()
+
     messages.value.push({
       id: nextId++,
       role: 'user',
@@ -84,15 +48,32 @@ export const useAgentStore = defineStore('agent', () => {
 
     isTyping.value = true
 
-    setTimeout(() => {
-      const template = MOCK_RESPONSES[Math.floor(Math.random() * MOCK_RESPONSES.length)]
+    try {
+      const result = await agentApi.chat({
+        message: text,
+        history,
+      })
+
       messages.value.push({
-        ...template,
         id: nextId++,
+        role: 'agent',
+        text: result.response.text,
+        cardType: result.response.card_type,
+        cardData: result.response.card_data,
         timestamp: new Date(),
       })
+    } catch (e) {
+      messages.value.push({
+        id: nextId++,
+        role: 'agent',
+        text: e instanceof Error
+          ? `Sorry, I encountered an error: ${e.message}. Please try again.`
+          : 'Sorry, something went wrong. Please try again.',
+        timestamp: new Date(),
+      })
+    } finally {
       isTyping.value = false
-    }, 1200 + Math.random() * 800)
+    }
   }
 
   function openWithPrompt(prompt: string) {

@@ -402,3 +402,38 @@ export const issuerApi = {
     })
   },
 }
+
+// ── Agent response types ───────────────────────────────────────────
+
+export type AgentCardType = 'action' | 'data' | 'form' | 'status' | 'insight'
+
+export interface AgentHistoryMessage {
+  role: 'user' | 'agent'
+  text: string
+}
+
+export interface AgentChatRequest {
+  message: string
+  history?: AgentHistoryMessage[]
+  stream?: boolean
+}
+
+export interface AgentChatResponse {
+  response: {
+    text: string
+    card_type?: AgentCardType
+    card_data?: Record<string, unknown>
+  }
+}
+
+// ── Agent endpoint (auth) ──────────────────────────────────────────
+
+export const agentApi = {
+  chat(data: AgentChatRequest): Promise<AgentChatResponse> {
+    return request('/agent/chat', {
+      method: 'POST',
+      body: data,
+      auth: true,
+    })
+  },
+}
