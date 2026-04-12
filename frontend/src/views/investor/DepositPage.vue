@@ -1,63 +1,172 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { toast } from 'vue-sonner'
 import { useAppStore } from '@/stores/app'
+import { useMarketplaceStore } from '@/stores/marketplace'
+import { useWallet } from '@/composables/useWallet'
+import { useFhe } from '@/composables/useFhe'
+import * as TokenService from '@/services/contracts/TokenService'
+import * as VaultService from '@/services/contracts/VaultService'
+import * as Erc20Service from '@/services/contracts/Erc20Service'
+import { addresses } from '@/contracts/addresses'
+import type { TokenResponseDto } from '@/services/api'
 import MCard from '@/components/ui/MCard.vue'
 import MButton from '@/components/ui/MButton.vue'
+import MBadge from '@/components/ui/MBadge.vue'
 import MStepProgress from '@/components/ui/MStepProgress.vue'
 import MGoldRule from '@/components/ui/MGoldRule.vue'
 import MPrivacyBanner from '@/components/ui/MPrivacyBanner.vue'
 import MSkeleton from '@/components/ui/MSkeleton.vue'
-import { CheckCircle } from 'lucide-vue-next'
+import MFundAccount from '@/components/ui/MFundAccount.vue'
+import { CheckCircle, Lock, Shield, Eye } from 'lucide-vue-next'
+import { formatUSD } from '@/lib/utils'
 
-const store = useAppStore()
+const route = useRoute()
+const app = useAppStore()
+const marketplace = useMarketplaceStore()
+const { address } = useWallet()
+const { encryptUint128 } = useFhe()
+
+// ── State ──────────────────────────────────────────────────────────
+
+type DepositPath = 'encrypted-mint' | 'vault-wrap'
+const depositPath = ref<DepositPath>('encrypted-mint')
+const selectedToken = ref<string>('')
 const amount = ref('')
 const currentStep = ref(0)
 const isProcessing = ref(false)
 const showSuccess = ref(false)
+const txHash = ref<string | null>(null)
+const error = ref<string | null>(null)
 
-const steps = [
-  { label: 'Enter Amount', description: 'Choose how much USDC to deposit' },
-  { label: 'Confirm', description: 'Review and approve the transaction' },
-  { label: 'Processing', description: 'Encrypting via Fhenix FHE' },
+const stepsEncrypted = [
+  { label: 'Enter Amount', description: 'Choose deposit amount' },
+  { label: 'Encrypt', description: 'Client-side FHE encryption' },
+  { label: 'Submit', description: 'Sending encrypted transaction' },
 ]
 
-const quickAmounts = ['100', '1,000', '5,000']
+const stepsVaultWrap = [
+  { label: 'Enter Amount', description: 'Choose wrap amount' },
+  { label: 'Approve', description: 'Approve ERC-20 to vault' },
+  { label: 'Wrap', description: 'Wrap into fhERC-20' },
+]
+
+const steps = computed(() => depositPath.value === 'encrypted-mint' ? stepsEncrypted : stepsVaultWrap)
+
+const quickAmounts = ['100', '1000', '5000']
 
 const numericAmount = computed(() => parseFloat(amount.value.replace(/,/g, '')) || 0)
-const estimatedYield = computed(() => (numericAmount.value * 0.048 / 12).toFixed(2))
+
+const selectedTokenData = computed<TokenResponseDto | undefined>(() =>
+  selectedToken.value ? marketplace.getByAddress(selectedToken.value) : undefined,
+)
+
+const estimatedYield = computed(() => {
+  const apy = selectedTokenData.value?.apy ? parseFloat(selectedTokenData.value.apy) : 4.8
+  return (numericAmount.value * apy / 100 / 12).toFixed(2)
+})
+
+onMounted(async () => {
+  if (!marketplace.loaded) {
+    await marketplace.load()
+  }
+  // Pre-select from query param (?token=0x...) or default to first active token
+  const queryToken = route.query.token as string | undefined
+  if (queryToken && marketplace.getByAddress(queryToken)) {
+    selectedToken.value = queryToken
+  } else if (marketplace.filtered.length > 0 && !selectedToken.value) {
+    selectedToken.value = marketplace.filtered[0].address
+  }
+})
+
+// ── Deposit handlers ───────────────────────────────────────────────
+
+async function handleEncryptedMint() {
+  if (!amount.value || isProcessing.value || !address.value) return
+  isProcessing.value = true
+  error.value = null
+
+  try {
+    // Step 1: Encrypt
+    currentStep.value = 1
+    const amountWei = BigInt(Math.floor(numericAmount.value * 1e18))
+    const encrypted = await encryptUint128(amountWei)
+
+    // Step 2: Submit encrypted mint
+    currentStep.value = 2
+    const hash = await TokenService.mint(
+      address.value as `0x${string}`,
+      encrypted as any,
+    )
+
+    txHash.value = hash
+    currentStep.value = 3
+    showSuccess.value = true
+    toast.success('Deposit confirmed', {
+      description: `Encrypted mint submitted — amount never appeared in cleartext`,
+    })
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : 'Deposit failed'
+    toast.error('Deposit failed', { description: error.value })
+  } finally {
+    isProcessing.value = false
+  }
+}
+
+async function handleVaultWrap() {
+  if (!amount.value || isProcessing.value || !address.value) return
+  isProcessing.value = true
+  error.value = null
+
+  try {
+    const amountWei = BigInt(Math.floor(numericAmount.value * 1e18))
+
+    // Step 1: Approve ERC-20 to vault
+    currentStep.value = 1
+    const underlying = await VaultService.underlyingToken()
+    await Erc20Service.approve(underlying, addresses.muHavenVault, amountWei)
+
+    // Step 2: Wrap
+    currentStep.value = 2
+    const hash = await VaultService.wrap(amountWei)
+
+    txHash.value = hash
+    currentStep.value = 3
+    showSuccess.value = true
+    toast.success('Wrap confirmed', {
+      description: `ERC-20 wrapped into fhERC-20 — balance now encrypted on-chain`,
+    })
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : 'Wrap failed'
+    toast.error('Wrap failed', { description: error.value })
+  } finally {
+    isProcessing.value = false
+  }
+}
 
 function handleDeposit() {
-  if (!amount.value || isProcessing.value) return
-  isProcessing.value = true
-  currentStep.value = 1
+  if (depositPath.value === 'encrypted-mint') {
+    handleEncryptedMint()
+  } else {
+    handleVaultWrap()
+  }
+}
 
-  setTimeout(() => {
-    currentStep.value = 2
-    setTimeout(() => {
-      currentStep.value = 3
-      isProcessing.value = false
-      showSuccess.value = true
-      toast.success('Deposit confirmed', {
-        description: `$${amount.value} USDC deposited via ReineiraOS`,
-      })
-      setTimeout(() => {
-        currentStep.value = 0
-        amount.value = ''
-        showSuccess.value = false
-      }, 3000)
-    }, 1500)
-  }, 1200)
+function resetForm() {
+  currentStep.value = 0
+  amount.value = ''
+  showSuccess.value = false
+  txHash.value = null
+  error.value = null
 }
 </script>
 
 <template>
   <div>
   <!-- Skeleton -->
-  <div v-if="store.isLoading" class="max-w-2xl mx-auto flex flex-col gap-8">
-    <div>
-      <MSkeleton variant="title" width="200px" />
-    </div>
+  <div v-if="app.isLoading" class="max-w-2xl mx-auto flex flex-col gap-8">
+    <MSkeleton variant="title" width="200px" />
     <MSkeleton variant="card" height="360px" />
   </div>
 
@@ -68,8 +177,62 @@ function handleDeposit() {
       :initial="{ opacity: 0, y: 20 }"
       :visible-once="{ opacity: 1, y: 0, transition: { duration: 500 } }"
     >
-      <h1 class="text-4xl font-sans font-bold text-midnight dark:text-white tracking-tight">Deposit USDC</h1>
+      <h1 class="text-4xl font-sans font-bold text-midnight dark:text-white tracking-tight">Deposit</h1>
       <MGoldRule />
+    </div>
+
+    <!-- Fund your account -->
+    <MFundAccount />
+
+    <!-- Deposit path selector -->
+    <div class="flex gap-3">
+      <button
+        @click="depositPath = 'encrypted-mint'"
+        :class="[
+          'flex-1 px-4 py-3 rounded-xl border text-left transition-all duration-200',
+          depositPath === 'encrypted-mint'
+            ? 'border-compute bg-compute/5 ring-2 ring-compute/20'
+            : 'border-haze dark:border-white/10 hover:border-compute/30',
+        ]"
+      >
+        <div class="flex items-center gap-2 mb-1">
+          <Lock :size="14" class="text-compute" />
+          <span class="text-sm font-medium text-midnight dark:text-white">Encrypted Mint</span>
+        </div>
+        <p class="text-xs text-cool">Client-side encryption — amount never in cleartext on-chain</p>
+        <MBadge variant="privacy" class="mt-2">Best Privacy</MBadge>
+      </button>
+
+      <button
+        @click="depositPath = 'vault-wrap'"
+        :class="[
+          'flex-1 px-4 py-3 rounded-xl border text-left transition-all duration-200',
+          depositPath === 'vault-wrap'
+            ? 'border-compute bg-compute/5 ring-2 ring-compute/20'
+            : 'border-haze dark:border-white/10 hover:border-compute/30',
+        ]"
+      >
+        <div class="flex items-center gap-2 mb-1">
+          <Shield :size="14" class="text-gold" />
+          <span class="text-sm font-medium text-midnight dark:text-white">Vault Wrap</span>
+        </div>
+        <p class="text-xs text-cool">Wrap existing ERC-20 RWA into fhERC-20 — amount visible until wrap</p>
+        <MBadge variant="gold" class="mt-2">For ERC-20 Tokens</MBadge>
+      </button>
+    </div>
+
+    <!-- Token selector -->
+    <div v-if="marketplace.filtered.length > 0">
+      <label class="text-xs uppercase tracking-wider text-cool font-sans font-medium">Token</label>
+      <select
+        v-model="selectedToken"
+        :disabled="isProcessing"
+        class="mt-2 w-full py-3 px-4 text-sm font-sans border border-haze dark:border-white/10 rounded-xl bg-white dark:bg-midnight text-midnight dark:text-white focus:outline-none focus:border-compute focus:ring-2 focus:ring-compute/20 transition-colors disabled:opacity-50"
+      >
+        <option v-for="t in marketplace.filtered" :key="t.address" :value="t.address">
+          {{ t.name }} ({{ t.symbol }}) — {{ t.apy ? `${t.apy}% APY` : 'N/A' }}
+        </option>
+      </select>
     </div>
 
     <div class="px-4 pb-2">
@@ -92,18 +255,29 @@ function handleDeposit() {
         >
           <CheckCircle :size="32" class="text-compute" />
         </div>
-        <p class="text-lg font-sans font-semibold text-midnight dark:text-white">Deposit Confirmed</p>
-        <p class="text-sm text-cool">Your balance has been encrypted on-chain</p>
+        <p class="text-lg font-sans font-semibold text-midnight dark:text-white">
+          {{ depositPath === 'encrypted-mint' ? 'Encrypted Deposit Confirmed' : 'Vault Wrap Confirmed' }}
+        </p>
+        <p class="text-sm text-cool">
+          {{ depositPath === 'encrypted-mint'
+            ? 'Amount was encrypted client-side — never visible on-chain'
+            : 'ERC-20 wrapped into fhERC-20 — balance now encrypted'
+          }}
+        </p>
+        <p v-if="txHash" class="text-xs font-mono text-cool">
+          tx: <a :href="`https://sepolia.arbiscan.io/tx/${txHash}`" target="_blank" rel="noopener" class="text-compute hover:underline">{{ txHash.slice(0, 10) }}...{{ txHash.slice(-8) }}</a>
+        </p>
+        <MButton variant="outline" @click="resetForm">Make Another Deposit</MButton>
+      </div>
+
+      <!-- Error state -->
+      <div v-else-if="error" class="flex flex-col items-center gap-4 py-8">
+        <p class="text-base text-cool">{{ error }}</p>
+        <MButton variant="outline" @click="resetForm">Try Again</MButton>
       </div>
 
       <!-- Form -->
       <template v-else>
-        <label class="text-xs uppercase tracking-wider text-cool font-sans font-medium">From</label>
-        <div class="mt-2 mb-6 bg-mist dark:bg-midnight rounded-xl p-4">
-          <p class="text-base font-sans font-medium text-midnight dark:text-white">Arbitrum Sepolia</p>
-          <p class="text-sm font-mono text-slate dark:text-cool mt-1">0x7a3f...b29e &middot; Balance: 12,500.00 USDC</p>
-        </div>
-
         <label class="text-xs uppercase tracking-wider text-cool font-sans font-medium">Amount</label>
 
         <!-- Quick amount buttons -->
@@ -115,14 +289,7 @@ function handleDeposit() {
             :disabled="isProcessing"
             class="px-3 py-1.5 text-xs font-medium border border-haze dark:border-white/10 rounded-lg text-cool hover:text-compute hover:border-compute/30 transition-all duration-200 cursor-pointer disabled:opacity-50"
           >
-            ${{ qa }}
-          </button>
-          <button
-            @click="amount = '12,500.00'"
-            :disabled="isProcessing"
-            class="px-3 py-1.5 text-xs font-medium border border-haze dark:border-white/10 rounded-lg text-cool hover:text-compute hover:border-compute/30 transition-all duration-200 cursor-pointer disabled:opacity-50"
-          >
-            MAX
+            ${{ Number(qa).toLocaleString() }}
           </button>
         </div>
 
@@ -140,24 +307,46 @@ function handleDeposit() {
 
         <!-- Estimated yield -->
         <div v-if="numericAmount > 0" class="mb-6 bg-compute/5 border border-compute/15 rounded-lg px-4 py-3 flex items-center justify-between">
-          <span class="text-xs text-slate dark:text-cool">Est. monthly yield at 4.8% APY</span>
+          <span class="text-xs text-slate dark:text-cool">
+            Est. monthly yield at {{ selectedTokenData?.apy || '4.8' }}% APY
+          </span>
           <span class="text-sm font-mono font-medium text-compute">${{ estimatedYield }}</span>
         </div>
         <div v-else class="mb-6" />
+
+        <!-- Privacy indicator -->
+        <div class="mb-4 p-3 rounded-lg border" :class="depositPath === 'encrypted-mint' ? 'border-compute/20 bg-compute/5' : 'border-gold/20 bg-gold/5'">
+          <div class="flex items-center gap-2">
+            <Eye :size="14" :class="depositPath === 'encrypted-mint' ? 'text-compute' : 'text-gold'" />
+            <span class="text-xs font-medium" :class="depositPath === 'encrypted-mint' ? 'text-compute' : 'text-gold'">
+              {{ depositPath === 'encrypted-mint' ? 'Privacy: Maximum' : 'Privacy: After Wrap' }}
+            </span>
+          </div>
+          <p class="text-xs text-cool mt-1">
+            {{ depositPath === 'encrypted-mint'
+              ? 'Amount encrypted client-side before submission. Never appears in cleartext on-chain.'
+              : 'ERC-20 approval and wrap amounts are visible on-chain. Balance becomes encrypted after wrapping.'
+            }}
+          </p>
+        </div>
 
         <MButton
           variant="primary"
           full-width
           size="lg"
           :loading="isProcessing"
-          :disabled="!amount.trim()"
+          :disabled="!amount.trim() || numericAmount <= 0"
           @click="handleDeposit"
         >
-          Deposit via ReineiraOS
+          {{ depositPath === 'encrypted-mint' ? 'Encrypt & Deposit' : 'Approve & Wrap' }}
         </MButton>
 
         <div class="mt-5">
-          <MPrivacyBanner text="Amount will be encrypted on-chain via Fhenix FHE. Nobody can see how much you deposited." />
+          <MPrivacyBanner
+            :text="depositPath === 'encrypted-mint'
+              ? 'Amount will be encrypted client-side via Fhenix FHE before submission. The chain never sees the cleartext.'
+              : 'Wrap amount is visible until it enters the vault. After wrapping, your fhERC-20 balance is FHE-encrypted.'"
+          />
         </div>
       </template>
     </MCard>

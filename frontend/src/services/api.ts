@@ -163,6 +163,85 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   return res.json()
 }
 
+// ── Response types ──────────────────────────────────────────────────
+
+export interface LatestNavDto {
+  nav: string
+  apy: string | null
+  total_aum: string | null
+  yield_rate: string | null
+  source: string
+  source_type: string
+  source_timestamp: string | null
+  fetched_at: string
+}
+
+export type AssetClass = 'treasury' | 'money_market' | 'private_credit' | 'real_estate' | 'other'
+export type TokenStatus = 'active' | 'paused' | 'winding_down' | 'archived'
+export type YieldStatus = 'pending' | 'claimable' | 'claimed' | 'expired'
+
+export interface TokenResponseDto {
+  id: string
+  address: string
+  name: string
+  symbol: string
+  issuer_address: string
+  apy: string | null
+  yield_schedule: string | null
+  kyc_tier: number
+  asset_class: AssetClass
+  min_investment: string | null
+  status: TokenStatus
+  created_at: string
+  updated_at: string
+  latest_nav: LatestNavDto | null
+}
+
+export interface NavSnapshotDto {
+  nav: string
+  apy: string | null
+  total_aum: string | null
+  yield_rate: string | null
+  source: string
+  source_type: string
+  source_timestamp: string | null
+  fetched_at: string
+}
+
+export interface PortfolioPositionDto {
+  token_address: string
+  token_symbol: string
+  last_synced_at: string | null
+}
+
+export interface YieldRecordDto {
+  id: string
+  distribution_id: number
+  escrow_id: string | null
+  token_address: string
+  amount: string | null
+  status: YieldStatus
+  claimed_at: string | null
+  created_at: string
+}
+
+export interface ActivityItemDto {
+  id: string
+  type: 'yield' | 'escrow'
+  status: string
+  token_address: string | null
+  amount: string | null
+  timestamp: string
+}
+
+export interface BalanceDto {
+  wallet_address: string
+  balance: string
+  formatted_balance: string
+  currency: string
+  chain_id: number
+}
+
 // ── Auth endpoints ──────────────────────────────────────────────────
 
 export const authApi = {
@@ -192,5 +271,77 @@ export const authApi = {
       method: 'DELETE',
       auth: true,
     })
+  },
+}
+
+// ── Token endpoints (public) ────────────────────────────────────────
+
+export const tokensApi = {
+  getAll(): Promise<{ tokens: TokenResponseDto[] }> {
+    return request('/tokens')
+  },
+
+  getByAddress(address: string): Promise<TokenResponseDto> {
+    return request(`/tokens/${address}`)
+  },
+
+  getNavHistory(
+    address: string,
+    range?: '1m' | '3m' | '6m' | '1y',
+  ): Promise<{ snapshots: NavSnapshotDto[] }> {
+    const params = range ? `?range=${range}` : ''
+    return request(`/tokens/${address}/nav-history${params}`)
+  },
+
+  getLatestNav(address: string): Promise<NavSnapshotDto> {
+    return request(`/tokens/${address}/nav/latest`)
+  },
+}
+
+// ── Portfolio endpoint (auth) ───────────────────────────────────────
+
+export const portfolioApi = {
+  get(): Promise<{ positions: PortfolioPositionDto[]; total_tokens: number }> {
+    return request('/portfolio', { auth: true })
+  },
+}
+
+// ── Yields endpoint (auth) ──────────────────────────────────────────
+
+export const yieldsApi = {
+  getAll(opts?: {
+    limit?: number
+    offset?: number
+    status?: YieldStatus
+  }): Promise<{ items: YieldRecordDto[]; total: number }> {
+    const params = new URLSearchParams()
+    if (opts?.limit) params.set('limit', String(opts.limit))
+    if (opts?.offset) params.set('offset', String(opts.offset))
+    if (opts?.status) params.set('status', opts.status)
+    const qs = params.toString()
+    return request(`/yields${qs ? `?${qs}` : ''}`, { auth: true })
+  },
+}
+
+// ── Activity endpoint (auth) ────────────────────────────────────────
+
+export const activityApi = {
+  getAll(opts?: {
+    limit?: number
+    offset?: number
+  }): Promise<{ items: ActivityItemDto[]; has_more: boolean }> {
+    const params = new URLSearchParams()
+    if (opts?.limit) params.set('limit', String(opts.limit))
+    if (opts?.offset) params.set('offset', String(opts.offset))
+    const qs = params.toString()
+    return request(`/activity${qs ? `?${qs}` : ''}`, { auth: true })
+  },
+}
+
+// ── Balance endpoint (auth) ─────────────────────────────────────────
+
+export const balanceApi = {
+  get(): Promise<BalanceDto> {
+    return request('/balance', { auth: true })
   },
 }

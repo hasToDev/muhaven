@@ -26,6 +26,11 @@ const router = createRouter({
       meta: { title: 'Portfolio' },
     },
     {
+      path: '/marketplace',
+      component: () => import('@/views/investor/MarketplacePage.vue'),
+      meta: { title: 'Marketplace' },
+    },
+    {
       path: '/deposit',
       component: () => import('@/views/investor/DepositPage.vue'),
       meta: { title: 'Deposit' },

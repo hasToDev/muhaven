@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
-import { PORTFOLIO } from '@/data/constants'
+import { ref, computed, onMounted } from 'vue'
 import { useAppStore } from '@/stores/app'
+import { useActivityStore } from '@/stores/activity'
 import { formatUSD } from '@/lib/utils'
 import MCard from '@/components/ui/MCard.vue'
 import MButton from '@/components/ui/MButton.vue'
@@ -9,63 +9,65 @@ import MBadge from '@/components/ui/MBadge.vue'
 import MSummaryCard from '@/components/ui/MSummaryCard.vue'
 import MGoldRule from '@/components/ui/MGoldRule.vue'
 import MSkeleton from '@/components/ui/MSkeleton.vue'
-import {
-  TrendingUp, ArrowDown, Activity, Search,
-  Hash, BarChart3, CalendarDays, Lock,
-} from 'lucide-vue-next'
+import { TrendingUp, ArrowDown, Activity, BarChart3, Lock, Inbox } from 'lucide-vue-next'
 
-const store = useAppStore()
-const allActivity = PORTFOLIO.activity
-const activeFilter = ref('all')
-const expandedIndex = ref<number | null>(null)
+const app = useAppStore()
+const activity = useActivityStore()
 
-const filters = ['all', 'yield', 'deposit', 'rebalance'] as const
+type FilterType = 'all' | 'yield' | 'escrow'
+const activeFilter = ref<FilterType>('all')
 
-const filteredActivity = computed(() => {
-  if (activeFilter.value === 'all') return allActivity
-  return allActivity.filter(a => a.type === activeFilter.value)
+const filtered = computed(() => {
+  if (activeFilter.value === 'all') return activity.items
+  return activity.items.filter(i => i.type === activeFilter.value)
 })
 
 const filterCounts = computed(() => ({
-  all: allActivity.length,
-  yield: allActivity.filter(a => a.type === 'yield').length,
-  deposit: allActivity.filter(a => a.type === 'deposit').length,
-  rebalance: allActivity.filter(a => a.type === 'rebalance').length,
+  all: activity.items.length,
+  yield: activity.items.filter(i => i.type === 'yield').length,
+  escrow: activity.items.filter(i => i.type === 'escrow').length,
 }))
 
-// Group by time period
-function getTimeGroup(time: string): string {
-  if (time.includes('h ') || time === '2h ago' || time === '4h ago' || time === '5h ago' || time === '6h ago' || time === '12h ago') return 'Today'
-  if (time.includes('d ago')) return 'This Week'
-  return 'Earlier'
+const activityMeta: Record<string, { icon: typeof TrendingUp; classes: string; bg: string }> = {
+  yield: { icon: TrendingUp, classes: 'text-gold', bg: 'bg-gold/10 dark:bg-gold/8' },
+  escrow: { icon: ArrowDown, classes: 'text-compute', bg: 'bg-compute/12 dark:bg-compute/8' },
 }
 
-const activityMeta: Record<string, { icon: typeof TrendingUp; classes: string; bg: string; border: string }> = {
-  yield: { icon: TrendingUp, classes: 'text-gold', bg: 'bg-gold/10 dark:bg-gold/8', border: 'border-l-gold' },
-  deposit: { icon: ArrowDown, classes: 'text-compute', bg: 'bg-compute/12 dark:bg-compute/8', border: 'border-l-compute' },
-  rebalance: { icon: Activity, classes: 'text-cool', bg: 'bg-mist dark:bg-midnight', border: 'border-l-cool' },
-}
+onMounted(async () => {
+  app.startLoading()
+  await activity.load()
+  app.stopLoading()
+})
 
-// Compute summary stats
-const totalVolume = allActivity
-  .filter(a => a.type === 'deposit')
-  .reduce((sum, a) => sum + parseFloat(a.amount.replace(/[$,]/g, '')), 0)
+function formatTime(timestamp: string): string {
+  const d = new Date(timestamp)
+  const now = new Date()
+  const diffMs = now.getTime() - d.getTime()
+  const diffH = Math.floor(diffMs / (1000 * 60 * 60))
+  const diffD = Math.floor(diffH / 24)
+
+  if (diffH < 1) return 'Just now'
+  if (diffH < 24) return `${diffH}h ago`
+  if (diffD < 7) return `${diffD}d ago`
+  return d.toLocaleDateString()
+}
 </script>
 
 <template>
   <div>
   <!-- Skeleton -->
-  <div v-if="store.isLoading" class="flex flex-col gap-8">
-    <div>
-      <MSkeleton variant="title" width="140px" />
+  <div v-if="app.isLoading" class="flex flex-col gap-8">
+    <MSkeleton variant="title" width="120px" />
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <MSkeleton variant="card" v-for="i in 3" :key="i" height="100px" />
     </div>
-    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-      <MSkeleton variant="card" v-for="i in 3" :key="i" height="80px" />
-    </div>
-    <div class="flex gap-2">
-      <MSkeleton v-for="i in 4" :key="i" width="80px" height="32px" />
-    </div>
-    <MSkeleton variant="card" height="350px" />
+    <MSkeleton variant="card" height="300px" />
+  </div>
+
+  <!-- Error state -->
+  <div v-else-if="activity.error" class="flex flex-col items-center justify-center py-20 gap-4">
+    <p class="text-base text-cool">{{ activity.error }}</p>
+    <MButton variant="outline" @click="activity.load()">Retry</MButton>
   </div>
 
   <!-- Content -->
@@ -79,108 +81,72 @@ const totalVolume = allActivity
       <MGoldRule />
     </div>
 
-    <!-- Summary stats -->
+    <!-- Summary cards -->
     <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-      <MSummaryCard
-        label="Total Transactions"
-        :value="String(allActivity.length)"
-        :icon="BarChart3"
-      />
-      <MSummaryCard
-        label="This Month"
-        :value="String(allActivity.filter(a => getTimeGroup(a.time) !== 'Earlier').length)"
-        :icon="CalendarDays"
-      />
-      <MSummaryCard
-        label="Total Deposits"
-        :value="formatUSD(totalVolume)"
-        :icon="ArrowDown"
-      />
+      <MSummaryCard label="Total Events" :value="String(activity.items.length)" :icon="BarChart3" />
+      <MSummaryCard label="Yield Events" :value="String(filterCounts.yield)" :icon="TrendingUp" />
+      <MSummaryCard label="Escrow Events" :value="String(filterCounts.escrow)" :icon="ArrowDown" />
     </div>
 
-    <!-- Filters with counts -->
-    <div class="flex gap-2 flex-wrap">
+    <!-- Filter buttons -->
+    <div class="flex gap-2">
       <MButton
-        v-for="f in filters"
+        v-for="f in (['all', 'yield', 'escrow'] as FilterType[])"
         :key="f"
-        :variant="activeFilter === f ? 'primary' : 'ghost'"
+        :variant="activeFilter === f ? 'primary' : 'outline'"
         size="sm"
         @click="activeFilter = f"
       >
-        {{ f === 'all' ? 'All' : f.charAt(0).toUpperCase() + f.slice(1) + 's' }}
-        <span class="ml-1 opacity-60">({{ filterCounts[f] }})</span>
+        {{ f === 'all' ? 'All' : f.charAt(0).toUpperCase() + f.slice(1) }}
+        <span class="ml-1.5 opacity-60">{{ filterCounts[f] }}</span>
       </MButton>
     </div>
 
     <!-- Activity timeline -->
-    <MCard
-      v-motion
-      :initial="{ opacity: 0, y: 16 }"
-      :visible-once="{ opacity: 1, y: 0, transition: { duration: 400 } }"
-    >
-      <div
-        v-if="filteredActivity.length === 0"
-        class="flex flex-col items-center gap-3 py-12 text-cool"
-      >
-        <Search :size="32" class="opacity-40" />
-        <p class="text-sm">No matching activity</p>
+    <MCard>
+      <div v-if="filtered.length === 0" class="flex flex-col items-center py-12 gap-3">
+        <Inbox :size="32" class="text-cool/30" />
+        <p class="text-sm text-cool">No matching activity</p>
       </div>
 
-      <template v-else>
-        <template v-for="(a, i) in filteredActivity" :key="i">
-          <!-- Time group header -->
-          <div
-            v-if="i === 0 || getTimeGroup(a.time) !== getTimeGroup(filteredActivity[i - 1].time)"
-            :class="['text-xs uppercase tracking-wider text-cool font-medium', i > 0 ? 'mt-6 mb-3' : 'mb-3']"
-          >
-            {{ getTimeGroup(a.time) }}
+      <div v-else>
+        <div
+          v-for="(item, i) in filtered"
+          :key="item.id"
+          :class="['flex items-center gap-4 py-4', i > 0 && 'border-t border-haze/50 dark:border-white/8']"
+        >
+          <div :class="['w-10 h-10 rounded-lg flex items-center justify-center', activityMeta[item.type]?.bg || 'bg-mist']">
+            <component
+              :is="activityMeta[item.type]?.icon || Activity"
+              :size="16"
+              :class="activityMeta[item.type]?.classes || 'text-cool'"
+            />
           </div>
+          <div class="flex-1 min-w-0">
+            <p class="text-base font-sans font-medium text-midnight dark:text-white">
+              {{ item.type === 'yield' ? 'Yield Distribution' : 'Escrow Event' }}
+              <span v-if="item.amount" class="font-mono text-xs ml-2">{{ formatUSD(parseFloat(item.amount)) }}</span>
+            </p>
+            <div class="flex items-center gap-2 mt-1">
+              <MBadge :variant="item.status === 'claimed' ? 'positive' : item.status === 'pending' ? 'gold' : 'teal'">
+                {{ item.status }}
+              </MBadge>
+              <span class="text-xs text-cool flex items-center gap-1">
+                <Lock :size="10" />
+                FHE encrypted
+              </span>
+            </div>
+          </div>
+          <span class="text-xs text-cool whitespace-nowrap">{{ formatTime(item.timestamp) }}</span>
+        </div>
+      </div>
 
-          <div
-            v-motion
-            :initial="{ opacity: 0, y: 8 }"
-            :visible-once="{ opacity: 1, y: 0, transition: { duration: 300, delay: i * 60 } }"
-            :class="[
-              'flex items-start gap-4 py-4 border-l-2 pl-4 cursor-pointer transition-colors duration-200 hover:bg-mist/30 dark:hover:bg-midnight/30 -ml-1 rounded-r-lg',
-              activityMeta[a.type]?.border || 'border-l-cool',
-              i > 0 && getTimeGroup(a.time) === getTimeGroup(filteredActivity[i - 1].time) && 'border-t border-t-haze/30 dark:border-t-white/5',
-            ]"
-            @click="expandedIndex = expandedIndex === i ? null : i"
-          >
-            <div class="relative">
-              <div :class="['w-9 h-9 rounded-lg flex items-center justify-center shrink-0', activityMeta[a.type]?.bg || 'bg-mist']">
-                <component
-                  :is="activityMeta[a.type]?.icon || Activity"
-                  :size="16"
-                  :class="activityMeta[a.type]?.classes || 'text-cool'"
-                />
-              </div>
-            </div>
-            <div class="flex-1 min-w-0">
-              <p class="text-base font-sans font-medium text-midnight dark:text-white">
-                {{ a.desc }} &middot;
-                <span class="font-mono text-xs">{{ a.amount }}</span>
-              </p>
-              <p class="text-sm text-cool mt-0.5">{{ a.token }}</p>
-              <!-- Expanded detail -->
-              <div
-                v-if="expandedIndex === i"
-                class="mt-3 pt-3 border-t border-haze/30 dark:border-white/5 space-y-2"
-              >
-                <div class="flex items-center gap-2 text-xs text-cool">
-                  <Hash :size="12" />
-                  <span class="font-mono">0x4f2e...a8c1</span>
-                </div>
-                <MBadge variant="privacy">
-                  <Lock :size="10" />
-                  FHE Encrypted (euint128)
-                </MBadge>
-              </div>
-            </div>
-            <span class="text-xs text-cool whitespace-nowrap">{{ a.time }}</span>
-          </div>
-        </template>
-      </template>
+      <!-- Load more -->
+      <div v-if="activity.hasMore" class="mt-4 text-center">
+        <MButton variant="outline" size="sm" :loading="activity.loadingMore" @click="activity.loadMore()">
+          Load More
+        </MButton>
+      </div>
     </MCard>
   </div>
   </div>

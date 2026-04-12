@@ -5,6 +5,7 @@ interface ImportMetaEnv {
   readonly VITE_ZERODEV_PASSKEY_SERVER_URL: string;
   readonly VITE_RPC_URL: string;
   readonly VITE_API_BASE_URL: string;
+  readonly VITE_CHAIN_ID: string;
 }
 
 interface ImportMeta {

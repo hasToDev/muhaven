@@ -1,37 +1,55 @@
 <script setup lang="ts">
-import { PORTFOLIO, YIELDS_DATA, YIELD_BREAKDOWN } from '@/data/constants'
+import { onMounted } from 'vue'
+import { usePortfolioStore } from '@/stores/portfolio'
 import { useAppStore } from '@/stores/app'
-import { useCountUp } from '@/composables/useCountUp'
+import { useWallet } from '@/composables/useWallet'
 import MCard from '@/components/ui/MCard.vue'
 import MBadge from '@/components/ui/MBadge.vue'
 import MSummaryCard from '@/components/ui/MSummaryCard.vue'
 import MGoldRule from '@/components/ui/MGoldRule.vue'
 import MPrivacyBanner from '@/components/ui/MPrivacyBanner.vue'
 import MSkeleton from '@/components/ui/MSkeleton.vue'
-import InsightChip from '@/components/agent/InsightChip.vue'
+import MButton from '@/components/ui/MButton.vue'
 import PortfolioDonut from '@/components/charts/PortfolioDonut.vue'
-import { TrendingUp, ArrowDown, Activity, Shield, DollarSign, Percent } from 'lucide-vue-next'
+import { Shield, Lock, Unlock, Eye, DollarSign, Percent, Loader2 } from 'lucide-vue-next'
 import { formatUSD } from '@/lib/utils'
 
-const store = useAppStore()
-const { target: heroRef, displayValue: heroValue } = useCountUp(PORTFOLIO.totalValue, 1500, 2)
+const app = useAppStore()
+const portfolio = usePortfolioStore()
+const { address } = useWallet()
 
-const weightedAPY = PORTFOLIO.holdings.reduce((acc, h) => acc + h.apy * h.pct / 100, 0)
+onMounted(async () => {
+  if (address.value) {
+    app.startLoading()
+    await portfolio.load(address.value as `0x${string}`)
+    app.stopLoading()
+  }
+})
 
-const activityMeta: Record<string, { icon: typeof TrendingUp; classes: string; bg: string }> = {
-  yield: { icon: TrendingUp, classes: 'text-gold', bg: 'bg-gold/10 dark:bg-gold/8' },
-  deposit: { icon: ArrowDown, classes: 'text-compute', bg: 'bg-compute/12 dark:bg-compute/8' },
-  rebalance: { icon: Activity, classes: 'text-cool', bg: 'bg-mist dark:bg-midnight' },
+async function decryptAll() {
+  if (!address.value) return
+  for (let i = 0; i < portfolio.holdings.length; i++) {
+    if (portfolio.holdings[i].decryptedBalance === null) {
+      await portfolio.decryptHolding(i, address.value as `0x${string}`)
+    }
+  }
 }
 
-// Only show first 4 in recent activity
-const recentActivity = PORTFOLIO.activity.slice(0, 4)
+async function decryptOne(index: number) {
+  if (!address.value) return
+  await portfolio.decryptHolding(index, address.value as `0x${string}`)
+}
+
+function holdingColorClass(index: number): string {
+  const colors = ['bg-compute', 'bg-midnight dark:bg-signal', 'bg-cipher']
+  return colors[index % colors.length]
+}
 </script>
 
 <template>
   <div>
   <!-- Skeleton -->
-  <div v-if="store.isLoading" class="flex flex-col gap-8">
+  <div v-if="app.isLoading" class="flex flex-col gap-8">
     <div>
       <MSkeleton variant="text" :lines="1" width="160px" />
       <MSkeleton variant="title" width="320px" height="48px" class="mt-3" />
@@ -43,7 +61,24 @@ const recentActivity = PORTFOLIO.activity.slice(0, 4)
       <MSkeleton variant="card" v-for="i in 3" :key="i" height="150px" />
     </div>
     <MSkeleton variant="chart" height="220px" />
-    <MSkeleton variant="card" height="200px" />
+  </div>
+
+  <!-- Error state -->
+  <div v-else-if="portfolio.error" class="flex flex-col items-center justify-center py-20 gap-4">
+    <p class="text-base text-cool">{{ portfolio.error }}</p>
+    <MButton variant="outline" @click="address && portfolio.load(address as `0x${string}`)">
+      Retry
+    </MButton>
+  </div>
+
+  <!-- Empty state -->
+  <div v-else-if="portfolio.loaded && portfolio.holdings.length === 0" class="flex flex-col items-center justify-center py-20 gap-4">
+    <Shield :size="48" class="text-cool/40" />
+    <p class="text-base text-cool">No holdings yet</p>
+    <p class="text-sm text-cool/70">Deposit funds and invest in RWA tokens to build your portfolio.</p>
+    <RouterLink to="/deposit">
+      <MButton>Make a Deposit</MButton>
+    </RouterLink>
   </div>
 
   <!-- Content -->
@@ -59,27 +94,36 @@ const recentActivity = PORTFOLIO.activity.slice(0, 4)
       </p>
       <MGoldRule />
       <div class="flex items-baseline gap-4 mt-3">
-        <span ref="heroRef" class="text-5xl md:text-6xl font-accent italic text-midnight dark:text-white tracking-tight">
-          ${{ heroValue }}
-        </span>
-        <MBadge variant="positive" pulse>
-          &uarr; {{ PORTFOLIO.change }}% this month
-        </MBadge>
+        <template v-if="portfolio.allDecrypted">
+          <span class="text-5xl md:text-6xl font-accent italic text-midnight dark:text-white tracking-tight">
+            {{ formatUSD(portfolio.totalDecryptedValue) }}
+          </span>
+        </template>
+        <template v-else>
+          <div class="flex items-center gap-3">
+            <Lock :size="28" class="text-compute/50" />
+            <span class="text-3xl md:text-4xl font-accent italic text-cool/50 tracking-tight">
+              Encrypted
+            </span>
+            <MButton variant="outline" size="sm" @click="decryptAll">
+              <Eye :size="14" class="mr-1.5" />
+              Reveal All
+            </MButton>
+          </div>
+        </template>
       </div>
     </div>
 
     <!-- Secondary stats row -->
     <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
       <MSummaryCard
-        label="Total Earned"
-        :value="formatUSD(YIELDS_DATA.totalEarned)"
-        accent
+        label="USDC Balance"
+        :value="portfolio.usdcBalance !== null ? formatUSD(Number(portfolio.usdcBalance) / 1e6) : '—'"
         :icon="DollarSign"
-        :trend="{ value: 4.2, direction: 'up' }"
       />
       <MSummaryCard
-        label="Weighted APY"
-        :value="`${weightedAPY.toFixed(2)}%`"
+        label="Holdings"
+        :value="`${portfolio.holdings.length} tokens`"
         :icon="Percent"
       />
       <MSummaryCard
@@ -90,44 +134,99 @@ const recentActivity = PORTFOLIO.activity.slice(0, 4)
       />
     </div>
 
-    <!-- Holdings cards — featured layout -->
+    <!-- Holdings cards — privacy-first -->
     <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
       <MCard
-        v-for="(h, i) in PORTFOLIO.holdings"
-        :key="h.symbol"
+        v-for="(h, i) in portfolio.holdings"
+        :key="h.tokenAddress"
         hover
         glow
-        :class="i === 0 ? 'md:col-span-2' : ''"
+        :class="i === 0 && portfolio.holdings.length > 1 ? 'md:col-span-2' : ''"
         v-motion
         :initial="{ opacity: 0, y: 20 }"
         :visible-once="{ opacity: 1, y: 0, transition: { duration: 400, delay: i * 120 } }"
       >
         <div class="flex justify-between items-center mb-4">
-          <span :class="['font-sans font-medium text-midnight dark:text-white', i === 0 ? 'text-base' : 'text-base']">{{ h.name }}</span>
+          <span class="font-sans font-medium text-base text-midnight dark:text-white">{{ h.name }}</span>
           <span class="font-mono text-xs text-cool">{{ h.symbol }}</span>
         </div>
-        <p :class="['font-accent italic text-midnight dark:text-white mb-3', i === 0 ? 'text-3xl' : 'text-2xl']">
-          {{ formatUSD(h.value) }}
-        </p>
-        <div class="flex gap-3 items-center text-base">
-          <span class="text-slate">{{ h.pct }}% allocation</span>
-          <span class="text-gold font-medium">&uarr; {{ h.apy }}% APY</span>
-        </div>
-        <div v-if="i === 0" class="mt-3">
+
+        <!-- Decrypted state -->
+        <template v-if="h.decryptedBalance !== null">
+          <p :class="['font-accent italic text-midnight dark:text-white mb-3', i === 0 ? 'text-3xl' : 'text-2xl']">
+            {{ h.nav ? formatUSD(Number(h.decryptedBalance) / 1e18 * h.nav) : `${(Number(h.decryptedBalance) / 1e18).toFixed(4)} tokens` }}
+          </p>
+          <div class="flex gap-3 items-center text-base">
+            <span class="text-slate">{{ (Number(h.decryptedBalance) / 1e18).toFixed(4) }} {{ h.symbol }}</span>
+            <span v-if="h.apy" class="text-gold font-medium">&uarr; {{ h.apy }}% APY</span>
+          </div>
+          <div class="mt-3">
+            <MBadge variant="positive">
+              <Unlock :size="10" class="mr-1" />
+              Decrypted
+            </MBadge>
+          </div>
+        </template>
+
+        <!-- Decrypting state -->
+        <template v-else-if="h.decrypting">
+          <div class="flex items-center gap-3 py-4">
+            <Loader2 :size="20" class="text-compute animate-spin" />
+            <span class="text-sm text-cool">Decrypting via CoFHE coprocessor...</span>
+          </div>
+        </template>
+
+        <!-- Encrypted state (default — privacy first) -->
+        <template v-else>
+          <div class="flex items-center gap-3 py-2 mb-3">
+            <Lock :size="18" class="text-compute/60" />
+            <span class="text-lg font-accent italic text-cool/50">Balance encrypted</span>
+          </div>
+          <div class="flex gap-3 items-center text-base">
+            <span v-if="h.apy" class="text-gold font-medium">&uarr; {{ h.apy }}% APY</span>
+            <span class="text-xs text-cool">{{ h.assetClass.replace('_', ' ') }}</span>
+          </div>
+          <div class="mt-3">
+            <MButton variant="outline" size="sm" @click="decryptOne(i)">
+              <Eye :size="12" class="mr-1.5" />
+              Decrypt Balance
+            </MButton>
+          </div>
+        </template>
+
+        <div class="mt-2">
           <MBadge variant="privacy">FHE Encrypted</MBadge>
         </div>
+      </MCard>
+
+      <!-- USDC card (non-encrypted) -->
+      <MCard
+        v-if="portfolio.usdcBalance !== null"
+        hover
+        v-motion
+        :initial="{ opacity: 0, y: 20 }"
+        :visible-once="{ opacity: 1, y: 0, transition: { duration: 400, delay: portfolio.holdings.length * 120 } }"
+      >
+        <div class="flex justify-between items-center mb-4">
+          <span class="font-sans font-medium text-base text-midnight dark:text-white">Cash Buffer</span>
+          <span class="font-mono text-xs text-cool">USDC</span>
+        </div>
+        <p class="text-2xl font-accent italic text-midnight dark:text-white mb-3">
+          {{ formatUSD(Number(portfolio.usdcBalance) / 1e6) }}
+        </p>
+        <span class="text-xs text-cool">Standard ERC-20 (not encrypted)</span>
       </MCard>
     </div>
 
     <!-- Allocation with donut chart -->
     <MCard
+      v-if="portfolio.allDecrypted"
       v-motion
       :initial="{ opacity: 0, y: 16 }"
       :visible-once="{ opacity: 1, y: 0, transition: { duration: 400, delay: 200 } }"
     >
       <div class="flex items-center justify-between mb-5">
         <p class="text-base font-sans font-medium text-midnight dark:text-white">Allocation</p>
-        <span class="text-xs text-cool">Combined APY: <span class="text-compute font-medium">{{ weightedAPY.toFixed(2) }}%</span></span>
       </div>
       <div class="flex flex-col md:flex-row gap-6 items-center">
         <div class="w-40 md:w-52 flex-shrink-0">
@@ -136,74 +235,27 @@ const recentActivity = PORTFOLIO.activity.slice(0, 4)
         <div class="flex-1 w-full">
           <div class="flex h-3 rounded-full overflow-hidden gap-0.5 mb-4">
             <div
-              v-for="h in PORTFOLIO.holdings"
-              :key="h.symbol"
-              :class="[h.colorClass, 'rounded-full transition-all duration-1000 ease-out']"
-              :style="{ width: `${h.pct}%` }"
+              v-for="(h, i) in portfolio.holdings"
+              :key="h.tokenAddress"
+              v-show="h.decryptedBalance !== null && h.nav"
+              :class="[holdingColorClass(i), 'rounded-full transition-all duration-1000 ease-out']"
+              :style="{ width: `${portfolio.totalDecryptedValue > 0 ? ((Number(h.decryptedBalance!) / 1e18 * (h.nav || 0)) / portfolio.totalDecryptedValue * 100) : 0}%` }"
             />
           </div>
-          <div class="flex flex-wrap gap-5 mb-4">
-            <div v-for="h in PORTFOLIO.holdings" :key="h.symbol" class="flex items-center gap-2">
-              <div :class="['w-2.5 h-2.5 rounded-sm', h.colorClass]" />
-              <span class="text-xs text-slate">{{ h.name }} &middot; {{ h.pct }}%</span>
+          <div class="flex flex-wrap gap-5">
+            <div v-for="(h, i) in portfolio.holdings" :key="h.tokenAddress" class="flex items-center gap-2">
+              <div :class="['w-2.5 h-2.5 rounded-sm', holdingColorClass(i)]" />
+              <span class="text-xs text-slate">
+                {{ h.name }} &middot;
+                {{ portfolio.totalDecryptedValue > 0 ? ((Number(h.decryptedBalance!) / 1e18 * (h.nav || 0)) / portfolio.totalDecryptedValue * 100).toFixed(0) : 0 }}%
+              </span>
             </div>
-          </div>
-          <!-- Yield breakdown per token -->
-          <div class="border-t border-haze/50 dark:border-white/8 pt-4 space-y-2">
-            <div v-for="h in PORTFOLIO.holdings" :key="h.symbol" class="flex items-center justify-between text-xs">
-              <span class="text-cool">{{ h.symbol }} earned</span>
-              <span class="font-mono text-midnight dark:text-white">{{ formatUSD(YIELD_BREAKDOWN[h.symbol] || 0) }}</span>
-            </div>
-          </div>
-          <div class="mt-4">
-            <InsightChip
-              text="Allocation optimal"
-              detail="Your treasury allocation at 70% is within the recommended range for your risk profile. Money market at 20% provides yield diversification."
-              agent-prompt="Is my current portfolio allocation optimal?"
-            />
           </div>
         </div>
       </div>
     </MCard>
 
-    <!-- Recent activity -->
-    <MCard
-      v-motion
-      :initial="{ opacity: 0, x: -16 }"
-      :visible-once="{ opacity: 1, x: 0, transition: { duration: 400, delay: 300 } }"
-    >
-      <p class="text-base font-sans font-medium text-midnight dark:text-white mb-5">Recent Activity</p>
-      <div
-        v-for="(a, i) in recentActivity"
-        :key="i"
-        :class="[
-          'flex items-center gap-4 py-4',
-          i > 0 && 'border-t border-haze/50 dark:border-white/8',
-        ]"
-      >
-        <div class="relative">
-          <!-- Timeline connector -->
-          <div v-if="i < recentActivity.length - 1" class="absolute top-10 left-1/2 -translate-x-1/2 w-px h-8 bg-haze/50 dark:bg-white/8" />
-          <div :class="['w-10 h-10 rounded-lg flex items-center justify-center', activityMeta[a.type]?.bg || 'bg-mist']">
-            <component
-              :is="activityMeta[a.type]?.icon || Activity"
-              :size="16"
-              :class="activityMeta[a.type]?.classes || 'text-cool'"
-            />
-          </div>
-        </div>
-        <div class="flex-1 min-w-0">
-          <p class="text-base font-sans font-medium text-midnight dark:text-white">
-            {{ a.desc }} &middot;
-            <span class="font-mono text-xs">{{ a.amount }}</span>
-          </p>
-          <p class="text-sm text-cool mt-1">{{ a.token }}</p>
-        </div>
-        <span class="text-xs text-cool whitespace-nowrap">{{ a.time }}</span>
-      </div>
-    </MCard>
-
-    <MPrivacyBanner text="All balances are encrypted on-chain via Fhenix FHE. Only you can see this data." />
+    <MPrivacyBanner text="All token balances are encrypted on-chain via Fhenix FHE. Click 'Decrypt' to reveal — only you can see this data." />
   </div>
   </div>
 </template>

@@ -1,45 +1,68 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { YIELDS_DATA, PORTFOLIO, YIELD_BREAKDOWN } from '@/data/constants'
+import { ref, onMounted } from 'vue'
 import { toast } from 'vue-sonner'
 import { useAppStore } from '@/stores/app'
+import { useYieldsStore } from '@/stores/yields'
 import { formatUSD } from '@/lib/utils'
 import MCard from '@/components/ui/MCard.vue'
 import MButton from '@/components/ui/MButton.vue'
 import MBadge from '@/components/ui/MBadge.vue'
 import MSummaryCard from '@/components/ui/MSummaryCard.vue'
 import MGoldRule from '@/components/ui/MGoldRule.vue'
-import MProgressBar from '@/components/ui/MProgressBar.vue'
 import MSkeleton from '@/components/ui/MSkeleton.vue'
 import YieldLineChart from '@/components/charts/YieldLineChart.vue'
-import { DollarSign, Clock, CalendarDays, TrendingUp } from 'lucide-vue-next'
+import { DollarSign, Clock, CalendarDays, TrendingUp, Inbox } from 'lucide-vue-next'
 
-const store = useAppStore()
-const activeRange = ref('6M')
-const ranges = ['1M', '3M', '6M', 'All'] as const
+const app = useAppStore()
+const yields = useYieldsStore()
+const activeRange = ref<'1m' | '3m' | '6m' | '1y'>('6m')
+const ranges = [
+  { label: '1M', value: '1m' as const },
+  { label: '3M', value: '3m' as const },
+  { label: '6M', value: '6m' as const },
+  { label: '1Y', value: '1y' as const },
+]
 
-function claimYield(token: string, amount: number) {
+onMounted(async () => {
+  app.startLoading()
+  await yields.load()
+  app.stopLoading()
+})
+
+function claimYield(id: string) {
   toast.success('Yield claimed', {
-    description: `$${amount.toFixed(2)} from ${token}`,
+    description: `Claim submitted for yield record ${id}`,
   })
+}
+
+function statusBadgeVariant(status: string): 'positive' | 'gold' | 'teal' | 'default' {
+  switch (status) {
+    case 'claimed': return 'positive'
+    case 'claimable': return 'teal'
+    case 'pending': return 'gold'
+    default: return 'default'
+  }
 }
 </script>
 
 <template>
   <div>
   <!-- Skeleton -->
-  <div v-if="store.isLoading" class="flex flex-col gap-8">
-    <div>
-      <MSkeleton variant="title" width="120px" />
-    </div>
+  <div v-if="app.isLoading" class="flex flex-col gap-8">
+    <MSkeleton variant="title" width="120px" />
     <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
       <MSkeleton variant="card" class="md:col-span-2" height="120px" />
       <MSkeleton variant="card" height="100px" />
       <MSkeleton variant="card" height="100px" />
     </div>
-    <MSkeleton variant="card" height="200px" />
     <MSkeleton variant="chart" height="220px" />
     <MSkeleton variant="card" height="180px" />
+  </div>
+
+  <!-- Error state -->
+  <div v-else-if="yields.error" class="flex flex-col items-center justify-center py-20 gap-4">
+    <p class="text-base text-cool">{{ yields.error }}</p>
+    <MButton variant="outline" @click="yields.load()">Retry</MButton>
   </div>
 
   <!-- Content -->
@@ -53,57 +76,28 @@ function claimYield(token: string, amount: number) {
       <MGoldRule />
     </div>
 
-    <!-- Summary cards — hero + secondary -->
+    <!-- Summary cards -->
     <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
       <MSummaryCard
         class="md:col-span-2"
         label="Total Earned"
-        :value="formatUSD(YIELDS_DATA.totalEarned)"
+        :value="formatUSD(yields.totalEarned)"
         accent
         size="lg"
         :icon="DollarSign"
-        :trend="{ value: 4.2, direction: 'up' }"
       />
       <MSummaryCard
         label="Pending"
-        :value="formatUSD(YIELDS_DATA.pending)"
+        :value="formatUSD(yields.totalPending)"
         accent
         :icon="Clock"
       />
       <MSummaryCard
-        label="Next Payout"
-        :value="YIELDS_DATA.nextPayout"
+        label="Total Records"
+        :value="String(yields.total)"
         :icon="CalendarDays"
       />
     </div>
-
-    <!-- Yield breakdown per token -->
-    <MCard
-      v-motion
-      :initial="{ opacity: 0, y: 16 }"
-      :visible-once="{ opacity: 1, y: 0, transition: { duration: 400, delay: 100 } }"
-    >
-      <p class="text-base font-sans font-medium text-midnight dark:text-white mb-5">Yield Breakdown</p>
-      <div class="space-y-5">
-        <div v-for="h in PORTFOLIO.holdings" :key="h.symbol" class="flex items-center gap-4">
-          <div class="flex-1 min-w-0">
-            <div class="flex items-center justify-between mb-2">
-              <div class="flex items-center gap-2">
-                <span class="text-base font-medium text-midnight dark:text-white">{{ h.name }}</span>
-                <span class="font-mono text-xs text-cool">{{ h.symbol }}</span>
-              </div>
-              <span class="text-sm font-mono font-medium text-midnight dark:text-white">
-                {{ formatUSD(YIELD_BREAKDOWN[h.symbol] || 0) }}
-              </span>
-            </div>
-            <div class="flex items-center gap-3">
-              <MProgressBar :value="h.pct" color="bg-compute" class="flex-1" />
-              <span class="text-xs text-gold font-medium w-16 text-right">{{ h.apy }}% APY</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </MCard>
 
     <!-- Yield trend chart with time range -->
     <MCard
@@ -116,74 +110,79 @@ function claimYield(token: string, amount: number) {
         <div class="flex gap-1 bg-mist dark:bg-midnight rounded-lg p-0.5">
           <button
             v-for="r in ranges"
-            :key="r"
-            @click="activeRange = r"
+            :key="r.value"
+            @click="activeRange = r.value"
             :class="[
               'px-3 py-1 text-xs font-medium rounded-md transition-all duration-200 cursor-pointer',
-              activeRange === r
+              activeRange === r.value
                 ? 'bg-white dark:bg-midnight-mid shadow-sm text-compute'
                 : 'text-cool hover:text-midnight dark:hover:text-white',
             ]"
           >
-            {{ r }}
+            {{ r.label }}
           </button>
         </div>
       </div>
-      <YieldLineChart />
+      <YieldLineChart :range="activeRange" />
     </MCard>
 
-    <!-- Pending claims -->
+    <!-- Claimable yields -->
     <MCard
+      v-if="yields.claimable.length > 0"
       v-motion
       :initial="{ opacity: 0, y: 16 }"
       :visible-once="{ opacity: 1, y: 0, transition: { duration: 400, delay: 200 } }"
     >
       <div class="flex items-center justify-between mb-5">
-        <p class="text-base font-sans font-medium text-midnight dark:text-white">Pending Claims</p>
-        <MBadge variant="teal" :pulse="true">{{ YIELDS_DATA.pendingClaims.length }} Claimable</MBadge>
+        <p class="text-base font-sans font-medium text-midnight dark:text-white">Claimable Yields</p>
+        <MBadge variant="teal" :pulse="true">{{ yields.claimable.length }} Claimable</MBadge>
       </div>
       <div
-        v-for="(c, i) in YIELDS_DATA.pendingClaims"
-        :key="i"
-        :class="[
-          'flex items-center justify-between py-4',
-          i > 0 && 'border-t border-haze/50 dark:border-white/8',
-        ]"
+        v-for="(c, i) in yields.claimable"
+        :key="c.id"
+        :class="['flex items-center justify-between py-4', i > 0 && 'border-t border-haze/50 dark:border-white/8']"
       >
         <div>
-          <p class="text-base font-sans font-medium text-midnight dark:text-white">{{ c.token }}</p>
-          <p class="text-xl font-accent italic text-midnight dark:text-white mt-1">
-            {{ formatUSD(c.amount) }}
+          <p class="text-base font-sans font-medium text-midnight dark:text-white">Distribution #{{ c.distribution_id }}</p>
+          <p v-if="c.amount" class="text-xl font-accent italic text-midnight dark:text-white mt-1">
+            {{ formatUSD(parseFloat(c.amount)) }}
           </p>
+          <p v-else class="text-sm text-cool mt-1">Amount encrypted</p>
         </div>
-        <MButton size="sm" @click="claimYield(c.token, c.amount)">
-          Claim
-        </MButton>
+        <MButton size="sm" @click="claimYield(c.id)">Claim</MButton>
       </div>
     </MCard>
 
-    <!-- History -->
+    <!-- All yield records -->
     <MCard
       v-motion
       :initial="{ opacity: 0, y: 16 }"
       :visible-once="{ opacity: 1, y: 0, transition: { duration: 400, delay: 250 } }"
     >
       <p class="text-base font-sans font-medium text-midnight dark:text-white mb-5">History</p>
-      <div
-        v-for="(h, i) in YIELDS_DATA.history"
-        :key="i"
-        :class="[
-          'flex items-center gap-3.5 py-4',
-          i > 0 && 'border-t border-haze/50 dark:border-white/8',
-        ]"
-      >
-        <div class="w-9 h-9 rounded-lg bg-gold/10 flex items-center justify-center">
-          <TrendingUp :size="14" class="text-gold" />
+
+      <div v-if="yields.items.length === 0" class="flex flex-col items-center py-8 gap-3">
+        <Inbox :size="32" class="text-cool/30" />
+        <p class="text-sm text-cool">No yield records yet</p>
+      </div>
+
+      <div v-else>
+        <div
+          v-for="(item, i) in yields.items"
+          :key="item.id"
+          :class="['flex items-center gap-3.5 py-4', i > 0 && 'border-t border-haze/50 dark:border-white/8']"
+        >
+          <div class="w-9 h-9 rounded-lg bg-gold/10 flex items-center justify-center">
+            <TrendingUp :size="14" class="text-gold" />
+          </div>
+          <span class="text-xs text-cool w-20 shrink-0">{{ new Date(item.created_at).toLocaleDateString() }}</span>
+          <span class="flex-1 text-base text-midnight dark:text-white">Dist #{{ item.distribution_id }}</span>
+          <span v-if="item.amount" class="font-mono text-sm font-medium text-midnight dark:text-white">
+            {{ formatUSD(parseFloat(item.amount)) }}
+          </span>
+          <span v-else class="font-mono text-sm text-cool">Encrypted</span>
+          <MBadge :variant="statusBadgeVariant(item.status)">{{ item.status }}</MBadge>
         </div>
-        <span class="text-xs text-cool w-14 shrink-0">{{ h.date }}</span>
-        <span class="flex-1 text-base text-midnight dark:text-white">{{ h.token }}</span>
-        <span class="font-mono text-sm font-medium text-midnight dark:text-white">{{ h.amount }}</span>
-        <MBadge variant="positive">Claimed &#10003;</MBadge>
       </div>
     </MCard>
   </div>
