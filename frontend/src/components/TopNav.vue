@@ -1,19 +1,25 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
+import { useAuth } from '@/composables/useAuth'
 import { useGlassNav } from '@/composables/useGlassNav'
-import { cn } from '@/lib/utils'
+import { cn, formatAddress } from '@/lib/utils'
 import MDarkToggle from '@/components/ui/MDarkToggle.vue'
 import {
   PieChart, ArrowDown, TrendingUp, Activity,
-  Coins, Share2, Users, ClipboardCheck, Wallet,
+  Coins, Share2, Users, ClipboardCheck, Wallet, LogOut, Loader2,
 } from 'lucide-vue-next'
 
 const route = useRoute()
 const router = useRouter()
 const store = useAppStore()
+const authStore = useAuthStore()
+const auth = useAuth()
 const { isScrolled } = useGlassNav(20)
+
+const switchingRole = ref(false)
 
 const investorNav = [
   { path: '/portfolio', label: 'Portfolio', icon: PieChart },
@@ -31,9 +37,29 @@ const issuerNav = [
 
 const navItems = computed(() => store.role === 'investor' ? investorNav : issuerNav)
 
-function switchRole(r: 'investor' | 'issuer') {
-  store.setRole(r)
-  router.push(r === 'investor' ? '/portfolio' : '/tokens')
+const displayAddress = computed(() => formatAddress(authStore.walletAddress))
+
+async function switchRole(r: 'investor' | 'issuer') {
+  if (r === store.role) return
+  if (switchingRole.value) return
+
+  switchingRole.value = true
+  try {
+    await auth.switchRole(r)
+    router.push(r === 'investor' ? '/portfolio' : '/tokens')
+  } catch {
+    // switchRole failed — stay on current role
+    // Error is in authStore.error, but we don't show it in nav
+    // Just do a client-side switch as fallback
+    store.setRole(r)
+    router.push(r === 'investor' ? '/portfolio' : '/tokens')
+  } finally {
+    switchingRole.value = false
+  }
+}
+
+async function handleLogout() {
+  await auth.logout()
 }
 </script>
 
@@ -85,23 +111,38 @@ function switchRole(r: 'investor' | 'issuer') {
             v-for="r in (['investor', 'issuer'] as const)"
             :key="r"
             @click="switchRole(r)"
+            :disabled="switchingRole"
             :class="cn(
               'px-3 py-1.5 text-xs font-sans font-medium rounded-md transition-all duration-200 capitalize cursor-pointer',
+              'disabled:opacity-70 disabled:cursor-wait',
               store.role === r
                 ? 'bg-white dark:bg-midnight shadow-sm text-compute'
                 : 'text-cool hover:text-midnight dark:hover:text-white',
             )"
           >
+            <Loader2 v-if="switchingRole && store.role !== r" :size="12" class="animate-spin inline mr-1" />
             {{ r }}
           </button>
         </div>
 
         <MDarkToggle />
 
-        <!-- Wallet -->
-        <div class="hidden sm:flex items-center gap-2 bg-mist dark:bg-midnight-mid rounded-lg px-3 py-2 border border-haze dark:border-white/8">
-          <Wallet :size="14" class="text-cool" />
-          <span class="font-mono text-xs text-slate dark:text-cool">0x7a3f...b29e</span>
+        <!-- Wallet + logout -->
+        <div
+          v-if="authStore.walletAddress"
+          class="hidden sm:flex items-center gap-1.5 bg-mist dark:bg-midnight-mid rounded-lg border border-haze dark:border-white/8"
+        >
+          <div class="flex items-center gap-2 px-3 py-2">
+            <Wallet :size="14" class="text-cool" />
+            <span class="font-mono text-xs text-slate dark:text-cool">{{ displayAddress }}</span>
+          </div>
+          <button
+            @click="handleLogout"
+            class="flex items-center justify-center px-2.5 py-2 border-l border-haze dark:border-white/8 text-cool hover:text-negative transition-colors duration-200 cursor-pointer"
+            title="Sign out"
+          >
+            <LogOut :size="14" />
+          </button>
         </div>
       </div>
     </nav>

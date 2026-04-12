@@ -16,6 +16,8 @@ const investorPaths = ['/portfolio', '/deposit', '/yields', '/activity']
 const issuerPaths = ['/tokens', '/distribute', '/investors', '/compliance']
 
 const isLandingPage = computed(() => route.path === '/' || route.meta.layout === 'landing')
+const isLoginPage = computed(() => route.meta.layout === 'login')
+const showChrome = computed(() => !isLandingPage.value && !isLoginPage.value)
 
 watch(
   () => route.path,
@@ -42,13 +44,13 @@ onMounted(() => {
     ]"
   >
     <MMeshGradient />
-    <TopNav v-if="!isLandingPage" />
+    <TopNav v-if="showChrome" />
     <main>
       <router-view v-slot="{ Component, route: viewRoute }">
         <transition name="page" mode="out-in">
           <div
             :key="viewRoute.path"
-            :class="viewRoute.meta.layout === 'landing'
+            :class="viewRoute.meta.layout === 'landing' || viewRoute.meta.layout === 'login'
               ? ''
               : 'max-w-screen-2xl mx-auto w-full px-6 sm:px-10 lg:px-16 xl:px-24 pt-10 pb-28 md:pb-32'"
           >
@@ -57,7 +59,7 @@ onMounted(() => {
         </transition>
       </router-view>
     </main>
-    <template v-if="!isLandingPage">
+    <template v-if="showChrome">
       <AgentFAB />
       <MMobileTabBar />
     </template>

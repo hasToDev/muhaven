@@ -1,4 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
+
+const PUBLIC_ROUTES = new Set(['/', '/login'])
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -10,6 +13,11 @@ const router = createRouter({
       path: '/',
       component: () => import('@/views/LandingPage.vue'),
       meta: { title: 'Home', layout: 'landing' },
+    },
+    {
+      path: '/login',
+      component: () => import('@/views/LoginPage.vue'),
+      meta: { title: 'Sign In', layout: 'login' },
     },
     // Investor routes
     {
@@ -60,6 +68,18 @@ const router = createRouter({
       meta: { title: 'Agent' },
     },
   ],
+})
+
+// Auth guard — redirect unauthenticated users to /login
+router.beforeEach((to) => {
+  if (PUBLIC_ROUTES.has(to.path)) return true
+
+  const authStore = useAuthStore()
+  if (!authStore.isAuthenticated) {
+    return { path: '/login', query: { redirect: to.fullPath } }
+  }
+
+  return true
 })
 
 export default router

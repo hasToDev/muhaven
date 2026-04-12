@@ -10,19 +10,31 @@ const pinia = createPinia()
 app.use(pinia)
 app.use(router)
 app.use(MotionPlugin)
+
+// Hydrate auth state from localStorage before first navigation
+import { useAuthStore } from './stores/auth'
+import { useWalletStore } from './stores/wallet'
+const authStore = useAuthStore()
+const hydrated = authStore.hydrate()
+
 app.mount('#app')
 
-// Dev-only: expose wallet store for console testing
+// If auth tokens were restored, reconnect wallet in the background (non-blocking)
+if (hydrated) {
+  const walletStore = useWalletStore()
+  walletStore.tryReconnect()
+}
+
+// Dev-only: expose stores for console testing
 if (import.meta.env.DEV) {
-  import('./stores/wallet').then(({ useWalletStore }) => {
-    ;(window as any).__wallet = useWalletStore()
-    console.log(
-      '%c[MuHaven] Wallet store exposed as window.__wallet',
-      'color: #1B9E8A; font-weight: bold',
-    )
-    console.log('  __wallet.register("yourname")  — create passkey')
-    console.log('  __wallet.connect()              — login with passkey')
-    console.log('  __wallet.address                — current address')
-    console.log('  __wallet.disconnect()           — disconnect')
-  })
+  const walletStore = useWalletStore()
+  ;(window as any).__wallet = walletStore
+  ;(window as any).__auth = authStore
+  console.log(
+    '%c[MuHaven] Stores exposed: window.__wallet, window.__auth',
+    'color: #1B9E8A; font-weight: bold',
+  )
+  console.log('  __wallet.register("yourname")  — create passkey')
+  console.log('  __wallet.connect()              — login with passkey')
+  console.log('  __auth.isAuthenticated           — check auth status')
 }
