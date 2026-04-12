@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ISSUER_TOKENS, TOKEN_OVERVIEW } from '@/data/constants'
+import { onMounted } from 'vue'
+import { useIssuerTokensStore } from '@/stores/issuer-tokens'
 import { useAppStore } from '@/stores/app'
 import { formatUSD } from '@/lib/utils'
 import MCard from '@/components/ui/MCard.vue'
@@ -11,14 +12,36 @@ import MPrivacyBanner from '@/components/ui/MPrivacyBanner.vue'
 import MSkeleton from '@/components/ui/MSkeleton.vue'
 import TokenGrowthChart from '@/components/charts/TokenGrowthChart.vue'
 import { DollarSign, Users, Percent, Coins } from 'lucide-vue-next'
+import type { TokenStatus } from '@/services/api'
 
-const store = useAppStore()
+const app = useAppStore()
+const store = useIssuerTokensStore()
+
+function statusVariant(status: TokenStatus) {
+  if (status === 'active') return 'positive' as const
+  if (status === 'paused') return 'gold' as const
+  if (status === 'winding_down') return 'negative' as const
+  return 'default' as const
+}
+
+function statusLabel(status: TokenStatus) {
+  if (status === 'winding_down') return 'Winding Down'
+  return status.charAt(0).toUpperCase() + status.slice(1)
+}
+
+onMounted(async () => {
+  if (!store.loaded) {
+    app.startLoading()
+    await store.load()
+    app.stopLoading()
+  }
+})
 </script>
 
 <template>
   <div>
   <!-- Skeleton -->
-  <div v-if="store.isLoading" class="flex flex-col gap-8">
+  <div v-if="store.loading" class="flex flex-col gap-8">
     <div class="flex justify-between items-center">
       <MSkeleton variant="title" width="180px" />
       <MSkeleton width="110px" height="36px" />
@@ -27,6 +50,19 @@ const store = useAppStore()
       <MSkeleton variant="card" v-for="i in 4" :key="i" height="100px" />
     </div>
     <MSkeleton variant="card" v-for="i in 2" :key="i" height="220px" />
+  </div>
+
+  <!-- Error -->
+  <div v-else-if="store.error" class="flex flex-col items-center gap-4 py-16">
+    <p class="text-negative text-sm">{{ store.error }}</p>
+    <MButton variant="ghost" size="sm" @click="store.load()">Retry</MButton>
+  </div>
+
+  <!-- Empty -->
+  <div v-else-if="store.loaded && store.tokens.length === 0" class="flex flex-col items-center gap-4 py-16">
+    <Coins :size="40" class="text-cool opacity-40" />
+    <p class="text-cool text-sm">No tokens issued yet</p>
+    <MButton>+ New Token</MButton>
   </div>
 
   <!-- Content -->
@@ -48,31 +84,31 @@ const store = useAppStore()
     <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
       <MSummaryCard
         label="Total AUM"
-        :value="formatUSD(TOKEN_OVERVIEW.totalAUM, 0)"
+        :value="store.aggregateStats.totalAUM ? formatUSD(parseFloat(store.aggregateStats.totalAUM), 0) : '--'"
         accent
         :icon="DollarSign"
       />
       <MSummaryCard
         label="Total Investors"
-        :value="String(TOKEN_OVERVIEW.totalInvestors)"
+        :value="String(store.aggregateStats.totalInvestors)"
         :icon="Users"
       />
       <MSummaryCard
         label="Weighted APY"
-        :value="`${TOKEN_OVERVIEW.weightedAPY}%`"
+        :value="store.aggregateStats.weightedAPY ? `${store.aggregateStats.weightedAPY}%` : '--'"
         :icon="Percent"
       />
       <MSummaryCard
         label="Active Tokens"
-        :value="String(TOKEN_OVERVIEW.activeTokens)"
+        :value="String(store.aggregateStats.activeTokens)"
         :icon="Coins"
       />
     </div>
 
     <!-- Token cards -->
     <MCard
-      v-for="(t, i) in ISSUER_TOKENS"
-      :key="i"
+      v-for="(t, i) in store.tokens"
+      :key="t.address"
       hover
       glow
       v-motion
@@ -85,8 +121,10 @@ const store = useAppStore()
           <p class="font-mono text-xs text-cool mt-1">{{ t.symbol }}</p>
         </div>
         <div class="flex items-center gap-2">
+          <MBadge :variant="statusVariant(t.status)" :pulse="t.status === 'paused'">
+            {{ statusLabel(t.status) }}
+          </MBadge>
           <MBadge variant="privacy">FHE Encrypted</MBadge>
-          <MBadge variant="teal">Issuer</MBadge>
         </div>
       </div>
 
@@ -97,15 +135,15 @@ const store = useAppStore()
         </div>
         <div>
           <p class="text-xs text-cool uppercase tracking-wider mb-1">Investors</p>
-          <p class="text-base font-medium text-midnight dark:text-white">{{ t.investors }}</p>
+          <p class="text-base font-medium text-midnight dark:text-white">{{ t.investors ?? '--' }}</p>
         </div>
         <div>
           <p class="text-xs text-cool uppercase tracking-wider mb-1">Yield APY</p>
-          <p class="text-base font-medium text-gold">{{ t.apy }}%</p>
+          <p class="text-base font-medium text-gold">{{ t.apy ? `${t.apy}%` : '--' }}</p>
         </div>
         <div>
           <p class="text-xs text-cool uppercase tracking-wider mb-1">Schedule</p>
-          <p class="text-base font-medium text-midnight dark:text-white">{{ t.schedule }}</p>
+          <p class="text-base font-medium text-midnight dark:text-white">{{ t.schedule ?? '--' }}</p>
         </div>
       </div>
 

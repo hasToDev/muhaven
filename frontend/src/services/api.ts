@@ -345,3 +345,60 @@ export const balanceApi = {
     return request('/balance', { auth: true })
   },
 }
+
+// ── Issuer response types ──────────────────────────────────────────
+
+export interface IssuerStatsDto {
+  total_aum: string | null
+  total_investors: number
+  weighted_apy: string | null
+  active_tokens: number
+  total_tokens: number
+  total_yield_distributed: string | null
+}
+
+export interface PrepareDistributionDto {
+  token_address: string
+  amount: string
+}
+
+export interface PrepareDistributionResult {
+  token_address: string
+  token_name: string
+  amount: string
+}
+
+export interface PrepareWhitelistResult {
+  address: string
+}
+
+// ── Issuer endpoints (auth + issuer role) ──────────────────────────
+
+export const issuerApi = {
+  getStats(): Promise<IssuerStatsDto> {
+    return request('/issuer/stats', { auth: true })
+  },
+
+  prepareDistribution(data: PrepareDistributionDto): Promise<PrepareDistributionResult> {
+    return request('/issuer/distribute', {
+      method: 'POST',
+      body: data,
+      auth: true,
+    })
+  },
+
+  addToWhitelist(addresses: string[]): Promise<PrepareWhitelistResult> {
+    return request('/issuer/whitelist', {
+      method: 'POST',
+      body: { addresses },
+      auth: true,
+    })
+  },
+
+  removeFromWhitelist(address: string): Promise<void> {
+    return request(`/issuer/whitelist/${address}`, {
+      method: 'DELETE',
+      auth: true,
+    })
+  },
+}
