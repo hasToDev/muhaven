@@ -36,6 +36,10 @@ const EnvSchema = z.object({
   QUICKNODE_WEBHOOK_SECRET: z.string().optional(),
   RELAY_WEBHOOK_SECRET: z.string().optional(),
 
+  // Block event poller
+  BLOCK_POLLER_ENABLED: z.coerce.boolean().default(false),
+  BLOCK_POLLER_INTERVAL_MS: z.coerce.number().default(15000),
+
   // MuHaven Contract Addresses (Arb Sepolia)
   MUHAVEN_TOKEN_ADDRESS: z.string().optional(),
   MUHAVEN_VAULT_ADDRESS: z.string().optional(),

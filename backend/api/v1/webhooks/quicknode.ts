@@ -6,7 +6,12 @@ import { sendResponse } from '../../../src/interface/handler-factory.js';
 import { withCors } from '../../../src/interface/middleware/with-cors.js';
 import { Response } from '../../../src/interface/response.js';
 
-const useCase = new ProcessEscrowEventUseCase(container.escrowRepo, container.escrowEventRepo);
+const useCase = new ProcessEscrowEventUseCase(
+  container.escrowRepo,
+  container.escrowEventRepo,
+  container.yieldRecordRepo,
+  container.userRepo,
+);
 
 const handler = async (req: VercelRequest, res: VercelResponse): Promise<void> => {
   if (req.method !== 'POST') {

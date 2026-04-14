@@ -6,6 +6,7 @@ import { MemoryEscrowRepository } from '../memory-escrow.repository.js';
 import { MemoryWithdrawalRepository } from '../memory-withdrawal.repository.js';
 import { MemoryEscrowEventRepository } from '../memory-escrow-event.repository.js';
 import { MemoryNonceRepository } from '../memory-nonce.repository.js';
+import { MemoryYieldRecordRepository } from '../memory-yield-record.repository.js';
 import { User } from '../../../../domain/auth/model/user.js';
 import { Session } from '../../../../domain/auth/model/session.js';
 import { Escrow } from '../../../../domain/escrow/model/escrow.js';
@@ -15,6 +16,7 @@ import { Withdrawal } from '../../../../domain/withdrawal/model/withdrawal.js';
 import { WithdrawalStatus } from '../../../../domain/withdrawal/model/withdrawal-status.enum.js';
 import { DestinationChain } from '../../../../domain/withdrawal/model/destination-chain.enum.js';
 import { EscrowEvent } from '../../../../domain/escrow/events/model/escrow-event.js';
+import { YieldRecord } from '../../../../domain/yield-history/model/yield-record.js';
 
 function makeUser(overrides: Partial<ConstructorParameters<typeof User>[0]> = {}): User {
   return new User({
@@ -381,5 +383,116 @@ describe('MemoryNonceRepository', () => {
   it('findAndDelete returns false for expired nonce', async () => {
     await repo.save('0xwallet', 'expired', -1);
     expect(await repo.findAndDelete('0xwallet', 'expired')).toBe(false);
+  });
+});
+
+// ── MemoryYieldRecordRepository ──────────────────────────────────────
+
+function makeYieldRecord(overrides: Partial<ConstructorParameters<typeof YieldRecord>[0]> = {}): YieldRecord {
+  return new YieldRecord({
+    id: randomUUID(),
+    userId: randomUUID(),
+    distributionId: 1,
+    tokenAddress: '0xtoken',
+    status: 'pending',
+    createdAt: new Date(),
+    ...overrides,
+  });
+}
+
+describe('MemoryYieldRecordRepository', () => {
+  let repo: MemoryYieldRecordRepository;
+
+  beforeEach(() => {
+    repo = new MemoryYieldRecordRepository();
+  });
+
+  it('save and findById returns the record', async () => {
+    const record = makeYieldRecord();
+    await repo.save(record);
+    const found = await repo.findById(record.id);
+    expect(found).not.toBeNull();
+    expect(found!.id).toBe(record.id);
+  });
+
+  it('findById returns null for unknown id', async () => {
+    expect(await repo.findById('nonexistent')).toBeNull();
+  });
+
+  it('findByUserId returns records for the user with pagination', async () => {
+    const userId = randomUUID();
+    await repo.save(makeYieldRecord({ userId }));
+    await repo.save(makeYieldRecord({ userId }));
+    await repo.save(makeYieldRecord({ userId: randomUUID() }));
+
+    const result = await repo.findByUserId(userId);
+    expect(result.items).toHaveLength(2);
+    expect(result.total).toBe(2);
+  });
+
+  it('findByUserId filters by status', async () => {
+    const userId = randomUUID();
+    await repo.save(makeYieldRecord({ userId, status: 'pending' }));
+    await repo.save(makeYieldRecord({ userId, status: 'claimable' }));
+
+    const result = await repo.findByUserId(userId, { status: 'claimable' });
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].status).toBe('claimable');
+  });
+
+  it('findByUserId paginates with limit and offset', async () => {
+    const userId = randomUUID();
+    for (let i = 0; i < 5; i++) {
+      await repo.save(makeYieldRecord({ userId }));
+    }
+
+    const page = await repo.findByUserId(userId, { limit: 2, offset: 1 });
+    expect(page.items).toHaveLength(2);
+    expect(page.total).toBe(5);
+  });
+
+  it('findByDistributionId returns all records for the distribution', async () => {
+    await repo.save(makeYieldRecord({ distributionId: 10 }));
+    await repo.save(makeYieldRecord({ distributionId: 10 }));
+    await repo.save(makeYieldRecord({ distributionId: 20 }));
+
+    const records = await repo.findByDistributionId(10);
+    expect(records).toHaveLength(2);
+  });
+
+  it('findByEscrowId returns the linked record', async () => {
+    const escrowId = randomUUID();
+    await repo.save(makeYieldRecord({ escrowId }));
+    await repo.save(makeYieldRecord());
+
+    const found = await repo.findByEscrowId(escrowId);
+    expect(found).not.toBeNull();
+    expect(found!.escrowId).toBe(escrowId);
+  });
+
+  it('findByEscrowId returns null when not found', async () => {
+    expect(await repo.findByEscrowId('nonexistent')).toBeNull();
+  });
+
+  it('updateStatus changes status', async () => {
+    const record = makeYieldRecord({ status: 'pending' });
+    await repo.save(record);
+
+    await repo.updateStatus(record.id, 'claimable');
+
+    const updated = await repo.findById(record.id);
+    expect(updated!.status).toBe('claimable');
+  });
+
+  it('updateStatus sets claimedAt when provided', async () => {
+    const record = makeYieldRecord({ status: 'claimable' });
+    await repo.save(record);
+
+    const now = new Date();
+    await repo.updateStatus(record.id, 'claimed', now);
+
+    const updated = await repo.findById(record.id);
+    expect(updated!.status).toBe('claimed');
+    expect(updated!.claimedAt).toEqual(now);
   });
 });

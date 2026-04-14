@@ -41,6 +41,7 @@ export const userRoleEnum = pgEnum('user_role', ['investor', 'issuer']);
 export const escrowEventTypeEnum = pgEnum('escrow_event_type', [
   'EscrowCreated',
   'EscrowSettled',
+  'EscrowRedeemed',
 ]);
 
 export const users = pgTable(
@@ -240,6 +241,7 @@ export const yieldRecords = pgTable(
   (t) => [
     index('yield_records_user_id_idx').on(t.userId),
     index('yield_records_distribution_id_idx').on(t.distributionId),
+    index('yield_records_escrow_id_idx').on(t.escrowId),
   ],
 );
 

@@ -3,6 +3,10 @@ import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getHealthStatus } from './infrastructure/health.js';
+import { getEnv } from './core/config.js';
+import { BlockchainEventPoller } from './infrastructure/blockchain/index.js';
+import { ProcessEscrowEventUseCase } from './application/use-case/webhook/process-escrow-event.use-case.js';
+import { container } from './infrastructure/container.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const API_DIR = join(__dirname, '..', 'api');
@@ -227,6 +231,44 @@ async function main() {
     }
     console.log('');
   });
+
+  // Start blockchain event poller if enabled
+  const env = getEnv();
+  if (env.BLOCK_POLLER_ENABLED) {
+    const escrowAddress = env.REINEIRA_ESCROW_ADDRESS;
+    const distributorAddress = env.YIELD_DISTRIBUTOR_ADDRESS;
+    const rpcUrl = env.RPC_URL;
+
+    if (!escrowAddress || !distributorAddress || !rpcUrl) {
+      console.warn('[poller] BLOCK_POLLER_ENABLED but missing REINEIRA_ESCROW_ADDRESS, YIELD_DISTRIBUTOR_ADDRESS, or RPC_URL — skipping');
+    } else {
+      const useCase = new ProcessEscrowEventUseCase(
+        container.escrowRepo,
+        container.escrowEventRepo,
+        container.yieldRecordRepo,
+        container.userRepo,
+      );
+
+      const poller = new BlockchainEventPoller(useCase, {
+        rpcUrl,
+        escrowAddress: escrowAddress as `0x${string}`,
+        yieldDistributorAddress: distributorAddress as `0x${string}`,
+        intervalMs: env.BLOCK_POLLER_INTERVAL_MS,
+      });
+
+      poller.start(env.BLOCK_POLLER_INTERVAL_MS);
+
+      const shutdown = () => {
+        poller.stop();
+        server.close();
+        process.exit(0);
+      };
+      process.on('SIGINT', shutdown);
+      process.on('SIGTERM', shutdown);
+
+      console.log(`[poller] Event poller started (interval: ${env.BLOCK_POLLER_INTERVAL_MS}ms)`);
+    }
+  }
 }
 
 main();

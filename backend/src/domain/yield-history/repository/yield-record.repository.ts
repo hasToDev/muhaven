@@ -16,5 +16,6 @@ export interface IYieldRecordRepository {
   findByUserId(userId: string, options?: FindYieldRecordsOptions): Promise<PaginatedYieldRecords>;
   findById(id: string): Promise<YieldRecord | null>;
   findByDistributionId(distributionId: number): Promise<YieldRecord[]>;
+  findByEscrowId(escrowId: string): Promise<YieldRecord | null>;
   updateStatus(id: string, status: YieldStatus, claimedAt?: Date): Promise<void>;
 }

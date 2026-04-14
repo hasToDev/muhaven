@@ -5,6 +5,7 @@ import {
   MemoryEscrowRepository,
   MemoryWithdrawalRepository,
   MemoryEscrowEventRepository,
+  MemoryYieldRecordRepository,
 } from './repository/memory/index.js';
 import {
   PgNonceRepository,
@@ -43,11 +44,11 @@ interface Repositories {
   escrowRepo: IEscrowRepository;
   withdrawalRepo: IWithdrawalRepository;
   escrowEventRepo: IEscrowEventRepository;
+  yieldRecordRepo: IYieldRecordRepository;
 }
 
 interface MuHavenRepositories {
   portfolioRepo: IPortfolioRepository;
-  yieldRecordRepo: IYieldRecordRepository;
   rwaTokenRepo: IRwaTokenRepository;
   navHistoryRepo: INavHistoryRepository;
 }
@@ -60,6 +61,7 @@ function createMemoryRepos(): Repositories {
     escrowRepo: new MemoryEscrowRepository(),
     withdrawalRepo: new MemoryWithdrawalRepository(),
     escrowEventRepo: new MemoryEscrowEventRepository(),
+    yieldRecordRepo: new MemoryYieldRecordRepository(),
   };
 }
 
@@ -72,6 +74,7 @@ function createPostgresRepos(): Repositories {
     escrowRepo: new PgEscrowRepository(db),
     withdrawalRepo: new PgWithdrawalRepository(db),
     escrowEventRepo: new PgEscrowEventRepository(db),
+    yieldRecordRepo: new PgYieldRecordRepository(db),
   };
 }
 
@@ -79,7 +82,6 @@ function createMuHavenRepos(): MuHavenRepositories {
   const db = getDb();
   return {
     portfolioRepo: new PgPortfolioRepository(db),
-    yieldRecordRepo: new PgYieldRecordRepository(db),
     rwaTokenRepo: new PgRwaTokenRepository(db),
     navHistoryRepo: new PgNavHistoryRepository(db),
   };
@@ -135,7 +137,7 @@ export const container = {
     return getMuHavenRepos().portfolioRepo;
   },
   get yieldRecordRepo() {
-    return getMuHavenRepos().yieldRecordRepo;
+    return getRepos().yieldRecordRepo;
   },
   get rwaTokenRepo() {
     return getMuHavenRepos().rwaTokenRepo;

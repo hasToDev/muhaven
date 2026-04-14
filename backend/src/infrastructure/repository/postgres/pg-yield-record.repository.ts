@@ -68,6 +68,13 @@ export class PgYieldRecordRepository implements IYieldRecordRepository {
     return rows.map((r) => this.toDomain(r));
   }
 
+  async findByEscrowId(escrowId: string): Promise<YieldRecord | null> {
+    const row = await this.db.query.yieldRecords.findFirst({
+      where: eq(yieldRecords.escrowId, escrowId),
+    });
+    return row ? this.toDomain(row) : null;
+  }
+
   async updateStatus(id: string, status: YieldStatus, claimedAt?: Date): Promise<void> {
     await this.db
       .update(yieldRecords)

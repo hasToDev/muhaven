@@ -4,3 +4,4 @@ export { MemoryEscrowRepository } from './memory-escrow.repository.js';
 export { MemoryWithdrawalRepository } from './memory-withdrawal.repository.js';
 export { MemoryEscrowEventRepository } from './memory-escrow-event.repository.js';
 export { MemoryNonceRepository } from './memory-nonce.repository.js';
+export { MemoryYieldRecordRepository } from './memory-yield-record.repository.js';
