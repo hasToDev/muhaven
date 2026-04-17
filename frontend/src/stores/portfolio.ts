@@ -4,7 +4,6 @@ import { portfolioApi, tokensApi, type PortfolioPositionDto, type TokenResponseD
 import * as TokenService from '@/services/contracts/TokenService'
 import * as Erc20Service from '@/services/contracts/Erc20Service'
 import { addresses } from '@/contracts/addresses'
-import type { BalanceDecryptResult } from '@/services/contracts/types'
 
 export interface PortfolioHolding {
   tokenAddress: `0x${string}`
@@ -32,9 +31,9 @@ export const usePortfolioStore = defineStore('portfolio', () => {
   const totalDecryptedValue = computed(() => {
     let total = 0
     for (const h of holdings.value) {
-      if (h.decryptedBalance !== null && h.nav !== null) {
-        // Assume 18 decimals for fhERC-20
-        total += Number(h.decryptedBalance) / 1e18 * h.nav
+      if (h.decryptedBalance !== null) {
+        // Assume 18 decimals for fhERC-20, fallback NAV $1 if not yet fetched
+        total += Number(h.decryptedBalance) / 1e18 * (h.nav ?? 1)
       }
     }
     // Add USDC (6 decimals, NAV = $1)
@@ -95,6 +94,7 @@ export const usePortfolioStore = defineStore('portfolio', () => {
 
   /**
    * Decrypt a single holding's balance. Privacy-first: user explicitly opts in.
+   * Uses client-side decryptForView (CoFHE SDK) — no on-chain transaction needed.
    */
   async function decryptHolding(index: number, accountAddress: `0x${string}`) {
     const holding = holdings.value[index]
@@ -104,15 +104,14 @@ export const usePortfolioStore = defineStore('portfolio', () => {
     holding.decryptedBalance = null
 
     try {
-      // Check if there's already a decrypted result (avoids re-requesting)
-      const cached: BalanceDecryptResult = await TokenService.getBalanceDecryptResult(accountAddress)
-      if (cached.decrypted) {
-        holding.decryptedBalance = cached.result
-        return
-      }
+      // Get encrypted balance handle from on-chain
+      const ctHash = await TokenService.encryptedBalanceOf(accountAddress)
 
-      // Request new decrypt + poll
-      holding.decryptedBalance = await TokenService.decryptBalance(accountAddress)
+      // Decrypt client-side via CoFHE SDK (permit-based, no tx needed)
+      const { useFhe } = await import('@/composables/useFhe')
+      const fhe = useFhe()
+      await fhe.initialize()
+      holding.decryptedBalance = await fhe.decryptUint128ForView(ctHash)
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Decrypt failed'
     } finally {

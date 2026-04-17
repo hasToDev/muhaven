@@ -11,6 +11,16 @@ const router = useRouter()
 const route = useRoute()
 const auth = useAuth()
 
+// Clear stale auth state when arriving at login page (e.g. after session expiry redirect)
+import { useAuthStore } from '@/stores/auth'
+import { useWalletStore } from '@/stores/wallet'
+const authStore = useAuthStore()
+const walletStore = useWalletStore()
+if (!authStore.isAuthenticated && (authStore.accessToken || authStore.walletAddress)) {
+  authStore.clearAuth()
+  walletStore.disconnect()
+}
+
 const mode = ref<'login' | 'register'>('login')
 const selectedRole = ref<UserRole>('investor')
 const username = ref('')

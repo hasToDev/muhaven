@@ -267,7 +267,7 @@ export const authApi = {
   },
 
   logout(): Promise<void> {
-    return request('/auth/tokens/', {
+    return request('/auth/tokens', {
       method: 'DELETE',
       auth: true,
     })
@@ -303,6 +303,14 @@ export const tokensApi = {
 export const portfolioApi = {
   get(): Promise<{ positions: PortfolioPositionDto[]; total_tokens: number }> {
     return request('/portfolio', { auth: true })
+  },
+
+  addPosition(tokenAddress: string, tokenSymbol: string): Promise<{ status: string }> {
+    return request('/portfolio', {
+      method: 'POST',
+      auth: true,
+      body: { token_address: tokenAddress, token_symbol: tokenSymbol },
+    })
   },
 }
 

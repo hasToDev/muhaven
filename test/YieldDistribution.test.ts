@@ -1,107 +1,127 @@
-import { loadFixture, time } from "@nomicfoundation/hardhat-toolbox/network-helpers";
+import { loadFixture } from "@nomicfoundation/hardhat-toolbox/network-helpers";
 import hre from "hardhat";
 import { Encryptable } from "@cofhe/sdk";
 import { expect } from "chai";
 import {
   deployMuHavenFixture,
-  deployMockReineiraEscrow,
+  deployMockMuHavenEscrow,
   deployMockPUSDC,
+  deployYieldGate,
+  deployYieldDistributor,
   ONE_TOKEN,
-  waitForDecrypt,
 } from "./helpers/setup";
-import { upgrades } from "hardhat";
 
 /// @dev PUSDC uses 6 decimals (like USDC). 1 PUSDC = 1_000_000 units.
 const ONE_PUSDC = 1_000_000n;
 
-describe("YieldDistributor + YieldGate", function () {
+/// @dev abi.encode(address) payload used as resolverData for YieldGate.
+function encodeBeneficiary(addr: string): string {
+  return hre.ethers.AbiCoder.defaultAbiCoder().encode(["address"], [addr]);
+}
+
+describe("YieldDistributor", function () {
+  /**
+   * Deploys the distributor wired to a MockMuHavenEscrow (simplest stand-in —
+   * no PUSDC transfer, no access control). Full redemption / silent-failure
+   * coverage lives in `MuHavenEscrow.test.ts`; this suite focuses on the
+   * distributor's own responsibilities: pulling PUSDC via the operator model,
+   * computing per-investor splits as euint64, and calling fundFrom in order.
+   */
   async function deployYieldFixture() {
     const base = await loadFixture(deployMuHavenFixture);
     const { deployer, token, kyc, registry } = base;
 
-    const escrow = await deployMockReineiraEscrow();
+    const escrow = await deployMockMuHavenEscrow();
     const pusdc = await deployMockPUSDC();
+    const yieldGate = await deployYieldGate(await token.getAddress(), await kyc.getAddress());
 
-    // Deploy YieldGate
-    const YieldGate = await hre.ethers.getContractFactory("YieldGate");
-    const yieldGate = await YieldGate.deploy(
-      await token.getAddress(),
-      await kyc.getAddress()
-    );
+    // Authorize the (mock) escrow to call YieldGate.onConditionSet during batchCreate
+    await yieldGate.setAuthorizedEscrow(await escrow.getAddress());
 
-    // Deploy YieldDistributor with PUSDC
-    const YieldDistributor = await hre.ethers.getContractFactory("YieldDistributor");
-    const distributor = await upgrades.deployProxy(
-      YieldDistributor,
-      [
-        await registry.getAddress(),
-        await escrow.getAddress(),
-        await yieldGate.getAddress(),
-        deployer.address,
-        await pusdc.getAddress(),
-      ],
-      { kind: "transparent", initializer: "initialize" }
+    const distributor = await deployYieldDistributor(
+      await registry.getAddress(),
+      await escrow.getAddress(),
+      await yieldGate.getAddress(),
+      deployer.address,
+      await pusdc.getAddress()
     );
 
     return { ...base, escrow, pusdc, yieldGate, distributor };
   }
 
+  /**
+   * Helper: create N escrows owned by `beneficiary` via escrow.batchCreate
+   * and return the sequential IDs. Mock escrow has no access control, so
+   * any signer may call this.
+   */
+  async function createEscrowsFor(
+    escrow: any,
+    yieldGate: any,
+    signer: any,
+    beneficiaries: string[]
+  ): Promise<number[]> {
+    const client = await hre.cofhe.createClientWithBatteries(signer);
+    const encInputs = beneficiaries.map((b) => Encryptable.address(b));
+    const encOwners = await client.encryptInputs(encInputs).execute();
+    const data = beneficiaries.map((b) => encodeBeneficiary(b));
+    const startId = Number(await escrow.escrowCount());
+    await escrow.batchCreate(encOwners, await yieldGate.getAddress(), data);
+    return beneficiaries.map((_, i) => startId + 1 + i);
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // startDistribution()
+  // ────────────────────────────────────────────────────────────────────────────
+
   describe("startDistribution()", function () {
-    it("should start a distribution via PUSDC confidentialTransferFrom", async function () {
+    it("starts a distribution via PUSDC confidentialTransferFrom", async function () {
       const { distributor, deployer, issuer, investor, token, pusdc } =
         await loadFixture(deployYieldFixture);
       const issuerClient = await hre.cofhe.createClientWithBatteries(issuer);
 
-      // Mint tokens so there is at least 1 investor
+      // Register investor via mint
       const [encMint] = await issuerClient.encryptInputs([Encryptable.uint128(ONE_TOKEN)]).execute();
       await token.connect(issuer).mint(investor.address, encMint);
 
-      // Fund deployer with PUSDC and grant operator status to distributor
       const yieldAmount = 10n * ONE_PUSDC;
       await pusdc.mint(deployer.address, Number(yieldAmount));
       const distributorAddr = await distributor.getAddress();
       await pusdc.connect(deployer).setOperator(distributorAddr, 2000000000);
 
-      // Encrypt yield amount and pass as InEuint64
       const deployerClient = await hre.cofhe.createClientWithBatteries(deployer);
       const [encYield] = await deployerClient.encryptInputs([Encryptable.uint64(yieldAmount)]).execute();
       await distributor.startDistribution(encYield);
 
       const dist = await distributor.getDistribution(1);
       expect(dist.investorCount).to.equal(1n);
-      // totalYield is widened from euint64 (10 PUSDC) to euint128
+      // Types are now euint64 throughout — no widening to euint128.
       hre.cofhe.mocks.expectPlaintext(dist.encTotalYield, yieldAmount);
-      // perInvestorYield = totalYield / investorCount = 10 PUSDC
+      // perInvestorYield = total / investorCount = yieldAmount for a single investor
       hre.cofhe.mocks.expectPlaintext(dist.encPerInvestorYield, yieldAmount);
-      // status should be PENDING (0)
-      expect(dist.status).to.equal(0n);
+      expect(dist.status).to.equal(0n); // PENDING
     });
 
-    it("should start a distribution from contract balance (two-step workaround)", async function () {
-      const { distributor, deployer, issuer, investor, token, pusdc } =
-        await loadFixture(deployYieldFixture);
+    it("starts a distribution from contract balance (two-step workaround)", async function () {
+      const { distributor, issuer, investor, token, pusdc } = await loadFixture(deployYieldFixture);
       const issuerClient = await hre.cofhe.createClientWithBatteries(issuer);
 
-      // Mint tokens so there is at least 1 investor
       const [encMint] = await issuerClient.encryptInputs([Encryptable.uint128(ONE_TOKEN)]).execute();
       await token.connect(issuer).mint(investor.address, encMint);
 
-      // Step 1: Transfer PUSDC directly to distributor (simulating EOA confidentialTransfer)
       const yieldAmount = 5n * ONE_PUSDC;
       const distributorAddr = await distributor.getAddress();
       await pusdc.mint(distributorAddr, Number(yieldAmount));
 
-      // Step 2: Start distribution from balance
       await distributor.startDistributionFromBalance();
 
       const dist = await distributor.getDistribution(1);
       expect(dist.investorCount).to.equal(1n);
       hre.cofhe.mocks.expectPlaintext(dist.encTotalYield, yieldAmount);
       hre.cofhe.mocks.expectPlaintext(dist.encPerInvestorYield, yieldAmount);
-      expect(dist.status).to.equal(0n); // PENDING
+      expect(dist.status).to.equal(0n);
     });
 
-    it("should revert startDistribution when no investors registered", async function () {
+    it("reverts NoInvestors when registry is empty", async function () {
       const { distributor, deployer, pusdc } = await loadFixture(deployYieldFixture);
 
       await pusdc.mint(deployer.address, Number(10n * ONE_PUSDC));
@@ -117,12 +137,15 @@ describe("YieldDistributor + YieldGate", function () {
     });
   });
 
-  describe("processBatch()", function () {
-    it("should process a batch and mark distribution COMPLETED", async function () {
-      const { distributor, deployer, issuer, investor, token, pusdc, escrow } =
-        await loadFixture(deployYieldFixture);
-      const issuerClient = await hre.cofhe.createClientWithBatteries(issuer);
+  // ────────────────────────────────────────────────────────────────────────────
+  // setEscrowIds()
+  // ────────────────────────────────────────────────────────────────────────────
 
+  describe("setEscrowIds()", function () {
+    async function startedDistribution() {
+      const ctx = await loadFixture(deployYieldFixture);
+      const { distributor, deployer, issuer, investor, token, pusdc } = ctx;
+      const issuerClient = await hre.cofhe.createClientWithBatteries(issuer);
       const [encMint] = await issuerClient.encryptInputs([Encryptable.uint128(ONE_TOKEN)]).execute();
       await token.connect(issuer).mint(investor.address, encMint);
 
@@ -133,18 +156,52 @@ describe("YieldDistributor + YieldGate", function () {
       const deployerClient = await hre.cofhe.createClientWithBatteries(deployer);
       const [encYield] = await deployerClient.encryptInputs([Encryptable.uint64(10n * ONE_PUSDC)]).execute();
       await distributor.startDistribution(encYield);
+      return ctx;
+    }
 
-      // processBatch is permissionless
-      await distributor.processBatch(1, 10);
+    it("attaches escrow IDs and emits EscrowIdsAttached", async function () {
+      const { distributor } = await startedDistribution();
+      await expect(distributor.setEscrowIds(1, [1]))
+        .to.emit(distributor, "EscrowIdsAttached")
+        .withArgs(1n, 1n);
+      const ids = await distributor.getEscrowIds(1);
+      expect(ids.length).to.equal(1);
+      expect(ids[0]).to.equal(1n);
+    });
 
-      expect(await distributor.isDistributionComplete(1)).to.be.true;
-      expect(await escrow.escrowCount()).to.equal(1n);
+    it("reverts EscrowIdsLengthMismatch if array length != investorCount", async function () {
+      const { distributor } = await startedDistribution();
+      await expect(distributor.setEscrowIds(1, [1, 2]))
+        .to.be.revertedWithCustomError(distributor, "EscrowIdsLengthMismatch");
+    });
+
+    it("reverts EscrowIdsAlreadySet on second call", async function () {
+      const { distributor } = await startedDistribution();
+      await distributor.setEscrowIds(1, [1]);
+      await expect(distributor.setEscrowIds(1, [2]))
+        .to.be.revertedWithCustomError(distributor, "EscrowIdsAlreadySet");
+    });
+
+    it("reverts InvalidDistribution for unknown distributionId", async function () {
+      const { distributor } = await loadFixture(deployYieldFixture);
+      await expect(distributor.setEscrowIds(999, []))
+        .to.be.revertedWithCustomError(distributor, "InvalidDistribution");
+    });
+
+    it("reverts Unauthorized when non-owner calls", async function () {
+      const { distributor, alice } = await startedDistribution();
+      await expect(distributor.connect(alice).setEscrowIds(1, [1]))
+        .to.be.revertedWithCustomError(distributor, "Unauthorized");
     });
   });
 
-  describe("requestYieldDecrypt() + getYieldDecryptResult()", function () {
-    it("should return decrypted yield amounts after time.increase(11)", async function () {
-      const { distributor, deployer, issuer, investor, token, pusdc } =
+  // ────────────────────────────────────────────────────────────────────────────
+  // processBatch()
+  // ────────────────────────────────────────────────────────────────────────────
+
+  describe("processBatch()", function () {
+    it("funds escrows via fundFrom and marks distribution COMPLETED", async function () {
+      const { distributor, deployer, issuer, investor, token, pusdc, escrow, yieldGate } =
         await loadFixture(deployYieldFixture);
       const issuerClient = await hre.cofhe.createClientWithBatteries(issuer);
 
@@ -160,51 +217,131 @@ describe("YieldDistributor + YieldGate", function () {
       const [encYield] = await deployerClient.encryptInputs([Encryptable.uint64(yieldAmount)]).execute();
       await distributor.startDistribution(encYield);
 
-      // Request async decrypt of yield amounts
-      await distributor.connect(deployer).requestYieldDecrypt(1);
-      await waitForDecrypt();
+      // SDK-style: batchCreate escrows, then attach IDs
+      const ids = await createEscrowsFor(escrow, yieldGate, deployer, [investor.address]);
+      await distributor.setEscrowIds(1, ids);
 
-      const result = await distributor.getYieldDecryptResult(1);
-      expect(result.totalYieldDecrypted).to.be.true;
-      expect(result.totalYield).to.equal(yieldAmount);
-      expect(result.perInvestorYieldDecrypted).to.be.true;
-      expect(result.perInvestorYield).to.equal(yieldAmount); // 1 investor
+      await distributor.processBatch(1, 10);
+
+      expect(await distributor.isDistributionComplete(1)).to.be.true;
+      expect(await escrow.escrowCount()).to.equal(1n);
+
+      // Verify fundFrom actually moved the encrypted per-investor yield into the escrow
+      const paid = await escrow.getPaidAmount(ids[0]);
+      hre.cofhe.mocks.expectPlaintext(paid, yieldAmount);
+    });
+
+    it("reverts EscrowIdsNotSet if processBatch runs before setEscrowIds", async function () {
+      const { distributor, deployer, issuer, investor, token, pusdc } = await loadFixture(deployYieldFixture);
+      const issuerClient = await hre.cofhe.createClientWithBatteries(issuer);
+      const [encMint] = await issuerClient.encryptInputs([Encryptable.uint128(ONE_TOKEN)]).execute();
+      await token.connect(issuer).mint(investor.address, encMint);
+
+      await pusdc.mint(deployer.address, Number(ONE_PUSDC));
+      const distributorAddr = await distributor.getAddress();
+      await pusdc.connect(deployer).setOperator(distributorAddr, 2000000000);
+
+      const deployerClient = await hre.cofhe.createClientWithBatteries(deployer);
+      const [encYield] = await deployerClient.encryptInputs([Encryptable.uint64(ONE_PUSDC)]).execute();
+      await distributor.startDistribution(encYield);
+
+      await expect(distributor.processBatch(1, 10))
+        .to.be.revertedWithCustomError(distributor, "EscrowIdsNotSet");
+    });
+
+    it("processes multi-investor distributions across batches", async function () {
+      const { distributor, deployer, issuer, investor, alice, token, pusdc, escrow, yieldGate } =
+        await loadFixture(deployYieldFixture);
+      const issuerClient = await hre.cofhe.createClientWithBatteries(issuer);
+
+      // Register 2 investors
+      const [encMintA] = await issuerClient.encryptInputs([Encryptable.uint128(ONE_TOKEN)]).execute();
+      await token.connect(issuer).mint(investor.address, encMintA);
+      const [encMintB] = await issuerClient.encryptInputs([Encryptable.uint128(ONE_TOKEN)]).execute();
+      await token.connect(issuer).mint(alice.address, encMintB);
+
+      const yieldAmount = 20n * ONE_PUSDC;
+      await pusdc.mint(deployer.address, Number(yieldAmount));
+      const distributorAddr = await distributor.getAddress();
+      await pusdc.connect(deployer).setOperator(distributorAddr, 2000000000);
+
+      const deployerClient = await hre.cofhe.createClientWithBatteries(deployer);
+      const [encYield] = await deployerClient.encryptInputs([Encryptable.uint64(yieldAmount)]).execute();
+      await distributor.startDistribution(encYield);
+
+      const ids = await createEscrowsFor(escrow, yieldGate, deployer, [
+        investor.address,
+        alice.address,
+      ]);
+      await distributor.setEscrowIds(1, ids);
+
+      // batchSize=1 — two calls needed
+      await distributor.processBatch(1, 1);
+      expect(await distributor.isDistributionComplete(1)).to.be.false;
+      await distributor.processBatch(1, 1);
+      expect(await distributor.isDistributionComplete(1)).to.be.true;
+
+      // Each investor's escrow funded with yieldAmount / 2
+      const perInvestor = yieldAmount / 2n;
+      hre.cofhe.mocks.expectPlaintext(await escrow.getPaidAmount(ids[0]), perInvestor);
+      hre.cofhe.mocks.expectPlaintext(await escrow.getPaidAmount(ids[1]), perInvestor);
+    });
+
+    it("reverts AlreadyCompleted if called on a finished distribution", async function () {
+      const { distributor, deployer, issuer, investor, token, pusdc, escrow, yieldGate } =
+        await loadFixture(deployYieldFixture);
+      const issuerClient = await hre.cofhe.createClientWithBatteries(issuer);
+      const [encMint] = await issuerClient.encryptInputs([Encryptable.uint128(ONE_TOKEN)]).execute();
+      await token.connect(issuer).mint(investor.address, encMint);
+
+      await pusdc.mint(deployer.address, Number(ONE_PUSDC));
+      const distributorAddr = await distributor.getAddress();
+      await pusdc.connect(deployer).setOperator(distributorAddr, 2000000000);
+
+      const deployerClient = await hre.cofhe.createClientWithBatteries(deployer);
+      const [encYield] = await deployerClient.encryptInputs([Encryptable.uint64(ONE_PUSDC)]).execute();
+      await distributor.startDistribution(encYield);
+
+      const ids = await createEscrowsFor(escrow, yieldGate, deployer, [investor.address]);
+      await distributor.setEscrowIds(1, ids);
+      await distributor.processBatch(1, 10);
+
+      await expect(distributor.processBatch(1, 10))
+        .to.be.revertedWithCustomError(distributor, "AlreadyCompleted");
     });
   });
 
-  describe("setYieldGate() / setReineiraEscrow() / setPusdc()", function () {
-    it("should allow owner to swap yield gate", async function () {
+  // ────────────────────────────────────────────────────────────────────────────
+  // Admin setters
+  // ────────────────────────────────────────────────────────────────────────────
+
+  describe("admin setters", function () {
+    it("setYieldGate: owner succeeds + emits event", async function () {
       const { distributor, deployer, yieldGate } = await loadFixture(deployYieldFixture);
       await expect(
         distributor.connect(deployer).setYieldGate(await yieldGate.getAddress())
-      ).to.not.be.reverted;
+      ).to.emit(distributor, "YieldGateUpdated");
     });
 
-    it("should allow owner to swap PUSDC address", async function () {
+    it("setMuHavenEscrow: owner succeeds + emits event", async function () {
+      const { distributor, deployer, escrow } = await loadFixture(deployYieldFixture);
+      await expect(
+        distributor.connect(deployer).setMuHavenEscrow(await escrow.getAddress())
+      ).to.emit(distributor, "MuHavenEscrowUpdated");
+    });
+
+    it("setPusdc: owner succeeds + emits event", async function () {
       const { distributor, deployer, pusdc } = await loadFixture(deployYieldFixture);
       await expect(
         distributor.connect(deployer).setPusdc(await pusdc.getAddress())
       ).to.emit(distributor, "PusdcUpdated");
     });
-  });
 
-  describe("YieldGate.isConditionMet()", function () {
-    it("should return true for investor with initialized balance", async function () {
-      const { yieldGate, escrow, issuer, investor, token } =
-        await loadFixture(deployYieldFixture);
-      const issuerClient = await hre.cofhe.createClientWithBatteries(issuer);
-
-      const [encMint] = await issuerClient.encryptInputs([Encryptable.uint128(ONE_TOKEN)]).execute();
-      await token.connect(issuer).mint(investor.address, encMint);
-
-      // Create an escrow entry so the gate has a stored beneficiary
-      const data = hre.ethers.AbiCoder.defaultAbiCoder().encode(["address"], [investor.address]);
-      const createTx = await escrow.create(investor.address, hre.ethers.ZeroHash, await yieldGate.getAddress());
-      await createTx.wait();
-      const escrowId = await escrow.escrowCount();
-
-      await yieldGate.onConditionSet(escrowId, data);
-      expect(await yieldGate.isConditionMet(escrowId)).to.be.true;
+    it("setMuHavenEscrow: non-owner reverts", async function () {
+      const { distributor, alice, escrow } = await loadFixture(deployYieldFixture);
+      await expect(
+        distributor.connect(alice).setMuHavenEscrow(await escrow.getAddress())
+      ).to.be.revertedWithCustomError(distributor, "OnlyOwner");
     });
   });
 });

@@ -14,6 +14,6 @@ export function formatNumber(num: number): string {
   return new Intl.NumberFormat().format(num)
 }
 
-export function formatUSD(value: number, decimals = 2): string {
-  return `$${value.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}`
+export function formatUSD(value: number, maxDecimals = 2): string {
+  return `$${value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: maxDecimals })}`
 }

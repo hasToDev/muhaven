@@ -81,8 +81,8 @@ export async function deployTestTreasury(initialSupply: bigint) {
   return treasury;
 }
 
-export async function deployMockReineiraEscrow() {
-  const Mock = await hre.ethers.getContractFactory("MockReineiraEscrow");
+export async function deployMockMuHavenEscrow() {
+  const Mock = await hre.ethers.getContractFactory("MockMuHavenEscrow");
   const mock = await Mock.deploy();
   return mock;
 }
@@ -91,6 +91,50 @@ export async function deployMockPUSDC() {
   const Mock = await hre.ethers.getContractFactory("MockPUSDC");
   const mock = await Mock.deploy();
   return mock;
+}
+
+export async function deployMuHavenEscrow(ownerAddress: string, paymentTokenAddress: string) {
+  const Escrow = await hre.ethers.getContractFactory("MuHavenEscrow");
+  const escrow = await upgrades.deployProxy(
+    Escrow,
+    [ownerAddress, paymentTokenAddress],
+    { kind: "transparent", initializer: "initialize" }
+  );
+  return escrow;
+}
+
+export async function deployYieldGate(tokenAddress: string, kycAddress: string) {
+  const YieldGate = await hre.ethers.getContractFactory("YieldGate");
+  const gate = await YieldGate.deploy(tokenAddress, kycAddress);
+  return gate;
+}
+
+export async function deployYieldDistributor(
+  registryAddress: string,
+  escrowAddress: string,
+  yieldGateAddress: string,
+  ownerAddress: string,
+  pusdcAddress: string
+) {
+  const Factory = await hre.ethers.getContractFactory("YieldDistributor");
+  const distributor = await upgrades.deployProxy(
+    Factory,
+    [registryAddress, escrowAddress, yieldGateAddress, ownerAddress, pusdcAddress],
+    { kind: "transparent", initializer: "initialize" }
+  );
+  return distributor;
+}
+
+export async function deployTestEscrowFunder() {
+  const Factory = await hre.ethers.getContractFactory("TestEscrowFunder");
+  const funder = await Factory.deploy();
+  return funder;
+}
+
+export async function deployTestCanRedeemChecker() {
+  const Factory = await hre.ethers.getContractFactory("TestCanRedeemChecker");
+  const checker = await Factory.deploy();
+  return checker;
 }
 
 // ── Full system fixture ───────────────────────────────────────────────────────
@@ -140,6 +184,46 @@ export async function deployMuHavenFixture() {
   const client = await hre.cofhe.createClientWithBatteries(deployer);
 
   return { deployer, issuer, investor, alice, kyc, registry, token, vault, treasury, client };
+}
+
+// ── Escrow fixture ────────────────────────────────────────────────────────────
+
+/**
+ * Deploys the full escrow pipeline on top of the MuHaven fixture:
+ *   MuHavenEscrow + YieldGate + MockPUSDC + TestEscrowFunder.
+ *
+ * Wiring:
+ *   - yieldGate.authorizedEscrow = muhavenEscrow
+ *   - muhavenEscrow.paymentToken = pusdc
+ *   - muhavenEscrow.authorizedCallers[deployer] = true (for direct batchCreate tests)
+ *   - muhavenEscrow.authorizedCallers[funder] = true (for fundFrom tests)
+ *
+ * Investor is registered via a mint of `ONE_TOKEN` from the issuer (KYC-gated),
+ * so YieldGate.canRedeem(investor) is satisfiable out of the box.
+ */
+export async function deployEscrowFixture() {
+  const base = await deployMuHavenFixture();
+  const { deployer, issuer, investor, token, kyc } = base;
+
+  // Mint tokens to investor so YieldGate's balance-init check passes
+  const issuerClient = await hre.cofhe.createClientWithBatteries(issuer);
+  const [encMint] = await issuerClient.encryptInputs([Encryptable.uint128(ONE_TOKEN)]).execute();
+  await token.connect(issuer).mint(investor.address, encMint);
+
+  const pusdc = await deployMockPUSDC();
+  const yieldGate = await deployYieldGate(
+    await token.getAddress(),
+    await kyc.getAddress()
+  );
+  const escrow = await deployMuHavenEscrow(deployer.address, await pusdc.getAddress());
+  const funder = await deployTestEscrowFunder();
+
+  // Wire everything
+  await yieldGate.setAuthorizedEscrow(await escrow.getAddress());
+  await escrow.setAuthorizedCaller(deployer.address, true);
+  await escrow.setAuthorizedCaller(await funder.getAddress(), true);
+
+  return { ...base, pusdc, yieldGate, escrow, funder };
 }
 
 // ── Time helpers ──────────────────────────────────────────────────────────────

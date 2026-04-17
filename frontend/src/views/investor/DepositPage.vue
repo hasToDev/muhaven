@@ -10,7 +10,7 @@ import * as TokenService from '@/services/contracts/TokenService'
 import * as VaultService from '@/services/contracts/VaultService'
 import * as Erc20Service from '@/services/contracts/Erc20Service'
 import { addresses } from '@/contracts/addresses'
-import type { TokenResponseDto } from '@/services/api'
+import { portfolioApi, type TokenResponseDto } from '@/services/api'
 import MCard from '@/components/ui/MCard.vue'
 import MButton from '@/components/ui/MButton.vue'
 import MBadge from '@/components/ui/MBadge.vue'
@@ -106,6 +106,11 @@ async function handleEncryptedMint() {
     toast.success('Deposit confirmed', {
       description: `Encrypted mint submitted — amount never appeared in cleartext`,
     })
+
+    // Register position in backend portfolio
+    if (selectedTokenData.value) {
+      portfolioApi.addPosition(selectedTokenData.value.address, selectedTokenData.value.symbol).catch(() => {})
+    }
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Deposit failed'
     toast.error('Deposit failed', { description: error.value })
@@ -137,6 +142,11 @@ async function handleVaultWrap() {
     toast.success('Wrap confirmed', {
       description: `ERC-20 wrapped into fhERC-20 — balance now encrypted on-chain`,
     })
+
+    // Register position in backend portfolio
+    if (selectedTokenData.value) {
+      portfolioApi.addPosition(selectedTokenData.value.address, selectedTokenData.value.symbol).catch(() => {})
+    }
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Wrap failed'
     toast.error('Wrap failed', { description: error.value })

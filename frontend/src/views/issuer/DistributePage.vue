@@ -66,7 +66,7 @@ async function handleDistribute() {
     // Step 1: Initialize FHE + encrypt amount
     await fhe.initialize()
     // Parse as string to avoid floating-point precision loss (USDC 6 decimals)
-    const [whole = '0', dec = ''] = amount.value.split('.')
+    const [whole = '0', dec = ''] = String(amount.value).split('.')
     const paddedDec = (dec + '000000').slice(0, 6)
     const amountRaw = BigInt(whole + paddedDec)
     const encrypted = await fhe.encryptUint128(amountRaw)

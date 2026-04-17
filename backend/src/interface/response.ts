@@ -1,5 +1,4 @@
 import { ZodError } from 'zod';
-import { getEnv } from '../core/config.js';
 import { ErrorResponseDtoFactory } from './dto/error-response.dto.js';
 
 export interface HttpResponse {
@@ -8,27 +7,9 @@ export interface HttpResponse {
   body: string;
 }
 
-function getSafeOrigin(): string {
-  try {
-    return getEnv().ALLOWED_ORIGINS;
-  } catch {
-    return '*';
-  }
-}
-
-function corsHeaders(): Record<string, string> {
-  return {
-    'Access-Control-Allow-Origin': getSafeOrigin(),
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    'Access-Control-Max-Age': '86400',
-  };
-}
-
 function defaultHeaders(): Record<string, string> {
   return {
     'Content-Type': 'application/json',
-    ...corsHeaders(),
   };
 }
 
@@ -52,7 +33,7 @@ export const Response = {
   noContent(): HttpResponse {
     return {
       statusCode: 204,
-      headers: corsHeaders(),
+      headers: {},
       body: '',
     };
   },

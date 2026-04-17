@@ -3,6 +3,13 @@
  *
  * Phase 8.8 — Test yield distribution on a live testnet deployment.
  *
+ * DEPRECATED as of Phase 19B: superseded by `scripts/test-e2e-sdk.ts` (Phase 19D.3),
+ * which exercises the full MuHavenEscrow-based pipeline via the MuHaven SDK.
+ * This script's yield-decrypt step (`requestYieldDecrypt` / `getYieldDecryptResult`)
+ * was removed from YieldDistributor in 19B.10 — only the wrap + operator +
+ * startDistribution steps remain functional, and only against a pre-19B.10
+ * deployed contract. DO NOT run against the 19D redeployment.
+ *
  * Tests the full PUSDC yield pipeline:
  *   1. Wrap USDC → PUSDC (ConfidentialUSDC) for the issuer
  *   2. Set YieldDistributor as operator on PUSDC
@@ -250,38 +257,18 @@ async function main() {
   console.log(`  status:         ${statusNames[status] ?? status}`);
   console.log(`  ✓ Distribution state verified\n`);
 
-  // ── Test 6: Request yield decrypt ───────────────────────────────────
-  console.log("--- Test 6: Yield Decrypt ---");
-  const yieldDecryptTx = await distributor.requestYieldDecrypt(distributionId);
-  await yieldDecryptTx.wait();
-  console.log(`  requestYieldDecrypt tx: ${yieldDecryptTx.hash}`);
-  console.log(`  Waiting ${COFHE_DELAY_SECONDS}s for CoFHE coprocessor...`);
-  await sleep(COFHE_DELAY_SECONDS * 1000);
+  // ── Test 6: Yield Decrypt [REMOVED in 19B.10] ───────────────────────
+  // requestYieldDecrypt / getYieldDecryptResult were removed from YieldDistributor
+  // (used the forbidden createDecryptTask pattern). Full decryption flow will be
+  // exercised by scripts/test-e2e-sdk.ts in Phase 19D against the redeployed
+  // contract using client-side decryptForView via the MuHaven SDK.
 
-  const [totalYield, totalDecrypted, perInvestor, perDecrypted] =
-    await distributor.getYieldDecryptResult(distributionId);
-  console.log(`  totalYield decrypted:      ${totalDecrypted}`);
-  if (totalDecrypted) {
-    console.log(
-      `  totalYield:                ${ethers.formatUnits(totalYield, PUSDC_DECIMALS)} PUSDC`,
-    );
-  }
-  console.log(`  perInvestorYield decrypted: ${perDecrypted}`);
-  if (perDecrypted) {
-    console.log(
-      `  perInvestorYield:           ${ethers.formatUnits(perInvestor, PUSDC_DECIMALS)} PUSDC`,
-    );
-  }
-  console.log(`  ✓ Yield decrypt tested\n`);
-
-  // NOTE: processBatch (escrow creation) is skipped on testnet.
-  // The real ConfidentialEscrow requires additional ReineiraOS setup
-  // (operator registration, task executor authorization) that is outside
-  // the scope of the MuHaven contract deployment.
-  // Local tests (pnpm test) cover the full pipeline with MockReineiraEscrow.
-  console.log("--- Skipped: Process Batch + Escrow Creation ---");
-  console.log("  ⚠ processBatch requires live ReineiraOS escrow setup");
-  console.log("  ⚠ Full pipeline tested locally with MockReineiraEscrow (81/81 passing)\n");
+  // NOTE: processBatch (escrow funding) is skipped on testnet.
+  // Requires the new MuHavenEscrow deployed + setEscrowIds wired by the SDK.
+  // Local tests (pnpm test) cover the full pipeline with MockMuHavenEscrow (147/147 passing).
+  console.log("--- Skipped: Process Batch + Escrow Funding ---");
+  console.log("  ⚠ processBatch requires MuHavenEscrow deployment + SDK wiring (Phase 19D)");
+  console.log("  ⚠ Full pipeline tested locally with MockMuHavenEscrow (147/147 passing)\n");
 
   // ── Summary ─────────────────────────────────────────────────────────
   console.log("=== Yield Distribution Tests Complete ===");

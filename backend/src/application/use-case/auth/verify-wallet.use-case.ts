@@ -53,13 +53,16 @@ export class VerifyWalletUseCase {
         createdAt: new Date(),
       });
       await this.userRepository.save(user);
+    } else if (dto.role && dto.role !== user.role) {
+      user = new User({ ...user, role: dto.role });
+      await this.userRepository.save(user);
     }
 
     const tokenPair = await this.jwtService.generateTokenPair({
       sub: user.id,
       walletAddress: user.walletAddress,
       walletProvider: user.walletProvider,
-      role: user.role,
+      role: dto.role ?? user.role,
       email: user.email,
     });
 

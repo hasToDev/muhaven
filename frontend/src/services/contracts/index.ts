@@ -20,7 +20,6 @@ export * as Erc20Service from './Erc20Service'
 export type {
   EncryptedInput,
   Distribution,
-  YieldDecryptResult,
   BalanceDecryptResult,
   RiskParamsDecryptResult,
   TxHash,

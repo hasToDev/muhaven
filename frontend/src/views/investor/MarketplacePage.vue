@@ -116,13 +116,10 @@ onMounted(async () => {
 
     <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
       <MCard
-        v-for="(token, i) in marketplace.filtered"
+        v-for="token in marketplace.filtered"
         :key="token.id"
         hover
         glow
-        v-motion
-        :initial="{ opacity: 0, y: 20 }"
-        :visible-once="{ opacity: 1, y: 0, transition: { duration: 400, delay: i * 80 } }"
       >
         <!-- Header -->
         <div class="flex justify-between items-start mb-4">

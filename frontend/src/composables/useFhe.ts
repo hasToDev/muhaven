@@ -192,6 +192,20 @@ export function useFhe() {
     }
   }
 
+  /**
+   * Decrypt a ciphertext handle for view (UI display only).
+   * Uses the self-permit created during initialization.
+   * No on-chain transaction needed — purely client-side via CoFHE coprocessor.
+   */
+  async function decryptUint128ForView(ctHash: bigint | string): Promise<bigint> {
+    const client = await ensureReady()
+    const { FheTypes } = await import('@cofhe/sdk')
+
+    return client
+      .decryptForView(ctHash, FheTypes.Uint128)
+      .execute() as Promise<bigint>
+  }
+
   /** Tear down the cofhe client (on logout / disconnect) */
   function destroy(): void {
     if (cofheClient) {
@@ -213,6 +227,7 @@ export function useFhe() {
     encryptUint64,
     encryptAddress,
     encryptBatch,
+    decryptUint128ForView,
     destroy,
   }
 }

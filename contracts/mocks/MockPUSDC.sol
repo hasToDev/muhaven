@@ -88,6 +88,14 @@ contract MockPUSDC is IFHERC20 {
         return _doTransfer(msg.sender, to, value);
     }
 
+    /// @notice uint256 variant of contract transfer — matches the pre-v0.1.0
+    ///         ConfidentialUSDC ABI (euint64 wraps uint256). Used by MuHavenEscrow
+    ///         via low-level call with selector `confidentialTransfer(address,uint256)`.
+    function confidentialTransfer(address to, uint256 value) external returns (uint256) {
+        euint64 result = _doTransfer(msg.sender, to, euint64.wrap(bytes32(value)));
+        return uint256(euint64.unwrap(result));
+    }
+
     /// @notice EOA transferFrom — requires operator approval.
     function confidentialTransferFrom(
         address from,

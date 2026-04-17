@@ -3,46 +3,49 @@ import hre from "hardhat";
 import { expect } from "chai";
 import {
   deployMuHavenFixture,
-  deployMockReineiraEscrow,
+  deployMockMuHavenEscrow,
   deployMockPUSDC,
+  deployYieldGate,
+  deployYieldDistributor,
+  deployMuHavenEscrow,
 } from "./helpers/setup";
-import { upgrades } from "hardhat";
 
 /// @dev IERC165 interfaceId — all ERC165 contracts must support this.
 const IERC165_ID = "0x01ffc9a7";
 /// @dev Invalid interfaceId — no contract should support this.
 const INVALID_ID = "0xffffffff";
 
+/// XOR of all function selectors in an ABI — ERC-165 interfaceId.
+function interfaceIdFromAbi(abi: string[]): string {
+  const iface = new hre.ethers.Interface(abi);
+  let id = 0n;
+  for (const frag of iface.fragments) {
+    if (frag.type === "function") {
+      id ^= BigInt(iface.getFunction(frag.name)!.selector);
+    }
+  }
+  return "0x" + id.toString(16).padStart(8, "0");
+}
+
 describe("EIP-165 supportsInterface", function () {
   async function deployAllFixture() {
     const base = await loadFixture(deployMuHavenFixture);
     const { deployer, token, kyc, registry } = base;
 
-    const escrow = await deployMockReineiraEscrow();
+    const escrow = await deployMockMuHavenEscrow();
     const pusdc = await deployMockPUSDC();
-
-    // YieldGate
-    const YieldGate = await hre.ethers.getContractFactory("YieldGate");
-    const yieldGate = await YieldGate.deploy(
-      await token.getAddress(),
-      await kyc.getAddress()
+    const yieldGate = await deployYieldGate(await token.getAddress(), await kyc.getAddress());
+    const distributor = await deployYieldDistributor(
+      await registry.getAddress(),
+      await escrow.getAddress(),
+      await yieldGate.getAddress(),
+      deployer.address,
+      await pusdc.getAddress()
     );
+    // Real (proxied) MuHavenEscrow for its own supportsInterface check
+    const realEscrow = await deployMuHavenEscrow(deployer.address, await pusdc.getAddress());
 
-    // YieldDistributor
-    const YieldDistributor = await hre.ethers.getContractFactory("YieldDistributor");
-    const distributor = await upgrades.deployProxy(
-      YieldDistributor,
-      [
-        await registry.getAddress(),
-        await escrow.getAddress(),
-        await yieldGate.getAddress(),
-        deployer.address,
-        await pusdc.getAddress(),
-      ],
-      { kind: "transparent", initializer: "initialize" }
-    );
-
-    return { ...base, escrow, pusdc, yieldGate, distributor };
+    return { ...base, escrow, realEscrow, pusdc, yieldGate, distributor };
   }
 
   describe("MuHavenToken", function () {
@@ -83,20 +86,12 @@ describe("EIP-165 supportsInterface", function () {
 
     it("should support IKYCGate", async function () {
       const { kyc } = await loadFixture(deployAllFixture);
-      const iface = new hre.ethers.Interface([
+      const interfaceId = interfaceIdFromAbi([
         "function isEligible(address) view returns (bool)",
         "function isEligibleForTier(address,uint256) view returns (bool)",
         "function providerName() view returns (string)",
       ]);
-      let interfaceId = 0n;
-      for (const frag of iface.fragments) {
-        if (frag.type === "function") {
-          const selector = BigInt(iface.getFunction(frag.name)!.selector);
-          interfaceId ^= selector;
-        }
-      }
-      const interfaceIdHex = "0x" + interfaceId.toString(16).padStart(8, "0");
-      expect(await kyc.supportsInterface(interfaceIdHex)).to.be.true;
+      expect(await kyc.supportsInterface(interfaceId)).to.be.true;
     });
 
     it("should NOT support invalid interfaceId", async function () {
@@ -113,9 +108,19 @@ describe("EIP-165 supportsInterface", function () {
 
     it("should support IYieldDistributor", async function () {
       const { distributor } = await loadFixture(deployAllFixture);
-      // Computed from compiled ABI (InEuint64 struct changes the selector)
-      // Updated after adding startDistributionFromBalance() to IYieldDistributor
-      expect(await distributor.supportsInterface("0x50544c12")).to.be.true;
+      // InEuint64 struct: (uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature).
+      // All encrypted type aliases (euint64) wrap bytes32 in canonical ABI form.
+      const interfaceId = interfaceIdFromAbi([
+        "function startDistribution((uint256,uint8,uint8,bytes)) returns (uint256)",
+        "function startDistributionFromBalance() returns (uint256)",
+        "function setEscrowIds(uint256,uint256[])",
+        "function processBatch(uint256,uint256)",
+        "function isDistributionComplete(uint256) view returns (bool)",
+        "function getDistribution(uint256) view returns (address,bytes32,bytes32,uint256,uint256,uint256,uint8)",
+        "function getEscrowIds(uint256) view returns (uint256[])",
+        "function encryptedTotalYieldDistributed() view returns (bytes32)",
+      ]);
+      expect(await distributor.supportsInterface(interfaceId)).to.be.true;
     });
 
     it("should NOT support invalid interfaceId", async function () {
@@ -132,25 +137,49 @@ describe("EIP-165 supportsInterface", function () {
 
     it("should support IConditionResolver", async function () {
       const { yieldGate } = await loadFixture(deployAllFixture);
-      // IConditionResolver = isConditionMet(uint256) ^ onConditionSet(uint256,bytes)
-      const iface = new hre.ethers.Interface([
-        "function isConditionMet(uint256) view returns (bool)",
+      // IConditionResolver = onConditionSet(uint256,bytes) ^ canRedeem(uint256)
+      // canRedeem returns ebool (bytes32), is NOT view.
+      const interfaceId = interfaceIdFromAbi([
         "function onConditionSet(uint256,bytes)",
+        "function canRedeem(uint256) returns (bytes32)",
       ]);
-      let interfaceId = 0n;
-      for (const frag of iface.fragments) {
-        if (frag.type === "function") {
-          const selector = BigInt(iface.getFunction(frag.name)!.selector);
-          interfaceId ^= selector;
-        }
-      }
-      const interfaceIdHex = "0x" + interfaceId.toString(16).padStart(8, "0");
-      expect(await yieldGate.supportsInterface(interfaceIdHex)).to.be.true;
+      expect(await yieldGate.supportsInterface(interfaceId)).to.be.true;
     });
 
     it("should NOT support invalid interfaceId", async function () {
       const { yieldGate } = await loadFixture(deployAllFixture);
       expect(await yieldGate.supportsInterface(INVALID_ID)).to.be.false;
+    });
+  });
+
+  describe("MuHavenEscrow", function () {
+    it("should support IERC165", async function () {
+      const { realEscrow } = await loadFixture(deployAllFixture);
+      expect(await realEscrow.supportsInterface(IERC165_ID)).to.be.true;
+    });
+
+    it("should support IMuHavenEscrow", async function () {
+      const { realEscrow } = await loadFixture(deployAllFixture);
+      // InEaddress: (uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature)
+      // eaddress/euint64/ebool all wrap bytes32.
+      const interfaceId = interfaceIdFromAbi([
+        "function batchCreate((uint256,uint8,uint8,bytes)[],address,bytes[]) returns (uint256[])",
+        "function fundFrom(uint256,bytes32)",
+        "function redeem(uint256)",
+        "function redeemMultiple(uint256[])",
+        "function exists(uint256) view returns (bool)",
+        "function getOwner(uint256) view returns (bytes32)",
+        "function getPaidAmount(uint256) view returns (bytes32)",
+        "function getIsRedeemed(uint256) view returns (bytes32)",
+        "function getResolver(uint256) view returns (address)",
+        "function total() view returns (uint256)",
+      ]);
+      expect(await realEscrow.supportsInterface(interfaceId)).to.be.true;
+    });
+
+    it("should NOT support invalid interfaceId", async function () {
+      const { realEscrow } = await loadFixture(deployAllFixture);
+      expect(await realEscrow.supportsInterface(INVALID_ID)).to.be.false;
     });
   });
 });

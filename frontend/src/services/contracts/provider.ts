@@ -4,13 +4,26 @@
  * - Writes: sendUserOperation() (gasless via ZeroDev bundler)
  */
 
-import { encodeFunctionData } from 'viem'
+import { createPublicClient, http, encodeFunctionData } from 'viem'
+import { arbitrumSepolia } from 'viem/chains'
 import { useWalletStore } from '@/stores/wallet'
 import { WalletNotConnectedError, ContractReadError, UserOpError, DecryptPendingError } from './errors'
 import type { TxHash } from './types'
 
+const RPC_URL = import.meta.env.VITE_RPC_URL || 'https://sepolia-rollup.arbitrum.io/rpc'
+
+/** Standalone public client for read-only calls — no wallet connection needed. */
+let _publicClient: ReturnType<typeof createPublicClient> | null = null
+function getPublicClient() {
+  if (!_publicClient) {
+    _publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(RPC_URL) })
+  }
+  return _publicClient
+}
+
 /**
- * Read from a contract (view/pure calls). Uses publicClient — free and instant.
+ * Read from a contract (view/pure calls). Uses a standalone publicClient — free, instant,
+ * and works without wallet connection (no passkey prompt on page load).
  */
 export async function contractRead<TAbi extends readonly unknown[]>(
   address: `0x${string}`,
@@ -19,12 +32,8 @@ export async function contractRead<TAbi extends readonly unknown[]>(
   args: unknown[] = [],
   contractName = 'Contract',
 ): Promise<unknown> {
-  const wallet = useWalletStore()
-  const clients = wallet.getViemClients()
-  if (!clients) throw new WalletNotConnectedError()
-
   try {
-    return await clients.publicClient.readContract({
+    return await getPublicClient().readContract({
       address,
       abi: abi as any,
       functionName,

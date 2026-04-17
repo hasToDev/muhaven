@@ -8,14 +8,11 @@ import {
     FHE,
     euint64,
     InEuint64,
-    euint128,
-    Common,
-    ITaskManager,
-    TASK_MANAGER_ADDRESS
+    Common
 } from "@fhenixprotocol/cofhe-contracts/FHE.sol";
 import {IFHERC20} from "./interfaces/IFHERC20.sol";
 import {IInvestorRegistry} from "./interfaces/IInvestorRegistry.sol";
-import {IReineiraEscrow} from "./interfaces/IReineiraEscrow.sol";
+import {IMuHavenEscrow} from "./interfaces/IMuHavenEscrow.sol";
 import {IYieldDistributor} from "./interfaces/IYieldDistributor.sol";
 
 /// @title YieldDistributor
@@ -26,9 +23,11 @@ import {IYieldDistributor} from "./interfaces/IYieldDistributor.sol";
 ///         to handle arbitrarily large investor sets without hitting block
 ///         gas limits.
 ///
-///         Each investor's share is encrypted and placed into a ReineiraOS escrow
-///         with a YieldGate condition. In production, replace MockReineiraEscrow
-///         and equal split with real ReineiraOS SDK + FHE proportional math.
+///         Each investor's share is funded into a pre-created MuHavenEscrow
+///         entry (via `IMuHavenEscrow.fundFrom`) gated by YieldGate. Escrow
+///         IDs are created by the SDK via `muhavenEscrow.batchCreate` and
+///         attached to the distribution via `setEscrowIds` before the first
+///         batch runs.
 ///
 ///         Deployed behind an OZ Transparent Proxy.
 ///
@@ -36,13 +35,13 @@ import {IYieldDistributor} from "./interfaces/IYieldDistributor.sol";
 ///   - Yield is deposited as PUSDC (`euint64`) via the IFHERC20 operator model.
 ///     The issuer grants this contract operator status, then `startDistribution`
 ///     calls `confidentialTransferFrom` — no cleartext amounts are ever emitted.
-///   - PUSDC amounts (`euint64`, 6 decimals) are widened to `euint128` via
-///     `FHE.asEuint128(euint64)` for internal accounting consistency with
-///     MuHavenToken balances (which use `euint128`).
-///   - `FHE.allow(encAmount, investor)` grants each investor permit-based
-///     decryption of their own yield share via client-side `decryptForView`.
+///   - All yield handles stay as `euint64` (matches PUSDC's native width).
+///     Previous `euint128` widening was removed — there is no RWA-balance
+///     accounting in this contract, so the stablecoin width is authoritative.
+///   - `FHE.allow(encAmount, muhavenEscrow)` grants the escrow ACL access so
+///     it can run `FHE.add` inside `fundFrom`.
 ///   - `investorCount` remains cleartext (already public via InvestorRegistry).
-///   - `totalYieldDistributed` is encrypted — aggregate yield history is private.
+///   - `_encTotalYieldDistributed` is encrypted — aggregate yield history private.
 ///
 ///   Known leakage:
 ///   - `DistributionStarted` emits `investorCount` (already public).
@@ -55,11 +54,11 @@ contract YieldDistributor is Initializable, ERC165Upgradeable, ReentrancyGuardTr
 
     struct Distribution {
         address token;
-        euint128 encTotalYield;         // encrypted total yield deposited
-        euint128 encPerInvestorYield;   // encrypted equal split: FHE.div(total, count)
+        euint64 encTotalYield;          // encrypted total yield deposited
+        euint64 encPerInvestorYield;    // encrypted equal split: FHE.div(total, count)
         uint256 investorCount;          // snapshot at startDistribution time (public)
         uint256 processedCount;         // investors processed so far (public progress)
-        uint256 escrowsCreated;         // escrows successfully created (public progress)
+        uint256 escrowsCreated;         // escrows funded so far (public progress)
         DistributionStatus status;
     }
 
@@ -68,10 +67,10 @@ contract YieldDistributor is Initializable, ERC165Upgradeable, ReentrancyGuardTr
     /// @dev Distribution IDs start at 1. ID 0 is reserved / uninitialized.
     mapping(uint256 => Distribution) public distributions;
     uint256 public distributionCount;
-    euint128 private _encTotalYieldDistributed;
+    euint64 private _encTotalYieldDistributed;
 
     IInvestorRegistry public registry;
-    IReineiraEscrow public reineiraEscrow;
+    IMuHavenEscrow public muhavenEscrow;
     address public yieldGate;
     address public owner;
     IFHERC20 public pusdc;
@@ -82,8 +81,15 @@ contract YieldDistributor is Initializable, ERC165Upgradeable, ReentrancyGuardTr
     /// @dev Informational only — not enforced on-chain in this version.
     uint256 public yieldIntervalSeconds;
 
-    /// @dev Reserved storage for future upgrades (proxy-safe gap)
-    uint256[50] private __gap;
+    /// @dev SDK-provided MuHavenEscrow IDs, one per investor, aligned with
+    ///      InvestorRegistry order at startDistribution time. Must be set
+    ///      via setEscrowIds() before processBatch() runs.
+    ///      Appended at the end of the storage block to preserve proxy layout.
+    mapping(uint256 => uint256[]) private _distributionEscrowIds;
+
+    /// @dev Reserved storage for future upgrades (proxy-safe gap).
+    ///      Reduced from 50 → 49 when `_distributionEscrowIds` was added.
+    uint256[49] private __gap;
 
     // ── Constants ─────────────────────────────────────────────────────────
 
@@ -101,6 +107,7 @@ contract YieldDistributor is Initializable, ERC165Upgradeable, ReentrancyGuardTr
         address indexed token,
         uint256 investorCount
     );
+    event EscrowIdsAttached(uint256 indexed distributionId, uint256 count);
     event BatchProcessed(
         uint256 indexed distributionId,
         uint256 processedCount,
@@ -109,7 +116,7 @@ contract YieldDistributor is Initializable, ERC165Upgradeable, ReentrancyGuardTr
     event DistributionCompleted(uint256 indexed distributionId);
     event AuthorizedCallerUpdated(address indexed caller, bool authorized);
     event YieldGateUpdated(address indexed newGate);
-    event ReineiraEscrowUpdated(address indexed newEscrow);
+    event MuHavenEscrowUpdated(address indexed newEscrow);
     event YieldScheduleUpdated(uint256 intervalSeconds);
     event PusdcUpdated(address indexed newPusdc);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
@@ -123,6 +130,9 @@ contract YieldDistributor is Initializable, ERC165Upgradeable, ReentrancyGuardTr
     error InvalidDistribution();
     error ZeroAddress();
     error PusdcTransferFailed();
+    error EscrowIdsNotSet();
+    error EscrowIdsAlreadySet();
+    error EscrowIdsLengthMismatch();
 
     // ── Modifiers ─────────────────────────────────────────────────────────
 
@@ -145,24 +155,24 @@ contract YieldDistributor is Initializable, ERC165Upgradeable, ReentrancyGuardTr
 
     /// @notice Initialize the proxy. Called once by the deploy script.
     /// @param _registry       InvestorRegistry — source of investor list for batching
-    /// @param _reineiraEscrow ReineiraOS escrow contract (or mock for testing)
-    /// @param _yieldGate      YieldGate contract address used as escrow condition
+    /// @param _muhavenEscrow  MuHavenEscrow contract (or mock for testing)
+    /// @param _yieldGate      YieldGate contract address used as escrow resolver
     /// @param _owner          Initial owner (deploy script / multisig)
     /// @param _pusdc          PUSDC (ConfidentialUSDC) address — IFHERC20 token used for yield
     function initialize(
         address _registry,
-        address _reineiraEscrow,
+        address _muhavenEscrow,
         address _yieldGate,
         address _owner,
         address _pusdc
     ) external initializer {
-        if (_registry == address(0) || _reineiraEscrow == address(0) ||
+        if (_registry == address(0) || _muhavenEscrow == address(0) ||
             _yieldGate == address(0) || _owner == address(0) ||
             _pusdc == address(0)) revert ZeroAddress();
 
         __ERC165_init();
         registry = IInvestorRegistry(_registry);
-        reineiraEscrow = IReineiraEscrow(_reineiraEscrow);
+        muhavenEscrow = IMuHavenEscrow(_muhavenEscrow);
         yieldGate = _yieldGate;
         owner = _owner;
         pusdc = IFHERC20(_pusdc);
@@ -176,10 +186,6 @@ contract YieldDistributor is Initializable, ERC165Upgradeable, ReentrancyGuardTr
     ///
     ///         The caller must have granted this contract operator status on PUSDC
     ///         via `pusdc.setOperator(address(this), expiry)` before calling.
-    ///
-    ///         PUSDC amounts are `euint64` (6-decimal stablecoin). These are widened
-    ///         to `euint128` via `FHE.asEuint128(euint64)` for consistency with
-    ///         MuHavenToken balances. The widening is lossless.
     ///
     /// @param encryptedTotalYield  Client-encrypted yield amount in PUSDC.
     ///                             Caller encrypts via `Encryptable.uint64(amount)`
@@ -215,24 +221,19 @@ contract YieldDistributor is Initializable, ERC165Upgradeable, ReentrancyGuardTr
         );
         if (!ok) revert PusdcTransferFailed();
 
-        // Ensure persistent ACL for the widening step below.
-        // verifyInput granted transient access, but FHE.asEuint128 calls
-        // TaskManager.cast which checks isAllowed. Persistent is safer
-        // than relying on transient surviving across external calls.
+        // Ensure persistent ACL for the division step below.
         FHE.allowThis(totalYield);
 
-        // Widen euint64 → euint128 for internal accounting consistency
-        euint128 encTotal = FHE.asEuint128(totalYield);
-        FHE.allowThis(encTotal);
-        euint128 encCount = FHE.asEuint128(count);
+        // Per-investor split stays in euint64 — matches PUSDC native width.
+        euint64 encCount = FHE.asEuint64(count);
         FHE.allowThis(encCount);
-        euint128 encPerInvestor = FHE.div(encTotal, encCount);
+        euint64 encPerInvestor = FHE.div(totalYield, encCount);
         FHE.allowThis(encPerInvestor);
 
         distributionId = ++distributionCount;
         distributions[distributionId] = Distribution({
             token:                address(pusdc),
-            encTotalYield:        encTotal,
+            encTotalYield:        totalYield,
             encPerInvestorYield:  encPerInvestor,
             investorCount:        count,
             processedCount:       0,
@@ -273,19 +274,17 @@ contract YieldDistributor is Initializable, ERC165Upgradeable, ReentrancyGuardTr
         // FHE.allow(newBalance, address(this)) after each transfer to us,
         // so this contract has ACL access to the balance handle.
         euint64 totalYield = pusdc.confidentialBalanceOf(address(this));
+        FHE.allowThis(totalYield);
 
-        // Widen euint64 → euint128 for internal accounting consistency
-        euint128 encTotal = FHE.asEuint128(totalYield);
-        FHE.allowThis(encTotal);
-        euint128 encCount = FHE.asEuint128(count);
+        euint64 encCount = FHE.asEuint64(count);
         FHE.allowThis(encCount);
-        euint128 encPerInvestor = FHE.div(encTotal, encCount);
+        euint64 encPerInvestor = FHE.div(totalYield, encCount);
         FHE.allowThis(encPerInvestor);
 
         distributionId = ++distributionCount;
         distributions[distributionId] = Distribution({
             token:                address(pusdc),
-            encTotalYield:        encTotal,
+            encTotalYield:        totalYield,
             encPerInvestorYield:  encPerInvestor,
             investorCount:        count,
             processedCount:       0,
@@ -294,6 +293,30 @@ contract YieldDistributor is Initializable, ERC165Upgradeable, ReentrancyGuardTr
         });
 
         emit DistributionStarted(distributionId, address(pusdc), count);
+    }
+
+    // ── Distribution: attach SDK-created escrows ─────────────────────────
+
+    /// @notice Attach MuHavenEscrow IDs to a distribution. Called by the SDK
+    ///         after `muhavenEscrow.batchCreate(encryptedOwners, ...)`.
+    ///         The array MUST be aligned with the InvestorRegistry order used
+    ///         to produce the encrypted owners — ids[i] is the escrow for
+    ///         `registry.getInvestorsPaginated(i, 1)`.
+    ///
+    ///         One-shot: subsequent calls revert with EscrowIdsAlreadySet.
+    /// @param distributionId  ID returned by startDistribution()
+    /// @param escrowIds       One escrow ID per registered investor
+    function setEscrowIds(
+        uint256 distributionId,
+        uint256[] calldata escrowIds
+    ) external onlyAuthorized {
+        if (distributionId == 0 || distributionId > distributionCount) revert InvalidDistribution();
+        Distribution storage d = distributions[distributionId];
+        if (escrowIds.length != d.investorCount) revert EscrowIdsLengthMismatch();
+        if (_distributionEscrowIds[distributionId].length != 0) revert EscrowIdsAlreadySet();
+
+        _distributionEscrowIds[distributionId] = escrowIds;
+        emit EscrowIdsAttached(distributionId, escrowIds.length);
     }
 
     // ── Distribution: batch processing ───────────────────────────────────
@@ -305,9 +328,8 @@ contract YieldDistributor is Initializable, ERC165Upgradeable, ReentrancyGuardTr
     ///         FHE patterns applied:
     ///         - `encPerInvestorYield` handle is reused across investors in the batch.
     ///           For equal-split distributions sharing one handle is equivalent.
-    ///           Production upgrade: create a unique ciphertext per investor for unlinkability.
-    ///         - `FHE.allow(encAmount, investor)` grants each investor permit-based
-    ///           decryption of their own yield share via client-side `decryptForView`.
+    ///         - `FHE.allow(encAmount, muhavenEscrow)` grants the escrow ACL access
+    ///           so it can run `FHE.add` inside `fundFrom`.
     ///
     /// @param distributionId  ID returned by startDistribution()
     /// @param batchSize       Max investors to process in this call
@@ -320,21 +342,27 @@ contract YieldDistributor is Initializable, ERC165Upgradeable, ReentrancyGuardTr
         Distribution storage d = distributions[distributionId];
         if (d.status == DistributionStatus.COMPLETED) revert AlreadyCompleted();
 
+        uint256[] storage ids = _distributionEscrowIds[distributionId];
+        if (ids.length == 0) revert EscrowIdsNotSet();
+
         if (d.status == DistributionStatus.PENDING) {
             d.status = DistributionStatus.IN_PROGRESS;
         }
 
-        address[] memory investors = registry.getInvestorsPaginated(d.processedCount, batchSize);
-        uint256 actualBatch = investors.length;
+        uint256 remaining = d.investorCount - d.processedCount;
+        uint256 actualBatch = batchSize < remaining ? batchSize : remaining;
 
         if (actualBatch > 0) {
-            euint128 encAmount = d.encPerInvestorYield;
-            FHE.allow(encAmount, address(reineiraEscrow));
+            euint64 encAmount = d.encPerInvestorYield;
+            uint256 startIndex = d.processedCount;
+
+            // Grant escrow persistent ACL once per call — FHE.allow routes
+            // through ITaskManager.allow (not allowTransient), so a single
+            // grant covers every fundFrom in the loop.
+            FHE.allow(encAmount, address(muhavenEscrow));
 
             for (uint256 i = 0; i < actualBatch; i++) {
-                // Grant investor permit-based decryption of their yield share
-                FHE.allow(encAmount, investors[i]);
-                reineiraEscrow.create(investors[i], encAmount, yieldGate);
+                muhavenEscrow.fundFrom(ids[startIndex + i], encAmount);
                 d.escrowsCreated++;
             }
 
@@ -363,12 +391,12 @@ contract YieldDistributor is Initializable, ERC165Upgradeable, ReentrancyGuardTr
     }
 
     /// @notice Returns cleartext metadata + encrypted yield handles for a distribution.
-    ///         Encrypted fields (`encTotalYield`, `encPerInvestorYield`) are ciphertext
-    ///         handles — authorized callers decrypt client-side via permits.
+    ///         Encrypted fields are ciphertext handles — authorized callers decrypt
+    ///         client-side via permits.
     function getDistribution(uint256 distributionId) external view returns (
         address token,
-        euint128 encTotalYield,
-        euint128 encPerInvestorYield,
+        euint64 encTotalYield,
+        euint64 encPerInvestorYield,
         uint256 investorCount,
         uint256 processedCount,
         uint256 escrowsCreated,
@@ -386,41 +414,13 @@ contract YieldDistributor is Initializable, ERC165Upgradeable, ReentrancyGuardTr
         );
     }
 
+    function getEscrowIds(uint256 distributionId) external view returns (uint256[] memory) {
+        return _distributionEscrowIds[distributionId];
+    }
+
     /// @notice Returns the encrypted aggregate of all completed distributions.
-    function encryptedTotalYieldDistributed() external view returns (euint128) {
+    function encryptedTotalYieldDistributed() external view returns (euint64) {
         return _encTotalYieldDistributed;
-    }
-
-    // ── Async decrypt for yield data ─────────────────────────────────────
-
-    /// @notice Request async decryption of a distribution's yield amounts.
-    ///         Only the owner or authorized callers can decrypt yield data.
-    function requestYieldDecrypt(uint256 distributionId) external onlyAuthorized {
-        if (distributionId == 0 || distributionId > distributionCount) revert InvalidDistribution();
-        Distribution storage d = distributions[distributionId];
-
-        FHE.allow(d.encTotalYield, msg.sender);
-        FHE.allow(d.encPerInvestorYield, msg.sender);
-
-        ITaskManager(TASK_MANAGER_ADDRESS).createDecryptTask(
-            uint256(euint128.unwrap(d.encTotalYield)), msg.sender
-        );
-        ITaskManager(TASK_MANAGER_ADDRESS).createDecryptTask(
-            uint256(euint128.unwrap(d.encPerInvestorYield)), msg.sender
-        );
-    }
-
-    /// @notice Read async-decrypted yield amounts for a distribution.
-    function getYieldDecryptResult(uint256 distributionId) external view returns (
-        uint128 totalYield,
-        bool totalYieldDecrypted,
-        uint128 perInvestorYield,
-        bool perInvestorYieldDecrypted
-    ) {
-        if (distributionId == 0 || distributionId > distributionCount) revert InvalidDistribution();
-        Distribution storage d = distributions[distributionId];
-        (totalYield, totalYieldDecrypted) = FHE.getDecryptResultSafe(d.encTotalYield);
-        (perInvestorYield, perInvestorYieldDecrypted) = FHE.getDecryptResultSafe(d.encPerInvestorYield);
     }
 
     // ── Admin ─────────────────────────────────────────────────────────────
@@ -432,18 +432,18 @@ contract YieldDistributor is Initializable, ERC165Upgradeable, ReentrancyGuardTr
     }
 
     /// @notice Update the YieldGate address. Only affects future distributions.
-    ///         Follows the swap pattern: deploy a new YieldGate, then call this.
+    ///         Follows the swap pattern: deploy a new YieldGate and call this.
     function setYieldGate(address newGate) external onlyOwner {
         if (newGate == address(0)) revert ZeroAddress();
         yieldGate = newGate;
         emit YieldGateUpdated(newGate);
     }
 
-    /// @notice Update the ReineiraOS escrow contract. Only affects future batches.
-    function setReineiraEscrow(address newEscrow) external onlyOwner {
+    /// @notice Update the MuHavenEscrow contract. Only affects future batches.
+    function setMuHavenEscrow(address newEscrow) external onlyOwner {
         if (newEscrow == address(0)) revert ZeroAddress();
-        reineiraEscrow = IReineiraEscrow(newEscrow);
-        emit ReineiraEscrowUpdated(newEscrow);
+        muhavenEscrow = IMuHavenEscrow(newEscrow);
+        emit MuHavenEscrowUpdated(newEscrow);
     }
 
     /// @notice Set the minimum interval between distributions (informational).

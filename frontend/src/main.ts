@@ -11,19 +11,20 @@ app.use(pinia)
 app.use(router)
 app.use(MotionPlugin)
 
-// Hydrate auth state from localStorage before first navigation
+// Hydrate auth state from localStorage before first navigation.
+// Wallet address is restored from localStorage (no passkey prompt).
+// Wallet provider reconnects lazily via ensureConnected() on first on-chain action.
 import { useAuthStore } from './stores/auth'
 import { useWalletStore } from './stores/wallet'
 const authStore = useAuthStore()
 const hydrated = authStore.hydrate()
 
-app.mount('#app')
-
-// If auth tokens were restored, reconnect wallet in the background (non-blocking)
 if (hydrated) {
   const walletStore = useWalletStore()
-  walletStore.tryReconnect()
+  walletStore.restoreAddress()
 }
+
+app.mount('#app')
 
 // Dev-only: expose stores for console testing
 if (import.meta.env.DEV) {

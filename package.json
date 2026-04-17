@@ -21,7 +21,8 @@
 		"test:testnet": "hardhat run scripts/test-testnet.ts --network arb-sepolia",
 		"test:yield:testnet": "hardhat run scripts/test-yield-testnet.ts --network arb-sepolia",
 		"deploy:diagnostic": "hardhat run scripts/deploy-diagnostic.ts --network arb-sepolia",
-		"test:diagnostic": "hardhat run scripts/test-diagnostic.ts --network arb-sepolia"
+		"test:diagnostic": "hardhat run scripts/test-diagnostic.ts --network arb-sepolia",
+		"setup:e2e": "hardhat run scripts/setup-e2e.ts --network arb-sepolia"
 	},
 	"author": "hasToDev",
 	"license": "MIT",

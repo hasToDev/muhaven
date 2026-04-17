@@ -28,9 +28,20 @@ export class SiweVerifier {
       const siweMessage = new SiweMessage(message);
       const address = siweMessage.address as `0x${string}`;
 
-      logger.info({ address, nonce: siweMessage.nonce, chainId: siweMessage.chainId }, 'Verifying SIWE signature');
+      logger.info({
+        address,
+        nonce: siweMessage.nonce,
+        chainId: siweMessage.chainId,
+        domain: siweMessage.domain,
+        uri: siweMessage.uri,
+      }, 'Verifying SIWE signature');
 
       const client = this.getPublicClient();
+
+      // Check if the smart account has code deployed
+      const code = await client.getCode({ address });
+      const isDeployed = code !== undefined && code !== '0x';
+      logger.info({ address, isDeployed, codeLength: code?.length ?? 0 }, 'Smart account deployment status');
 
       // viem's verifyMessage handles both EOA (ecrecover) and smart account
       // (ERC-1271 isValidSignature + ERC-6492 counterfactual) signatures
@@ -43,7 +54,9 @@ export class SiweVerifier {
       logger.info({ address, valid }, 'SIWE verification result');
       return { address: siweMessage.address, valid };
     } catch (error) {
-      logger.error({ error: error instanceof Error ? error.message : error }, 'SIWE verification failed');
+      const errMsg = error instanceof Error ? error.message : String(error);
+      const errStack = error instanceof Error ? error.stack : undefined;
+      logger.error({ error: errMsg, stack: errStack }, 'SIWE verification failed');
       return { address: '', valid: false };
     }
   }

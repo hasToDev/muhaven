@@ -74,7 +74,7 @@ export function useAuth() {
       const message = buildSiweMessage(
         addr,
         nonce,
-        'Sign in to MuHaven — your confidential RWA portfolio.',
+        'Sign in to MuHaven - your confidential RWA portfolio.',
       )
       const signature = await walletStore.signMessage(message)
 
@@ -200,19 +200,18 @@ export function useAuth() {
    */
   async function initialize(): Promise<void> {
     if (authStore.hydrate()) {
-      // Tokens loaded from storage and still valid — try to reconnect wallet
-      if (walletStore.address || localStorage.getItem('muhaven-wallet')) {
-        await walletStore.tryReconnect()
-        // Wallet reconnected — start FHE in background
-        initFheInBackground()
-      }
+      // Tokens loaded from storage and still valid — restore wallet address
+      // without triggering a passkey prompt. The provider reconnects lazily
+      // via ensureConnected() when the user performs an on-chain action.
+      walletStore.restoreAddress()
+      initFheInBackground()
       return
     }
 
     // Tokens expired or missing — try refresh
     const refreshed = await refreshToken()
-    if (refreshed && localStorage.getItem('muhaven-wallet')) {
-      await walletStore.tryReconnect()
+    if (refreshed) {
+      walletStore.restoreAddress()
       initFheInBackground()
     }
   }

@@ -13,10 +13,10 @@ const portfolio = usePortfolioStore()
 
 const holdingValues = computed(() =>
   portfolio.holdings
-    .filter(h => h.decryptedBalance !== null && h.nav !== null)
+    .filter(h => h.decryptedBalance !== null)
     .map(h => ({
       name: h.name,
-      value: Number(h.decryptedBalance!) / 1e18 * h.nav!,
+      value: Number(h.decryptedBalance!) / 1e18 * (h.nav ?? 1),
     })),
 )
 

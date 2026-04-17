@@ -33,14 +33,6 @@ export interface Distribution {
   status: DistributionStatus
 }
 
-/** Yield decrypt result */
-export interface YieldDecryptResult {
-  totalYield: bigint
-  totalYieldDecrypted: boolean
-  perInvestorYield: bigint
-  perInvestorYieldDecrypted: boolean
-}
-
 /** Balance decrypt result */
 export interface BalanceDecryptResult {
   result: bigint

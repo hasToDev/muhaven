@@ -28,16 +28,21 @@ onMounted(async () => {
 
 async function decryptAll() {
   if (!address.value) return
-  for (let i = 0; i < portfolio.holdings.length; i++) {
-    if (portfolio.holdings[i].decryptedBalance === null) {
-      await portfolio.decryptHolding(i, address.value as `0x${string}`)
-    }
-  }
+  const pending = portfolio.holdings
+    .map((h, i) => h.decryptedBalance === null ? i : -1)
+    .filter(i => i >= 0)
+  await Promise.all(
+    pending.map(i => portfolio.decryptHolding(i, address.value as `0x${string}`)),
+  )
 }
 
 async function decryptOne(index: number) {
   if (!address.value) return
   await portfolio.decryptHolding(index, address.value as `0x${string}`)
+}
+
+function formatTokenAmount(value: number): string {
+  return value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 4 })
 }
 
 function holdingColorClass(index: number): string {
@@ -123,7 +128,7 @@ function holdingColorClass(index: number): string {
       />
       <MSummaryCard
         label="Holdings"
-        :value="`${portfolio.holdings.length} tokens`"
+        :value="`${portfolio.holdings.length} assets`"
         :icon="Percent"
       />
       <MSummaryCard
@@ -154,10 +159,10 @@ function holdingColorClass(index: number): string {
         <!-- Decrypted state -->
         <template v-if="h.decryptedBalance !== null">
           <p :class="['font-accent italic text-midnight dark:text-white mb-3', i === 0 ? 'text-3xl' : 'text-2xl']">
-            {{ h.nav ? formatUSD(Number(h.decryptedBalance) / 1e18 * h.nav) : `${(Number(h.decryptedBalance) / 1e18).toFixed(4)} tokens` }}
+            {{ h.nav ? formatUSD(Number(h.decryptedBalance) / 1e18 * h.nav) : `${formatTokenAmount(Number(h.decryptedBalance) / 1e18)} tokens` }}
           </p>
           <div class="flex gap-3 items-center text-base">
-            <span class="text-slate">{{ (Number(h.decryptedBalance) / 1e18).toFixed(4) }} {{ h.symbol }}</span>
+            <span class="text-slate">{{ formatTokenAmount(Number(h.decryptedBalance) / 1e18) }} {{ h.symbol }}</span>
             <span v-if="h.apy" class="text-gold font-medium">&uarr; {{ h.apy }}% APY</span>
           </div>
           <div class="mt-3">
@@ -237,9 +242,9 @@ function holdingColorClass(index: number): string {
             <div
               v-for="(h, i) in portfolio.holdings"
               :key="h.tokenAddress"
-              v-show="h.decryptedBalance !== null && h.nav"
+              v-show="h.decryptedBalance !== null"
               :class="[holdingColorClass(i), 'rounded-full transition-all duration-1000 ease-out']"
-              :style="{ width: `${portfolio.totalDecryptedValue > 0 ? ((Number(h.decryptedBalance!) / 1e18 * (h.nav || 0)) / portfolio.totalDecryptedValue * 100) : 0}%` }"
+              :style="{ width: `${portfolio.totalDecryptedValue > 0 ? ((Number(h.decryptedBalance!) / 1e18 * (h.nav ?? 1)) / portfolio.totalDecryptedValue * 100) : 0}%` }"
             />
           </div>
           <div class="flex flex-wrap gap-5">
@@ -247,7 +252,7 @@ function holdingColorClass(index: number): string {
               <div :class="['w-2.5 h-2.5 rounded-sm', holdingColorClass(i)]" />
               <span class="text-xs text-slate">
                 {{ h.name }} &middot;
-                {{ portfolio.totalDecryptedValue > 0 ? ((Number(h.decryptedBalance!) / 1e18 * (h.nav || 0)) / portfolio.totalDecryptedValue * 100).toFixed(0) : 0 }}%
+                {{ portfolio.totalDecryptedValue > 0 ? ((Number(h.decryptedBalance!) / 1e18 * (h.nav ?? 1)) / portfolio.totalDecryptedValue * 100).toFixed(0) : 0 }}%
               </span>
             </div>
           </div>

@@ -12,7 +12,8 @@ export const useWalletStore = defineStore('wallet', () => {
 
   let provider: IWalletProvider | null = null
 
-  const connected = computed(() => !!address.value && !!provider)
+  const connected = computed(() => !!address.value)
+  const providerReady = computed(() => !!address.value && !!provider)
 
   function persistAddress(addr: string | null) {
     if (addr) {
@@ -113,8 +114,17 @@ export const useWalletStore = defineStore('wallet', () => {
     persistAddress(addr)
   }
 
+  /** Restore wallet address from localStorage without triggering a passkey prompt. */
+  function restoreAddress(): void {
+    const saved = getSavedAddress()
+    if (saved) address.value = saved
+  }
+
   /** Attempt to restore session from localStorage on app init. Fails silently. */
   async function tryReconnect(): Promise<void> {
+    // Already connected — skip reconnect (avoids extra passkey prompt after register/login)
+    if (provider && address.value) return
+
     const saved = getSavedAddress()
     if (!saved) return
 
@@ -140,6 +150,7 @@ export const useWalletStore = defineStore('wallet', () => {
     address,
     connecting,
     connected,
+    providerReady,
     error,
     // actions
     connect,
@@ -148,6 +159,7 @@ export const useWalletStore = defineStore('wallet', () => {
     signMessage,
     sendUserOperation,
     getViemClients,
+    restoreAddress,
     tryReconnect,
   }
 })

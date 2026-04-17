@@ -1,103 +1,156 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import {Common, euint128} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
+import {FHE, ebool, euint128, Common} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
 import {ERC165} from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
 import {IMuHavenToken} from "./interfaces/IMuHavenToken.sol";
 import {IKYCGate} from "./interfaces/IKYCGate.sol";
+import {IConditionResolver} from "./interfaces/IConditionResolver.sol";
 
 /// @title YieldGate
-/// @notice ReineiraOS gate plugin for conditional yield settlement.
-///         An escrow is only settled when both conditions pass:
+/// @notice Condition resolver plugin for MuHavenEscrow. An escrow is only
+///         settleable when both checks pass:
 ///           1. Beneficiary is KYC-eligible
 ///           2. Beneficiary holds an encrypted token balance (is a token holder)
 ///
 ///         NOT proxied — follows the swap pattern. To upgrade: deploy a new
-///         YieldGate and call YieldDistributor.setYieldGate(newAddress).
+///         YieldGate and call MuHavenEscrow owners to migrate via the SDK.
 ///
-///         Hackathon simplification: condition 2 uses Common.isInitialized()
-///         as a proxy for "has a balance". In production, this should use
-///         async decryption to verify balance > 0 (FHE.gt cannot be read
-///         synchronously as a plain bool).
-contract YieldGate is ERC165 {
+///         `canRedeem` returns an `ebool` that MuHavenEscrow folds into its
+///         silent-failure AND chain. Both checks resolve to plaintext booleans
+///         (KYC whitelist + balance initialization are cleartext state); we
+///         trivially encrypt the result so the escrow can operate on it via FHE.
+///
+///         Hackathon simplification: condition 2 uses `Common.isInitialized()`
+///         as a proxy for "has a balance". Production would use `FHE.gt(balance, 0)`
+///         via an async decrypt — see the production upgrade path below.
+///
+/// @dev Privacy caveat:
+///      The beneficiary address is stored in plaintext (`_escrowBeneficiary`)
+///      because the KYC check is plaintext. The mapping is `private` and
+///      no public getter is exposed, but storage slots are still readable
+///      off-chain via RPC `eth_getStorageAt`. This is an acknowledged residual
+///      leak of the eaddress-owner privacy goal — fully closing it requires
+///      an FHE-based KYC gate. See THREAT_MODEL.md.
+contract YieldGate is IConditionResolver, ERC165 {
 
     // ── Storage ───────────────────────────────────────────────────────────
 
     IMuHavenToken public immutable muhavenToken;
     IKYCGate public immutable kycGate;
 
-    /// @dev Maps ReineiraOS escrow ID → beneficiary address.
-    ///      Set via onConditionSet() when the escrow is created.
-    mapping(uint256 => address) public escrowBeneficiary;
+    /// @dev Admin / swap authority. Can rotate the authorized escrow.
+    address public owner;
+
+    /// @dev Only this address may call `onConditionSet`. Prevents arbitrary
+    ///      callers from hijacking the beneficiary mapping.
+    address public authorizedEscrow;
+
+    /// @dev Private — plaintext beneficiary cache used by canRedeem().
+    ///      See privacy caveat in the contract docstring.
+    mapping(uint256 => address) private _escrowBeneficiary;
 
     // ── Events ────────────────────────────────────────────────────────────
 
-    event ConditionSet(uint256 indexed escrowId, address indexed beneficiary);
+    /// @dev `beneficiary` is NOT emitted to avoid placing an escrowId ↔ investor
+    ///      link in event logs (which are cheap to index off-chain).
+    event ConditionSet(uint256 indexed escrowId);
+    event AuthorizedEscrowUpdated(address indexed newEscrow);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
     // ── Errors ────────────────────────────────────────────────────────────
 
     error ZeroAddress();
+    error Unauthorized();
     error UnknownEscrow();
+    error AlreadySet();
+    error AuthorizedEscrowNotSet();
+
+    // ── Modifiers ─────────────────────────────────────────────────────────
+
+    modifier onlyOwner() {
+        if (msg.sender != owner) revert Unauthorized();
+        _;
+    }
 
     // ── Constructor ───────────────────────────────────────────────────────
 
+    /// @param _muhavenToken  Address of the RWA token whose holders are gated.
+    /// @param _kycGate       KYC/whitelist oracle.
+    ///
+    /// @dev `authorizedEscrow` is intentionally deferred to a setter so deploy
+    ///      scripts can ship this contract before MuHavenEscrow is live. The
+    ///      resolver is unusable until `setAuthorizedEscrow` is called.
     constructor(address _muhavenToken, address _kycGate) {
         if (_muhavenToken == address(0) || _kycGate == address(0)) revert ZeroAddress();
         muhavenToken = IMuHavenToken(_muhavenToken);
         kycGate = IKYCGate(_kycGate);
+        owner = msg.sender;
+        emit OwnershipTransferred(address(0), msg.sender);
     }
 
-    // ── ReineiraOS gate interface ─────────────────────────────────────────
+    // ── IConditionResolver ────────────────────────────────────────────────
 
-    /// @notice Called by ReineiraOS when an escrow is created with this gate.
-    ///         Decodes the beneficiary address from the condition data payload
-    ///         and stores it for use in isConditionMet().
+    /// @inheritdoc IConditionResolver
     ///
-    /// @param escrowId  The ReineiraOS escrow ID
-    /// @param data      ABI-encoded beneficiary address: abi.encode(address)
+    /// @dev Called by MuHavenEscrow.batchCreate() once per escrow.
+    ///      Decodes the beneficiary address from the resolver data payload
+    ///      and stores it for use in canRedeem().
+    ///      `data` format: `abi.encode(address beneficiary)`.
     function onConditionSet(uint256 escrowId, bytes calldata data) external {
+        if (authorizedEscrow == address(0)) revert AuthorizedEscrowNotSet();
+        if (msg.sender != authorizedEscrow) revert Unauthorized();
+        if (_escrowBeneficiary[escrowId] != address(0)) revert AlreadySet();
+
         address beneficiary = abi.decode(data, (address));
         if (beneficiary == address(0)) revert ZeroAddress();
-        escrowBeneficiary[escrowId] = beneficiary;
-        emit ConditionSet(escrowId, beneficiary);
+
+        _escrowBeneficiary[escrowId] = beneficiary;
+        emit ConditionSet(escrowId);
     }
 
-    /// @notice Evaluated by ReineiraOS before releasing an escrow.
-    ///         Returns true only when both checks pass.
+    /// @inheritdoc IConditionResolver
     ///
-    ///         Check 1 — KYC eligibility: beneficiary is whitelisted.
-    ///         Check 2 — Token holder: beneficiary's encrypted balance ciphertext
-    ///                   is initialized (i.e. they have ever received tokens).
+    /// @dev Evaluates two cleartext checks and trivially encrypts the AND.
+    ///      The result is granted to `msg.sender` (MuHavenEscrow) so it can
+    ///      fold the ebool into its silent-failure chain.
     ///
-    ///         Production upgrade path:
-    ///           Replace check 2 with FHE.gt(balance, FHE.asEuint128(0)) + async
-    ///           decrypt to get a definitive balance > 0 result. Common.isInitialized
-    ///           is a sufficient proxy for the hackathon mock because tokens are only
-    ///           minted to investors who passed KYC, so an initialized balance
-    ///           means they currently hold or once held tokens.
-    ///
-    /// @param escrowId  The ReineiraOS escrow ID to evaluate
-    /// @return true if both KYC and token-holder conditions are met
-    function isConditionMet(uint256 escrowId) external view returns (bool) {
-        address beneficiary = escrowBeneficiary[escrowId];
+    ///      Production upgrade path:
+    ///        Replace check 2 with `FHE.gt(balance, FHE.asEuint128(0))` +
+    ///        async decrypt for a definitive balance > 0 verdict.
+    ///        `Common.isInitialized` is a sufficient proxy for the hackathon
+    ///        because tokens are only minted to KYC-verified investors.
+    function canRedeem(uint256 escrowId) external returns (ebool allowed) {
+        address beneficiary = _escrowBeneficiary[escrowId];
         if (beneficiary == address(0)) revert UnknownEscrow();
 
-        // Check 1: KYC gate
-        if (!kycGate.isEligible(beneficiary)) return false;
-
-        // Check 2: Token holder (hackathon proxy — see Production upgrade path above)
+        bool kycOk = kycGate.isEligible(beneficiary);
         euint128 encBalance = muhavenToken.encryptedBalanceOf(beneficiary);
-        if (!Common.isInitialized(encBalance)) return false;
+        bool hasBalance = Common.isInitialized(encBalance);
 
-        return true;
+        allowed = FHE.asEbool(kycOk && hasBalance);
+        FHE.allowThis(allowed);
+        FHE.allow(allowed, msg.sender);
+    }
+
+    // ── Admin ─────────────────────────────────────────────────────────────
+
+    /// @notice Set (or rotate) the address allowed to call onConditionSet.
+    ///         Only affects future escrows — existing mappings are preserved.
+    function setAuthorizedEscrow(address newEscrow) external onlyOwner {
+        if (newEscrow == address(0)) revert ZeroAddress();
+        authorizedEscrow = newEscrow;
+        emit AuthorizedEscrowUpdated(newEscrow);
+    }
+
+    function transferOwnership(address newOwner) external onlyOwner {
+        if (newOwner == address(0)) revert ZeroAddress();
+        address previous = owner;
+        owner = newOwner;
+        emit OwnershipTransferred(previous, newOwner);
     }
 
     // ── EIP-165 ─────────────────────────────────────────────────────────
-
-    /// @dev IConditionResolver interfaceId = isConditionMet(uint256) ^ onConditionSet(uint256,bytes)
-    bytes4 private constant _ICONDITION_RESOLVER_ID =
-        bytes4(keccak256("isConditionMet(uint256)")) ^
-        bytes4(keccak256("onConditionSet(uint256,bytes)"));
 
     function supportsInterface(bytes4 interfaceId)
         public
@@ -105,7 +158,7 @@ contract YieldGate is ERC165 {
         override
         returns (bool)
     {
-        return interfaceId == _ICONDITION_RESOLVER_ID
+        return interfaceId == type(IConditionResolver).interfaceId
             || super.supportsInterface(interfaceId);
     }
 }

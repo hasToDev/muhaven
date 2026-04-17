@@ -9,7 +9,7 @@ import { useGlassNav } from '@/composables/useGlassNav'
 import { cn, formatAddress } from '@/lib/utils'
 import MDarkToggle from '@/components/ui/MDarkToggle.vue'
 import {
-  PieChart, ArrowDown, TrendingUp, Activity,
+  PieChart, ArrowDown, TrendingUp, Activity, Store, Sparkles,
   Coins, Share2, Users, ClipboardCheck, Wallet, LogOut, LogIn, Loader2,
 } from 'lucide-vue-next'
 
@@ -25,9 +25,11 @@ const switchingRole = ref(false)
 
 const investorNav = [
   { path: '/portfolio', label: 'Portfolio', icon: PieChart },
+  { path: '/marketplace', label: 'Marketplace', icon: Store },
   { path: '/deposit', label: 'Deposit', icon: ArrowDown },
   { path: '/yields', label: 'Yields', icon: TrendingUp },
   { path: '/activity', label: 'Activity', icon: Activity },
+  { path: '/agent', label: 'Agent', icon: Sparkles },
 ]
 
 const issuerNav = [

@@ -317,11 +317,14 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
     }
 
     // ── Async decrypt for balance viewing (Pattern: createDecryptTask) ───
+    // NOTE: The recommended pattern is client-side decryptForView() via CoFHE SDK.
+    // This on-chain async flow is kept for backwards compatibility.
 
     /// @notice Request async decryption of the caller's own balance.
     ///         Result can be read later via getBalanceDecryptResult().
     function requestBalanceDecrypt() external {
         if (!Common.isInitialized(_balances[msg.sender])) revert NoBalance();
+        FHE.allow(_balances[msg.sender], msg.sender);
         ITaskManager(TASK_MANAGER_ADDRESS).createDecryptTask(
             uint256(euint128.unwrap(_balances[msg.sender])),
             msg.sender
