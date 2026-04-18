@@ -119,6 +119,10 @@ export class ZeroDevProvider implements IWalletProvider {
   private sessionKernelClient: KernelAccountClient | null = null;
   private sessionExpiresAt = 0;
   private sessionRecord: SessionKeyRecord | null = null;
+  // In-flight install guard. Concurrent sendUserOperation calls must not
+  // race into two separate installSessionKey runs — doing so would fire
+  // the enableSig passkey prompt twice and build orphaned kernels.
+  private installPromise: Promise<void> | null = null;
 
   async connect(): Promise<string> {
     return this.login();
@@ -174,6 +178,7 @@ export class ZeroDevProvider implements IWalletProvider {
     this.sessionKernelClient = null;
     this.sessionExpiresAt = 0;
     this.sessionRecord = null;
+    this.installPromise = null;
 
     this.kernelClient = null;
     this.webAuthnKeyRef = null;
@@ -242,10 +247,23 @@ export class ZeroDevProvider implements IWalletProvider {
    *   once to authorize the regular validator (that's the enableSig).
    *
    * Call site: invoked inside `sendUserOperation` on first session-covered
-   * UserOp. Idempotent — reuses cached in-memory kernel when present.
+   * UserOp. Idempotent — reuses cached in-memory kernel when present, and
+   * dedupes concurrent callers via `installPromise` so racing UserOps don't
+   * fire two enableSig prompts.
    */
   async installSessionKey(): Promise<void> {
     if (this.hasSessionKey()) return;
+    if (this.installPromise) return this.installPromise;
+
+    this.installPromise = this.doInstallSessionKey();
+    try {
+      await this.installPromise;
+    } finally {
+      this.installPromise = null;
+    }
+  }
+
+  private async doInstallSessionKey(): Promise<void> {
     if (!this.kernelClient?.account || !this.webAuthnKeyRef) {
       throw new Error('installSessionKey: passkey kernel not connected');
     }

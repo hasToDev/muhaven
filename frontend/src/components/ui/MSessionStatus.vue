@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
+import { computed, onMounted, onBeforeUnmount } from 'vue'
 import { Zap } from 'lucide-vue-next'
 import { useWalletStore } from '@/stores/wallet'
 import { cn } from '@/lib/utils'
@@ -8,19 +8,16 @@ const props = withDefaults(defineProps<{ size?: 'sm' | 'md' }>(), { size: 'md' }
 
 const wallet = useWalletStore()
 
-// Local tick so the minute-countdown re-renders even without a wallet
-// operation updating the store. We re-fetch the provider's expiry every
-// 30s — fine-grained enough for minute-level display, cheap enough to run
-// while the pill is mounted.
-const tick = ref(0)
+// Re-fetch the provider's expiry every 30s. `refreshSessionState` mutates
+// the reactive `sessionExpirySec` ref in the store, which this component's
+// computeds already track — so the interval alone drives re-renders. No
+// local tick ref needed. 30s is coarse enough not to thrash (display is
+// minute-level), frequent enough to make the countdown visible in demos.
 let intervalId: ReturnType<typeof setInterval> | null = null
 
 onMounted(() => {
   wallet.refreshSessionState()
-  intervalId = setInterval(() => {
-    wallet.refreshSessionState()
-    tick.value++
-  }, 30_000)
+  intervalId = setInterval(() => wallet.refreshSessionState(), 30_000)
 })
 
 onBeforeUnmount(() => {
@@ -28,8 +25,6 @@ onBeforeUnmount(() => {
 })
 
 const label = computed(() => {
-  // Reference `tick` so Vue re-evaluates on each interval beat.
-  void tick.value
   const sec = wallet.sessionExpirySec
   if (sec <= 0) return ''
   const mins = Math.ceil(sec / 60)
@@ -41,7 +36,7 @@ const label = computed(() => {
   return `${mins}m`
 })
 
-const visible = computed(() => wallet.sessionKeyActive && label.value)
+const visible = computed(() => wallet.sessionKeyActive && !!label.value)
 
 const tooltip = computed(() =>
   `Session key active — ${label.value} left. Distribute + claim actions sign silently until it expires.`,
