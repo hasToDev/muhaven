@@ -7,6 +7,7 @@ import { MuHavenClient, type ProgressEvent } from '@muhaven/sdk'
 import { useIssuerTokensStore } from '@/stores/issuer-tokens'
 import { useAppStore } from '@/stores/app'
 import { useWallet } from '@/composables/useWallet'
+import { useWalletStore } from '@/stores/wallet'
 import { useFhe } from '@/composables/useFhe'
 import { createZeroDevSender } from '@/services/contracts/zeroDevSender'
 import * as YieldService from '@/services/contracts/YieldService'
@@ -34,6 +35,7 @@ const OPERATOR_EXPIRY_SECONDS = 365 * 24 * 60 * 60
 const app = useAppStore()
 const tokenStore = useIssuerTokensStore()
 const { address: walletAddress, connected } = useWallet()
+const walletStore = useWalletStore()
 const fhe = useFhe()
 
 const selectedToken = ref('')
@@ -413,6 +415,12 @@ onMounted(async () => {
           </div>
         </div>
 
+        <p
+          v-if="!walletStore.sessionKeyActive"
+          class="mb-3 text-xs text-cool text-center"
+        >
+          First Distribute installs a scoped session key — subsequent signatures happen silently in this tab.
+        </p>
         <MButton
           full-width
           size="lg"

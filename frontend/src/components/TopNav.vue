@@ -8,6 +8,7 @@ import { useAuth } from '@/composables/useAuth'
 import { useGlassNav } from '@/composables/useGlassNav'
 import { cn, formatAddress } from '@/lib/utils'
 import MDarkToggle from '@/components/ui/MDarkToggle.vue'
+import MSessionStatus from '@/components/ui/MSessionStatus.vue'
 import {
   PieChart, ArrowDown, TrendingUp, Activity, Store, Sparkles,
   Coins, Share2, Users, ClipboardCheck, Wallet, LogOut, LogIn, Loader2,
@@ -181,6 +182,7 @@ async function handleLogout() {
             </span>
             <Wallet :size="14" class="text-cool" />
             <span class="font-mono text-xs text-slate dark:text-cool">{{ displayAddress }}</span>
+            <MSessionStatus />
           </div>
           <!-- Degraded: Sign In to re-authenticate -->
           <button
@@ -238,6 +240,7 @@ async function handleLogout() {
                 />
               </span>
               <span class="font-mono text-[10px] text-slate dark:text-cool">{{ displayAddress }}</span>
+              <MSessionStatus size="sm" />
             </div>
             <!-- Degraded: re-auth -->
             <button
