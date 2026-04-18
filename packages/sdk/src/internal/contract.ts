@@ -1,34 +1,34 @@
-import type { Address, Hash, PublicClient, WalletClient } from 'viem'
+import type { Address, Hash, PublicClient } from 'viem'
 import { parseEventLogs } from 'viem'
+import type { MuHavenSender } from '../sender.js'
 import { TxFailedError } from '../errors.js'
 
 /**
- * Send a write transaction via the provided wallet client and wait for its receipt.
+ * Submit a write via the pluggable sender and wait for the receipt.
  * Throws TxFailedError if the receipt reverts.
+ *
+ * The sender is responsible for returning a confirmed **tx hash** (not a
+ * UserOp hash) so `publicClient.waitForTransactionReceipt` resolves cleanly
+ * — see `MuHavenSender` docstring.
  */
 export async function writeAndWait(args: {
   publicClient: PublicClient
-  walletClient: WalletClient
+  sender: MuHavenSender
   address: Address
   abi: readonly unknown[]
   functionName: string
   args: readonly unknown[]
   operation: string
 }): Promise<{ hash: Hash; logs: import('viem').Log[] }> {
-  const { publicClient, walletClient, address, abi, functionName, args: callArgs, operation } = args
-  const account = walletClient.account
-  if (!account) throw new TxFailedError(operation, undefined, new Error('walletClient has no account'))
-  const chain = walletClient.chain
+  const { publicClient, sender, address, abi, functionName, args: callArgs, operation } = args
 
   let hash: Hash
   try {
-    hash = await walletClient.writeContract({
-      account,
-      chain,
+    hash = await sender.write({
       address,
-      abi: abi as any,
+      abi,
       functionName,
-      args: callArgs as any,
+      args: callArgs,
     })
   } catch (e) {
     throw new TxFailedError(operation, undefined, e)

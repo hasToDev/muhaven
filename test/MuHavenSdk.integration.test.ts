@@ -34,6 +34,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { hardhat as hardhatChain } from "viem/chains";
 import {
   MuHavenClient,
+  walletClientToSender,
   DistributionStatus,
   ConfigError,
   BatchSizeExceededError,
@@ -136,7 +137,7 @@ async function makeSdk(deployer: any, addresses: MuHavenAddresses, privateKey: `
   const { publicClient, walletClient, address } = makeViemClients(privateKey);
   const sdk = new MuHavenClient({
     publicClient,
-    walletClient,
+    sender: walletClientToSender(walletClient),
     cofheClient: cofheClient as any,
     addresses,
   });
@@ -155,7 +156,7 @@ describe("MuHaven SDK (integration)", function () {
       const { walletClient } = makeViemClients(HARDHAT_PK_0);
       expect(() => new MuHavenClient({
         publicClient: undefined as any,
-        walletClient,
+        sender: walletClientToSender(walletClient),
         cofheClient: cofheClient as any,
         addresses,
       })).to.throw(ConfigError, /publicClient/);
@@ -166,7 +167,7 @@ describe("MuHaven SDK (integration)", function () {
       const { publicClient, walletClient } = makeViemClients(HARDHAT_PK_0);
       expect(() => new MuHavenClient({
         publicClient,
-        walletClient,
+        sender: walletClientToSender(walletClient),
         cofheClient: undefined as any,
         addresses,
       })).to.throw(ConfigError, /cofheClient/);
@@ -179,7 +180,7 @@ describe("MuHaven SDK (integration)", function () {
       const incomplete = { ...addresses, yieldGate: undefined as any };
       expect(() => new MuHavenClient({
         publicClient,
-        walletClient,
+        sender: walletClientToSender(walletClient),
         cofheClient: cofheClient as any,
         addresses: incomplete,
       })).to.throw(ConfigError, /yieldGate/);
@@ -191,14 +192,14 @@ describe("MuHaven SDK (integration)", function () {
       const { publicClient, walletClient } = makeViemClients(HARDHAT_PK_0);
       expect(() => new MuHavenClient({
         publicClient,
-        walletClient,
+        sender: walletClientToSender(walletClient),
         cofheClient: cofheClient as any,
         addresses,
         defaultBatchSize: 0,
       })).to.throw(ConfigError, /defaultBatchSize/);
       expect(() => new MuHavenClient({
         publicClient,
-        walletClient,
+        sender: walletClientToSender(walletClient),
         cofheClient: cofheClient as any,
         addresses,
         defaultBatchSize: 201,
@@ -377,7 +378,7 @@ describe("MuHaven SDK (integration)", function () {
         deployer, addresses, pusdc, distributor, escrow, registry, yieldGate,
       } = await loadFixture(deploySdkFixture);
       await fundAndApprovePusdc(pusdc, deployer, addresses.yieldDistributor, 10n * ONE_PUSDC);
-      const { sdk, publicClient, walletClient } = await makeSdk(deployer, addresses);
+      const { sdk } = await makeSdk(deployer, addresses);
 
       const { escrowIds } = await sdk.createYieldEscrows();
       const { distributionId } = await sdk.startDistribution(10n * ONE_PUSDC);

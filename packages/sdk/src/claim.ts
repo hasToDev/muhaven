@@ -1,5 +1,6 @@
-import type { Address, Hash, PublicClient, WalletClient } from 'viem'
+import type { Address, Hash, PublicClient } from 'viem'
 import type { ProgressCallback } from './types.js'
+import type { MuHavenSender } from './sender.js'
 import { BatchSizeExceededError, ConfigError } from './errors.js'
 import { muhavenEscrowAbi } from './abi/muhavenEscrow.js'
 import { writeAndWait } from './internal/contract.js'
@@ -16,16 +17,16 @@ import { MAX_BATCH_SIZE } from './constants.js'
  */
 export async function claimYieldFlow(args: {
   publicClient: PublicClient
-  walletClient: WalletClient
+  sender: MuHavenSender
   muhavenEscrow: Address
   escrowId: bigint
   onProgress?: ProgressCallback
 }): Promise<Hash> {
-  const { publicClient, walletClient, muhavenEscrow, escrowId, onProgress } = args
+  const { publicClient, sender, muhavenEscrow, escrowId, onProgress } = args
 
   const { hash } = await writeAndWait({
     publicClient,
-    walletClient,
+    sender,
     address: muhavenEscrow,
     abi: muhavenEscrowAbi,
     functionName: 'redeem',
@@ -51,12 +52,12 @@ export async function claimYieldFlow(args: {
  */
 export async function claimYieldBatchFlow(args: {
   publicClient: PublicClient
-  walletClient: WalletClient
+  sender: MuHavenSender
   muhavenEscrow: Address
   escrowIds: bigint[]
   onProgress?: ProgressCallback
 }): Promise<Hash> {
-  const { publicClient, walletClient, muhavenEscrow, escrowIds, onProgress } = args
+  const { publicClient, sender, muhavenEscrow, escrowIds, onProgress } = args
   if (escrowIds.length === 0) throw new ConfigError('escrowIds is empty')
   if (escrowIds.length > MAX_BATCH_SIZE) {
     throw new BatchSizeExceededError(escrowIds.length, MAX_BATCH_SIZE)
@@ -64,7 +65,7 @@ export async function claimYieldBatchFlow(args: {
 
   const { hash } = await writeAndWait({
     publicClient,
-    walletClient,
+    sender,
     address: muhavenEscrow,
     abi: muhavenEscrowAbi,
     functionName: 'redeemMultiple',

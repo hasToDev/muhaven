@@ -33,6 +33,12 @@ export async function total(): Promise<bigint> {
   return contractRead(addr, muhavenEscrowAbi, 'total', [], CONTRACT) as Promise<bigint>
 }
 
+export async function isAuthorizedCaller(account: `0x${string}`): Promise<boolean> {
+  return contractRead(
+    addr, muhavenEscrowAbi, 'authorizedCallers', [account], CONTRACT,
+  ) as Promise<boolean>
+}
+
 // ── Writes ─────────────────────────────────────────────────────────
 
 /**

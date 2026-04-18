@@ -43,6 +43,12 @@ export async function distributionCount(): Promise<bigint> {
   return contractRead(addr, yieldDistributorAbi, 'distributionCount', [], CONTRACT) as Promise<bigint>
 }
 
+export async function isAuthorizedCaller(account: `0x${string}`): Promise<boolean> {
+  return contractRead(
+    addr, yieldDistributorAbi, 'authorizedCallers', [account], CONTRACT,
+  ) as Promise<boolean>
+}
+
 // ── Writes ─────────────────────────────────────────────────────────
 
 export async function startDistribution(encrypted: EncryptedInput): Promise<TxHash> {

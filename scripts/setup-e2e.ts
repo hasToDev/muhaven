@@ -9,13 +9,21 @@
  *   2. Accredits on ERC3643KYCAdapter (Tier 2)
  *   3. Grants minter role on MuHavenToken
  *   4. Authorizes on YieldDistributor
+ *   4b. Authorizes on MuHavenEscrow (SDK batchCreate path)
  *   5. Transfers USDC from deployer to smart account
  *   6. Transfers TestTreasury (underlying ERC-20) tokens to smart account
  *   7. Whitelists + accredits the deployer itself (so deployer can be registered
  *      as an investor in test-e2e-sdk.ts — Phase 19D.3)
  *   8. Wraps USDC → PUSDC on the deployer wallet (E2E_WRAP_AMOUNT, default 10)
+ *   8b. Wraps USDC → PUSDC to the target smart account
+ *       (E2E_TARGET_WRAP_AMOUNT, default 5). Required for the frontend
+ *       issuer to fund a distribution from its own PUSDC balance.
  *   9. Grants YieldDistributor operator access on the deployer's PUSDC balance
- *      so startDistribution's confidentialTransferFrom can pull funds
+ *      so CLI startDistribution's confidentialTransferFrom can pull funds
+ *
+ * NOTE: The smart account's own `setOperator(yieldDistributor, expiry)` must
+ * be issued BY the smart account itself (the operator mapping is keyed by
+ * msg.sender). That's handled client-side via a UserOp at first Distribute.
  *
  * Usage:
  *   pnpm hardhat run scripts/setup-e2e.ts --network arb-sepolia -- --address 0xYOUR_SMART_ACCOUNT
@@ -86,6 +94,7 @@ async function main() {
   const kycAddr = getAddress(deployment, "ERC3643KYCAdapter");
   const tokenAddr = getAddress(deployment, "MuHavenToken");
   const distributorAddr = getAddress(deployment, "YieldDistributor");
+  const escrowAddr = getAddress(deployment, "MuHavenEscrow");
   const treasuryAddr =
     process.env.TEST_TREASURY_ADDRESS ||
     deployment.contracts["TestTreasury"]?.proxy ||
@@ -103,6 +112,7 @@ async function main() {
   console.log(`KYCAdapter:       ${kycAddr}`);
   console.log(`MuHavenToken:     ${tokenAddr}`);
   console.log(`YieldDistributor: ${distributorAddr}`);
+  console.log(`MuHavenEscrow:    ${escrowAddr}`);
   console.log(`TestTreasury:     ${treasuryAddr}`);
   console.log(`Circle USDC:      ${usdcAddress}`);
   console.log(`PUSDC (cUSDC):    ${pusdcAddress}\n`);
@@ -114,6 +124,7 @@ async function main() {
     "YieldDistributor",
     distributorAddr,
   );
+  const escrow = await ethers.getContractAt("MuHavenEscrow", escrowAddr);
   const usdc = await ethers.getContractAt(
     "@openzeppelin/contracts/token/ERC20/IERC20.sol:IERC20",
     usdcAddress,
@@ -188,6 +199,23 @@ async function main() {
     `  isAuthorized: ${await distributor.authorizedCallers(targetAddress)}`,
   );
   console.log(`  ✓ Distributor authorization done\n`);
+
+  // ── Step 4b: Authorize on MuHavenEscrow ─────────────────────────────
+  // The SDK's `createYieldEscrows` calls MuHavenEscrow.batchCreate directly,
+  // gated by onlyAuthorized. Frontend issuer (smart account) must be listed.
+  console.log("--- Step 4b: Authorize on MuHavenEscrow ---");
+  const alreadyEscrowAuthorized = await escrow.authorizedCallers(targetAddress);
+  if (alreadyEscrowAuthorized) {
+    console.log(`  Already authorized on escrow, skipping`);
+  } else {
+    const tx = await escrow.setAuthorizedCaller(targetAddress, true);
+    await tx.wait();
+    console.log(`  escrow.setAuthorizedCaller tx: ${tx.hash}`);
+  }
+  console.log(
+    `  isAuthorized: ${await escrow.authorizedCallers(targetAddress)}`,
+  );
+  console.log(`  ✓ Escrow authorization done\n`);
 
   // ── Step 5: Transfer USDC ───────────────────────────────────────────
   console.log("--- Step 5: Transfer USDC ---");
@@ -316,6 +344,54 @@ async function main() {
   }
   console.log(`  ${wrapOutcome === 'done' ? '✓' : '○'} Wrap step ${wrapOutcome}\n`);
 
+  // ── Step 8b: Wrap USDC → PUSDC to the target smart account ─────────
+  // The frontend issuer uses a ZeroDev smart account. For its distribute
+  // flow to pull PUSDC via `confidentialTransferFrom`, the smart account
+  // needs its own PUSDC balance. Env-controlled amount (6-decimal PUSDC).
+  // Default 5. Set E2E_TARGET_WRAP_AMOUNT=0 to skip on re-runs.
+  const targetWrapAmountEnv = process.env.E2E_TARGET_WRAP_AMOUNT;
+  const targetWrapAmountPusdc = targetWrapAmountEnv !== undefined
+    ? BigInt(targetWrapAmountEnv)
+    : 5n;
+  const targetWrapAmountUnits = targetWrapAmountPusdc * 10n ** 6n;
+
+  console.log("--- Step 8b: Wrap USDC → PUSDC (target smart account) ---");
+  let targetWrapOutcome: 'done' | 'skipped (E2E_TARGET_WRAP_AMOUNT=0)' | 'skipped (insufficient USDC)';
+  if (targetWrapAmountPusdc === 0n) {
+    console.log("  E2E_TARGET_WRAP_AMOUNT=0 — skipping target wrap");
+    targetWrapOutcome = 'skipped (E2E_TARGET_WRAP_AMOUNT=0)';
+  } else {
+    const deployerUsdcNow = await usdc.balanceOf(deployer.address);
+    console.log(
+      `  Target wrap: ${targetWrapAmountPusdc} PUSDC (${ethers.formatUnits(targetWrapAmountUnits, 6)} USDC) → ${targetAddress}`,
+    );
+    console.log(
+      `  Deployer USDC: ${ethers.formatUnits(deployerUsdcNow, 6)}`,
+    );
+    if (deployerUsdcNow < targetWrapAmountUnits) {
+      console.log(
+        `  ⚠ Insufficient deployer USDC to wrap (need ${ethers.formatUnits(targetWrapAmountUnits, 6)}). Skipping.`,
+      );
+      targetWrapOutcome = 'skipped (insufficient USDC)';
+    } else {
+      const usdcErc20 = await ethers.getContractAt(
+        "@openzeppelin/contracts/token/ERC20/IERC20.sol:IERC20",
+        usdcAddress,
+      );
+      // Approve exactly the target wrap amount; wrap pulls via safeTransferFrom.
+      const approveTx = await usdcErc20.approve(pusdcAddress, targetWrapAmountUnits);
+      await approveTx.wait();
+      console.log(`  usdc.approve(pusdc, ${targetWrapAmountPusdc}) tx: ${approveTx.hash}`);
+
+      const pusdc = new ethers.Contract(pusdcAddress, PUSDC_ABI, deployer);
+      const wrapTx = await pusdc.wrap(targetAddress, targetWrapAmountUnits);
+      await wrapTx.wait();
+      console.log(`  pusdc.wrap(target, ${targetWrapAmountPusdc}) tx: ${wrapTx.hash}`);
+      targetWrapOutcome = 'done';
+    }
+  }
+  console.log(`  ${targetWrapOutcome === 'done' ? '✓' : '○'} Target wrap step ${targetWrapOutcome}\n`);
+
   // ── Step 9: Set YieldDistributor as PUSDC operator ─────────────────
   // Required for YieldDistributor.startDistribution's confidentialTransferFrom
   // pull to succeed. setOperator is idempotent — calling it again refreshes
@@ -346,13 +422,18 @@ async function main() {
   console.log(`    ✓ KYC Tier 2 (accredited)`);
   console.log(`    ✓ Minter role (MuHavenToken)`);
   console.log(`    ✓ Authorized caller (YieldDistributor)`);
+  console.log(`    ✓ Authorized caller (MuHavenEscrow)`);
   console.log(`    ✓ USDC funded`);
   console.log(`    ✓ TestTreasury funded`);
+  console.log(`    ${targetWrapOutcome === 'done' ? '✓' : '○'} PUSDC wrap: ${targetWrapOutcome === 'done' ? `${targetWrapAmountPusdc} cUSDC wrapped to target` : targetWrapOutcome}`);
   console.log(`  Deployer (${deployer.address}):`);
   console.log(`    ✓ KYC Tier 1 + Tier 2`);
   console.log(`    ${wrapOutcome === 'done' ? '✓' : '○'} PUSDC wrap: ${wrapOutcome === 'done' ? `${wrapAmountPusdc} cUSDC wrapped` : wrapOutcome}`);
   console.log(`    ✓ YieldDistributor as PUSDC operator`);
-  console.log(`\nReady for Phase 19D.3: test-e2e-sdk.ts\n`);
+  console.log(`\n⚠ Operator approval for the smart account is issued from the`);
+  console.log(`  frontend on first Distribute click (must be called by msg.sender`);
+  console.log(`  = the smart account itself). Auto-included as a UserOp.\n`);
+  console.log(`Ready for Phase 19D.3 (CLI) + frontend Distribute (browser)\n`);
 }
 
 main().catch((err) => {

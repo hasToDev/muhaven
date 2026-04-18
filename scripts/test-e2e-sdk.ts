@@ -41,7 +41,7 @@ import { createPublicClient, createWalletClient, http, type Address } from "viem
 import { privateKeyToAccount } from "viem/accounts";
 import { arbitrumSepolia } from "viem/chains";
 import { Encryptable } from "@cofhe/sdk";
-import { MuHavenClient, type MuHavenAddresses, type ProgressEvent } from "@muhaven/sdk";
+import { MuHavenClient, walletClientToSender, type MuHavenAddresses, type ProgressEvent } from "@muhaven/sdk";
 import { createCofheClient } from "../tasks/utils";
 import { loadDeployment, getAddress, sleep } from "./testnet-utils";
 
@@ -168,7 +168,7 @@ async function main() {
 
   const sdk = new MuHavenClient({
     publicClient,
-    walletClient,
+    sender: walletClientToSender(walletClient),
     cofheClient: cofheClient as any,
     addresses,
     expectedChainId: ARB_SEPOLIA_CHAIN_ID,

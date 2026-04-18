@@ -1,4 +1,5 @@
-import type { Address, Hash, PublicClient, WalletClient } from 'viem'
+import type { Address, Hash, PublicClient } from 'viem'
+import type { MuHavenSender } from './sender.js'
 
 /**
  * Structural type for the `@cofhe/sdk` client (web or node build).
@@ -38,7 +39,13 @@ export interface MuHavenAddresses {
 
 export interface MuHavenClientConfig {
   publicClient: PublicClient
-  walletClient: WalletClient
+  /**
+   * Pluggable transaction sender. For a standard viem `WalletClient`,
+   * wrap with `walletClientToSender(walletClient)` (shipped from the SDK).
+   * For ERC-4337 bundler-backed senders (e.g. ZeroDev passkey kernels),
+   * consumers implement `MuHavenSender` against their bundler SDK.
+   */
+  sender: MuHavenSender
   /** Initialized cofhe client from `@cofhe/sdk/node` or `@cofhe/sdk/web`. */
   cofheClient: CofheLikeClient
   addresses: MuHavenAddresses

@@ -206,6 +206,15 @@ export function useFhe() {
       .execute() as Promise<bigint>
   }
 
+  /**
+   * Return the raw cofhe client for consumers that need direct access
+   * (e.g. passing to `new MuHavenClient({ cofheClient, ... })`). Ensures
+   * the client is initialized + connected before returning.
+   */
+  async function getRawClient(): Promise<CofheClient> {
+    return ensureReady()
+  }
+
   /** Tear down the cofhe client (on logout / disconnect) */
   function destroy(): void {
     if (cofheClient) {
@@ -228,6 +237,7 @@ export function useFhe() {
     encryptAddress,
     encryptBatch,
     decryptUint128ForView,
+    getRawClient,
     destroy,
   }
 }

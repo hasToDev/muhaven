@@ -23,6 +23,11 @@ export default defineConfig(({ mode }) => ({
     alias: {
       '@': resolve(__dirname, 'src'),
     },
+    // @muhaven/sdk is symlinked from packages/sdk. Without this dedup,
+    // vite follows the symlink into the root pnpm dep tree for viem's
+    // transitive deps (isows) and fails to resolve the frontend's
+    // vite-plugin-node-polyfills shims.
+    dedupe: ['viem', 'isows', '@cofhe/sdk'],
   },
   optimizeDeps: {
     // Exclude tfhe from pre-bundling — it has WASM that needs special handling

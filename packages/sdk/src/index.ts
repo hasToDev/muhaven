@@ -1,6 +1,8 @@
 export { MuHavenClient, DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE } from './client.js'
 export { DistributionStatus } from './yield.js'
 export { fetchAllInvestors } from './escrows.js'
+export { walletClientToSender } from './sender.js'
+export type { MuHavenSender } from './sender.js'
 export type {
   MuHavenClientConfig,
   MuHavenAddresses,

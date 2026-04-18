@@ -1,4 +1,4 @@
-import type { Address, Hash, PublicClient, WalletClient } from 'viem'
+import type { Address, Hash, PublicClient } from 'viem'
 import type {
   CofheLikeClient,
   MuHavenClientConfig,
@@ -8,6 +8,7 @@ import type {
   FundEscrowsResult,
   DistributeYieldResult,
 } from './types.js'
+import type { MuHavenSender } from './sender.js'
 import { ConfigError, NetworkError } from './errors.js'
 import { createYieldEscrowsFlow } from './escrows.js'
 import {
@@ -26,17 +27,18 @@ export { DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE }
  *   1. SDK-side batch encryption + MuHavenEscrow.batchCreate (ZK-validated eaddress owners)
  *   2. YieldDistributor.processBatch loop that funds each escrow via fundFrom
  *
- * The client is wallet-agnostic: callers pass in viem PublicClient + WalletClient,
- * which can be backed by ZeroDev Kernel (passkey), MetaMask, TrustWallet,
- * WalletConnect, or a raw private key (for Node scripts).
+ * The client is wallet-agnostic: callers pass in a viem `PublicClient` for
+ * reads and a `MuHavenSender` for writes. Any signer shape works — raw
+ * private key via viem `WalletClient`, injected EOA (MetaMask etc.), or an
+ * ERC-4337 bundler-backed smart account (e.g. ZeroDev passkey kernels).
  *
  * The CoFHE client is also caller-provided (from `@cofhe/sdk/web` in browser,
  * `@cofhe/sdk/node` in Node). This keeps the SDK free of WASM bindings.
  *
- * ### Quickstart (Node)
+ * ### Quickstart (Node, EOA)
  *
  * ```ts
- * import { MuHavenClient } from '@muhaven/sdk'
+ * import { MuHavenClient, walletClientToSender } from '@muhaven/sdk'
  * import { createCofheClient, createCofheConfig } from '@cofhe/sdk/node'
  * import { arbSepolia } from '@cofhe/sdk/chains'
  * import { createPublicClient, createWalletClient, http } from 'viem'
@@ -54,17 +56,24 @@ export { DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE }
  * await cofheClient.connect(publicClient, walletClient)
  *
  * const sdk = new MuHavenClient({
- *   publicClient, walletClient, cofheClient,
+ *   publicClient,
+ *   sender: walletClientToSender(walletClient),
+ *   cofheClient,
  *   addresses: { muhavenEscrow, yieldDistributor, investorRegistry, yieldGate },
  *   expectedChainId: 421614,
  * })
  *
  * await sdk.validateNetwork()
  * ```
+ *
+ * ### Quickstart (Browser, bundler-backed smart account)
+ *
+ * Implement a consumer-owned adapter against your bundler SDK — see
+ * `MuHavenSender` for the contract. Pass the adapter as `sender`.
  */
 export class MuHavenClient {
   readonly publicClient: PublicClient
-  readonly walletClient: WalletClient
+  readonly sender: MuHavenSender
   readonly cofheClient: CofheLikeClient
   readonly addresses: MuHavenAddresses
   readonly expectedChainId?: number
@@ -72,7 +81,7 @@ export class MuHavenClient {
 
   constructor(config: MuHavenClientConfig) {
     if (!config.publicClient) throw new ConfigError('publicClient is required')
-    if (!config.walletClient) throw new ConfigError('walletClient is required')
+    if (!config.sender) throw new ConfigError('sender is required')
     if (!config.cofheClient) throw new ConfigError('cofheClient is required')
     if (!config.addresses) throw new ConfigError('addresses is required')
 
@@ -87,7 +96,7 @@ export class MuHavenClient {
     }
 
     this.publicClient = config.publicClient
-    this.walletClient = config.walletClient
+    this.sender = config.sender
     this.cofheClient = config.cofheClient
     this.addresses = config.addresses
     this.expectedChainId = config.expectedChainId
@@ -100,15 +109,13 @@ export class MuHavenClient {
     }
   }
 
-  /** Read the connected wallet's address. */
+  /** Read the connected sender's address. */
   getAccount(): Address {
-    const account = this.walletClient.account
-    if (!account) throw new ConfigError('walletClient has no account')
-    return account.address
+    return this.sender.address
   }
 
   /**
-   * Validate public + wallet clients are on the expected chain.
+   * Validate public client + sender are on the expected chain.
    * Throws NetworkError on mismatch. No-op if expectedChainId is unset.
    */
   async validateNetwork(): Promise<void> {
@@ -119,9 +126,9 @@ export class MuHavenClient {
       throw new NetworkError(this.expectedChainId, pubChainId)
     }
 
-    const walletChainId = await this.walletClient.getChainId()
-    if (walletChainId !== this.expectedChainId) {
-      throw new NetworkError(this.expectedChainId, walletChainId)
+    const senderChainId = await this.sender.getChainId()
+    if (senderChainId !== this.expectedChainId) {
+      throw new NetworkError(this.expectedChainId, senderChainId)
     }
   }
 
@@ -144,7 +151,7 @@ export class MuHavenClient {
     const batchSize = opts?.batchSize ?? this.defaultBatchSize
     return createYieldEscrowsFlow({
       publicClient: this.publicClient,
-      walletClient: this.walletClient,
+      sender: this.sender,
       cofheClient: this.cofheClient,
       muhavenEscrow: this.addresses.muhavenEscrow,
       yieldGate: this.addresses.yieldGate,
@@ -167,7 +174,7 @@ export class MuHavenClient {
     const batchSize = opts?.batchSize ?? this.defaultBatchSize
     const { batchesProcessed, txHashes } = await fundEscrowsFlow({
       publicClient: this.publicClient,
-      walletClient: this.walletClient,
+      sender: this.sender,
       yieldDistributor: this.addresses.yieldDistributor,
       distributionId,
       escrowIds,
@@ -184,7 +191,7 @@ export class MuHavenClient {
   ): Promise<Hash> {
     return claimYieldFlow({
       publicClient: this.publicClient,
-      walletClient: this.walletClient,
+      sender: this.sender,
       muhavenEscrow: this.addresses.muhavenEscrow,
       escrowId,
       onProgress: opts?.onProgress,
@@ -201,7 +208,7 @@ export class MuHavenClient {
   ): Promise<Hash> {
     return claimYieldBatchFlow({
       publicClient: this.publicClient,
-      walletClient: this.walletClient,
+      sender: this.sender,
       muhavenEscrow: this.addresses.muhavenEscrow,
       escrowIds,
       onProgress: opts?.onProgress,
@@ -226,7 +233,7 @@ export class MuHavenClient {
   ): Promise<{ distributionId: bigint; txHash: Hash }> {
     return startDistributionFlow({
       publicClient: this.publicClient,
-      walletClient: this.walletClient,
+      sender: this.sender,
       cofheClient: this.cofheClient,
       yieldDistributor: this.addresses.yieldDistributor,
       totalYield,
@@ -297,7 +304,7 @@ export class MuHavenClient {
   ): Promise<Hash> {
     return grantAdminDecryptFlow({
       publicClient: this.publicClient,
-      walletClient: this.walletClient,
+      sender: this.sender,
       yieldDistributor: this.addresses.yieldDistributor,
       distributionId,
       viewer,

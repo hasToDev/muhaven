@@ -1,11 +1,19 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { toast } from 'vue-sonner'
+import { createPublicClient, http } from 'viem'
+import { arbitrumSepolia } from 'viem/chains'
+import { MuHavenClient, type ProgressEvent } from '@muhaven/sdk'
 import { useIssuerTokensStore } from '@/stores/issuer-tokens'
 import { useAppStore } from '@/stores/app'
+import { useWallet } from '@/composables/useWallet'
 import { useFhe } from '@/composables/useFhe'
+import { createZeroDevSender } from '@/services/contracts/zeroDevSender'
 import * as YieldService from '@/services/contracts/YieldService'
 import * as RegistryService from '@/services/contracts/RegistryService'
+import * as EscrowService from '@/services/contracts/EscrowService'
+import * as PusdcService from '@/services/contracts/PusdcService'
+import { addresses } from '@/contracts/addresses'
 import { formatUSD } from '@/lib/utils'
 import MCard from '@/components/ui/MCard.vue'
 import MButton from '@/components/ui/MButton.vue'
@@ -15,10 +23,17 @@ import MGoldRule from '@/components/ui/MGoldRule.vue'
 import MPrivacyBanner from '@/components/ui/MPrivacyBanner.vue'
 import MSkeleton from '@/components/ui/MSkeleton.vue'
 import { CheckCircle, AlertTriangle } from 'lucide-vue-next'
-import { DistributionStatus } from '@/services/contracts/types'
+
+const RPC_URL = import.meta.env.VITE_RPC_URL || 'https://sepolia-rollup.arbitrum.io/rpc'
+const ARB_SEPOLIA_CHAIN_ID = 421614
+const DISTRIBUTE_BATCH_SIZE = 50
+// Operator approval expiry — 1 year from now as absolute unix timestamp
+// (PUSDC's setOperator takes a uint48 expiry, not a duration).
+const OPERATOR_EXPIRY_SECONDS = 365 * 24 * 60 * 60
 
 const app = useAppStore()
 const tokenStore = useIssuerTokensStore()
+const { address: walletAddress, connected } = useWallet()
 const fhe = useFhe()
 
 const selectedToken = ref('')
@@ -28,18 +43,24 @@ const isProcessing = ref(false)
 const showReceipt = ref(false)
 const distributionError = ref<string | null>(null)
 const batchProgress = ref({ processed: 0, total: 0 })
+const stageLabel = ref<string | null>(null)
 const receiptData = ref({
   token: '',
   amount: '',
   investors: 0,
   escrows: 0,
+  distributionId: '',
 })
 
+// Stepper mapped 1:1 to the SDK's distributeYield pipeline. The SDK emits
+// `startDistribution` → `encrypt` + `batchCreate` (per batch) →
+// `setEscrowIds` → `processBatch` (per batch) via onProgress; we advance
+// currentStep in handleDistribute's onProgress handler.
 const steps = [
-  { label: 'Select Token' },
-  { label: 'Encrypt Amount' },
+  { label: 'Encrypt' },
   { label: 'Start Distribution' },
-  { label: 'Process Batches' },
+  { label: 'Create Escrows' },
+  { label: 'Fund Escrows' },
   { label: 'Complete' },
 ]
 
@@ -55,55 +76,153 @@ const canDistribute = computed(() =>
   selectedToken.value && amount.value && parseFloat(amount.value) > 0 && !isProcessing.value,
 )
 
+/** Parse "12.34" → 12_340_000n (PUSDC's 6-decimal units, string-safe). */
+function toPusdcUnits(human: string): bigint {
+  const [whole = '0', frac = ''] = human.split('.')
+  const fracPadded = (frac + '000000').slice(0, 6)
+  return BigInt(whole) * 1_000_000n + BigInt(fracPadded || '0')
+}
+
 async function handleDistribute() {
   if (!canDistribute.value) return
 
+  if (!connected.value) {
+    toast.error('Wallet not connected', {
+      description: 'Sign in with your passkey to distribute yield',
+    })
+    return
+  }
+
   isProcessing.value = true
   distributionError.value = null
-  currentStep.value = 1
+  stageLabel.value = null
+  batchProgress.value = { processed: 0, total: 0 }
+  currentStep.value = 0
 
   try {
-    // Step 1: Initialize FHE + encrypt amount
-    await fhe.initialize()
-    // Parse as string to avoid floating-point precision loss (USDC 6 decimals)
-    const [whole = '0', dec = ''] = String(amount.value).split('.')
-    const paddedDec = (dec + '000000').slice(0, 6)
-    const amountRaw = BigInt(whole + paddedDec)
-    const encrypted = await fhe.encryptUint128(amountRaw)
-    currentStep.value = 2
+    const totalYieldUnits = toPusdcUnits(amount.value)
+    const issuerAddr = walletAddress.value as `0x${string}`
 
-    // Step 2: Start distribution on-chain
-    await YieldService.startDistribution(encrypted)
-    const distCount = await YieldService.distributionCount()
-    const distributionId = distCount - 1n
-    currentStep.value = 3
+    // ── Pre-flight: verify on-chain configuration before touching FHE ────
+    // Each check is a cheap view call. Fail fast with an actionable message
+    // so the user doesn't waste a passkey signature on a doomed tx.
+    stageLabel.value = 'Pre-flight checks'
 
-    // Step 3: Process batches
-    const investorCount = await RegistryService.investorCount()
-    batchProgress.value = { processed: 0, total: Number(investorCount) }
-    const batchSize = 10n
+    const [
+      investorCount,
+      ydAuthorized,
+      escrowAuthorized,
+      pusdcBalance,
+      operatorSet,
+    ] = await Promise.all([
+      RegistryService.investorCount(),
+      YieldService.isAuthorizedCaller(issuerAddr),
+      EscrowService.isAuthorizedCaller(issuerAddr),
+      PusdcService.balanceOf(issuerAddr),
+      PusdcService.isOperator(issuerAddr, addresses.yieldDistributor),
+    ])
 
-    let complete = false
-    while (!complete) {
-      await YieldService.processBatch(distributionId, batchSize)
-      const dist = await YieldService.getDistribution(distributionId)
-      batchProgress.value.processed = Number(dist.processedCount)
-
-      if (dist.status === DistributionStatus.COMPLETED) {
-        complete = true
-        receiptData.value = {
-          token: selectedTokenInfo.value?.symbol ?? '',
-          amount: amount.value,
-          investors: Number(dist.investorCount),
-          escrows: Number(dist.escrowsCreated),
-        }
-      }
+    if (investorCount === 0n) {
+      throw new Error(
+        'No registered investors — mint MuHavenToken to at least one KYC-approved address first',
+      )
+    }
+    if (!ydAuthorized) {
+      throw new Error(
+        `This account is not authorized on YieldDistributor. Run: pnpm hardhat run scripts/setup-e2e.ts --network arb-sepolia -- ${issuerAddr}`,
+      )
+    }
+    if (!escrowAuthorized) {
+      throw new Error(
+        `This account is not authorized on MuHavenEscrow. Run: pnpm hardhat run scripts/setup-e2e.ts --network arb-sepolia -- ${issuerAddr}`,
+      )
+    }
+    if (pusdcBalance < totalYieldUnits) {
+      const have = (Number(pusdcBalance) / 1_000_000).toFixed(6)
+      const need = (Number(totalYieldUnits) / 1_000_000).toFixed(6)
+      throw new Error(
+        `Insufficient PUSDC (have ${have}, need ${need}). Ask an admin to wrap more USDC → PUSDC to this account.`,
+      )
     }
 
-    currentStep.value = 4
+    // ── Auto-setOperator on first distribute ────────────────────────────
+    // The operator mapping is keyed by msg.sender, so it must be granted
+    // from the smart account itself — can't be done by the deployer script.
+    // Sent as its own UserOp (one passkey prompt) before the distribute pipeline.
+    if (!operatorSet) {
+      stageLabel.value = 'Granting YieldDistributor operator approval (one-time)'
+      const expiry = BigInt(Math.floor(Date.now() / 1000) + OPERATOR_EXPIRY_SECONDS)
+      await PusdcService.setOperator(addresses.yieldDistributor, expiry)
+      toast.info('Operator approval granted', {
+        description: 'One-time setup — subsequent distributes skip this step',
+      })
+    }
+
+    currentStep.value = 1
+    stageLabel.value = null
+
+    // Ensure FHE client is ready (loads tfhe WASM, connects, creates self-permit).
+    await fhe.initialize()
+    const cofheClient = await fhe.getRawClient()
+
+    const publicClient = createPublicClient({
+      chain: arbitrumSepolia,
+      transport: http(RPC_URL),
+    })
+
+    const sdk = new MuHavenClient({
+      publicClient,
+      sender: createZeroDevSender(),
+      cofheClient: cofheClient as any,
+      addresses: {
+        muhavenEscrow: addresses.muhavenEscrow,
+        yieldDistributor: addresses.yieldDistributor,
+        investorRegistry: addresses.investorRegistry,
+        yieldGate: addresses.yieldGate,
+      },
+      expectedChainId: ARB_SEPOLIA_CHAIN_ID,
+    })
+    await sdk.validateNetwork()
+
+    const result = await sdk.distributeYield(totalYieldUnits, {
+      batchSize: DISTRIBUTE_BATCH_SIZE,
+      onProgress: (e: ProgressEvent) => {
+        stageLabel.value = e.message ?? e.stage
+        switch (e.stage) {
+          case 'encrypt':
+            // Fires for both the totalYield encryption (pre-start) and each
+            // investor-address batch (during createYieldEscrows). We leave
+            // currentStep where batchCreate / startDistribution last put it
+            // and only surface the message via stageLabel.
+            break
+          case 'startDistribution':
+            currentStep.value = 2
+            break
+          case 'batchCreate':
+            currentStep.value = 3
+            break
+          case 'setEscrowIds':
+            currentStep.value = 4
+            break
+          case 'processBatch':
+            currentStep.value = 4
+            batchProgress.value = { processed: e.current, total: e.total }
+            break
+        }
+      },
+    })
+
+    currentStep.value = 5
+    receiptData.value = {
+      token: selectedTokenInfo.value?.symbol ?? '',
+      amount: amount.value,
+      investors: result.escrowIds.length,
+      escrows: result.escrowIds.length,
+      distributionId: result.distributionId.toString(),
+    }
     showReceipt.value = true
     toast.success('Distribution complete', {
-      description: `Yield distributed to ${receiptData.value.investors} investors via ReineiraOS escrow`,
+      description: `Distribution #${result.distributionId} — ${result.escrowIds.length} encrypted escrows funded`,
     })
   } catch (e) {
     distributionError.value = e instanceof Error ? e.message : 'Distribution failed'
@@ -112,6 +231,7 @@ async function handleDistribute() {
     })
   } finally {
     isProcessing.value = false
+    stageLabel.value = null
   }
 }
 
@@ -121,6 +241,7 @@ function resetForm() {
   showReceipt.value = false
   distributionError.value = null
   batchProgress.value = { processed: 0, total: 0 }
+  stageLabel.value = null
 }
 
 onMounted(async () => {
@@ -164,20 +285,6 @@ onMounted(async () => {
       <MStepProgress :steps="steps" :current-step="currentStep" />
     </div>
 
-    <!-- Phase 19D notice: the full distribute pipeline (startDistribution →
-         escrow batchCreate → setEscrowIds → processBatch) is driven by the CLI
-         (`pnpm run test:e2e:sdk`) for the hackathon demo. The UI button below
-         still triggers startDistribution but does NOT create + fund escrows —
-         use the CLI to complete the pipeline end-to-end. -->
-    <div class="bg-gold/10 border border-gold/40 rounded-xl p-4 text-sm text-midnight dark:text-white">
-      <p class="font-semibold mb-1">Pipeline status: CLI-driven (hackathon demo)</p>
-      <p class="text-cool text-xs leading-relaxed">
-        Full yield distribution (encrypt → start → batch-create escrows → attach
-        → process) runs via <code class="font-mono text-compute">pnpm run test:e2e:sdk</code>.
-        Frontend orchestration via ZeroDev-routed UserOps is wave-4 work.
-      </p>
-    </div>
-
     <MCard
       padding="lg"
       v-motion
@@ -198,11 +305,12 @@ onMounted(async () => {
           <p class="text-lg font-semibold text-midnight dark:text-white">Distribution Complete</p>
         </div>
         <div class="bg-mist dark:bg-midnight rounded-xl p-5 space-y-3 text-sm">
+          <div class="flex justify-between"><span class="text-cool">Distribution ID</span><span class="font-mono text-midnight dark:text-white">#{{ receiptData.distributionId }}</span></div>
           <div class="flex justify-between"><span class="text-cool">Token</span><span class="font-medium text-midnight dark:text-white">{{ receiptData.token }}</span></div>
           <div class="flex justify-between"><span class="text-cool">Total Amount</span><span class="font-mono text-midnight dark:text-white">${{ receiptData.amount }}</span></div>
           <div class="flex justify-between"><span class="text-cool">Investors</span><span class="font-medium text-midnight dark:text-white">{{ receiptData.investors }}</span></div>
           <div class="flex justify-between"><span class="text-cool">Escrows Created</span><span class="font-medium text-midnight dark:text-white">{{ receiptData.escrows }}</span></div>
-          <div class="flex justify-between"><span class="text-cool">Settlement</span><span class="font-medium text-compute">ReineiraOS Escrow</span></div>
+          <div class="flex justify-between"><span class="text-cool">Settlement</span><span class="font-medium text-compute">MuHaven Escrow (PUSDC)</span></div>
         </div>
         <MBadge variant="privacy" class="mx-auto">Amounts encrypted via FHE</MBadge>
         <MButton full-width variant="ghost" @click="resetForm">New Distribution</MButton>
@@ -248,11 +356,11 @@ onMounted(async () => {
           />
         </div>
 
-        <!-- FHE encryption step indicator -->
-        <div v-if="isProcessing && fhe.currentStep.value" class="mb-4">
+        <!-- SDK pipeline stage indicator (or fallback to FHE encryption step) -->
+        <div v-if="isProcessing && (stageLabel || fhe.currentStep.value)" class="mb-4">
           <div class="flex items-center gap-2 text-sm text-compute">
             <div class="w-4 h-4 border-2 border-compute border-t-transparent rounded-full animate-spin" />
-            <span class="font-mono text-xs">{{ fhe.currentStep.value }}</span>
+            <span class="font-mono text-xs">{{ stageLabel || fhe.currentStep.value }}</span>
           </div>
         </div>
 
@@ -305,10 +413,10 @@ onMounted(async () => {
           full-width
           size="lg"
           :loading="isProcessing"
-          :disabled="true"
+          :disabled="!canDistribute"
           @click="handleDistribute"
         >
-          Use CLI: pnpm run test:e2e:sdk
+          Distribute Yield
         </MButton>
 
         <div class="mt-5">

@@ -1,5 +1,6 @@
-import type { Address, Hash, PublicClient, WalletClient } from 'viem'
+import type { Address, Hash, PublicClient } from 'viem'
 import type { CofheLikeClient, EncryptedInput, ProgressCallback } from './types.js'
+import type { MuHavenSender } from './sender.js'
 import {
   BatchSizeExceededError,
   ConfigError,
@@ -74,13 +75,13 @@ export async function getDistribution(
  */
 export async function startDistributionFlow(args: {
   publicClient: PublicClient
-  walletClient: WalletClient
+  sender: MuHavenSender
   cofheClient: CofheLikeClient
   yieldDistributor: Address
   totalYield: bigint
   onProgress?: ProgressCallback
 }): Promise<{ distributionId: bigint; txHash: Hash }> {
-  const { publicClient, walletClient, cofheClient, yieldDistributor, totalYield, onProgress } = args
+  const { publicClient, sender, cofheClient, yieldDistributor, totalYield, onProgress } = args
   if (totalYield <= 0n) throw new ConfigError(`totalYield must be > 0, got ${totalYield}`)
 
   onProgress?.({
@@ -94,7 +95,7 @@ export async function startDistributionFlow(args: {
 
   const { hash, logs } = await writeAndWait({
     publicClient,
-    walletClient,
+    sender,
     address: yieldDistributor,
     abi: yieldDistributorAbi,
     functionName: 'startDistribution',
@@ -141,17 +142,17 @@ export async function startDistributionFlow(args: {
  */
 export async function setEscrowIdsFlow(args: {
   publicClient: PublicClient
-  walletClient: WalletClient
+  sender: MuHavenSender
   yieldDistributor: Address
   distributionId: bigint
   escrowIds: bigint[]
   onProgress?: ProgressCallback
 }): Promise<Hash> {
-  const { publicClient, walletClient, yieldDistributor, distributionId, escrowIds, onProgress } = args
+  const { publicClient, sender, yieldDistributor, distributionId, escrowIds, onProgress } = args
 
   const { hash } = await writeAndWait({
     publicClient,
-    walletClient,
+    sender,
     address: yieldDistributor,
     abi: yieldDistributorAbi,
     functionName: 'setEscrowIds',
@@ -176,13 +177,13 @@ export async function setEscrowIdsFlow(args: {
  */
 export async function processUntilCompleteFlow(args: {
   publicClient: PublicClient
-  walletClient: WalletClient
+  sender: MuHavenSender
   yieldDistributor: Address
   distributionId: bigint
   batchSize: number
   onProgress?: ProgressCallback
 }): Promise<{ batchesProcessed: number; txHashes: Hash[] }> {
-  const { publicClient, walletClient, yieldDistributor, distributionId, batchSize, onProgress } = args
+  const { publicClient, sender, yieldDistributor, distributionId, batchSize, onProgress } = args
 
   if (batchSize <= 0 || batchSize > MAX_BATCH_SIZE) {
     throw new BatchSizeExceededError(batchSize, MAX_BATCH_SIZE)
@@ -220,7 +221,7 @@ export async function processUntilCompleteFlow(args: {
 
     const { hash } = await writeAndWait({
       publicClient,
-      walletClient,
+      sender,
       address: yieldDistributor,
       abi: yieldDistributorAbi,
       functionName: 'processBatch',
@@ -254,17 +255,17 @@ export async function processUntilCompleteFlow(args: {
  */
 export async function grantAdminDecryptFlow(args: {
   publicClient: PublicClient
-  walletClient: WalletClient
+  sender: MuHavenSender
   yieldDistributor: Address
   distributionId: bigint
   viewer: Address
   onProgress?: ProgressCallback
 }): Promise<Hash> {
-  const { publicClient, walletClient, yieldDistributor, distributionId, viewer, onProgress } = args
+  const { publicClient, sender, yieldDistributor, distributionId, viewer, onProgress } = args
 
   const { hash } = await writeAndWait({
     publicClient,
-    walletClient,
+    sender,
     address: yieldDistributor,
     abi: yieldDistributorAbi,
     functionName: 'grantYieldDecryptAccess',
@@ -289,14 +290,14 @@ export async function grantAdminDecryptFlow(args: {
  */
 export async function fundEscrowsFlow(args: {
   publicClient: PublicClient
-  walletClient: WalletClient
+  sender: MuHavenSender
   yieldDistributor: Address
   distributionId: bigint
   escrowIds: bigint[]
   batchSize: number
   onProgress?: ProgressCallback
 }): Promise<{ batchesProcessed: number; txHashes: Hash[] }> {
-  const { publicClient, walletClient, yieldDistributor, distributionId, escrowIds, batchSize, onProgress } = args
+  const { publicClient, sender, yieldDistributor, distributionId, escrowIds, batchSize, onProgress } = args
 
   if (escrowIds.length === 0) throw new ConfigError('escrowIds is empty')
 
@@ -336,7 +337,7 @@ export async function fundEscrowsFlow(args: {
 
   if (existing.length === 0) {
     const setTx = await setEscrowIdsFlow({
-      publicClient, walletClient, yieldDistributor,
+      publicClient, sender, yieldDistributor,
       distributionId, escrowIds, onProgress,
     })
     txHashesBeforeProcess.push(setTx)
@@ -356,7 +357,7 @@ export async function fundEscrowsFlow(args: {
   }
 
   const { batchesProcessed, txHashes } = await processUntilCompleteFlow({
-    publicClient, walletClient, yieldDistributor,
+    publicClient, sender, yieldDistributor,
     distributionId, batchSize, onProgress,
   })
 

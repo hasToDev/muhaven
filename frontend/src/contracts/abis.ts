@@ -240,6 +240,13 @@ export const investorRegistryAbi = [
 
 export const yieldDistributorAbi = [
   {
+    name: 'authorizedCallers',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: '', type: 'address' }],
+    outputs: [{ type: 'bool' }],
+  },
+  {
     name: 'startDistribution',
     type: 'function',
     stateMutability: 'nonpayable',
@@ -391,6 +398,14 @@ export const yieldDistributorAbi = [
 // batchCreate + fundFrom are SDK-driven from Phase 19C.
 
 export const muhavenEscrowAbi = [
+  // ── Role checks ────────────────────────────────────────────────────
+  {
+    name: 'authorizedCallers',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: '', type: 'address' }],
+    outputs: [{ type: 'bool' }],
+  },
   // ── SDK creation + funding ─────────────────────────────────────────
   {
     name: 'batchCreate',
@@ -698,3 +713,42 @@ export const erc20Abi = [
     outputs: [{ type: 'string' }],
   },
 ] as const
+
+// ── ConfidentialUSDC (PUSDC) ─────────────────────────────────────────
+// Minimal ABI covering only what the frontend needs for pre-flight checks
+// and self-operator approval. All FHE-ciphertext methods are intentionally
+// omitted — consumers should not attempt to read encrypted balances here.
+//
+// Deployed ConfidentialUSDC on Arb Sepolia predates cofhe-contracts v0.1.0
+// (uses uint256 for euint64 selectors). All functions below are plaintext
+// and unaffected by that mismatch.
+export const pusdcAbi = [
+  {
+    name: 'balanceOf',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'account', type: 'address' }],
+    outputs: [{ type: 'uint256' }],
+  },
+  {
+    name: 'isOperator',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'holder', type: 'address' },
+      { name: 'spender', type: 'address' },
+    ],
+    outputs: [{ type: 'bool' }],
+  },
+  {
+    name: 'setOperator',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'operator', type: 'address' },
+      { name: 'until', type: 'uint48' },
+    ],
+    outputs: [],
+  },
+] as const
+

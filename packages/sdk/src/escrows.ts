@@ -1,5 +1,6 @@
-import type { Address, Hash, PublicClient, WalletClient } from 'viem'
+import type { Address, Hash, PublicClient } from 'viem'
 import type { CofheLikeClient, EncryptedInput, ProgressCallback } from './types.js'
+import type { MuHavenSender } from './sender.js'
 import { BatchSizeExceededError, ConfigError, InvariantError } from './errors.js'
 import { muhavenEscrowAbi } from './abi/muhavenEscrow.js'
 import { investorRegistryAbi } from './abi/investorRegistry.js'
@@ -48,13 +49,13 @@ export async function fetchAllInvestors(
  */
 export async function batchCreateEscrows(args: {
   publicClient: PublicClient
-  walletClient: WalletClient
+  sender: MuHavenSender
   cofheClient: CofheLikeClient
   muhavenEscrow: Address
   yieldGate: Address
   investors: Address[]
 }): Promise<{ escrowIds: bigint[]; txHash: Hash }> {
-  const { publicClient, walletClient, cofheClient, muhavenEscrow, yieldGate, investors } = args
+  const { publicClient, sender, cofheClient, muhavenEscrow, yieldGate, investors } = args
   if (investors.length === 0) throw new ConfigError('investors array is empty')
   if (investors.length > MAX_BATCH_SIZE) {
     throw new BatchSizeExceededError(investors.length, MAX_BATCH_SIZE)
@@ -80,7 +81,7 @@ export async function batchCreateEscrows(args: {
 
   const { hash, logs } = await writeAndWait({
     publicClient,
-    walletClient,
+    sender,
     address: muhavenEscrow,
     abi: muhavenEscrowAbi,
     functionName: 'batchCreate',
@@ -108,7 +109,7 @@ export async function batchCreateEscrows(args: {
  */
 export async function createYieldEscrowsFlow(args: {
   publicClient: PublicClient
-  walletClient: WalletClient
+  sender: MuHavenSender
   cofheClient: CofheLikeClient
   muhavenEscrow: Address
   yieldGate: Address
@@ -117,7 +118,7 @@ export async function createYieldEscrowsFlow(args: {
   onProgress?: ProgressCallback
 }): Promise<{ escrowIds: bigint[]; txHashes: Hash[] }> {
   const {
-    publicClient, walletClient, cofheClient,
+    publicClient, sender, cofheClient,
     muhavenEscrow, yieldGate, investorRegistry,
     batchSize, onProgress,
   } = args
@@ -147,7 +148,7 @@ export async function createYieldEscrowsFlow(args: {
     })
 
     const { escrowIds: ids, txHash } = await batchCreateEscrows({
-      publicClient, walletClient, cofheClient,
+      publicClient, sender, cofheClient,
       muhavenEscrow, yieldGate,
       investors: slice,
     })

@@ -3,6 +3,9 @@ import { ref, onMounted } from 'vue'
 import { toast } from 'vue-sonner'
 import { useAppStore } from '@/stores/app'
 import { useYieldsStore } from '@/stores/yields'
+import { useWallet } from '@/composables/useWallet'
+import * as EscrowService from '@/services/contracts/EscrowService'
+import { WalletNotConnectedError } from '@/services/contracts/errors'
 import { formatUSD } from '@/lib/utils'
 import MCard from '@/components/ui/MCard.vue'
 import MButton from '@/components/ui/MButton.vue'
@@ -15,6 +18,7 @@ import { DollarSign, Clock, CalendarDays, TrendingUp, Inbox } from 'lucide-vue-n
 
 const app = useAppStore()
 const yields = useYieldsStore()
+const { connected } = useWallet()
 const activeRange = ref<'1m' | '3m' | '6m' | '1y'>('6m')
 const ranges = [
   { label: '1M', value: '1m' as const },
@@ -23,16 +27,63 @@ const ranges = [
   { label: '1Y', value: '1y' as const },
 ]
 
+const claimingIds = ref<Set<string>>(new Set())
+
+// Backend poller runs every 15s (BLOCK_POLLER_INTERVAL_MS). Account for bundler
+// latency + block inclusion + one poll cycle before the yield record flips
+// claimable → claimed. 22s hits the sweet spot for a single refetch.
+const CLAIM_REFETCH_DELAY_MS = 22_000
+
+const ARBISCAN_TX_BASE = 'https://sepolia.arbiscan.io/tx/'
+
 onMounted(async () => {
   app.startLoading()
   await yields.load()
   app.stopLoading()
 })
 
-function claimYield(id: string) {
-  toast.success('Yield claimed', {
-    description: `Claim submitted for yield record ${id}`,
-  })
+async function claimYield(recordId: string, escrowId: string | null) {
+  if (claimingIds.value.has(recordId)) return
+
+  if (!escrowId) {
+    toast.error('Claim unavailable', {
+      description: 'On-chain escrow not yet indexed — try again shortly',
+    })
+    return
+  }
+
+  // Note: `connected.value` can be true while the wallet provider is still
+  // dormant (address restored from localStorage, provider not yet materialized).
+  // The try/catch below handles that lazy-reconnect case via WalletNotConnectedError.
+  if (!connected.value) {
+    toast.error('Wallet not connected', {
+      description: 'Sign in with your passkey to claim yield',
+    })
+    return
+  }
+
+  claimingIds.value.add(recordId)
+  try {
+    const hash = await EscrowService.redeem(BigInt(escrowId))
+    toast.success('Claim submitted', {
+      description: `tx ${hash.slice(0, 10)}… — status will update once confirmed`,
+      action: {
+        label: 'View',
+        onClick: () => window.open(`${ARBISCAN_TX_BASE}${hash}`, '_blank', 'noopener'),
+      },
+    })
+    // Keep the button spinning through the refetch window so the user can't
+    // double-submit against an already-redeemed escrow while the poller catches up.
+    await new Promise(r => setTimeout(r, CLAIM_REFETCH_DELAY_MS))
+    await yields.load()
+  } catch (e) {
+    const description = e instanceof WalletNotConnectedError
+      ? 'Sign in with your passkey and try again'
+      : e instanceof Error ? e.message : 'Unknown error'
+    toast.error('Claim failed', { description })
+  } finally {
+    claimingIds.value.delete(recordId)
+  }
 }
 
 function statusBadgeVariant(status: string): 'positive' | 'gold' | 'teal' | 'default' {
@@ -149,7 +200,14 @@ function statusBadgeVariant(status: string): 'positive' | 'gold' | 'teal' | 'def
           </p>
           <p v-else class="text-sm text-cool mt-1">Amount encrypted</p>
         </div>
-        <MButton size="sm" @click="claimYield(c.id)">Claim</MButton>
+        <MButton
+          size="sm"
+          :loading="claimingIds.has(c.id)"
+          :disabled="!c.escrow_id"
+          @click="claimYield(c.id, c.escrow_id)"
+        >
+          Claim
+        </MButton>
       </div>
     </MCard>
 
