@@ -102,7 +102,7 @@ async function handleLogout() {
     >
       <!-- Logo -->
       <router-link to="/" class="flex items-center gap-2.5 mr-6">
-        <img src="/logo.jpg" alt="MuHaven" class="w-8 h-8 rounded-lg" style="mix-blend-mode: multiply" />
+        <img src="/logo.png" alt="MuHaven" class="w-8 h-8 rounded-lg" style="mix-blend-mode: multiply" />
         <span class="text-lg font-sans font-bold text-midnight dark:text-white hidden sm:inline tracking-tight">MuHaven</span>
       </router-link>
 

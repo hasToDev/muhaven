@@ -122,7 +122,7 @@ function toggleMode() {
           >
             <div class="flex items-center gap-3 mb-3">
               <img
-                src="/logo.jpg"
+                src="/logo.png"
                 alt="MuHaven"
                 class="w-10 h-10 rounded-xl shadow-sm"
                 style="mix-blend-mode: multiply"

@@ -128,7 +128,7 @@ function scaleIn(delay = 0) {
       >
         <!-- Logo -->
         <div class="flex items-center gap-2.5">
-          <img src="/logo.jpg" alt="MuHaven" class="w-8 h-8 rounded-lg" style="mix-blend-mode: multiply" />
+          <img src="/logo.png" alt="MuHaven" class="w-8 h-8 rounded-lg" style="mix-blend-mode: multiply" />
           <span :class="cn('font-sans font-bold text-midnight dark:text-white tracking-tight transition-all duration-500', isScrolled ? 'text-base' : 'text-xl')">MuHaven</span>
         </div>
 
@@ -739,7 +739,7 @@ function scaleIn(delay = 0) {
     <footer class="border-t border-haze/50 dark:border-white/5 py-8">
       <div class="max-w-6xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between gap-4">
         <div class="flex items-center gap-2.5">
-          <img src="/logo.jpg" alt="MuHaven" class="w-6 h-6 rounded-md" style="mix-blend-mode: multiply" />
+          <img src="/logo.png" alt="MuHaven" class="w-6 h-6 rounded-md" style="mix-blend-mode: multiply" />
           <span class="text-base font-sans font-semibold text-midnight dark:text-white">MuHaven</span>
         </div>
         <p class="text-sm text-cool">
