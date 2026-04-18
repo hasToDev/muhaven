@@ -86,6 +86,15 @@ contract MuHavenEscrow is Initializable, ERC165Upgradeable, ReentrancyGuardTrans
     ///      SDK's expected paging behavior (plan 19C batches at 50; 200 is a
     ///      comfortable headroom). Enforce explicitly so reverts surface a named
     ///      error rather than a raw OOG / 0x panic.
+    ///
+    ///      **Practical ceiling is gas-bound, not constant-bound.** Each escrow
+    ///      in `batchCreate` runs `FHE.asEaddress` (ZK validation ≈ 300–500k gas)
+    ///      plus a resolver callback; each escrow in `redeemMultiple` runs the
+    ///      silent-failure AND chain (3 FHE.eq/and/not + FHE.select ≈ 1M+ gas).
+    ///      On Arb Sepolia (30M block gas limit), realistic ceilings are around
+    ///      50 for batchCreate and 20–30 for redeemMultiple. The SDK defaults to
+    ///      batchSize=50 to stay comfortably inside these bounds. Callers passing
+    ///      values above the practical ceiling will hit OOG before `BatchTooLarge`.
     uint256 public constant MAX_BATCH_SIZE = 200;
 
     // ── Events (extra) ───────────────────────────────────────────────────

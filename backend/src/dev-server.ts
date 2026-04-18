@@ -235,12 +235,16 @@ async function main() {
   // Start blockchain event poller if enabled
   const env = getEnv();
   if (env.BLOCK_POLLER_ENABLED) {
+    // REINEIRA_ESCROW_ADDRESS is retained as the env var name for backwards
+    // compatibility with existing homelab configs — semantically it now points
+    // at MuHavenEscrow (Phase 19B/19D switched escrow implementations).
     const escrowAddress = env.REINEIRA_ESCROW_ADDRESS;
     const distributorAddress = env.YIELD_DISTRIBUTOR_ADDRESS;
+    const registryAddress = env.INVESTOR_REGISTRY_ADDRESS;
     const rpcUrl = env.RPC_URL;
 
-    if (!escrowAddress || !distributorAddress || !rpcUrl) {
-      console.warn('[poller] BLOCK_POLLER_ENABLED but missing REINEIRA_ESCROW_ADDRESS, YIELD_DISTRIBUTOR_ADDRESS, or RPC_URL — skipping');
+    if (!escrowAddress || !distributorAddress || !registryAddress || !rpcUrl) {
+      console.warn('[poller] BLOCK_POLLER_ENABLED but missing REINEIRA_ESCROW_ADDRESS, YIELD_DISTRIBUTOR_ADDRESS, INVESTOR_REGISTRY_ADDRESS, or RPC_URL — skipping');
     } else {
       const useCase = new ProcessEscrowEventUseCase(
         container.escrowRepo,
@@ -253,6 +257,7 @@ async function main() {
         rpcUrl,
         escrowAddress: escrowAddress as `0x${string}`,
         yieldDistributorAddress: distributorAddress as `0x${string}`,
+        investorRegistryAddress: registryAddress as `0x${string}`,
         intervalMs: env.BLOCK_POLLER_INTERVAL_MS,
       });
 

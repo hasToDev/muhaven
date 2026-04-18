@@ -318,6 +318,17 @@ export const yieldDistributorAbi = [
     inputs: [{ name: 'newEscrow', type: 'address' }],
     outputs: [],
   },
+  // ── Admin: grant aggregate yield decrypt access (Phase 19D.0) ──────
+  {
+    name: 'grantYieldDecryptAccess',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'distributionId', type: 'uint256' },
+      { name: 'viewer', type: 'address' },
+    ],
+    outputs: [],
+  },
   // ── Events ────────────────────────────────────────────────────────
   {
     name: 'DistributionStarted',
@@ -360,6 +371,15 @@ export const yieldDistributorAbi = [
     name: 'MuHavenEscrowUpdated',
     type: 'event',
     inputs: [{ name: 'newEscrow', type: 'address', indexed: true }],
+    anonymous: false,
+  },
+  {
+    name: 'YieldDecryptAccessGranted',
+    type: 'event',
+    inputs: [
+      { name: 'distributionId', type: 'uint256', indexed: true },
+      { name: 'viewer', type: 'address', indexed: true },
+    ],
     anonymous: false,
   },
 ] as const

@@ -43,6 +43,16 @@ export const yieldDistributorAbi = [
     inputs: [{ name: 'newEscrow', type: 'address' }],
     outputs: [],
   },
+  {
+    name: 'grantYieldDecryptAccess',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'distributionId', type: 'uint256' },
+      { name: 'viewer', type: 'address' },
+    ],
+    outputs: [],
+  },
   // ── Views ──────────────────────────────────────────────────────────
   {
     name: 'isDistributionComplete',
@@ -120,6 +130,15 @@ export const yieldDistributorAbi = [
     name: 'MuHavenEscrowUpdated',
     type: 'event',
     inputs: [{ name: 'newEscrow', type: 'address', indexed: true }],
+    anonymous: false,
+  },
+  {
+    name: 'YieldDecryptAccessGranted',
+    type: 'event',
+    inputs: [
+      { name: 'distributionId', type: 'uint256', indexed: true },
+      { name: 'viewer', type: 'address', indexed: true },
+    ],
     anonymous: false,
   },
 ] as const

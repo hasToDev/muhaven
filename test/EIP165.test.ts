@@ -119,6 +119,7 @@ describe("EIP-165 supportsInterface", function () {
         "function getDistribution(uint256) view returns (address,bytes32,bytes32,uint256,uint256,uint256,uint8)",
         "function getEscrowIds(uint256) view returns (uint256[])",
         "function encryptedTotalYieldDistributed() view returns (bytes32)",
+        "function grantYieldDecryptAccess(uint256,address)",
       ]);
       expect(await distributor.supportsInterface(interfaceId)).to.be.true;
     });

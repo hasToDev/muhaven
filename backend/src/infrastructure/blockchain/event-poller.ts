@@ -1,16 +1,36 @@
 /**
  * BlockchainEventPoller — self-hosted alternative to QuickNode webhooks.
  *
- * Polls for escrow and yield distributor events using viem's getLogs,
- * enriches distribution escrows with context, and feeds the same
- * ProcessEscrowEventUseCase pipeline that the webhook endpoint uses.
+ * Polls MuHavenEscrow + YieldDistributor events via viem's getLogs and feeds
+ * the same ProcessEscrowEventUseCase pipeline that the webhook endpoint uses.
  *
- * Compatible with future webhook integration — both sources feed the
- * same use case with the same EscrowEventPayload format.
+ * Flow (Phase 19D onwards)
+ * ------------------------
+ *   MuHavenEscrow events emit only `escrowId` — `beneficiary` is stored as an
+ *   encrypted `eaddress` and no longer carried in-event. The poller reconstructs
+ *   the escrowId → investor mapping by reading on-chain state after the
+ *   `YieldDistributor.EscrowIdsAttached(distributionId, count)` event lands:
+ *
+ *     1. `yieldDistributor.getEscrowIds(distributionId)` → array of escrowIds
+ *     2. `investorRegistry.getInvestorsPaginated(0, count)` → array of addresses
+ *     3. Align by index — `escrowIds[i]` is owned by `investors[i]`.
+ *     4. Emit one enriched `EscrowCreated` payload per pair (with
+ *        distribution_id, beneficiary, token_address).
+ *
+ *   The raw on-chain `EscrowCreated` logs from `batchCreate` are observed for
+ *   telemetry only — they cannot be enriched standalone because the owner is
+ *   encrypted.
+ *
+ *   `EscrowRedeemed` is passed through unchanged.
  */
-import { createPublicClient, http, type PublicClient } from 'viem';
+import { createPublicClient, http, type PublicClient, type Address } from 'viem';
 import { arbitrumSepolia } from 'viem/chains';
-import { escrowAbi, yieldDistributorAbi } from './contract-abis.js';
+import {
+  escrowAbi,
+  yieldDistributorAbi,
+  yieldDistributorReadAbi,
+  investorRegistryReadAbi,
+} from './contract-abis.js';
 import type { ProcessEscrowEventUseCase, EscrowEventPayload } from '../../application/use-case/webhook/process-escrow-event.use-case.js';
 import { getLogger } from '../../core/logger.js';
 import type { Logger } from 'pino';
@@ -21,6 +41,7 @@ export interface EventPollerConfig {
   rpcUrl: string;
   escrowAddress: `0x${string}`;
   yieldDistributorAddress: `0x${string}`;
+  investorRegistryAddress: `0x${string}`;
   intervalMs: number;
 }
 
@@ -28,6 +49,7 @@ export class BlockchainEventPoller {
   private readonly client: PublicClient;
   private readonly escrowAddress: `0x${string}`;
   private readonly yieldDistributorAddress: `0x${string}`;
+  private readonly investorRegistryAddress: `0x${string}`;
   private readonly logger: Logger;
   private lastProcessedBlock: bigint | null = null;
   private intervalHandle: ReturnType<typeof setInterval> | null = null;
@@ -44,6 +66,7 @@ export class BlockchainEventPoller {
     });
     this.escrowAddress = config.escrowAddress;
     this.yieldDistributorAddress = config.yieldDistributorAddress;
+    this.investorRegistryAddress = config.investorRegistryAddress;
     this.logger = getLogger('BlockchainEventPoller');
   }
 
@@ -141,17 +164,11 @@ export class BlockchainEventPoller {
       }),
     ]);
 
-    // Index BatchProcessed by txHash for same-tx correlation with EscrowCreated
-    // Index DistributionStarted by distributionId for token lookup (different tx than BatchProcessed)
-    const batchByTx = new Map<string, { distributionId: bigint }>();
+    // Index DistributionStarted by distributionId for token lookup (usually in
+    // the same tx as startDistribution, but may be earlier-block if polling
+    // lagged — we also fall back to reading getDistribution on the chain).
     const tokenByDistributionId = new Map<bigint, string>();
-
     for (const log of distributorLogs) {
-      if (log.eventName === 'BatchProcessed' && log.transactionHash) {
-        batchByTx.set(log.transactionHash, {
-          distributionId: (log as any).args.distributionId,
-        });
-      }
       if (log.eventName === 'DistributionStarted') {
         const args = (log as any).args;
         tokenByDistributionId.set(args.distributionId, args.token);
@@ -160,49 +177,112 @@ export class BlockchainEventPoller {
 
     const payloads: EscrowEventPayload[] = [];
 
-    for (const log of escrowLogs) {
+    // ── Enriched EscrowCreated: one per (escrowId, investor) pair per
+    //    EscrowIdsAttached event ──────────────────────────────────────────
+    for (const log of distributorLogs) {
+      if (log.eventName !== 'EscrowIdsAttached') continue;
       if (!log.transactionHash || log.blockNumber === null) continue;
 
-      const blockNumber = log.blockNumber.toString();
-      const txHash = log.transactionHash;
+      const args = (log as any).args;
+      const distributionId: bigint = args.distributionId;
+      const count: bigint = args.count;
 
-      if (log.eventName === 'EscrowCreated') {
-        const args = (log as any).args;
-        const escrowId = args.escrowId.toString();
-        const beneficiary: string = args.beneficiary;
+      try {
+        const [escrowIds, investors, token] = await Promise.all([
+          this.client.readContract({
+            address: this.yieldDistributorAddress,
+            abi: yieldDistributorReadAbi,
+            functionName: 'getEscrowIds',
+            args: [distributionId],
+          }) as Promise<readonly bigint[]>,
+          this.client.readContract({
+            address: this.investorRegistryAddress,
+            abi: investorRegistryReadAbi,
+            functionName: 'getInvestorsPaginated',
+            args: [0n, count],
+          }) as Promise<readonly Address[]>,
+          this.resolveToken(tokenByDistributionId, distributionId),
+        ]);
 
-        const batch = batchByTx.get(txHash);
-
-        const payload: EscrowEventPayload = {
-          tx_hash: txHash,
-          escrow_id: escrowId,
-          event_type: 'EscrowCreated',
-          block_number: blockNumber,
-          beneficiary,
-        };
-
-        // Enrich with distribution context if in same tx as BatchProcessed
-        if (batch) {
-          payload.distribution_id = Number(batch.distributionId);
-          // Look up token address by distributionId (from DistributionStarted in an earlier tx)
-          const token = tokenByDistributionId.get(batch.distributionId);
-          if (token) {
-            payload.token_address = token;
-          }
+        if (escrowIds.length !== investors.length) {
+          // Structural impossibility under the contract invariants (registry
+          // only appends; setEscrowIds length-matched to investorCount at
+          // startDistribution). If it ever fires, either (a) a chain reorg
+          // raced the two reads, or (b) an ABI / contract drift. Throw to
+          // keep the cursor pinned — next tick retries against a settled
+          // state. Silently skipping would lose the distribution's records
+          // forever because the event would roll out of the poll window.
+          this.logger.error(
+            { distributionId: distributionId.toString(), escrowIds: escrowIds.length, investors: investors.length },
+            'escrowIds / investors length mismatch — refusing to advance cursor, will retry',
+          );
+          throw new Error(
+            `escrowIds (${escrowIds.length}) / investors (${investors.length}) length mismatch for distribution ${distributionId}`,
+          );
         }
 
-        payloads.push(payload);
-      } else if (log.eventName === 'EscrowRedeemed') {
-        const args = (log as any).args;
-        payloads.push({
-          tx_hash: txHash,
-          escrow_id: args.escrowId.toString(),
-          event_type: 'EscrowRedeemed',
-          block_number: blockNumber,
-        });
+        for (let i = 0; i < escrowIds.length; i++) {
+          payloads.push({
+            tx_hash: log.transactionHash,
+            escrow_id: escrowIds[i]!.toString(),
+            event_type: 'EscrowCreated',
+            block_number: log.blockNumber.toString(),
+            distribution_id: Number(distributionId),
+            beneficiary: investors[i]!,
+            token_address: token,
+          });
+        }
+      } catch (err) {
+        this.logger.error(
+          { err, distributionId: distributionId.toString() },
+          'failed to enrich EscrowIdsAttached — will retry on next poll if the log stays in range',
+        );
+        // Don't advance the cursor past this chunk so we can retry next tick.
+        throw err;
       }
     }
 
+    // ── EscrowRedeemed: straightforward pass-through ──────────────────────
+    for (const log of escrowLogs) {
+      if (!log.transactionHash || log.blockNumber === null) continue;
+      if (log.eventName !== 'EscrowRedeemed') continue;
+      const args = (log as any).args;
+      payloads.push({
+        tx_hash: log.transactionHash,
+        escrow_id: args.escrowId.toString(),
+        event_type: 'EscrowRedeemed',
+        block_number: log.blockNumber.toString(),
+      });
+    }
+
     return payloads;
+  }
+
+  /**
+   * Resolve the token address for a distribution. Prefers the in-window
+   * `DistributionStarted` log, falls back to an on-chain read when the
+   * distribution was started in a block older than the current poll window
+   * (e.g. when setEscrowIds was in a different tx than startDistribution).
+   */
+  private async resolveToken(
+    cache: Map<bigint, string>,
+    distributionId: bigint,
+  ): Promise<string | undefined> {
+    const cached = cache.get(distributionId);
+    if (cached) return cached;
+
+    try {
+      const dist = await this.client.readContract({
+        address: this.yieldDistributorAddress,
+        abi: yieldDistributorReadAbi,
+        functionName: 'getDistribution',
+        args: [distributionId],
+      }) as readonly [Address, `0x${string}`, `0x${string}`, bigint, bigint, bigint, number];
+      cache.set(distributionId, dist[0]);
+      return dist[0];
+    } catch (err) {
+      this.logger.warn({ err, distributionId: distributionId.toString() }, 'getDistribution read failed');
+      return undefined;
+    }
   }
 }

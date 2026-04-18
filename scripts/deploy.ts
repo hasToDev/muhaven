@@ -5,11 +5,13 @@
  *
  * Local (in-process hardhat network):
  *   pnpm run deploy:local
- *   → Deploys TestTreasury + MockReineiraEscrow inline, then all core contracts.
+ *   → Deploys TestTreasury + MockPUSDC inline, then all core contracts.
+ *     MuHavenEscrow is deployed fresh (replaces ReineiraOS ConfidentialEscrow — Phase 19B).
  *
  * Testnet (Arbitrum Sepolia):
  *   pnpm run deploy:testnet
- *   → Requires UNDERLYING_TOKEN_ADDRESS, REINEIRA_ESCROW_ADDRESS, and PUSDC_ADDRESS in .env.
+ *   → Requires UNDERLYING_TOKEN_ADDRESS and PUSDC_ADDRESS in .env.
+ *     MuHavenEscrow is deployed fresh behind an OZ Transparent Proxy.
  *
  * Output: deployments/{network}.json (proxy + implementation addresses)
  */
@@ -41,26 +43,20 @@ async function main() {
 
   // Testnet: both required; local: deployed inline below
   let underlyingTokenAddress: string;
-  let reineiraEscrowAddress: string;
   let pusdcAddress: string;
 
   if (!isLocal) {
     if (!process.env.UNDERLYING_TOKEN_ADDRESS) {
       throw new Error("UNDERLYING_TOKEN_ADDRESS is required for non-local deploy");
     }
-    if (!process.env.REINEIRA_ESCROW_ADDRESS) {
-      throw new Error("REINEIRA_ESCROW_ADDRESS is required for non-local deploy");
-    }
     if (!process.env.PUSDC_ADDRESS) {
       throw new Error("PUSDC_ADDRESS is required for non-local deploy");
     }
     underlyingTokenAddress = process.env.UNDERLYING_TOKEN_ADDRESS;
-    reineiraEscrowAddress = process.env.REINEIRA_ESCROW_ADDRESS;
     pusdcAddress = process.env.PUSDC_ADDRESS;
   } else {
     // Will be assigned in the local-mocks block below; TS needs a definite value
     underlyingTokenAddress = ethers.ZeroAddress;
-    reineiraEscrowAddress = ethers.ZeroAddress;
     pusdcAddress = ethers.ZeroAddress;
   }
 
@@ -85,15 +81,7 @@ async function main() {
     record["TestTreasury"] = { address: underlyingTokenAddress };
     console.log(`   TestTreasury: ${underlyingTokenAddress}`);
 
-    console.log("0b. [local] Deploying MockReineiraEscrow...");
-    const MockEscrowFactory = await ethers.getContractFactory("MockReineiraEscrow");
-    const mockEscrow = await MockEscrowFactory.deploy();
-    await mockEscrow.waitForDeployment();
-    reineiraEscrowAddress = await mockEscrow.getAddress();
-    record["MockReineiraEscrow"] = { address: reineiraEscrowAddress };
-    console.log(`   MockReineiraEscrow: ${reineiraEscrowAddress}`);
-
-    console.log("0c. [local] Deploying MockPUSDC...");
+    console.log("0b. [local] Deploying MockPUSDC...");
     const MockPUSDCFactory = await ethers.getContractFactory("MockPUSDC");
     const mockPusdc = await MockPUSDCFactory.deploy();
     await mockPusdc.waitForDeployment();
@@ -166,12 +154,31 @@ async function main() {
   record["YieldGate"] = { address: gateAddr };
   console.log(`   ${gateAddr}`);
 
-  // ── 6. YieldDistributor (proxied) ────────────────────────────────────────
-  console.log("6. YieldDistributor (proxy)...");
+  // ── 6. MuHavenEscrow (proxied) ───────────────────────────────────────────
+  // Replaces the ReineiraOS ConfidentialEscrow in the yield pipeline (Phase 19B).
+  // paymentToken is bound at init time — subsequent swaps via setPaymentToken().
+  console.log("6. MuHavenEscrow (proxy)...");
+  const EscrowFactory = await ethers.getContractFactory("MuHavenEscrow");
+  const muhavenEscrow = await upgrades.deployProxy(
+    EscrowFactory,
+    [owner, pusdcAddress],
+    { kind: "transparent" },
+  );
+  await muhavenEscrow.waitForDeployment();
+  const escrowAddr = await muhavenEscrow.getAddress();
+  record["MuHavenEscrow"] = {
+    proxy: escrowAddr,
+    implementation: await upgrades.erc1967.getImplementationAddress(escrowAddr),
+  };
+  console.log(`   proxy: ${escrowAddr}`);
+  console.log(`   impl:  ${record["MuHavenEscrow"].implementation}`);
+
+  // ── 7. YieldDistributor (proxied) ────────────────────────────────────────
+  console.log("7. YieldDistributor (proxy)...");
   const DistFactory = await ethers.getContractFactory("YieldDistributor");
   const distributor = await upgrades.deployProxy(
     DistFactory,
-    [registryAddr, reineiraEscrowAddress, gateAddr, owner, pusdcAddress],
+    [registryAddr, escrowAddr, gateAddr, owner, pusdcAddress],
     { kind: "transparent" },
   );
   await distributor.waitForDeployment();
@@ -183,8 +190,8 @@ async function main() {
   console.log(`   proxy: ${distAddr}`);
   console.log(`   impl:  ${record["YieldDistributor"].implementation}`);
 
-  // ── 7. MuHavenVault (proxied) ────────────────────────────────────────────
-  console.log("7. MuHavenVault (proxy)...");
+  // ── 8. MuHavenVault (proxied) ────────────────────────────────────────────
+  console.log("8. MuHavenVault (proxy)...");
   const VaultFactory = await ethers.getContractFactory("MuHavenVault");
   const vault = await upgrades.deployProxy(
     VaultFactory,
@@ -218,6 +225,23 @@ async function main() {
   const distContract = await ethers.getContractAt("YieldDistributor", distAddr);
   await (await distContract.setAuthorizedCaller(issuer, true)).wait();
   console.log("   distributor.setAuthorizedCaller(issuer) ✓");
+
+  // YieldGate must know which escrow is allowed to call onConditionSet.
+  // One-shot setter — if the escrow is ever rotated, deploy a fresh YieldGate too.
+  const yieldGateContract = await ethers.getContractAt("YieldGate", gateAddr);
+  await (await yieldGateContract.setAuthorizedEscrow(escrowAddr)).wait();
+  console.log("   yieldGate.setAuthorizedEscrow(muhavenEscrow) ✓");
+
+  // Distributor must be allowed to call MuHavenEscrow.fundFrom inside processBatch.
+  const escrowContract = await ethers.getContractAt("MuHavenEscrow", escrowAddr);
+  await (await escrowContract.setAuthorizedCaller(distAddr, true)).wait();
+  console.log("   muhavenEscrow.setAuthorizedCaller(distributor) ✓");
+
+  // Issuer wallet drives SDK batchCreate from off-chain — needs authorizedCaller
+  // status so MuHavenEscrow accepts its batchCreate calls (redeem remains
+  // permissionless — the silent-failure chain gates payouts).
+  await (await escrowContract.setAuthorizedCaller(issuer, true)).wait();
+  console.log("   muhavenEscrow.setAuthorizedCaller(issuer) ✓");
 
   // ── Save deployments (archive previous if exists) ────────────────────────
   const outDir = join(__dirname, "..", "deployments");

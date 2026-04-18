@@ -13,6 +13,7 @@ import { createYieldEscrowsFlow } from './escrows.js'
 import {
   fundEscrowsFlow,
   startDistributionFlow,
+  grantAdminDecryptFlow,
   DistributionStatus,
 } from './yield.js'
 import { claimYieldFlow, claimYieldBatchFlow } from './claim.js'
@@ -272,6 +273,36 @@ export class MuHavenClient {
       createTxHashes: [startTx, ...createTxHashes],
       fundTxHashes,
     }
+  }
+
+  /**
+   * Grant `viewer` permit-based decrypt access to a distribution's encrypted
+   * yield aggregates (`encTotalYield` and `encPerInvestorYield`). Issued via
+   * plain `FHE.allow` on-chain — no async decrypt tasks.
+   *
+   * After the tx confirms, `viewer` can run
+   * `cofheClient.decryptForView(ctHash).withPermit().execute()` on either
+   * handle to read the plaintext.
+   *
+   * **Caller must be the YieldDistributor owner.** Non-owner calls revert
+   * with `OnlyOwner` (surfaced as `TxFailedError`).
+   *
+   * @param distributionId  ID returned by startDistribution()
+   * @param viewer          Address to grant decrypt-view access to
+   */
+  async grantAdminDecrypt(
+    distributionId: bigint,
+    viewer: Address,
+    opts?: { onProgress?: ProgressCallback },
+  ): Promise<Hash> {
+    return grantAdminDecryptFlow({
+      publicClient: this.publicClient,
+      walletClient: this.walletClient,
+      yieldDistributor: this.addresses.yieldDistributor,
+      distributionId,
+      viewer,
+      onProgress: opts?.onProgress,
+    })
   }
 
   /** Re-exported for consumers that want to introspect distribution state. */

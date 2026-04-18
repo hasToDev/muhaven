@@ -55,6 +55,7 @@ export type ProgressStage =
   | 'processBatch'
   | 'startDistribution'
   | 'redeem'
+  | 'grantAdminDecrypt'
 
 export interface ProgressEvent {
   stage: ProgressStage

@@ -9,6 +9,7 @@ import {
   deployYieldGate,
   deployYieldDistributor,
   ONE_TOKEN,
+  ZERO_ADDRESS,
 } from "./helpers/setup";
 
 /// @dev PUSDC uses 6 decimals (like USDC). 1 PUSDC = 1_000_000 units.
@@ -99,6 +100,38 @@ describe("YieldDistributor", function () {
       // perInvestorYield = total / investorCount = yieldAmount for a single investor
       hre.cofhe.mocks.expectPlaintext(dist.encPerInvestorYield, yieldAmount);
       expect(dist.status).to.equal(0n); // PENDING
+    });
+
+    it("forwards the pulled PUSDC onward to MuHavenEscrow (redeem payout pool)", async function () {
+      // Regression guard for the 19D.3 fix: processBatch + fundFrom only updates
+      // the escrow's encrypted per-investor counter — it does NOT move tokens.
+      // startDistribution must push the pulled cUSDC to MuHavenEscrow so redeem
+      // has a pool to draw from. If this ever regresses, redeem silently pays 0
+      // on mainnet (escrow balance = 0 so confidentialTransfer fails).
+      const { distributor, deployer, issuer, investor, token, pusdc, escrow } =
+        await loadFixture(deployYieldFixture);
+      const issuerClient = await hre.cofhe.createClientWithBatteries(issuer);
+      const [encMint] = await issuerClient.encryptInputs([Encryptable.uint128(ONE_TOKEN)]).execute();
+      await token.connect(issuer).mint(investor.address, encMint);
+
+      const yieldAmount = 7n * ONE_PUSDC;
+      await pusdc.mint(deployer.address, Number(yieldAmount));
+      await pusdc.connect(deployer).setOperator(await distributor.getAddress(), 2_000_000_000);
+
+      const deployerClient = await hre.cofhe.createClientWithBatteries(deployer);
+      const [encYield] = await deployerClient.encryptInputs([Encryptable.uint64(yieldAmount)]).execute();
+      await distributor.startDistribution(encYield);
+
+      // After startDistribution: escrow should hold the full yieldAmount
+      // (cleartext-equivalent handle, encrypted). Distributor balance = 0.
+      hre.cofhe.mocks.expectPlaintext(
+        await pusdc.confidentialBalanceOf(await escrow.getAddress()),
+        yieldAmount,
+      );
+      hre.cofhe.mocks.expectPlaintext(
+        await pusdc.confidentialBalanceOf(await distributor.getAddress()),
+        0n,
+      );
     });
 
     it("starts a distribution from contract balance (two-step workaround)", async function () {
@@ -308,6 +341,66 @@ describe("YieldDistributor", function () {
 
       await expect(distributor.processBatch(1, 10))
         .to.be.revertedWithCustomError(distributor, "AlreadyCompleted");
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // grantYieldDecryptAccess()
+  // ────────────────────────────────────────────────────────────────────────────
+
+  describe("grantYieldDecryptAccess()", function () {
+    async function startedDistribution() {
+      const ctx = await loadFixture(deployYieldFixture);
+      const { distributor, deployer, issuer, investor, token, pusdc } = ctx;
+      const issuerClient = await hre.cofhe.createClientWithBatteries(issuer);
+      const [encMint] = await issuerClient.encryptInputs([Encryptable.uint128(ONE_TOKEN)]).execute();
+      await token.connect(issuer).mint(investor.address, encMint);
+
+      const yieldAmount = 10n * ONE_PUSDC;
+      await pusdc.mint(deployer.address, Number(yieldAmount));
+      const distributorAddr = await distributor.getAddress();
+      await pusdc.connect(deployer).setOperator(distributorAddr, 2000000000);
+
+      const deployerClient = await hre.cofhe.createClientWithBatteries(deployer);
+      const [encYield] = await deployerClient.encryptInputs([Encryptable.uint64(yieldAmount)]).execute();
+      await distributor.startDistribution(encYield);
+      return ctx;
+    }
+
+    it("owner grants decrypt access + emits YieldDecryptAccessGranted", async function () {
+      const { distributor, deployer, alice } = await startedDistribution();
+      await expect(distributor.connect(deployer).grantYieldDecryptAccess(1, alice.address))
+        .to.emit(distributor, "YieldDecryptAccessGranted")
+        .withArgs(1n, alice.address);
+    });
+
+    it("reverts OnlyOwner when non-owner calls", async function () {
+      const { distributor, alice } = await startedDistribution();
+      await expect(distributor.connect(alice).grantYieldDecryptAccess(1, alice.address))
+        .to.be.revertedWithCustomError(distributor, "OnlyOwner");
+    });
+
+    it("reverts InvalidDistribution for unknown distributionId", async function () {
+      const { distributor, deployer, alice } = await startedDistribution();
+      await expect(distributor.connect(deployer).grantYieldDecryptAccess(999, alice.address))
+        .to.be.revertedWithCustomError(distributor, "InvalidDistribution");
+      await expect(distributor.connect(deployer).grantYieldDecryptAccess(0, alice.address))
+        .to.be.revertedWithCustomError(distributor, "InvalidDistribution");
+    });
+
+    it("reverts ZeroAddress when viewer is zero", async function () {
+      const { distributor, deployer } = await startedDistribution();
+      await expect(distributor.connect(deployer).grantYieldDecryptAccess(1, ZERO_ADDRESS))
+        .to.be.revertedWithCustomError(distributor, "ZeroAddress");
+    });
+
+    it("is idempotent — second grant succeeds and emits again", async function () {
+      const { distributor, deployer, alice } = await startedDistribution();
+      await distributor.connect(deployer).grantYieldDecryptAccess(1, alice.address);
+      // Second call succeeds (FHE.allow is idempotent) and emits again for audit trail.
+      await expect(distributor.connect(deployer).grantYieldDecryptAccess(1, alice.address))
+        .to.emit(distributor, "YieldDecryptAccessGranted")
+        .withArgs(1n, alice.address);
     });
   });
 

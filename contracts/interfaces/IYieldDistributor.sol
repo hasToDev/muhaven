@@ -20,4 +20,5 @@ interface IYieldDistributor {
     );
     function getEscrowIds(uint256 distributionId) external view returns (uint256[] memory);
     function encryptedTotalYieldDistributed() external view returns (euint64);
+    function grantYieldDecryptAccess(uint256 distributionId, address viewer) external;
 }

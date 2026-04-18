@@ -244,6 +244,46 @@ export async function processUntilCompleteFlow(args: {
 }
 
 /**
+ * Grant a third-party viewer permit-based decrypt access to a distribution's
+ * encrypted yield aggregates (`encTotalYield`, `encPerInvestorYield`). Only the
+ * YieldDistributor owner may call this.
+ *
+ * Uses plain `FHE.allow` on-chain — no `createDecryptTask`. After the tx lands,
+ * `viewer` can decrypt both handles via:
+ *   `cofheClient.decryptForView(ctHash).withPermit().execute()`
+ */
+export async function grantAdminDecryptFlow(args: {
+  publicClient: PublicClient
+  walletClient: WalletClient
+  yieldDistributor: Address
+  distributionId: bigint
+  viewer: Address
+  onProgress?: ProgressCallback
+}): Promise<Hash> {
+  const { publicClient, walletClient, yieldDistributor, distributionId, viewer, onProgress } = args
+
+  const { hash } = await writeAndWait({
+    publicClient,
+    walletClient,
+    address: yieldDistributor,
+    abi: yieldDistributorAbi,
+    functionName: 'grantYieldDecryptAccess',
+    args: [distributionId, viewer],
+    operation: 'YieldDistributor.grantYieldDecryptAccess',
+  })
+
+  onProgress?.({
+    stage: 'grantAdminDecrypt',
+    current: 1,
+    total: 1,
+    message: `Granted decrypt access on distribution ${distributionId} to ${viewer}`,
+    txHash: hash,
+  })
+
+  return hash
+}
+
+/**
  * High-level: setEscrowIds + processBatch loop.
  * Used by `MuHavenClient.fundEscrows`.
  */

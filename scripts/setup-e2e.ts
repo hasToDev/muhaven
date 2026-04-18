@@ -11,12 +11,20 @@
  *   4. Authorizes on YieldDistributor
  *   5. Transfers USDC from deployer to smart account
  *   6. Transfers TestTreasury (underlying ERC-20) tokens to smart account
+ *   7. Whitelists + accredits the deployer itself (so deployer can be registered
+ *      as an investor in test-e2e-sdk.ts — Phase 19D.3)
+ *   8. Wraps USDC → PUSDC on the deployer wallet (E2E_WRAP_AMOUNT, default 10)
+ *   9. Grants YieldDistributor operator access on the deployer's PUSDC balance
+ *      so startDistribution's confidentialTransferFrom can pull funds
  *
  * Usage:
  *   pnpm hardhat run scripts/setup-e2e.ts --network arb-sepolia -- --address 0xYOUR_SMART_ACCOUNT
  *
  *   Or set the address via env var:
  *   E2E_ADDRESS=0xYOUR_SMART_ACCOUNT pnpm hardhat run scripts/setup-e2e.ts --network arb-sepolia
+ *
+ *   Tune wrap amount (skip by setting 0):
+ *   E2E_WRAP_AMOUNT=20 pnpm hardhat run scripts/setup-e2e.ts --network arb-sepolia
  *
  * Prerequisites:
  *   - Contracts deployed via `pnpm run deploy:testnet`
@@ -30,6 +38,24 @@ import { loadDeployment, getAddress, sleep } from "./testnet-utils";
 // Amounts to transfer for testing
 const USDC_TRANSFER_AMOUNT = 100n * 10n ** 6n; // 100 USDC (6 decimals)
 const TREASURY_TRANSFER_AMOUNT = 1000n * 10n ** 18n; // 1000 TestTreasury tokens (18 decimals)
+
+// PUSDC wrap amount for deployer (6 decimals). 10 PUSDC by default — enough
+// for ~20 distribution test runs at the 0.5 PUSDC default in test-e2e-sdk.ts.
+// Set to 0 to skip the wrap step (useful on re-runs once the deployer already
+// has a sizable cUSDC balance).
+const DEFAULT_WRAP_AMOUNT_PUSDC = 10n;
+
+// Operator approval expiry — 1 year from now in seconds. uint48 → max ~2^48.
+const OPERATOR_EXPIRY = BigInt(Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60);
+
+// ConfidentialUSDC ABI: the subset setup-e2e calls. Explicit to avoid having
+// to import the whole ReineiraOS tokens package.
+const PUSDC_ABI = [
+  "function wrap(address to, uint256 amount) external",
+  "function setOperator(address operator, uint48 until) external",
+  "function isOperator(address holder, address spender) external view returns (bool)",
+  "function balanceOf(address) view returns (uint256)",
+] as const;
 
 async function main() {
   const [deployer] = await ethers.getSigners();
@@ -70,11 +96,16 @@ async function main() {
     process.env.USDC_ADDRESS ||
     "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d";
 
+  const pusdcAddress =
+    process.env.PUSDC_ADDRESS ||
+    "0x6b6e6479b8b3237933c3ab9d8be969862d4ed89f";
+
   console.log(`KYCAdapter:       ${kycAddr}`);
   console.log(`MuHavenToken:     ${tokenAddr}`);
   console.log(`YieldDistributor: ${distributorAddr}`);
   console.log(`TestTreasury:     ${treasuryAddr}`);
-  console.log(`Circle USDC:      ${usdcAddress}\n`);
+  console.log(`Circle USDC:      ${usdcAddress}`);
+  console.log(`PUSDC (cUSDC):    ${pusdcAddress}\n`);
 
   // ── Get contract instances ──────────────────────────────────────────
   const kyc = await ethers.getContractAt("ERC3643KYCAdapter", kycAddr);
@@ -216,16 +247,112 @@ async function main() {
   }
   console.log(`  ✓ Treasury step done\n`);
 
+  // ── Step 7: Deployer-side KYC (whitelist + accredit) ───────────────
+  // test-e2e-sdk.ts mints MuHavenToken to the deployer to register it as an
+  // investor in the registry. Registration only succeeds if the deployer is
+  // KYC-eligible. Mirrors the smart-account flow above, pointed at deployer.
+  console.log("--- Step 7: Deployer KYC (whitelist + accredit) ---");
+  if (!(await kyc.isWhitelisted(deployer.address))) {
+    const tx = await kyc.addToWhitelist(deployer.address);
+    await tx.wait();
+    console.log(`  addToWhitelist(deployer) tx: ${tx.hash}`);
+  } else {
+    console.log(`  Deployer already whitelisted`);
+  }
+  if (!(await kyc.isAccredited(deployer.address))) {
+    const tx = await kyc.addToAccreditedList(deployer.address);
+    await tx.wait();
+    console.log(`  addToAccreditedList(deployer) tx: ${tx.hash}`);
+  } else {
+    console.log(`  Deployer already accredited`);
+  }
+  console.log(`  ✓ Deployer KYC done\n`);
+
+  // ── Step 8: Wrap USDC → PUSDC on the deployer wallet ───────────────
+  // PUSDC's confidentialBalanceOf returns an encrypted handle, so we can't
+  // compare it to a target cleartext amount from this script. The wrap step
+  // is controlled explicitly: E2E_WRAP_AMOUNT (in PUSDC units, 6-decimal).
+  // Default 10 PUSDC. Set to 0 to skip on re-runs.
+  const wrapAmountEnv = process.env.E2E_WRAP_AMOUNT;
+  const wrapAmountPusdc = wrapAmountEnv !== undefined
+    ? BigInt(wrapAmountEnv)
+    : DEFAULT_WRAP_AMOUNT_PUSDC;
+  const wrapAmountUnits = wrapAmountPusdc * 10n ** 6n;
+
+  console.log("--- Step 8: Wrap USDC → PUSDC (deployer) ---");
+  let wrapOutcome: 'done' | 'skipped (E2E_WRAP_AMOUNT=0)' | 'skipped (insufficient USDC)';
+  if (wrapAmountPusdc === 0n) {
+    console.log("  E2E_WRAP_AMOUNT=0 — skipping wrap step");
+    wrapOutcome = 'skipped (E2E_WRAP_AMOUNT=0)';
+  } else {
+    const deployerUsdcNow = await usdc.balanceOf(deployer.address);
+    console.log(
+      `  Target wrap: ${wrapAmountPusdc} PUSDC (${ethers.formatUnits(wrapAmountUnits, 6)} USDC)`,
+    );
+    console.log(
+      `  Deployer USDC: ${ethers.formatUnits(deployerUsdcNow, 6)}`,
+    );
+    if (deployerUsdcNow < wrapAmountUnits) {
+      console.log(
+        `  ⚠ Insufficient deployer USDC to wrap (need ${ethers.formatUnits(wrapAmountUnits, 6)}). Skipping.`,
+      );
+      wrapOutcome = 'skipped (insufficient USDC)';
+    } else {
+      const usdcErc20 = await ethers.getContractAt(
+        "@openzeppelin/contracts/token/ERC20/IERC20.sol:IERC20",
+        usdcAddress,
+      );
+      // Approve exactly the wrap amount; wrap pulls via safeTransferFrom.
+      const approveTx = await usdcErc20.approve(pusdcAddress, wrapAmountUnits);
+      await approveTx.wait();
+      console.log(`  usdc.approve(pusdc, ${wrapAmountPusdc}) tx: ${approveTx.hash}`);
+
+      const pusdc = new ethers.Contract(pusdcAddress, PUSDC_ABI, deployer);
+      const wrapTx = await pusdc.wrap(deployer.address, wrapAmountUnits);
+      await wrapTx.wait();
+      console.log(`  pusdc.wrap(deployer, ${wrapAmountPusdc}) tx: ${wrapTx.hash}`);
+      wrapOutcome = 'done';
+    }
+  }
+  console.log(`  ${wrapOutcome === 'done' ? '✓' : '○'} Wrap step ${wrapOutcome}\n`);
+
+  // ── Step 9: Set YieldDistributor as PUSDC operator ─────────────────
+  // Required for YieldDistributor.startDistribution's confidentialTransferFrom
+  // pull to succeed. setOperator is idempotent — calling it again refreshes
+  // the expiry. Expiry 1 year out so it doesn't need re-running frequently.
+  console.log("--- Step 9: Set distributor as PUSDC operator (deployer) ---");
+  const pusdcView = new ethers.Contract(
+    pusdcAddress,
+    PUSDC_ABI,
+    deployer,
+  );
+  const alreadyOp = await pusdcView.isOperator(deployer.address, distributorAddr);
+  if (alreadyOp) {
+    console.log(`  Distributor already an operator — refreshing expiry`);
+  }
+  const opTx = await pusdcView.setOperator(distributorAddr, OPERATOR_EXPIRY);
+  await opTx.wait();
+  console.log(
+    `  pusdc.setOperator(distributor, ${new Date(
+      Number(OPERATOR_EXPIRY) * 1000,
+    ).toISOString()}) tx: ${opTx.hash}`,
+  );
+  console.log(`  ✓ Operator set\n`);
+
   // ── Summary ─────────────────────────────────────────────────────────
   console.log("=== E2E Setup Complete ===");
-  console.log(`  Target: ${targetAddress}`);
-  console.log(`  ✓ KYC Tier 1 (whitelist)`);
-  console.log(`  ✓ KYC Tier 2 (accredited)`);
-  console.log(`  ✓ Minter role (MuHavenToken)`);
-  console.log(`  ✓ Authorized caller (YieldDistributor)`);
-  console.log(`  ✓ USDC funded`);
-  console.log(`  ✓ TestTreasury funded`);
-  console.log(`\nThe target address is ready for E2E testing.\n`);
+  console.log(`  Target (smart account): ${targetAddress}`);
+  console.log(`    ✓ KYC Tier 1 (whitelist)`);
+  console.log(`    ✓ KYC Tier 2 (accredited)`);
+  console.log(`    ✓ Minter role (MuHavenToken)`);
+  console.log(`    ✓ Authorized caller (YieldDistributor)`);
+  console.log(`    ✓ USDC funded`);
+  console.log(`    ✓ TestTreasury funded`);
+  console.log(`  Deployer (${deployer.address}):`);
+  console.log(`    ✓ KYC Tier 1 + Tier 2`);
+  console.log(`    ${wrapOutcome === 'done' ? '✓' : '○'} PUSDC wrap: ${wrapOutcome === 'done' ? `${wrapAmountPusdc} cUSDC wrapped` : wrapOutcome}`);
+  console.log(`    ✓ YieldDistributor as PUSDC operator`);
+  console.log(`\nReady for Phase 19D.3: test-e2e-sdk.ts\n`);
 }
 
 main().catch((err) => {

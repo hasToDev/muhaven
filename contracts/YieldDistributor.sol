@@ -100,6 +100,14 @@ contract YieldDistributor is Initializable, ERC165Upgradeable, ReentrancyGuardTr
     bytes4 private constant _TRANSFER_FROM_UINT256 =
         bytes4(keccak256("confidentialTransferFrom(address,address,uint256)"));
 
+    /// @dev Selector for confidentialTransfer(address,uint256). Same version-skew
+    ///      rationale as _TRANSFER_FROM_UINT256. Used to push the total pulled
+    ///      yield onward to MuHavenEscrow so redeem payouts have a cUSDC pool
+    ///      to draw from (processBatch → fundFrom only tracks encrypted
+    ///      accounting; it does NOT move tokens).
+    bytes4 private constant _TRANSFER_UINT256 =
+        bytes4(keccak256("confidentialTransfer(address,uint256)"));
+
     // ── Events ────────────────────────────────────────────────────────────
 
     event DistributionStarted(
@@ -114,6 +122,7 @@ contract YieldDistributor is Initializable, ERC165Upgradeable, ReentrancyGuardTr
         uint256 investorCount
     );
     event DistributionCompleted(uint256 indexed distributionId);
+    event YieldDecryptAccessGranted(uint256 indexed distributionId, address indexed viewer);
     event AuthorizedCallerUpdated(address indexed caller, bool authorized);
     event YieldGateUpdated(address indexed newGate);
     event MuHavenEscrowUpdated(address indexed newEscrow);
@@ -224,6 +233,11 @@ contract YieldDistributor is Initializable, ERC165Upgradeable, ReentrancyGuardTr
         // Ensure persistent ACL for the division step below.
         FHE.allowThis(totalYield);
 
+        // Push the whole pulled amount onward to MuHavenEscrow so redeem has
+        // a cUSDC pool to draw from. fundFrom only updates the encrypted
+        // per-investor counter — it does not move tokens.
+        _forwardYieldToEscrow(totalYield);
+
         // Per-investor split stays in euint64 — matches PUSDC native width.
         euint64 encCount = FHE.asEuint64(count);
         FHE.allowThis(encCount);
@@ -276,6 +290,10 @@ contract YieldDistributor is Initializable, ERC165Upgradeable, ReentrancyGuardTr
         euint64 totalYield = pusdc.confidentialBalanceOf(address(this));
         FHE.allowThis(totalYield);
 
+        // Move the whole balance to MuHavenEscrow for redemption payouts.
+        // Same rationale as `startDistribution`.
+        _forwardYieldToEscrow(totalYield);
+
         euint64 encCount = FHE.asEuint64(count);
         FHE.allowThis(encCount);
         euint64 encPerInvestor = FHE.div(totalYield, encCount);
@@ -293,6 +311,25 @@ contract YieldDistributor is Initializable, ERC165Upgradeable, ReentrancyGuardTr
         });
 
         emit DistributionStarted(distributionId, address(pusdc), count);
+    }
+
+    // ── Internal: PUSDC forwarding ───────────────────────────────────────
+
+    /// @dev Push `amount` PUSDC from this contract to MuHavenEscrow. Low-level
+    ///      call with the pre-v0.1.0 ConfidentialUSDC selector — same rationale
+    ///      as the confidentialTransferFrom call in startDistribution.
+    ///      Grants the payment token ACL access to the handle before the
+    ///      transfer so its internal FHE.sub/add on balances succeeds.
+    function _forwardYieldToEscrow(euint64 amount) internal {
+        FHE.allow(amount, address(pusdc));
+        (bool ok, ) = address(pusdc).call(
+            abi.encodeWithSelector(
+                _TRANSFER_UINT256,
+                address(muhavenEscrow),
+                uint256(euint64.unwrap(amount))
+            )
+        );
+        if (!ok) revert PusdcTransferFailed();
     }
 
     // ── Distribution: attach SDK-created escrows ─────────────────────────
@@ -421,6 +458,37 @@ contract YieldDistributor is Initializable, ERC165Upgradeable, ReentrancyGuardTr
     /// @notice Returns the encrypted aggregate of all completed distributions.
     function encryptedTotalYieldDistributed() external view returns (euint64) {
         return _encTotalYieldDistributed;
+    }
+
+    // ── Decrypt access ────────────────────────────────────────────────────
+
+    /// @notice Grant `viewer` permit-based decrypt access to a distribution's
+    ///         encrypted aggregates (`encTotalYield` and `encPerInvestorYield`).
+    ///
+    ///         The issuer who encrypted the input already has permit access via
+    ///         CoFHE's per-input signature. This method extends access to a
+    ///         third party (auditor, platform backend, regulator) without
+    ///         exposing per-investor balances. Post-call, `viewer` can run
+    ///         `cofheClient.decryptForView(ctHash).withPermit().execute()` on
+    ///         both handles.
+    ///
+    ///         Idempotent — FHE.allow is safe to call repeatedly with the same
+    ///         (handle, viewer) pair; the event fires each time for audit trail.
+    ///
+    /// @dev Uses plain `FHE.allow` only — never `createDecryptTask`. See
+    ///      `feedback_fhe_decrypt_pattern` memory for the rationale.
+    ///
+    /// @param distributionId  ID returned by startDistribution()
+    /// @param viewer          Address to grant decrypt-view access to
+    function grantYieldDecryptAccess(uint256 distributionId, address viewer) external onlyOwner {
+        if (viewer == address(0)) revert ZeroAddress();
+        if (distributionId == 0 || distributionId > distributionCount) revert InvalidDistribution();
+
+        Distribution storage d = distributions[distributionId];
+        FHE.allow(d.encTotalYield, viewer);
+        FHE.allow(d.encPerInvestorYield, viewer);
+
+        emit YieldDecryptAccessGranted(distributionId, viewer);
     }
 
     // ── Admin ─────────────────────────────────────────────────────────────

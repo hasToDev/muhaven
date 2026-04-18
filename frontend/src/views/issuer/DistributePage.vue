@@ -164,6 +164,20 @@ onMounted(async () => {
       <MStepProgress :steps="steps" :current-step="currentStep" />
     </div>
 
+    <!-- Phase 19D notice: the full distribute pipeline (startDistribution →
+         escrow batchCreate → setEscrowIds → processBatch) is driven by the CLI
+         (`pnpm run test:e2e:sdk`) for the hackathon demo. The UI button below
+         still triggers startDistribution but does NOT create + fund escrows —
+         use the CLI to complete the pipeline end-to-end. -->
+    <div class="bg-gold/10 border border-gold/40 rounded-xl p-4 text-sm text-midnight dark:text-white">
+      <p class="font-semibold mb-1">Pipeline status: CLI-driven (hackathon demo)</p>
+      <p class="text-cool text-xs leading-relaxed">
+        Full yield distribution (encrypt → start → batch-create escrows → attach
+        → process) runs via <code class="font-mono text-compute">pnpm run test:e2e:sdk</code>.
+        Frontend orchestration via ZeroDev-routed UserOps is wave-4 work.
+      </p>
+    </div>
+
     <MCard
       padding="lg"
       v-motion
@@ -291,10 +305,10 @@ onMounted(async () => {
           full-width
           size="lg"
           :loading="isProcessing"
-          :disabled="!canDistribute"
+          :disabled="true"
           @click="handleDistribute"
         >
-          {{ isProcessing ? 'Distributing...' : 'Deposit & Distribute' }}
+          Use CLI: pnpm run test:e2e:sdk
         </MButton>
 
         <div class="mt-5">

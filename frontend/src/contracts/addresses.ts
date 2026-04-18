@@ -11,23 +11,23 @@ export interface ContractAddresses {
   kycAdapter: `0x${string}`
   riskParams: `0x${string}`
   yieldGate: `0x${string}`
+  muhavenEscrow: `0x${string}`
   // External (ReineiraOS)
   usdc: `0x${string}`
   pusdc: `0x${string}`
-  escrow: `0x${string}`
 }
 
 const arbSepolia: ContractAddresses = {
-  muHavenToken: '0x05519F5c6b0b0626ACd5d7099efC91d9D8367c73',
-  muHavenVault: '0x513A6Fe54c0b640e16d79CC20787421c17b16Db9',
-  investorRegistry: '0x189D3BF72DB3b6b13E275e9Dce7cAAfFEBEeD40B',
-  yieldDistributor: '0x15F7Da3E0CbBEF587314d4a2e73cc81Ead0f3218',
-  kycAdapter: '0xdF7Cf475ceC7c6691f6c0776ed6Ed05AAa9bec77',
-  riskParams: '0xE8C2C6a7A60C31f34a7735e70aa3C99eCC2ef145',
-  yieldGate: '0x2de30627Cf17b973A0c1d01cfe665d2954A76B39',
+  muHavenToken: '0xF95c9aA19e974e4cA0778AAdb76580423eEEeb03',
+  muHavenVault: '0xF445898f1af1DFde88E26c75C4d35c9025C5C631',
+  investorRegistry: '0x9e19cFC63661AF1624ba16392dc02134F91d36f6',
+  yieldDistributor: '0xD403252436e41EFd81D76eB9223485cB66cb1638',
+  kycAdapter: '0x0aF7003E645b3f8028dac59556aa0Cf0AeA21851',
+  riskParams: '0x7F287982232De3C78c1958Aa11f3D9826B445604',
+  yieldGate: '0x2cBAa54E5Ce4ED6D68722e35E18eba77B1c11964',
+  muhavenEscrow: '0xb18ca2122b31Df9Aaef8226f6218Bd93B852F40A',
   usdc: '0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d',
   pusdc: '0x6b6e6479b8b3237933c3ab9d8be969862d4ed89f',
-  escrow: '0xC4333F84F5034D8691CB95f068def2e3B6DC60Fa',
 }
 
 const addressMap: Record<string, ContractAddresses> = {

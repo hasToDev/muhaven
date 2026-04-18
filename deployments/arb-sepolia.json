@@ -1,32 +1,36 @@
 {
   "network": "arb-sepolia",
-  "timestamp": "2026-04-11T09:46:44.951Z",
+  "timestamp": "2026-04-18T01:35:40.744Z",
   "deployer": "0xe11E83398C33A37CaC02C01c43F14A7f95876986",
   "contracts": {
     "ERC3643KYCAdapter": {
-      "address": "0xdF7Cf475ceC7c6691f6c0776ed6Ed05AAa9bec77"
+      "address": "0x0aF7003E645b3f8028dac59556aa0Cf0AeA21851"
     },
     "InvestorRegistry": {
-      "proxy": "0x189D3BF72DB3b6b13E275e9Dce7cAAfFEBEeD40B",
+      "proxy": "0x9e19cFC63661AF1624ba16392dc02134F91d36f6",
       "implementation": "0x22d04e9CdAa289bA94846245e146F56Ac060C58c"
     },
     "MuHavenToken": {
-      "proxy": "0x05519F5c6b0b0626ACd5d7099efC91d9D8367c73",
-      "implementation": "0xE211a4f1Fb05c15a3b02Ab0D6D83E274dD84257f"
+      "proxy": "0xF95c9aA19e974e4cA0778AAdb76580423eEEeb03",
+      "implementation": "0x4cAd201BB299C1d4dcbAa1f31ec12e5891beA68C"
     },
     "RiskParams": {
-      "proxy": "0xE8C2C6a7A60C31f34a7735e70aa3C99eCC2ef145",
+      "proxy": "0x7F287982232De3C78c1958Aa11f3D9826B445604",
       "implementation": "0x7F29F555266cd14B38D4857C7a3BCD485B4ed398"
     },
     "YieldGate": {
-      "address": "0x2de30627Cf17b973A0c1d01cfe665d2954A76B39"
+      "address": "0x2cBAa54E5Ce4ED6D68722e35E18eba77B1c11964"
+    },
+    "MuHavenEscrow": {
+      "proxy": "0xb18ca2122b31Df9Aaef8226f6218Bd93B852F40A",
+      "implementation": "0xF9f843fbce2cF6A3F292d12aAC5009f5fc47E05f"
     },
     "YieldDistributor": {
-      "proxy": "0x15F7Da3E0CbBEF587314d4a2e73cc81Ead0f3218",
-      "implementation": "0x336cf2D6cB630789CC1d476f2Ff00c20698bF7ba"
+      "proxy": "0xD403252436e41EFd81D76eB9223485cB66cb1638",
+      "implementation": "0x90F49e5584F9123bFf44BddB64C16059D9b5eB93"
     },
     "MuHavenVault": {
-      "proxy": "0x513A6Fe54c0b640e16d79CC20787421c17b16Db9",
+      "proxy": "0xF445898f1af1DFde88E26c75C4d35c9025C5C631",
       "implementation": "0x92f2DADcADCD016BfbBF9ED120D4560033a49033"
     }
   }

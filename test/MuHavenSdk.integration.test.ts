@@ -523,6 +523,35 @@ describe("MuHaven SDK (integration)", function () {
   });
 
   // ────────────────────────────────────────────────────────────────────────────
+  // grantAdminDecrypt()
+  // ────────────────────────────────────────────────────────────────────────────
+
+  describe("grantAdminDecrypt()", function () {
+    it("issues the grant tx and a non-owner call rejects via TxFailedError", async function () {
+      const { deployer, alice, addresses, pusdc, distributor } = await loadFixture(deploySdkFixture);
+      await fundAndApprovePusdc(pusdc, deployer, addresses.yieldDistributor, 10n * ONE_PUSDC);
+
+      const { sdk: ownerSdk } = await makeSdk(deployer, addresses);
+      const { distributionId } = await ownerSdk.startDistribution(10n * ONE_PUSDC);
+
+      // Happy path — owner grants access, event fires.
+      const grantTx = await ownerSdk.grantAdminDecrypt(distributionId, alice.address as Address);
+      expect(grantTx).to.match(/^0x[0-9a-f]{64}$/);
+      const receipt = await ownerSdk.publicClient.waitForTransactionReceipt({ hash: grantTx });
+      const granted = receipt.logs.some((log) =>
+        log.address.toLowerCase() === addresses.yieldDistributor.toLowerCase()
+      );
+      expect(granted).to.be.true;
+
+      // Non-owner call — alice isn't the YieldDistributor owner (deployer is).
+      const { sdk: aliceSdk } = await makeSdk(deployer, addresses, HARDHAT_PK_2);
+      await expect(
+        aliceSdk.grantAdminDecrypt(distributionId, alice.address as Address)
+      ).to.be.rejected;
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────────────────────
   // DistributionStatus enum
   // ────────────────────────────────────────────────────────────────────────────
 
