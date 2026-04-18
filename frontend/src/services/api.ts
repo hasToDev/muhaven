@@ -445,3 +445,23 @@ export const agentApi = {
     })
   },
 }
+
+// ── Demo endpoints ─────────────────────────────────────────────────
+
+export interface WhitelistSelfResult {
+  whitelisted: boolean
+  accredited: boolean
+  whitelistTxHash: string | null
+  accreditTxHash: string | null
+  alreadyComplete: boolean
+}
+
+export const demoApi = {
+  whitelistSelf(): Promise<WhitelistSelfResult> {
+    return request('/demo/whitelist-self', {
+      method: 'POST',
+      body: {},
+      auth: true,
+    })
+  },
+}

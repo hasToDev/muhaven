@@ -56,7 +56,22 @@ export async function contractWrite<TAbi extends readonly unknown[]>(
   contractName = 'Contract',
 ): Promise<TxHash> {
   const wallet = useWalletStore()
-  if (!wallet.getViemClients()) throw new WalletNotConnectedError()
+  // Check address presence, not provider readiness. The ZeroDev provider is
+  // lazy-initialized on first sendUserOperation via ensureConnected() — avoids
+  // a passkey prompt on every page load. Gating on getViemClients() here would
+  // throw before that lazy path runs, breaking fresh sessions where address
+  // is restored from localStorage but provider hasn't been recreated yet.
+  if (!wallet.connected) {
+    // Surface exactly what the store thinks — helps diagnose lost-localStorage
+    // vs stale Pinia state vs hydrate-failed-silently scenarios in the E2E run.
+    // Intentionally verbose so the failure message on DistributePage is actionable.
+    console.error('[contractWrite] wallet.connected=false', {
+      address: wallet.address,
+      connecting: wallet.connecting,
+      localStorageAddr: typeof localStorage !== 'undefined' ? localStorage.getItem('muhaven-wallet') : '(no localStorage)',
+    })
+    throw new WalletNotConnectedError()
+  }
 
   let data: `0x${string}`
   try {

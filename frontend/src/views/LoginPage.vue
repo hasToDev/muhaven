@@ -4,8 +4,8 @@ import { useRouter, useRoute } from 'vue-router'
 import { useAuth } from '@/composables/useAuth'
 import { cn } from '@/lib/utils'
 import MButton from '@/components/ui/MButton.vue'
-import { Shield, Fingerprint, Loader2, AlertCircle, CheckCircle2 } from 'lucide-vue-next'
-import type { UserRole } from '@/services/api'
+import { Shield, Fingerprint, Loader2, AlertCircle, CheckCircle2, BadgeCheck } from 'lucide-vue-next'
+import { demoApi, type UserRole } from '@/services/api'
 
 const router = useRouter()
 const route = useRoute()
@@ -24,8 +24,10 @@ if (!authStore.isAuthenticated && (authStore.accessToken || authStore.walletAddr
 const mode = ref<'login' | 'register'>('login')
 const selectedRole = ref<UserRole>('investor')
 const username = ref('')
-const authStep = ref<'idle' | 'working' | 'done'>('idle')
+const authStep = ref<'idle' | 'working' | 'done' | 'awaiting-whitelist'>('idle')
 const localError = ref<string | null>(null)
+const whitelistState = ref<'idle' | 'working' | 'done' | 'error'>('idle')
+const whitelistError = ref<string | null>(null)
 
 const isRegister = computed(() => mode.value === 'register')
 const isWorking = computed(() => authStep.value === 'working')
@@ -33,6 +35,7 @@ const isWorking = computed(() => authStep.value === 'working')
 const stepLabel = computed(() => {
   switch (authStep.value) {
     case 'working': return isRegister.value ? 'Creating passkey & signing in...' : 'Authenticating with passkey...'
+    case 'awaiting-whitelist': return 'Passkey created'
     case 'done': return 'Welcome to MuHaven'
     default: return ''
   }
@@ -46,7 +49,10 @@ onMounted(() => {
 })
 
 watch(() => auth.isAuthenticated.value, (v) => {
-  if (v) redirectToDashboard()
+  // Suppress auto-redirect while the user is on the post-register whitelist step —
+  // otherwise the watcher fires right after the banner appears and yanks the
+  // page out from under the user before they can click "Enable demo access".
+  if (v && authStep.value !== 'awaiting-whitelist') redirectToDashboard()
 })
 
 function redirectToDashboard() {
@@ -76,6 +82,13 @@ async function handleAuth() {
       isRegister.value ? username.value.trim() : undefined,
     )
 
+    // On register: pause and offer the demo-only self-serve whitelist button
+    // before redirecting. On login: proceed directly.
+    if (isRegister.value) {
+      authStep.value = 'awaiting-whitelist'
+      return
+    }
+
     authStep.value = 'done'
     await new Promise(r => setTimeout(r, 600))
     redirectToDashboard()
@@ -83,6 +96,29 @@ async function handleAuth() {
     authStep.value = 'idle'
     localError.value = auth.error.value || (e instanceof Error ? e.message : 'Authentication failed')
   }
+}
+
+async function requestWhitelist() {
+  whitelistError.value = null
+  whitelistState.value = 'working'
+  try {
+    const result = await demoApi.whitelistSelf()
+    whitelistState.value = 'done'
+    // Small pause so the user sees the success state, then continue.
+    await new Promise(r => setTimeout(r, 800))
+    authStep.value = 'done'
+    await new Promise(r => setTimeout(r, 400))
+    redirectToDashboard()
+    void result
+  } catch (e) {
+    whitelistState.value = 'error'
+    whitelistError.value = e instanceof Error ? e.message : 'Whitelist request failed'
+  }
+}
+
+function skipWhitelist() {
+  authStep.value = 'done'
+  setTimeout(redirectToDashboard, 300)
 }
 
 function toggleMode() {
@@ -172,6 +208,64 @@ function toggleMode() {
             </div>
           </transition>
 
+          <!-- Demo-mode self-serve whitelist (shown post-register) -->
+          <transition
+            enter-active-class="transition-all duration-300 ease-out"
+            leave-active-class="transition-all duration-200 ease-in"
+            enter-from-class="opacity-0 -translate-y-2"
+            leave-to-class="opacity-0 translate-y-2"
+          >
+            <div v-if="authStep === 'awaiting-whitelist'" class="mb-2">
+              <div
+                class="mb-5 flex items-start gap-2.5 px-4 py-3 rounded-lg bg-gold/10 border border-gold/25"
+              >
+                <BadgeCheck :size="16" class="text-gold shrink-0 mt-0.5" />
+                <div class="flex flex-col gap-1">
+                  <p class="text-xs font-sans font-semibold text-gold leading-relaxed">
+                    Demo mode — self-serve KYC
+                  </p>
+                  <p class="text-xs font-sans text-slate dark:text-cool leading-relaxed">
+                    Production uses issuer-approved whitelisting. For this demo, click below to
+                    whitelist your new passkey so you can transfer tokens and receive yield.
+                  </p>
+                </div>
+              </div>
+
+              <MButton
+                variant="primary"
+                size="lg"
+                full-width
+                :loading="whitelistState === 'working'"
+                :disabled="whitelistState === 'working' || whitelistState === 'done'"
+                @click="requestWhitelist"
+              >
+                <BadgeCheck v-if="whitelistState !== 'done'" :size="18" />
+                <CheckCircle2 v-else :size="18" />
+                {{ whitelistState === 'done' ? 'Whitelisted — redirecting' : 'Enable demo access' }}
+              </MButton>
+
+              <transition
+                enter-active-class="transition-all duration-200 ease-out"
+                enter-from-class="opacity-0"
+              >
+                <div
+                  v-if="whitelistError"
+                  class="mt-3 flex items-start gap-2.5 px-4 py-3 rounded-lg bg-negative/8 border border-negative/15"
+                >
+                  <AlertCircle :size="16" class="text-negative shrink-0 mt-0.5" />
+                  <p class="text-xs font-sans text-negative leading-relaxed">{{ whitelistError }}</p>
+                </div>
+              </transition>
+
+              <button
+                @click="skipWhitelist"
+                class="mt-4 block mx-auto text-xs font-sans text-cool hover:text-compute transition-colors cursor-pointer"
+              >
+                Skip for now
+              </button>
+            </div>
+          </transition>
+
           <!-- Form (hidden during auth flow) -->
           <transition
             enter-active-class="transition-all duration-300 ease-out"
@@ -179,7 +273,7 @@ function toggleMode() {
             enter-from-class="opacity-0"
             leave-to-class="opacity-0"
           >
-            <div v-if="!isWorking && authStep !== 'done'">
+            <div v-if="!isWorking && authStep !== 'done' && authStep !== 'awaiting-whitelist'">
               <!-- Role selector -->
               <div
                 v-motion

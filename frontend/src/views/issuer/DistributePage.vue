@@ -77,8 +77,12 @@ const canDistribute = computed(() =>
 )
 
 /** Parse "12.34" → 12_340_000n (PUSDC's 6-decimal units, string-safe). */
-function toPusdcUnits(human: string): bigint {
-  const [whole = '0', frac = ''] = human.split('.')
+function toPusdcUnits(human: string | number): bigint {
+  // `<input type="number">` + v-model coerces the bound ref to a JS number,
+  // not a string — calling .split directly throws "X.split is not a function".
+  // Normalize defensively; regressed once before (Phase 19A fix #16).
+  const str = typeof human === 'string' ? human : String(human)
+  const [whole = '0', frac = ''] = str.split('.')
   const fracPadded = (frac + '000000').slice(0, 6)
   return BigInt(whole) * 1_000_000n + BigInt(fracPadded || '0')
 }

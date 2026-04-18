@@ -5,7 +5,7 @@ import { nodePolyfills } from 'vite-plugin-node-polyfills'
 import wasm from 'vite-plugin-wasm'
 import { resolve } from 'path'
 
-export default defineConfig(({ mode }) => ({
+export default defineConfig(() => ({
   plugins: [
     vue(),
     tailwindcss(),
@@ -15,7 +15,9 @@ export default defineConfig(({ mode }) => ({
       globals: { Buffer: true, process: true },
     }),
   ],
-  base: mode === 'ghpages' ? '/muhaven/' : '/',
+  // All GH Pages deploys go through the muhaven-web repo with a custom-domain
+  // CNAME (muhaven.hasto.dev), so base is always `/`.
+  base: '/',
   server: {
     port: 7778,
   },

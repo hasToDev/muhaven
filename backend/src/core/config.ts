@@ -55,6 +55,13 @@ const EnvSchema = z.object({
   SIMPLE_CONDITION_ADDRESS: z.string().optional(),
   CIRCLE_USDC_ADDRESS: z.string().optional(),
   REINEIRA_COORDINATOR_URL: z.string().optional(),
+
+  // Demo-mode self-serve whitelist (/api/v1/demo/whitelist-self)
+  // Private key of the current KYC adapter admin. See constraint: the
+  // ERC3643KYCAdapter has a single `admin` slot (onlyAdmin), so this is
+  // effectively the deployer key until the adapter is upgraded to multi-admin.
+  // Leave blank to disable the endpoint entirely (returns 503).
+  DEMO_WHITELIST_PRIVATE_KEY: z.string().optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

@@ -1,0 +1,4 @@
+.playwright-profile/
+trace/
+screenshots/
+node_modules/

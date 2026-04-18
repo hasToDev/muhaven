@@ -43,8 +43,11 @@
 import { ethers } from "hardhat";
 import { loadDeployment, getAddress, sleep } from "./testnet-utils";
 
-// Amounts to transfer for testing
-const USDC_TRANSFER_AMOUNT = 100n * 10n ** 6n; // 100 USDC (6 decimals)
+// Amounts to transfer for testing. USDC amount is env-controlled so a re-run
+// against an already-funded target doesn't drain the deployer further.
+// Default 10 USDC is enough for ~20 distribute runs at 0.5 PUSDC each.
+const USDC_TRANSFER_AMOUNT =
+  (process.env.E2E_USDC_AMOUNT ? BigInt(process.env.E2E_USDC_AMOUNT) : 10n) * 10n ** 6n;
 const TREASURY_TRANSFER_AMOUNT = 1000n * 10n ** 18n; // 1000 TestTreasury tokens (18 decimals)
 
 // PUSDC wrap amount for deployer (6 decimals). 10 PUSDC by default — enough

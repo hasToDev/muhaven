@@ -1,0 +1,19 @@
+{
+  "name": "muhaven-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Playwright-driven end-to-end test for the deployed MuHaven DistributePage flow on Arb Sepolia",
+  "scripts": {
+    "install:browsers": "playwright install chromium",
+    "distribute": "tsx distribute.ts"
+  },
+  "dependencies": {
+    "playwright": "^1.50.1",
+    "tsx": "^4.21.0",
+    "viem": "^2.48.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22"
+  }
+}
