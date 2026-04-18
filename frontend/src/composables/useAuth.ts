@@ -92,8 +92,9 @@ export function useAuth() {
       authStore.setTokens(stored)
       appStore.setRole(r)
 
-      // Step 6: Initialize FHE client in background (non-blocking)
-      initFheInBackground()
+      // FHE client is initialized lazily on first encrypt/decrypt call
+      // (via useFhe.ensureReady()) to avoid the self-permit passkey prompt
+      // during the register/login flow.
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Authentication failed'
       authStore.error = msg
@@ -101,16 +102,6 @@ export function useAuth() {
     } finally {
       authStore.loading = false
     }
-  }
-
-  /** Start FHE initialization in the background. Logs errors but doesn't block. */
-  function initFheInBackground(): void {
-    import('@/composables/useFhe').then(({ useFhe }) => {
-      const fhe = useFhe()
-      fhe.initialize().catch((e) => {
-        console.warn('[MuHaven] FHE init failed (non-blocking):', e)
-      })
-    })
   }
 
   /** Logout: call backend, clear local state, disconnect wallet, redirect to /login */
@@ -203,8 +194,8 @@ export function useAuth() {
       // Tokens loaded from storage and still valid — restore wallet address
       // without triggering a passkey prompt. The provider reconnects lazily
       // via ensureConnected() when the user performs an on-chain action.
+      // FHE client also initializes lazily on first encrypt/decrypt.
       walletStore.restoreAddress()
-      initFheInBackground()
       return
     }
 
@@ -212,7 +203,6 @@ export function useAuth() {
     const refreshed = await refreshToken()
     if (refreshed) {
       walletStore.restoreAddress()
-      initFheInBackground()
     }
   }
 
