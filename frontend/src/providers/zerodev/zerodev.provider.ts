@@ -8,11 +8,31 @@ import {
   constants,
 } from '@zerodev/sdk';
 import type { KernelAccountClient } from '@zerodev/sdk';
-import { createPublicClient, createWalletClient, http, type Hex } from 'viem';
+import {
+  toPermissionValidator,
+  serializePermissionAccount,
+  deserializePermissionAccount,
+} from '@zerodev/permissions';
+import { toECDSASigner } from '@zerodev/permissions/signers';
+import { toCallPolicy, CallPolicyVersion } from '@zerodev/permissions/policies';
+import { toTimestampPolicy } from '@zerodev/permissions/policies';
+import { createPublicClient, createWalletClient, http, type Hex, type PublicClient } from 'viem';
 import { signMessage as viemSignMessage } from 'viem/actions';
 import { arbitrumSepolia } from 'viem/chains';
 import { entryPoint07Address } from 'viem/account-abstraction';
 import { WindowHelper } from '@/helpers/WindowHelper';
+import { addresses as CONTRACTS } from '@/contracts/addresses';
+import { yieldDistributorAbi, muhavenEscrowAbi, pusdcAbi } from '@/contracts/abis';
+import {
+  generateSessionRecord,
+  loadSessionRecord,
+  saveSessionRecord,
+  clearSessionRecord,
+  signerFromRecord,
+  isRecordValid,
+  expirySecondsRemaining,
+  type SessionKeyRecord,
+} from '../session-key';
 
 const ENTRY_POINT = { address: entryPoint07Address, version: '0.7' as const };
 const KERNEL_VERSION = constants.KERNEL_V3_1;
@@ -70,11 +90,35 @@ function getRpcUrl(): string {
   return import.meta.env.VITE_RPC_URL || 'https://sepolia-rollup.arbitrum.io/rpc';
 }
 
+/**
+ * The narrow allowlist the session validator is scoped to.
+ * Covers the two compounding flows: issuer distribute + investor claim.
+ * Any UserOp targeting a contract/function outside this set will be
+ * rejected by the bundler — we detect that and fall back to the passkey
+ * kernel for the re-attempt.
+ */
+const SESSION_PERMISSIONS = [
+  { target: CONTRACTS.yieldDistributor, functionName: 'startDistribution', abi: yieldDistributorAbi, valueLimit: 0n },
+  { target: CONTRACTS.yieldDistributor, functionName: 'setEscrowIds', abi: yieldDistributorAbi, valueLimit: 0n },
+  { target: CONTRACTS.yieldDistributor, functionName: 'processBatch', abi: yieldDistributorAbi, valueLimit: 0n },
+  { target: CONTRACTS.muhavenEscrow, functionName: 'batchCreate', abi: muhavenEscrowAbi, valueLimit: 0n },
+  { target: CONTRACTS.muhavenEscrow, functionName: 'redeem', abi: muhavenEscrowAbi, valueLimit: 0n },
+  { target: CONTRACTS.muhavenEscrow, functionName: 'redeemMultiple', abi: muhavenEscrowAbi, valueLimit: 0n },
+  { target: CONTRACTS.pusdc, functionName: 'setOperator', abi: pusdcAbi, valueLimit: 0n },
+] as const;
+
 export class ZeroDevProvider implements IWalletProvider {
   private kernelClient: KernelAccountClient | null = null;
   private webAuthnKeyRef: WebAuthnKey | null = null;
   private _address: string | null = null;
   private _viemClients: ViemClients | null = null;
+
+  // Session-key state — a second, scoped kernel client that signs silently
+  // via an ECDSA private key held in sessionStorage. Built lazily on first
+  // session-covered UserOp; torn down on disconnect or expiry.
+  private sessionKernelClient: KernelAccountClient | null = null;
+  private sessionExpiresAt = 0;
+  private sessionRecord: SessionKeyRecord | null = null;
 
   async connect(): Promise<string> {
     return this.login();
@@ -121,6 +165,16 @@ export class ZeroDevProvider implements IWalletProvider {
   }
 
   async disconnect(): Promise<void> {
+    // Clear session-key state from both memory and sessionStorage.
+    // On tab close sessionStorage is cleared anyway, but explicit logout
+    // must not leave a valid session key behind on the device.
+    if (this._address) {
+      clearSessionRecord(this._address);
+    }
+    this.sessionKernelClient = null;
+    this.sessionExpiresAt = 0;
+    this.sessionRecord = null;
+
     this.kernelClient = null;
     this.webAuthnKeyRef = null;
     this._address = null;
@@ -166,10 +220,157 @@ export class ZeroDevProvider implements IWalletProvider {
     return this._viemClients;
   }
 
+  // ── Session keys ───────────────────────────────────────────────────
+
+  hasSessionKey(): boolean {
+    if (!this.sessionKernelClient) return false;
+    return this.sessionExpiresAt > Math.floor(Date.now() / 1000);
+  }
+
+  getSessionExpirySeconds(): number {
+    if (!this.sessionRecord) return 0;
+    return expirySecondsRemaining(this.sessionRecord);
+  }
+
+  /**
+   * Build (or restore) the scoped session kernel client.
+   *
+   * - If a valid session exists in sessionStorage, rebuild the kernel from it
+   *   (no passkey prompt — enableSig is cached in `serializedAccount`).
+   * - Otherwise generate a fresh session key + build a dual-validator kernel.
+   *   The first UserOp sent through this kernel will fire the passkey prompt
+   *   once to authorize the regular validator (that's the enableSig).
+   *
+   * Call site: invoked inside `sendUserOperation` on first session-covered
+   * UserOp. Idempotent — reuses cached in-memory kernel when present.
+   */
+  async installSessionKey(): Promise<void> {
+    if (this.hasSessionKey()) return;
+    if (!this.kernelClient?.account || !this.webAuthnKeyRef) {
+      throw new Error('installSessionKey: passkey kernel not connected');
+    }
+    const smartAccountAddress = this.kernelClient.account.address;
+
+    const stored = loadSessionRecord(smartAccountAddress);
+    let record: SessionKeyRecord;
+    if (isRecordValid(stored)) {
+      record = stored;
+    } else {
+      const generated = generateSessionRecord(smartAccountAddress);
+      record = generated.record;
+      saveSessionRecord(record);
+    }
+
+    const publicClient = buildPublicClient();
+
+    const sessionSigner = await toECDSASigner({ signer: signerFromRecord(record) });
+
+    const callPolicy = toCallPolicy({
+      policyVersion: CallPolicyVersion.V0_0_4,
+      permissions: [...SESSION_PERMISSIONS] as any,
+    });
+
+    const timestampPolicy = toTimestampPolicy({
+      validAfter: 0,
+      validUntil: record.expiresAt,
+    });
+
+    const permissionValidator = await toPermissionValidator(publicClient, {
+      signer: sessionSigner,
+      policies: [callPolicy, timestampPolicy],
+      kernelVersion: KERNEL_VERSION,
+      entryPoint: ENTRY_POINT,
+    });
+
+    let account;
+    if (record.serializedAccount) {
+      account = await deserializePermissionAccount(
+        publicClient as any,
+        ENTRY_POINT,
+        KERNEL_VERSION,
+        record.serializedAccount,
+        sessionSigner,
+      );
+    } else {
+      const passkeyValidator = await toPasskeyValidator(publicClient, {
+        webAuthnKey: this.webAuthnKeyRef,
+        entryPoint: ENTRY_POINT,
+        kernelVersion: KERNEL_VERSION,
+        validatorContractVersion: PasskeyValidatorContractVersion.V0_0_3_PATCHED,
+      });
+      account = await createKernelAccount(publicClient as any, {
+        plugins: { sudo: passkeyValidator, regular: permissionValidator },
+        entryPoint: ENTRY_POINT,
+        kernelVersion: KERNEL_VERSION,
+      });
+    }
+
+    const paymaster = createZeroDevPaymasterClient({
+      chain: arbitrumSepolia,
+      transport: http(getBundlerUrl()),
+    });
+
+    this.sessionKernelClient = createKernelAccountClient({
+      account,
+      chain: arbitrumSepolia,
+      bundlerTransport: http(getBundlerUrl()),
+      paymaster,
+    });
+    this.sessionExpiresAt = record.expiresAt;
+    this.sessionRecord = record;
+  }
+
+  /**
+   * Cache the enableSig after the first successful session UserOp so the next
+   * page load can reuse the same session without re-signing with the passkey.
+   */
+  private async persistSessionAfterFirstUserOp(): Promise<void> {
+    if (!this.sessionKernelClient?.account) return;
+    if (!this.sessionRecord || this.sessionRecord.serializedAccount) return;
+    try {
+      const serialized = await serializePermissionAccount(
+        this.sessionKernelClient.account as any,
+        this.sessionRecord.privateKey,
+      );
+      this.sessionRecord = { ...this.sessionRecord, serializedAccount: serialized };
+      saveSessionRecord(this.sessionRecord);
+    } catch (e) {
+      // Non-fatal: reload will re-install cleanly.
+      console.warn('[ZeroDev] serializePermissionAccount failed — session will re-install on reload', e);
+    }
+  }
+
+  /**
+   * Send a UserOperation. Prefers the scoped session kernel when available;
+   * falls back to the passkey kernel if the session hasn't been installed
+   * yet, can't be installed, or rejects the call (e.g. an out-of-scope call
+   * the session policy forbids).
+   */
   async sendUserOperation(calls: Call[]): Promise<string> {
     if (!this.kernelClient?.account) throw new Error('Not connected');
 
-    const callData = await this.kernelClient.account.encodeCalls(
+    // Try the session path first. Install if absent.
+    try {
+      if (!this.hasSessionKey()) {
+        await this.installSessionKey();
+      }
+      const hash = await this.sendViaKernel(this.sessionKernelClient!, calls);
+      // Non-blocking: persist enableSig for reload survival.
+      void this.persistSessionAfterFirstUserOp();
+      return hash;
+    } catch (e) {
+      console.warn('[ZeroDev] Session-key send failed; falling back to passkey kernel', e);
+      // Invalidate the session so later calls retry cleanly.
+      this.sessionKernelClient = null;
+      this.sessionExpiresAt = 0;
+      return this.sendViaKernel(this.kernelClient, calls);
+    }
+  }
+
+  private async sendViaKernel(client: KernelAccountClient, calls: Call[]): Promise<string> {
+    if (!client.account) throw new Error('Kernel client has no account');
+
+    const callData = await client.account.encodeCalls(
       calls.map((c) => ({
         to: c.to as Hex,
         data: c.data as Hex,
@@ -177,8 +378,8 @@ export class ZeroDevProvider implements IWalletProvider {
       })),
     );
 
-    const userOpHash = await this.kernelClient.sendUserOperation({ callData });
-    const receipt = await this.kernelClient.waitForUserOperationReceipt({ hash: userOpHash });
+    const userOpHash = await client.sendUserOperation({ callData });
+    const receipt = await client.waitForUserOperationReceipt({ hash: userOpHash });
     return receipt.receipt.transactionHash;
   }
 }

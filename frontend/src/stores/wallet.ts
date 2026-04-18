@@ -10,10 +10,26 @@ export const useWalletStore = defineStore('wallet', () => {
   const connecting = ref(false)
   const error = ref<string | null>(null)
 
+  // Reactive mirror of the provider's session-key state. Updated by the
+  // store wrapper around sendUserOperation so UI components (TopNav pill,
+  // DistributePage hint) stay in sync without polling the provider.
+  const sessionKeyActive = ref(false)
+  const sessionExpirySec = ref(0)
+
   let provider: IWalletProvider | null = null
 
   const connected = computed(() => !!address.value)
   const providerReady = computed(() => !!address.value && !!provider)
+
+  function refreshSessionState(): void {
+    if (!provider || typeof provider.hasSessionKey !== 'function') {
+      sessionKeyActive.value = false
+      sessionExpirySec.value = 0
+      return
+    }
+    sessionKeyActive.value = provider.hasSessionKey()
+    sessionExpirySec.value = provider.getSessionExpirySeconds?.() ?? 0
+  }
 
   function persistAddress(addr: string | null) {
     if (addr) {
@@ -72,6 +88,8 @@ export const useWalletStore = defineStore('wallet', () => {
     provider = null
     address.value = null
     error.value = null
+    sessionKeyActive.value = false
+    sessionExpirySec.value = 0
     persistAddress(null)
   }
 
@@ -84,7 +102,23 @@ export const useWalletStore = defineStore('wallet', () => {
   async function sendUserOperation(calls: Call[]): Promise<string> {
     await ensureConnected()
     if (!provider) throw new Error('No wallet connected')
-    return provider.sendUserOperation(calls)
+    try {
+      return await provider.sendUserOperation(calls)
+    } finally {
+      refreshSessionState()
+    }
+  }
+
+  async function installSessionKey(): Promise<void> {
+    await ensureConnected()
+    if (!provider || typeof provider.installSessionKey !== 'function') {
+      throw new Error('Session keys not supported by this provider')
+    }
+    try {
+      await provider.installSessionKey()
+    } finally {
+      refreshSessionState()
+    }
   }
 
   let reconnectPromise: Promise<void> | null = null
@@ -152,14 +186,18 @@ export const useWalletStore = defineStore('wallet', () => {
     connected,
     providerReady,
     error,
+    sessionKeyActive,
+    sessionExpirySec,
     // actions
     connect,
     register,
     disconnect,
     signMessage,
     sendUserOperation,
+    installSessionKey,
     getViemClients,
     restoreAddress,
     tryReconnect,
+    refreshSessionState,
   }
 })
