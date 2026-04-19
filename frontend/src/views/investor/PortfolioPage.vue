@@ -115,7 +115,7 @@ function holdingColorClass(index: number): string {
             <span class="text-3xl md:text-4xl font-accent italic text-cool/50 tracking-tight">
               Encrypted
             </span>
-            <MButton variant="outline" size="sm" @click="decryptAll">
+            <MButton variant="outline" size="sm" data-testid="portfolio-reveal-all-cta" @click="decryptAll">
               <Eye :size="14" class="mr-1.5" />
               Reveal All
             </MButton>
@@ -151,6 +151,8 @@ function holdingColorClass(index: number): string {
         :key="h.tokenAddress"
         hover
         glow
+        data-testid="portfolio-holding-card"
+        :data-token-address="h.tokenAddress"
         :class="i === 0 && portfolio.holdings.length > 1 ? 'md:col-span-2' : ''"
         v-motion
         :initial="{ opacity: 0, y: 20 }"
@@ -197,7 +199,7 @@ function holdingColorClass(index: number): string {
             <span class="text-xs text-cool">{{ h.assetClass.replace('_', ' ') }}</span>
           </div>
           <div class="mt-3">
-            <MButton variant="outline" size="sm" @click="decryptOne(i)">
+            <MButton variant="outline" size="sm" data-testid="portfolio-decrypt-cta" @click="decryptOne(i)">
               <Eye :size="12" class="mr-1.5" />
               Decrypt Balance
             </MButton>
@@ -258,6 +260,7 @@ function holdingColorClass(index: number): string {
             <button
               @click="decryptPusdc"
               :disabled="portfolio.pusdcDecrypting"
+              data-testid="portfolio-pusdc-refresh"
               class="text-[11px] font-sans text-cool hover:text-compute transition-colors flex items-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-wait"
               title="Re-read + decrypt"
             >
@@ -270,6 +273,7 @@ function holdingColorClass(index: number): string {
             v-else
             size="sm"
             full-width
+            data-testid="portfolio-pusdc-decrypt-cta"
             :loading="portfolio.pusdcDecrypting"
             :disabled="portfolio.pusdcDecrypting"
             @click="decryptPusdc"

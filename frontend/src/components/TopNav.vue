@@ -163,6 +163,7 @@ onBeforeUnmount(() => {
             :key="r"
             @click="switchRole(r)"
             :disabled="switchingRole"
+            :data-testid="`nav-role-${r}`"
             :class="cn(
               'px-3 py-1.5 text-xs font-sans font-medium rounded-md transition-all duration-200 capitalize cursor-pointer',
               'disabled:opacity-70 disabled:cursor-wait',
@@ -186,6 +187,8 @@ onBeforeUnmount(() => {
           <button
             type="button"
             @click="copyAddress"
+            data-testid="nav-wallet-pill"
+            :data-full-address="authStore.walletAddress"
             :title="copied ? 'Copied!' : `Copy ${authStore.walletAddress}`"
             :aria-label="copied ? 'Address copied to clipboard' : `Copy smart account address ${authStore.walletAddress}`"
             class="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-haze/60 dark:hover:bg-white/5 transition-colors rounded-l-lg"
@@ -231,6 +234,7 @@ onBeforeUnmount(() => {
           <button
             v-else
             @click="handleLogout"
+            data-testid="nav-wallet-logout"
             class="flex items-center justify-center px-2.5 py-2 border-l border-haze dark:border-white/8 text-cool hover:text-negative transition-colors duration-200 cursor-pointer"
             title="Sign out"
           >
@@ -242,6 +246,7 @@ onBeforeUnmount(() => {
         <button
           v-else
           @click="handleSignIn"
+          data-testid="nav-wallet-signin"
           class="hidden sm:flex items-center gap-2 px-4 py-2 text-sm font-sans font-medium text-white bg-compute hover:bg-compute/90 rounded-lg transition-colors duration-200 cursor-pointer"
         >
           <LogIn :size="14" />
@@ -255,6 +260,7 @@ onBeforeUnmount(() => {
             <button
               type="button"
               @click="copyAddress"
+              :data-full-address="authStore.walletAddress"
               :title="copied ? 'Copied!' : `Copy ${authStore.walletAddress}`"
               :aria-label="copied ? 'Address copied to clipboard' : `Copy smart account address ${authStore.walletAddress}`"
               class="flex items-center gap-1.5 px-2.5 py-2 bg-mist dark:bg-midnight-mid rounded-lg border border-haze dark:border-white/8 cursor-pointer active:bg-haze/60 dark:active:bg-white/5 transition-colors"

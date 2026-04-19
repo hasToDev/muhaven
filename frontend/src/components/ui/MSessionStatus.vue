@@ -46,6 +46,7 @@ const tooltip = computed(() =>
 <template>
   <span
     v-if="visible"
+    data-testid="session-status"
     :class="cn(
       'inline-flex items-center gap-1 rounded-full border border-compute/30 bg-compute/10 text-compute',
       'font-mono tracking-tight select-none',

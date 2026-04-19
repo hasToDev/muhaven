@@ -1,14 +1,23 @@
 {
   "name": "muhaven-e2e",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Playwright-driven end-to-end test for the deployed MuHaven DistributePage flow on Arb Sepolia",
+  "description": "Playwright functional regression suite for the MuHaven UI.",
   "scripts": {
     "install:browsers": "playwright install chromium",
+    "test": "playwright test",
+    "test:ui": "playwright test --ui",
+    "test:public": "playwright test --project=public",
+    "test:auth": "playwright test --project=auth",
+    "test:investor": "playwright test --project=investor",
+    "test:issuer": "playwright test --project=issuer",
+    "test:regression": "playwright test --project=regression",
+    "report": "playwright show-report",
     "distribute": "tsx distribute.ts"
   },
   "dependencies": {
+    "@playwright/test": "^1.50.1",
     "playwright": "^1.50.1",
     "tsx": "^4.21.0",
     "viem": "^2.48.1"

@@ -198,6 +198,7 @@ function resetForm() {
     <div class="flex gap-3">
       <button
         @click="depositPath = 'encrypted-mint'"
+        data-testid="deposit-path-encrypted"
         :class="[
           'flex-1 px-4 py-3 rounded-xl border text-left transition-all duration-200',
           depositPath === 'encrypted-mint'
@@ -215,6 +216,7 @@ function resetForm() {
 
       <button
         @click="depositPath = 'vault-wrap'"
+        data-testid="deposit-path-wrap"
         :class="[
           'flex-1 px-4 py-3 rounded-xl border text-left transition-all duration-200',
           depositPath === 'vault-wrap'
@@ -237,6 +239,7 @@ function resetForm() {
       <select
         v-model="selectedToken"
         :disabled="isProcessing"
+        data-testid="deposit-token-select"
         class="mt-2 w-full py-3 px-4 text-sm font-sans border border-haze dark:border-white/10 rounded-xl bg-white dark:bg-midnight text-midnight dark:text-white focus:outline-none focus:border-compute focus:ring-2 focus:ring-compute/20 transition-colors disabled:opacity-50"
       >
         <option v-for="t in marketplace.filtered" :key="t.address" :value="t.address">
@@ -256,7 +259,7 @@ function resetForm() {
       :visible-once="{ opacity: 1, y: 0, transition: { duration: 400, delay: 150 } }"
     >
       <!-- Success state -->
-      <div v-if="showSuccess" class="flex flex-col items-center gap-4 py-8">
+      <div v-if="showSuccess" data-testid="deposit-success-card" class="flex flex-col items-center gap-4 py-8">
         <div
           v-motion
           :initial="{ opacity: 0, scale: 0.5 }"
@@ -281,7 +284,7 @@ function resetForm() {
       </div>
 
       <!-- Error state -->
-      <div v-else-if="error" class="flex flex-col items-center gap-4 py-8">
+      <div v-else-if="error" data-testid="deposit-error-card" class="flex flex-col items-center gap-4 py-8">
         <p class="text-base text-cool">{{ error }}</p>
         <MButton variant="outline" @click="resetForm">Try Again</MButton>
       </div>
@@ -297,6 +300,7 @@ function resetForm() {
             :key="qa"
             @click="amount = qa"
             :disabled="isProcessing"
+            :data-testid="`deposit-quick-${qa}`"
             class="px-3 py-1.5 text-xs font-medium border border-haze dark:border-white/10 rounded-lg text-cool hover:text-compute hover:border-compute/30 transition-all duration-200 cursor-pointer disabled:opacity-50"
           >
             ${{ Number(qa).toLocaleString() }}
@@ -310,6 +314,7 @@ function resetForm() {
               v-model="amount"
               placeholder="0.00"
               :disabled="isProcessing"
+              data-testid="deposit-amount-input"
               class="w-full py-3.5 pl-8 pr-4 text-lg font-mono border border-haze dark:border-white/10 rounded-xl bg-white dark:bg-midnight text-midnight dark:text-white placeholder:text-cool focus:outline-none focus:border-compute focus:ring-2 focus:ring-compute/20 transition-colors disabled:opacity-50"
             />
           </div>
@@ -344,6 +349,7 @@ function resetForm() {
           variant="primary"
           full-width
           size="lg"
+          data-testid="deposit-cta"
           :loading="isProcessing"
           :disabled="!amount.trim() || numericAmount <= 0"
           @click="handleDeposit"

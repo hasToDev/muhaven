@@ -1,4 +1,7 @@
 .playwright-profile/
+profiles/
 trace/
 screenshots/
+test-results/
+playwright-report/
 node_modules/

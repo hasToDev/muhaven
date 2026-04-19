@@ -74,6 +74,7 @@ onMounted(async () => {
         <input
           v-model="marketplace.searchQuery"
           placeholder="Search tokens..."
+          data-testid="marketplace-search"
           class="w-full py-2.5 pl-10 pr-4 text-sm font-sans border border-haze dark:border-white/10 rounded-xl bg-white dark:bg-midnight text-midnight dark:text-white placeholder:text-cool focus:outline-none focus:border-compute focus:ring-2 focus:ring-compute/20 transition-colors"
         />
       </div>
@@ -82,6 +83,7 @@ onMounted(async () => {
       <div class="flex gap-1.5 flex-wrap">
         <button
           @click="marketplace.assetClassFilter = ''"
+          data-testid="marketplace-filter-all"
           :class="[
             'px-3 py-2 text-xs font-medium rounded-lg transition-all duration-200 cursor-pointer',
             !marketplace.assetClassFilter
@@ -95,6 +97,7 @@ onMounted(async () => {
           v-for="ac in marketplace.assetClasses"
           :key="ac"
           @click="marketplace.assetClassFilter = ac as any"
+          :data-testid="`marketplace-filter-${ac}`"
           :class="[
             'px-3 py-2 text-xs font-medium rounded-lg transition-all duration-200 cursor-pointer',
             marketplace.assetClassFilter === ac
@@ -120,12 +123,14 @@ onMounted(async () => {
         :key="token.id"
         hover
         glow
+        data-testid="marketplace-token-card"
+        :data-token-address="token.address"
       >
         <!-- Header -->
         <div class="flex justify-between items-start mb-4">
           <div>
-            <p class="font-sans font-medium text-base text-midnight dark:text-white">{{ token.name }}</p>
-            <p class="font-mono text-xs text-cool mt-0.5">{{ token.symbol }}</p>
+            <p class="font-sans font-medium text-base text-midnight dark:text-white" data-testid="marketplace-token-name">{{ token.name }}</p>
+            <p class="font-mono text-xs text-cool mt-0.5" data-testid="marketplace-token-symbol">{{ token.symbol }}</p>
           </div>
           <MBadge :variant="token.status === 'active' ? 'positive' : 'default'">
             {{ token.status }}
@@ -172,7 +177,7 @@ onMounted(async () => {
 
         <!-- Invest button -->
         <RouterLink :to="`/deposit?token=${token.address}`">
-          <MButton variant="primary" full-width size="sm">
+          <MButton variant="primary" full-width size="sm" data-testid="marketplace-invest-cta">
             Invest
           </MButton>
         </RouterLink>

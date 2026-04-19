@@ -238,6 +238,7 @@ function toggleMode() {
                 variant="primary"
                 size="lg"
                 full-width
+                data-testid="auth-demo-whitelist-cta"
                 :loading="whitelistState === 'working'"
                 :disabled="whitelistState === 'working' || whitelistState === 'done'"
                 @click="requestWhitelist"
@@ -262,6 +263,7 @@ function toggleMode() {
 
               <button
                 @click="skipWhitelist"
+                data-testid="auth-demo-skip"
                 class="mt-4 block mx-auto text-xs font-sans text-cool hover:text-compute transition-colors cursor-pointer"
               >
                 Skip for now
@@ -292,6 +294,7 @@ function toggleMode() {
                     v-for="r in (['investor', 'issuer'] as const)"
                     :key="r"
                     @click="selectedRole = r"
+                    :data-testid="`auth-role-${r}`"
                     :class="cn(
                       'flex-1 px-4 py-2.5 text-sm font-sans font-medium rounded-md transition-all duration-200 capitalize cursor-pointer',
                       selectedRole === r
@@ -326,6 +329,7 @@ function toggleMode() {
                     type="text"
                     placeholder="e.g. My MuHaven key"
                     autocomplete="username webauthn"
+                    data-testid="auth-passkey-name-input"
                     :class="cn(
                       'w-full px-4 py-3 text-sm font-sans rounded-lg transition-all duration-200',
                       'bg-mist dark:bg-midnight/60',
@@ -348,6 +352,7 @@ function toggleMode() {
                   variant="primary"
                   size="lg"
                   full-width
+                  data-testid="auth-cta"
                   :loading="auth.loading.value"
                   :disabled="auth.loading.value"
                   @click="handleAuth"
@@ -366,6 +371,7 @@ function toggleMode() {
               >
                 <button
                   @click="toggleMode"
+                  data-testid="auth-mode-toggle"
                   class="text-xs font-sans text-cool hover:text-compute transition-colors duration-200 cursor-pointer"
                 >
                   {{ isRegister ? 'Already have an account? Sign in' : 'New here? Create account' }}

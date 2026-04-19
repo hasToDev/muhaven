@@ -95,6 +95,7 @@ function formatTime(timestamp: string): string {
         :key="f"
         :variant="activeFilter === f ? 'primary' : 'outline'"
         size="sm"
+        :data-testid="`activity-filter-${f}`"
         @click="activeFilter = f"
       >
         {{ f === 'all' ? 'All' : f.charAt(0).toUpperCase() + f.slice(1) }}
@@ -143,7 +144,7 @@ function formatTime(timestamp: string): string {
 
       <!-- Load more -->
       <div v-if="activity.hasMore" class="mt-4 text-center">
-        <MButton variant="outline" size="sm" :loading="activity.loadingMore" @click="activity.loadMore()">
+        <MButton variant="outline" size="sm" data-testid="activity-load-more" :loading="activity.loadingMore" @click="activity.loadMore()">
           Load More
         </MButton>
       </div>

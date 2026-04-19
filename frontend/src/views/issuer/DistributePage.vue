@@ -361,6 +361,7 @@ onMounted(async () => {
             v-if="pusdcConfidentialBalance === null"
             @click="decryptPusdcBalance"
             :disabled="pusdcDecrypting"
+            data-testid="distribute-reveal-confidential"
             class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-sans font-medium bg-compute/10 text-compute border border-compute/25 hover:bg-compute/15 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-wait"
             title="Client-side FHE decrypt — no on-chain tx, no gas."
           >
@@ -371,6 +372,7 @@ onMounted(async () => {
           <button
             @click="() => { pusdcConfidentialBalance = null; loadPusdcBalance(); }"
             :disabled="pusdcLoading"
+            data-testid="distribute-refresh-pusdc"
             class="p-1.5 rounded-lg text-cool hover:text-compute hover:bg-mist dark:hover:bg-midnight-mid transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-wait"
             title="Refresh public balance (hides any decrypted confidential view)"
           >
@@ -393,7 +395,7 @@ onMounted(async () => {
       :visible-once="{ opacity: 1, y: 0, transition: { duration: 400, delay: 150 } }"
     >
       <!-- Receipt state -->
-      <div v-if="showReceipt" class="space-y-6">
+      <div v-if="showReceipt" data-testid="distribute-receipt" class="space-y-6">
         <div class="flex flex-col items-center gap-3 py-4">
           <div
             v-motion
@@ -406,7 +408,7 @@ onMounted(async () => {
           <p class="text-lg font-semibold text-midnight dark:text-white">Distribution Complete</p>
         </div>
         <div class="bg-mist dark:bg-midnight rounded-xl p-5 space-y-3 text-sm">
-          <div class="flex justify-between"><span class="text-cool">Distribution ID</span><span class="font-mono text-midnight dark:text-white">#{{ receiptData.distributionId }}</span></div>
+          <div class="flex justify-between"><span class="text-cool">Distribution ID</span><span data-testid="distribute-receipt-id" class="font-mono text-midnight dark:text-white">#{{ receiptData.distributionId }}</span></div>
           <div class="flex justify-between"><span class="text-cool">Token</span><span class="font-medium text-midnight dark:text-white">{{ receiptData.token }}</span></div>
           <div class="flex justify-between"><span class="text-cool">Total Amount</span><span class="font-mono text-midnight dark:text-white">${{ receiptData.amount }}</span></div>
           <div class="flex justify-between"><span class="text-cool">Investors</span><span class="font-medium text-midnight dark:text-white">{{ receiptData.investors }}</span></div>
@@ -418,7 +420,7 @@ onMounted(async () => {
       </div>
 
       <!-- Error state -->
-      <div v-else-if="distributionError" class="space-y-4">
+      <div v-else-if="distributionError" data-testid="distribute-error" class="space-y-4">
         <div class="flex flex-col items-center gap-3 py-4">
           <div class="w-14 h-14 rounded-full bg-negative/12 flex items-center justify-center">
             <AlertTriangle :size="28" class="text-negative" />
@@ -435,6 +437,7 @@ onMounted(async () => {
         <select
           v-model="selectedToken"
           :disabled="isProcessing"
+          data-testid="distribute-token-select"
           class="mt-2 mb-6 w-full bg-mist dark:bg-midnight rounded-xl p-4 text-sm font-sans font-medium text-midnight dark:text-white border border-haze dark:border-white/10 focus:outline-none focus:border-compute cursor-pointer disabled:opacity-50"
         >
           <option value="" disabled>Choose a token...</option>
@@ -453,6 +456,7 @@ onMounted(async () => {
             step="0.01"
             min="0"
             :disabled="isProcessing"
+            data-testid="distribute-amount-input"
             class="w-full py-3.5 pl-8 pr-4 text-lg font-mono border border-haze dark:border-white/10 rounded-xl bg-white dark:bg-midnight text-midnight dark:text-white placeholder:text-cool focus:outline-none focus:border-compute focus:ring-2 focus:ring-compute/20 transition-colors disabled:opacity-50"
           />
         </div>
@@ -519,6 +523,7 @@ onMounted(async () => {
         <MButton
           full-width
           size="lg"
+          data-testid="distribute-cta"
           :loading="isProcessing"
           :disabled="!canDistribute"
           @click="handleDistribute"

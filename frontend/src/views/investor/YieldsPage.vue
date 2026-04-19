@@ -163,6 +163,7 @@ function statusBadgeVariant(status: string): 'positive' | 'gold' | 'teal' | 'def
             v-for="r in ranges"
             :key="r.value"
             @click="activeRange = r.value"
+            :data-testid="`yields-range-${r.value}`"
             :class="[
               'px-3 py-1 text-xs font-medium rounded-md transition-all duration-200 cursor-pointer',
               activeRange === r.value
@@ -191,6 +192,8 @@ function statusBadgeVariant(status: string): 'positive' | 'gold' | 'teal' | 'def
       <div
         v-for="(c, i) in yields.claimable"
         :key="c.id"
+        data-testid="yields-claim-row"
+        :data-record-id="c.id"
         :class="['flex items-center justify-between py-4', i > 0 && 'border-t border-haze/50 dark:border-white/8']"
       >
         <div>
@@ -202,6 +205,7 @@ function statusBadgeVariant(status: string): 'positive' | 'gold' | 'teal' | 'def
         </div>
         <MButton
           size="sm"
+          data-testid="yields-claim-cta"
           :loading="claimingIds.has(c.id)"
           :disabled="!c.escrow_id"
           @click="claimYield(c.id, c.escrow_id)"
