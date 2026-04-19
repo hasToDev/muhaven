@@ -6,9 +6,11 @@
 
 ## Overview
 
-MuHaven is a **two-sided** three-layer system: an **fhERC-20 token layer** (encrypted RWA balances), a **settlement layer** (encrypted yield distribution via ReineiraOS), and an **AI agent layer** (autonomous portfolio management on encrypted state). All three layers share the Fhenix CoFHE coprocessor for fully homomorphic encryption.
+MuHaven is a **two-sided** three-layer system: an **fhERC-20 token layer** (encrypted RWA balances), a **settlement layer** (encrypted yield distribution via `MuHavenEscrow` on top of ReineiraOS PUSDC), and an **AI agent layer** (autonomous portfolio management on encrypted state — scaffolded in the current hackathon build, full execution loop is Wave 4). All three layers share the Fhenix CoFHE coprocessor for fully homomorphic encryption.
 
 The **supply side** (issuers) creates and manages RWA tokens, deposits yield, and manages investor eligibility. The **demand side** (investors) purchases tokens, receives yield, and uses AI-powered portfolio management. Both sides share the same smart contracts but interact through different interfaces.
+
+In Wave 3 the frontend talks to an **application backend** (Docker stack on a homelab, exposed via Cloudflare tunnel) that provides SIWE+passkey auth, portfolio/yield aggregation, and a block poller that tracks distribution state. A separate **FHE worker** service wraps `@cofhe/sdk/node` so server-side encryption (needed for agent flows) is isolated from the API pod. See [BACKEND_SETUP.md](./BACKEND_SETUP.md) for the full service topology.
 
 ---
 
@@ -88,92 +90,83 @@ The **supply side** (issuers) creates and manages RWA tokens, deposits yield, an
 
 ### Contract dependency graph
 
-```
-MuHavenToken (fhERC-20)
-│
-├── imports: @fhenixprotocol/cofhe-contracts/FHE.sol
-│             (euint128, eaddress, ebool — max type is euint128)
-│
-├── roles: owner (deployer), issuer (RWA issuer), minters (MINTER_ROLE)
-│          onlyMinter gates mint(), onlyIssuer gates depositYield()
-│
-├── uses: IKYCGate (interface)
-│         │
-│         ├── ERC3643KYCAdapter (implementation)
-│         │   └── reads: ONCHAINID claims from trusted issuers
-│         │
-│         └── [Future] ReineiraOSKYCAdapter (implementation)
-│             └── reads: ReineiraOS compliance proofs
-│
-├── interacts with: PUSDC (ReineiraOS confidential stablecoin)
-│                   └── encrypted deposit/withdrawal via PUSDC wrapper
-│
-├── interacts with: YieldDistributor (new)
-│                   │
-│                   ├── called by: MuHavenToken.depositYield()
-│                   ├── reads: all holder encrypted balances
-│                   └── creates: proportional ReineiraOS escrows
-│
-└── interacts with: YieldGate (ReineiraOS plugin)
-                    │
-                    ├── implements: IConditionResolver
-                    │   └── isConditionMet(escrowId) → bool
-                    │
-                    └── reads: MuHavenToken.encryptedBalanceOf()
-                              to verify yield eligibility
+Eight contracts on Arb Sepolia (six proxied, two standalone). Full table with current addresses in [`deployments/arb-sepolia.json`](../deployments/arb-sepolia.json).
 
-MuHavenVault (new — wrapping model)
+```
+MuHavenToken (fhERC-20, proxy)
 │
-├── locks: external ERC-20 RWA tokens (e.g., BUIDL, OUSG)
-├── mints: equivalent fhERC-20 via MuHavenToken.mint() (vault has MINTER_ROLE)
-└── unwraps: burn fhERC-20, release original ERC-20
+├── imports: @fhenixprotocol/cofhe-contracts/FHE.sol (euint128 max)
+├── roles:   owner, issuer, minters (MINTER_ROLE)
+├── uses:    IKYCGate → ERC3643KYCAdapter (whitelist for hackathon,
+│                                         ONCHAINID claim lookup in production)
+├── writes:  InvestorRegistry.addInvestor() on first mint() to a new address
+└── held by: MuHavenVault (wrap flow), issuer (direct mint)
+
+InvestorRegistry (proxy)
+└── written by MuHavenToken; iterated by SDK + YieldDistributor in pages
+
+MuHavenVault (proxy)
+├── locks external ERC-20 RWA (BUIDL, OUSG, TestTreasury in dev)
+├── has MINTER_ROLE on MuHavenToken → mints fhERC-20 wrapper 1:1
+└── unwrap burns fhERC-20 and releases underlying
+
+YieldDistributor (proxy)
+├── driven by the issuer (startDistribution) via SDK
+├── pulls PUSDC (ReineiraOS confidential stablecoin) — encrypted amount
+├── reads InvestorRegistry + MuHavenToken encrypted balances
+└── calls MuHavenEscrow.batchCreate + fundFrom in paginated batches
+
+MuHavenEscrow (proxy — Wave 3)
+├── encrypted owner (eaddress), payout (euint64), redeemed flag (ebool)
+├── resolver = YieldGate (IConditionResolver: canRedeem + onConditionSet)
+├── investor redeem() silently nullifies on wrong caller / resolver denial
+└── pays out PUSDC via low-level call (euint64 selector workaround)
+
+YieldGate (standalone)
+├── IConditionResolver implementation
+├── onConditionSet(id, data) caches plaintext beneficiary off-chain-state
+└── canRedeem(id) checks KYC + token balance > 0
+
+RiskParams (proxy)
+└── stores 4x euint64 guardrails per investor; FHE.allow(owner) after writes
+
+ERC3643KYCAdapter (standalone)
+└── whitelist (hackathon) / ONCHAINID claim lookup (production)
 ```
 
 ### Core contract: MuHavenToken.sol
 
 ```solidity
-// Simplified structure — see SMART_CONTRACTS.md for full spec
+// Simplified — see SMART_CONTRACTS.md for full spec
 contract MuHavenToken {
-    // Encrypted state
     mapping(address => euint128) private _encryptedBalances;
-    mapping(address => mapping(address => euint128)) private _encryptedAllowances;
     euint128 private _encryptedTotalSupply;
 
-    // KYC gate (swappable)
     IKYCGate public kycGate;
+    IInvestorRegistry public registry;
+    mapping(address => bool) public minters;
     address public owner;
     address public issuer;
 
-    // Issuer role-based access
-    modifier onlyIssuer() {
-        require(msg.sender == issuer, "Only issuer");
-        _;
+    modifier onlyMinter() { require(minters[msg.sender], "Only minter"); _; }
+
+    // Mint — granted to issuer + MuHavenVault via MINTER_ROLE
+    function mint(address to, InEuint128 calldata encryptedAmount) external onlyMinter {
+        require(kycGate.isEligible(to), "KYC: not eligible");
+        euint128 amount = FHE.asEuint128(encryptedAmount);
+        _encryptedBalances[to] = FHE.add(_encryptedBalances[to], amount);
+        FHE.allowThis(_encryptedBalances[to]);
+        FHE.allow(_encryptedBalances[to], to);   // permit for client decryptForView
+        if (!registry.isInvestor(to)) registry.addInvestor(to);
+        emit Transfer(address(0), to);
     }
 
-    // Risk parameters (encrypted per investor)
-    mapping(address => euint64) private _maxDrawdown;
-    mapping(address => euint64) private _minYieldThreshold;
-
-    // Transfer hook — checks KYC before every transfer
-    function _beforeTokenTransfer(address from, address to, euint128 amount) internal {
-        require(kycGate.isEligible(to), "KYC: recipient not eligible");
-    }
-
-    // Minting — any address with MINTER_ROLE (issuer + vault) can mint
-    function mint(address to, InEuint128 calldata encryptedAmount) external onlyMinter;
-
-    // Yield deposit — issuer deposits total yield, YieldDistributor creates escrows
-    function depositYield(uint256 totalYield) external onlyIssuer;
-
-    // Sealed output — only the permit holder can unseal client-side
-    // NOTE: FHE.decrypt() is async in CoFHE — use sealed outputs instead
-    function balanceOfSealed(
-        PermissionedV2 memory permission
-    ) public view withPermission(permission) returns (SealedUint memory) {
-        return FHE.sealoutputTyped(_encryptedBalances[permission.issuer], permission.sealingKey);
-    }
+    // Read (off-chain): client fetches handle, decrypts via permit — no seal-output
+    function encryptedBalanceOf(address account) external view returns (euint128);
 }
 ```
+
+Client reads use `cofheClient.decryptForView(ctHash).withPermit().execute()` — the older `sealOutput` / `balanceOfSealed` pattern is removed in cofhe-contracts v0.1.3. See [SMART_CONTRACTS.md § Reading balance](./SMART_CONTRACTS.md#reading-balance-client-side-with-cofhesdk) for the full pattern.
 
 ---
 
@@ -197,17 +190,16 @@ contract MuHavenToken {
 
 **Issuer yield deposit flow (step by step):**
 
-1. Issuer opens the Issuer Dashboard → selects a token → enters total yield amount (e.g., $50,000)
-2. Issuer calls `MuHavenToken.depositYield(50000)` via dashboard
-3. USDC is transferred from issuer to MuHavenToken contract
-4. MuHavenToken calls `YieldDistributor.distributeYield()` with the total amount
-5. YieldDistributor reads each investor's encrypted balance from MuHavenToken
-6. For each investor, it calculates proportional yield using FHE math (encrypted)
-7. YieldDistributor creates a ReineiraOS escrow per investor, gated by YieldGate
-8. YieldGate verifies eligibility (holds tokens? KYC valid?) before releasing each escrow
-9. Investor's AI agent auto-claims yield → amount added to encrypted balance
+1. Issuer opens the Issuer Dashboard → selects a token → enters total yield amount (e.g., 50 PUSDC).
+2. Frontend calls the MuHaven SDK's `distributeYield(totalYield)`, which orchestrates three sub-steps:
+   1. `startDistribution` — encrypts the total, submits to `YieldDistributor`, which pulls PUSDC from the issuer via a confidential transfer.
+   2. `createYieldEscrows` — paginates `InvestorRegistry`, batch-encrypts addresses with a shared ZK proof, and calls `MuHavenEscrow.batchCreate` with `YieldGate` as the condition resolver. Returns sequentially-assigned escrow IDs.
+   3. `fundEscrows` — loops `YieldDistributor.processBatch`, which computes each investor's encrypted share and funds the corresponding escrow via `fundFrom`.
+3. `YieldGate.onConditionSet` caches the plaintext beneficiary (off-chain mapping, not state) so subsequent `canRedeem` checks are cheap.
+4. Investor opens the yields page → clicks "Claim" → `MuHavenEscrow.redeem(id)` is sent as a gasless UserOp through their ZeroDev kernel.
+5. If the encrypted owner check, not-already-redeemed flag, and resolver check all pass, the escrow silently pays out encrypted PUSDC. Events are emitted unconditionally — the backend block poller verifies the actual PUSDC transfer before marking the yield record claimed.
 
-**Key insight:** Issuers and investors share the same smart contracts but interact through different interfaces. The fhERC-20 token, KYC gate, and yield gate serve both sides. The issuer dashboard and investor AI agent are just different UX layers on top of the same protocol.
+**Key insight:** Issuers and investors share the same smart contracts and the same SDK. The SDK's pluggable sender pattern (EOA-backed `walletClientToSender` for scripts, ZeroDev kernel sender for the frontend) lets one codebase drive both execution contexts. See [SDK.md](./SDK.md) for the full API.
 
 ---
 
@@ -221,11 +213,12 @@ contract MuHavenToken {
 
 ### MuHaven ↔ ReineiraOS
 
-- **What**: Confidential stablecoin (PUSDC) for deposits/withdrawals + encrypted escrow for yield distribution + insurance pools.
-- **How**: ReineiraOS SDK (`@reineira-os/sdk`) for PUSDC wrapping/unwrapping and escrow creation. Custom `IConditionResolver` (YieldGate) for release logic.
-- **Where**: Investor deposit/withdrawal (PUSDC wrapper), yield distribution pipeline (ConfidentialEscrow), insurance purchasing.
-- **Key integration**: PUSDC replaces cleartext USDC transfers — deposit amounts are encrypted. YieldGate reads MuHavenToken's encrypted balances to verify eligibility.
-- **Note**: Privara is ReineiraOS's consumer application layer — MuHaven uses ReineiraOS directly via Platform Modules instead of integrating Privara as a separate SDK.
+- **What**: PUSDC (ReineiraOS's encrypted USDC wrapper) for deposits/withdrawals + backend Platform Modules scaffolding.
+- **How**: Direct contract calls to PUSDC for confidential transfers. Backend structure (Clean Architecture layout, ZeroDev passkey kernel provider, Drizzle repositories) is forked from the ReineiraOS Platform Modules starter and adapted for MuHaven.
+- **Where**: Investor deposit/withdrawal, yield funding (`YieldDistributor` → PUSDC → `MuHavenEscrow`), backend auth + worker skeleton.
+- **Key integration**: PUSDC replaces cleartext USDC transfers — deposit amounts are encrypted on the wire and at rest.
+- **Escrow note**: MuHaven deploys its own `MuHavenEscrow` rather than using ReineiraOS's `ConfidentialEscrow` directly. The deployed ConfidentialUSDC on Arb Sepolia predates `cofhe-contracts` v0.1.0 and uses `euint64 = uint256` at the ABI level, while ReineiraOS's `ConfidentialEscrow` assumes the newer `euint64 = bytes32` selector. `MuHavenEscrow` works around this with a low-level call using the legacy selector, and also adds two-phase (ZK batch) creation tailored to the MuHaven flow. See `development/DEV_WAVE_3/PUSDC_TRANSFER_ISSUE.md`.
+- **Privara note**: Privara is ReineiraOS's consumer app layer — MuHaven uses ReineiraOS directly via Platform Modules instead of integrating Privara as an SDK.
 
 ### MuHaven ↔ ERC-3643
 
@@ -243,31 +236,37 @@ contract MuHavenToken {
 | Component | Trust level | Mitigation |
 |-----------|------------|------------|
 | Fhenix CoFHE | External dependency — FHE key compromise would expose all encrypted state | Threshold decryption distributes key across multiple parties |
-| ReineiraOS | Non-custodial — PUSDC wrapper + escrow in smart contracts | Gate plugin controls release; escrow isolation prevents cross-contamination; investor wallet signs all transactions |
-| AI Agent | Agent wallet — funded with capped balance, revocable | Investor controls the cap; can drain wallet anytime; session keys in production |
+| ReineiraOS (PUSDC) | Non-custodial — PUSDC in smart contract | `MuHavenEscrow` owns its own two-phase escrow logic; only pulls PUSDC via confidential transfers |
+| ZeroDev kernel + passkey | User holds their passkey on device (WebAuthn) | Session keys are scoped to the MuHaven contract set and time-limited; invalidated on logout |
+| AI Agent (Wave 4) | Scaffolded only — no execution loop shipped yet | See Agent status note below |
 | ERC-3643 Claims | Trusted issuers vouch for KYC status | Multiple issuers can be required; issuer registry is on-chain |
 
-### Agent security model
+### Wallet model (Wave 3, shipped)
+
+Users authenticate with a **passkey** (WebAuthn) attached to a **ZeroDev smart account** (EIP-4337 kernel). All user writes are UserOps signed by the passkey and relayed through ZeroDev's bundler + paymaster. The `frontend/src/providers/zerodev/` layer handles registration, login, and session-key installation.
+
+**Session keys** (`@zerodev/permissions`): after the first passkey sign-in, the frontend installs a session-key validator scoped to a narrow allowlist of function calls on MuHaven contracts, valid for a configurable duration (default 1 hour). Subsequent writes within the session are signed by the session key locally — no passkey prompt. This is the shipped prompt-reduction mechanism; see `development/DEV_WAVE_3/PROMPT_REDUCTION_PLAN.md` for the full design.
+
+**Production upgrade (post-hackathon):** Migrate from ZeroDev's kernel-specific permission system to [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) native session keys once EIP-7702 finalizes and wallet support lands.
+
+### Agent security model (Wave 4, scaffolded)
+
+The AI agent chat UI is live on the frontend, but the execution loop — the portion that would call SDK methods on behalf of the user — is not wired up in the hackathon build. When it ships (Wave 4), the agent wallet will share the ZeroDev kernel + session-key scaffolding described above:
 
 ```
-Investor Wallet (full control)
+User passkey (WebAuthn, on device)
 │
-├── Funds a dedicated agent wallet with:
-│   ├── Max USDC balance: $X (investor chooses the cap)
-│   ├── Whitelisted contracts: [MuHavenToken, PUSDC, ReineiraOS Escrow]
-│   └── Revocable: investor can drain the agent wallet anytime
-│
-└── Agent wallet used by AI Agent
-    ├── Can: execute trades within funded balance
-    ├── Can: claim yields
-    ├── Can: rebalance within drift tolerance
-    ├── Cannot: spend more than what's in the agent wallet
-    ├── Cannot: interact with non-whitelisted contracts
-    ├── Cannot: transfer to external addresses
-    └── Cannot: unseal other users' data
+└── Authenticates the ZeroDev kernel account
+    │
+    ├── Direct user actions: signed by passkey (first op) or session key
+    │
+    └── Wave 4: delegated agent actions
+        ├── Narrower session key scope (e.g., only claim_yield, view_portfolio)
+        ├── Shorter expiry (per-conversation, not per-session)
+        └── Per-action user confirmation modal for writes, initially
 ```
 
-**Production upgrade (post-hackathon):** Replace the agent wallet with EIP-7702 session keys — scoped, time-limited, revocable wallet permissions that don't require a separate funded wallet.
+The agent never holds a private key — it calls into the SDK through the authenticated session kernel just like the user does. See [AGENT_DESIGN.md](./AGENT_DESIGN.md) for the staged rollout.
 
 ---
 

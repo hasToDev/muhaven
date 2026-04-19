@@ -1,8 +1,10 @@
 # MuHaven — AI Agent Design
 
-> Architecture, tool definitions, and step-by-step implementation guide for the MuHaven AI agent. Written for builders new to agentic AI.
+> Architecture, tool definitions, and staged implementation guide for the MuHaven AI agent.
 
-> **SDK note**: All tool handlers use `@cofhe/sdk` (v0.4.0) with `Encryptable.uint64()` / `Encryptable.uint128()` for encryption and the async decrypt pattern (`requestBalanceDecrypt` → `getBalanceDecryptResult`) for reading balances. Import from `@cofhe/sdk/node` in Node.js agent contexts. See [SMART_CONTRACTS.md](./SMART_CONTRACTS.md) for SDK compatibility details.
+> **Status (Wave 3 / Phase 20.H):** The agent **chat UI is scaffolded and wired to a backend stub**, but the execution loop — the part that actually calls tools on the user's behalf — is **deferred to Wave 4**. The code snippets below describe the target architecture; the repo currently contains the chat surface, the tool schemas, and the SDK + contract plumbing that the Wave 4 loop will invoke. What ships today in the hackathon build: investors and issuers drive the same SDK flows directly from the Vue dashboard. What's missing: the LLM reasoning loop, the tool dispatcher, and the per-action confirmation modals.
+
+> **SDK note**: Tool handlers use `@cofhe/sdk` (v0.4.0) with `Encryptable.uint64()` / `Encryptable.uint128()` for input encryption and the **permit-based client decrypt** pattern (`cofheClient.decryptForView(ctHash).withPermit().execute()`) for reading. The legacy `requestBalanceDecrypt` / sealed-output pattern shown in earlier drafts of this document is **no longer used** — `sealOutput` was removed in cofhe-contracts v0.1.3. Import from `@cofhe/sdk/node` server-side and from `@cofhe/sdk/web` in the browser. See [SMART_CONTRACTS.md § Critical CoFHE patterns](./SMART_CONTRACTS.md#critical-cofhe-patterns) for the canonical patterns.
 
 ---
 
@@ -178,36 +180,25 @@ interface Tool {
 {
   name: "view_portfolio",
   description: "Show the investor's current portfolio with decrypted balances. Only the investor can see this data. Call this when the user asks about their holdings, balance, or portfolio.",
-  parameters: {
-    type: "object",
-    properties: {},
-  },
+  parameters: { type: "object", properties: {} },
   handler: async () => {
-    // Request async decryption of balance (investor signs their own balance task)
-    await muhavenToken.requestBalanceDecrypt();
-    let balance = 0n;
-    for (let i = 0; i < 30; i++) {
-      const [val, ready] = await muhavenToken.getBalanceDecryptResult(walletAddress);
-      if (ready) { balance = val; break; }
-      await new Promise(r => setTimeout(r, 2000));
-    }
+    // Read encrypted balance handle, decrypt via permit — no on-chain task
+    const balanceCt = await muhavenToken.read.encryptedBalanceOf([walletAddress]);
+    const balance = await cofheClient
+      .decryptForView(balanceCt)
+      .forType(FheTypes.Uint128)
+      .withPermit()
+      .execute();
 
-    // Request async decryption of risk params
-    await riskParamsContract.requestRiskParamsDecrypt(walletAddress);
-    let maxDrawdown = 0n, minYield = 0n;
-    for (let i = 0; i < 30; i++) {
-      const [md, my, , , mdReady] = await riskParamsContract.getRiskParamsDecryptResult(walletAddress);
-      if (mdReady) { maxDrawdown = md; minYield = my; break; }
-      await new Promise(r => setTimeout(r, 2000));
-    }
+    // Risk params — four euint64 handles, decrypt each
+    const [mdCt, myCt, dtCt, msCt] = await riskParamsContract.read.getParams([walletAddress]);
+    const [maxDrawdown, minYield] = await Promise.all([
+      cofheClient.decryptForView(mdCt).forType(FheTypes.Uint64).withPermit().execute(),
+      cofheClient.decryptForView(myCt).forType(FheTypes.Uint64).withPermit().execute(),
+    ]);
 
     return {
-      total_value_usd: Number(balance) / 1e6, // Convert from 6 decimals
-      positions: [
-        { token: "MHRWA-TB", value: (Number(balance) / 1e6) * 0.7, yield_apy: 4.8 },
-        { token: "MHRWA-MM", value: (Number(balance) / 1e6) * 0.2, yield_apy: 5.2 },
-        { token: "Cash buffer", value: (Number(balance) / 1e6) * 0.1, yield_apy: 5.0 },
-      ],
+      total_value_usd: Number(balance) / 1e6,
       risk_params: {
         max_drawdown: `${Number(maxDrawdown) / 100}%`,
         min_yield_alert: `${Number(minYield) / 100}%`,
@@ -218,27 +209,31 @@ interface Tool {
 }
 ```
 
+Note: the position breakdown in an earlier draft of this tool (hardcoded 70/20/10 allocation) is removed — the actual portfolio composition is reconstructed from `yield_records` + vault wrap events by the backend, not from the LLM's guess.
+
 ### Tool 5: `claim_yield`
 
 ```typescript
 {
   name: "claim_yield",
-  description: "Claim pending yield from ReineiraOS escrows. Call this when the user asks to claim yields or when auto-claim is enabled.",
+  description: "Claim pending yield from a MuHavenEscrow. Call this when the user asks to claim yields.",
   parameters: {
     type: "object",
     properties: {
-      escrow_id: { type: "string", description: "ReineiraOS escrow ID to claim from" }
+      escrow_id: { type: "string", description: "MuHavenEscrow id (stringified bigint)" }
     },
     required: ["escrow_id"]
   },
   handler: async ({ escrow_id }) => {
-    // Redeem from ReineiraOS escrow
-    const sdk = ReineiraSDK.create({ network: 'testnet', privateKey: process.env.AGENT_WALLET_KEY });
-    const result = await sdk.escrow.redeem(escrow_id);
-    return { success: true, message: "Yield claimed and added to your portfolio (encrypted)" };
+    // Single call through the MuHaven SDK — sender is the user's ZeroDev kernel,
+    // so this is submitted as a gasless UserOp authenticated by the active session key.
+    const txHash = await muhavenSdk.claimYield(BigInt(escrow_id));
+    return { success: true, txHash, message: "Claim submitted. Backend poller verifies PUSDC receipt." };
   }
 }
 ```
+
+Remember: `MuHavenEscrow.redeem` emits `EscrowRedeemed` unconditionally. Treat the `txHash` as a submission receipt, not a success confirmation — the backend block poller observes the actual PUSDC `ConfidentialTransfer` before updating `yield_records.status = 'claimed'`.
 
 ### Tool 6: `set_risk_params`
 
@@ -489,52 +484,57 @@ async function executeToolHandler(toolName: string, params: any) {
 
 ---
 
-## Agent wallet (hackathon approach)
+## Wallet model — passkey + session keys (shipped in Wave 3)
 
-The agent needs a wallet to sign transactions, but it should NOT have the investor's private key.
-
-For the hackathon, we use a dedicated **agent wallet** — a separate wallet funded by the investor with a capped USDC balance:
+Earlier drafts of this document proposed a dedicated **agent wallet** funded with a capped USDC balance. That model was superseded in Phase 8 by the ZeroDev passkey kernel + session-key system. The agent, when Wave 4 lands, will not hold any private key — it will call into the SDK through the user's existing authenticated kernel, the same path the user's UI clicks use today.
 
 ```
-Investor Wallet (MetaMask)
+User passkey (WebAuthn, on device)
 │
-├── Funds a dedicated agent wallet:
-│   ├── Sends $X USDC to the agent wallet address
-│   ├── Agent can only spend what's in this wallet
-│   └── Investor can drain the agent wallet anytime
-│
-└── Agent backend holds the agent wallet private key
-    ├── Stored in environment variable (AGENT_WALLET_KEY)
-    ├── Used to sign transactions on behalf of investor
-    └── If wallet is empty → agent can't act
+└── ZeroDev kernel smart account (EIP-4337)
+    │
+    ├── First sign-in: passkey dialog → kernel deploy + session-key install
+    ├── Subsequent writes: signed locally by session key (no passkey prompt)
+    │                      scope = narrow allowlist of MuHaven functions
+    │                      TTL   = VITE_SESSION_KEY_DURATION_SEC (default 1h)
+    │
+    └── Wave 4: agent delegated actions reuse the same session key
+        ├── Per-action confirmation modal for writes (initially)
+        ├── Optional tighter scope for agent-issued UserOps
+        └── No separate funded wallet; nothing for the agent to drain
 ```
 
-This is simple, safe, and sufficient to demonstrate the concept. The agent's maximum risk exposure is the funded amount.
-
-**Production upgrade (post-hackathon):** Replace the agent wallet with EIP-7702 session keys — scoped, time-limited, revocable wallet permissions set on-chain. This eliminates the need for a separate funded wallet and allows fine-grained controls (daily spend limits, whitelisted contracts, expiry dates).
+Implementation reference: `frontend/src/providers/zerodev/` and `frontend/src/providers/session-key.ts`. Design rationale: `development/DEV_WAVE_3/PROMPT_REDUCTION_PLAN.md`. EIP-7702 migration stays on the roadmap once wallet support lands.
 
 ---
 
-## Hackathon scope vs. roadmap
+## Shipped vs planned
 
-### Wave 4 scope (build this)
+### Shipped (Phase 20.H, Wave 3)
 
-- 3 tools: `get_yields`, `deposit` + `buy_rwa` (combined flow), `view_portfolio`
-- Advisory conversation: risk assessment → allocation recommendation → confirmation → execution
-- Chat UI in Vue 3
-- Hardcoded yield data (no oracle integration yet)
+- **Chat UI** — `frontend/src/views/AgentPage.vue` + `frontend/src/components/agent/*`, wired to `/api/v1/agent/chat` (backend stub returns canned responses for now).
+- **Tool schemas** (this document) + **contracts + SDK** that the tools will invoke.
+- **SDK integration from the frontend** — investors and issuers already trigger the flows directly from the dashboard (deposit, buy, claim, distribute).
+- **ZeroDev passkey auth + session keys** — the authentication substrate the agent will reuse.
+- **Backend + FHE worker scaffolding** — the FHE worker exists so server-side tool handlers can encrypt inputs without shipping a private key to the pod.
 
-### Roadmap (build later)
+### Planned (Wave 4)
 
-- `claim_yield` tool (requires ReineiraOS escrow integration)
-- `set_risk_params` tool (requires RiskParams contract)
-- Auto-rebalancing based on drift tolerance
-- Auto-reinvestment of claimed yields
-- Insurance purchasing tool
-- Session key integration (EIP-7702)
-- Multiple LLM provider support
-- Agent performance analytics
-- Agent-to-agent coordination via x402 payments and ERC-8004 identity (production enhancement — hackathon scope uses direct SDK calls from the portfolio agent)
+- LLM reasoning loop wired to the tool schemas above.
+- Tool dispatcher that routes `tool_use` → `executeToolHandler(name, input)`.
+- `/api/v1/agent/chat` real implementation (currently a stub).
+- Per-action confirmation modals for writes.
+- Yield oracle integration replacing hardcoded `get_yields` values.
+
+### Post-hackathon
+
+- Auto-rebalancing based on drift tolerance (reads encrypted risk params, proposes a rebalance, waits for approval).
+- Auto-reinvestment of claimed yields.
+- Insurance tool (ReineiraOS insurance pools).
+- EIP-7702 native session keys (migrate off ZeroDev's kernel-specific permission system once 7702 finalizes).
+- Multi-provider LLM support (Claude, OpenAI, local models).
+- Agent performance analytics.
+- Agent-to-agent coordination via x402 payments + ERC-8004 identity.
 
 ---
 
