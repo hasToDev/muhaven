@@ -9,6 +9,7 @@ import MButton from './MButton.vue'
 import MBadge from './MBadge.vue'
 import { Copy, Check, RefreshCw, Wallet, ExternalLink } from 'lucide-vue-next'
 import { formatUSD, formatAddress } from '@/lib/utils'
+import { CIRCLE_FAUCET_URL } from '@/lib/external'
 
 const { address, connected } = useWallet()
 const copied = ref(false)
@@ -109,10 +110,23 @@ watch(connected, (val) => {
 
     <!-- Funding instructions -->
     <div v-if="usdcBalance !== null && usdcBalance === 0n" class="mt-4 p-4 rounded-lg bg-gold/5 border border-gold/20">
-      <p class="text-sm font-medium text-midnight dark:text-white mb-2">Fund your account</p>
+      <div class="flex items-center justify-between gap-3 mb-2">
+        <p class="text-sm font-medium text-midnight dark:text-white">Fund your account</p>
+        <a
+          :href="CIRCLE_FAUCET_URL"
+          target="_blank"
+          rel="noopener"
+          data-testid="fund-account-faucet-link"
+          class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-sans font-medium rounded-lg bg-gold/15 text-gold hover:bg-gold/25 transition-colors cursor-pointer"
+        >
+          Open Circle faucet
+          <ExternalLink :size="12" />
+        </a>
+      </div>
       <ol class="text-xs text-cool space-y-1.5 list-decimal list-inside">
         <li>Copy the address above</li>
-        <li>Send USDC on <strong>Arbitrum Sepolia</strong> from any wallet or faucet</li>
+        <li>Open the <strong>Circle faucet</strong> and select <strong>USDC</strong> on <strong>Arbitrum Sepolia</strong></li>
+        <li>Paste the smart account address and request funds</li>
         <li>Click <strong>Refresh</strong> to see your updated balance</li>
       </ol>
       <p class="text-xs text-cool mt-2">

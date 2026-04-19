@@ -9,13 +9,19 @@ import MBadge from '@/components/ui/MBadge.vue'
 import MSummaryCard from '@/components/ui/MSummaryCard.vue'
 import MGoldRule from '@/components/ui/MGoldRule.vue'
 import MSkeleton from '@/components/ui/MSkeleton.vue'
-import { TrendingUp, ArrowDown, Activity, BarChart3, Lock, Inbox } from 'lucide-vue-next'
+import MPrivacyProofPanel from '@/components/ui/MPrivacyProofPanel.vue'
+import { TrendingUp, ArrowDown, Activity, BarChart3, Lock, Inbox, ChevronDown } from 'lucide-vue-next'
 
 const app = useAppStore()
 const activity = useActivityStore()
 
 type FilterType = 'all' | 'yield' | 'escrow'
 const activeFilter = ref<FilterType>('all')
+const expandedId = ref<string | null>(null)
+
+function toggleExpand(id: string) {
+  expandedId.value = expandedId.value === id ? null : id
+}
 
 const filtered = computed(() => {
   if (activeFilter.value === 'all') return activity.items
@@ -114,31 +120,63 @@ function formatTime(timestamp: string): string {
         <div
           v-for="(item, i) in filtered"
           :key="item.id"
-          :class="['flex items-center gap-4 py-4', i > 0 && 'border-t border-haze/50 dark:border-white/8']"
+          :class="['py-4', i > 0 && 'border-t border-haze/50 dark:border-white/8']"
         >
-          <div :class="['w-10 h-10 rounded-lg flex items-center justify-center', activityMeta[item.type]?.bg || 'bg-mist']">
-            <component
-              :is="activityMeta[item.type]?.icon || Activity"
-              :size="16"
-              :class="activityMeta[item.type]?.classes || 'text-cool'"
-            />
-          </div>
-          <div class="flex-1 min-w-0">
-            <p class="text-base font-sans font-medium text-midnight dark:text-white">
-              {{ item.type === 'yield' ? 'Yield Distribution' : 'Escrow Event' }}
-              <span v-if="item.amount" class="font-mono text-xs ml-2">{{ formatUSD(parseFloat(item.amount)) }}</span>
-            </p>
-            <div class="flex items-center gap-2 mt-1">
-              <MBadge :variant="item.status === 'claimed' ? 'positive' : item.status === 'pending' ? 'gold' : 'teal'">
-                {{ item.status }}
-              </MBadge>
-              <span class="text-xs text-cool flex items-center gap-1">
-                <Lock :size="10" />
-                FHE encrypted
-              </span>
+          <div class="flex items-center gap-4">
+            <div :class="['w-10 h-10 rounded-lg flex items-center justify-center', activityMeta[item.type]?.bg || 'bg-mist']">
+              <component
+                :is="activityMeta[item.type]?.icon || Activity"
+                :size="16"
+                :class="activityMeta[item.type]?.classes || 'text-cool'"
+              />
+            </div>
+            <div class="flex-1 min-w-0">
+              <p class="text-base font-sans font-medium text-midnight dark:text-white">
+                {{ item.type === 'yield' ? 'Yield Distribution' : 'Escrow Event' }}
+                <span v-if="item.amount" class="font-mono text-xs ml-2">{{ formatUSD(parseFloat(item.amount)) }}</span>
+              </p>
+              <div class="flex items-center gap-2 mt-1">
+                <MBadge :variant="item.status === 'claimed' ? 'positive' : item.status === 'pending' ? 'gold' : 'teal'">
+                  {{ item.status }}
+                </MBadge>
+                <span class="text-xs text-cool flex items-center gap-1">
+                  <Lock :size="10" />
+                  FHE encrypted
+                </span>
+              </div>
+            </div>
+            <div class="flex items-center gap-3 shrink-0">
+              <span class="text-xs text-cool whitespace-nowrap">{{ formatTime(item.timestamp) }}</span>
+              <button
+                v-if="item.tx_hash"
+                type="button"
+                @click="toggleExpand(item.id)"
+                :data-testid="`activity-row-toggle-${item.id}`"
+                :aria-expanded="expandedId === item.id"
+                class="flex items-center gap-1 text-[11px] font-sans font-medium text-compute hover:text-compute/80 transition-colors cursor-pointer"
+              >
+                Privacy proof
+                <ChevronDown
+                  :size="12"
+                  :class="['transition-transform duration-200', expandedId === item.id && 'rotate-180']"
+                />
+              </button>
             </div>
           </div>
-          <span class="text-xs text-cool whitespace-nowrap">{{ formatTime(item.timestamp) }}</span>
+
+          <!-- Expanded privacy proof. We rely on the panel's own internal
+               opacity transition rather than animating max-height here, which
+               brittle-clips on tall content. -->
+          <transition
+            enter-active-class="transition-opacity duration-300 ease-out"
+            leave-active-class="transition-opacity duration-200 ease-in"
+            enter-from-class="opacity-0"
+            leave-to-class="opacity-0"
+          >
+            <div v-if="expandedId === item.id && item.tx_hash" class="mt-3 sm:ml-14">
+              <MPrivacyProofPanel :tx-hash="item.tx_hash" :default-open="true" />
+            </div>
+          </transition>
         </div>
       </div>
 

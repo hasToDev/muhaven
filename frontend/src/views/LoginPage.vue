@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuth } from '@/composables/useAuth'
+import { useHomeTarget } from '@/composables/useHomeTarget'
 import { cn } from '@/lib/utils'
 import MButton from '@/components/ui/MButton.vue'
 import { Shield, Fingerprint, Loader2, AlertCircle, CheckCircle2, BadgeCheck } from 'lucide-vue-next'
@@ -10,6 +11,7 @@ import { demoApi, type UserRole } from '@/services/api'
 const router = useRouter()
 const route = useRoute()
 const auth = useAuth()
+const homeTarget = useHomeTarget()
 
 // Clear stale auth state when arriving at login page (e.g. after session expiry redirect)
 import { useAuthStore } from '@/stores/auth'
@@ -159,17 +161,22 @@ function toggleMode() {
             :enter="{ opacity: 1, y: 0, transition: { delay: 100, duration: 400 } }"
             class="flex flex-col items-center mb-8"
           >
-            <div class="flex items-center gap-3 mb-3">
+            <router-link
+              :to="homeTarget"
+              data-testid="login-logo-home"
+              class="flex items-center gap-3 mb-3 group cursor-pointer rounded-xl px-2 py-1 -mx-2 -my-1 transition-all duration-200 hover:bg-mist/60 dark:hover:bg-white/5"
+              aria-label="Back to MuHaven home"
+            >
               <img
                 src="/logo.png"
                 alt="MuHaven"
-                class="w-10 h-10 rounded-xl shadow-sm"
+                class="w-10 h-10 rounded-xl shadow-sm transition-transform duration-300 group-hover:scale-105"
                 style="mix-blend-mode: multiply"
               />
-              <span class="text-2xl font-sans font-bold text-midnight dark:text-white tracking-tight">
+              <span class="text-2xl font-sans font-bold text-midnight dark:text-white tracking-tight transition-colors group-hover:text-compute">
                 MuHaven
               </span>
-            </div>
+            </router-link>
             <p class="text-sm text-cool font-sans">
               Confidential RWA portfolio management
             </p>

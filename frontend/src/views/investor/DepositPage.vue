@@ -19,6 +19,7 @@ import MGoldRule from '@/components/ui/MGoldRule.vue'
 import MPrivacyBanner from '@/components/ui/MPrivacyBanner.vue'
 import MSkeleton from '@/components/ui/MSkeleton.vue'
 import MFundAccount from '@/components/ui/MFundAccount.vue'
+import MPrivacyProofPanel, { type ProofIntent } from '@/components/ui/MPrivacyProofPanel.vue'
 import { CheckCircle, Lock, Shield, Eye } from 'lucide-vue-next'
 import { formatUSD } from '@/lib/utils'
 
@@ -38,6 +39,7 @@ const currentStep = ref(0)
 const isProcessing = ref(false)
 const showSuccess = ref(false)
 const txHash = ref<string | null>(null)
+const txIntent = ref<ProofIntent | null>(null)
 const error = ref<string | null>(null)
 
 const stepsEncrypted = [
@@ -101,6 +103,14 @@ async function handleEncryptedMint() {
     )
 
     txHash.value = hash
+    // Snapshot the inner call we just submitted so the privacy-proof panel
+    // can render it. We can't recover this from `tx.input` because ZeroDev
+    // wraps everything in handleOps([...]).
+    txIntent.value = {
+      contract: 'MuHavenToken',
+      functionName: 'mint',
+      args: [address.value, encrypted],
+    }
     currentStep.value = 3
     showSuccess.value = true
     toast.success('Deposit confirmed', {
@@ -137,6 +147,13 @@ async function handleVaultWrap() {
     const hash = await VaultService.wrap(amountWei)
 
     txHash.value = hash
+    // Intent reflects the wrap call only (the approve was a separate userOp
+    // with its own hash that we don't surface).
+    txIntent.value = {
+      contract: 'MuHavenVault',
+      functionName: 'wrap',
+      args: [amountWei],
+    }
     currentStep.value = 3
     showSuccess.value = true
     toast.success('Wrap confirmed', {
@@ -168,6 +185,7 @@ function resetForm() {
   amount.value = ''
   showSuccess.value = false
   txHash.value = null
+  txIntent.value = null
   error.value = null
 }
 </script>
@@ -280,6 +298,16 @@ function resetForm() {
         <p v-if="txHash" class="text-xs font-mono text-cool">
           tx: <a :href="`https://sepolia.arbiscan.io/tx/${txHash}`" target="_blank" rel="noopener" class="text-compute hover:underline">{{ txHash.slice(0, 10) }}...{{ txHash.slice(-8) }}</a>
         </p>
+
+        <!-- Privacy proof — split view of what Arbiscan sees vs. what you see -->
+        <MPrivacyProofPanel
+          v-if="txHash"
+          :tx-hash="txHash"
+          :intent="txIntent ?? undefined"
+          :default-open="true"
+          class="w-full mt-2"
+        />
+
         <MButton variant="outline" @click="resetForm">Make Another Deposit</MButton>
       </div>
 

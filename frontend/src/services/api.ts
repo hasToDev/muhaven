@@ -232,6 +232,12 @@ export interface ActivityItemDto {
   token_address: string | null
   amount: string | null
   timestamp: string
+  /**
+   * On-chain transaction hash that produced this activity row.
+   * Optional — older backends / indexer rows may not populate it.
+   * When present, the UI can show an inline privacy-proof panel for the tx.
+   */
+  tx_hash?: string | null
 }
 
 export interface BalanceDto {

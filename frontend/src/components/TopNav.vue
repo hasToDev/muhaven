@@ -6,6 +6,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useWalletStore } from '@/stores/wallet'
 import { useAuth } from '@/composables/useAuth'
 import { useGlassNav } from '@/composables/useGlassNav'
+import { useHomeTarget } from '@/composables/useHomeTarget'
 import { cn, formatAddress } from '@/lib/utils'
 import MDarkToggle from '@/components/ui/MDarkToggle.vue'
 import MSessionStatus from '@/components/ui/MSessionStatus.vue'
@@ -23,6 +24,7 @@ const authStore = useAuthStore()
 const walletStore = useWalletStore()
 const auth = useAuth()
 const { isScrolled } = useGlassNav(20)
+const homeTarget = useHomeTarget()
 
 const switchingRole = ref(false)
 
@@ -130,7 +132,7 @@ onBeforeUnmount(() => {
       )"
     >
       <!-- Logo -->
-      <router-link to="/" class="flex items-center gap-2.5 mr-6">
+      <router-link :to="homeTarget" data-testid="nav-logo-home" class="flex items-center gap-2.5 mr-6">
         <img src="/logo.png" alt="MuHaven" class="w-8 h-8 rounded-lg" style="mix-blend-mode: multiply" />
         <span class="text-lg font-sans font-bold text-midnight dark:text-white hidden sm:inline tracking-tight">MuHaven</span>
       </router-link>

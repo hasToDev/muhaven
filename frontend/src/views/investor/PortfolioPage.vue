@@ -8,6 +8,7 @@ import MBadge from '@/components/ui/MBadge.vue'
 import MSummaryCard from '@/components/ui/MSummaryCard.vue'
 import MGoldRule from '@/components/ui/MGoldRule.vue'
 import MPrivacyBanner from '@/components/ui/MPrivacyBanner.vue'
+import MFaucetBanner from '@/components/ui/MFaucetBanner.vue'
 import MSkeleton from '@/components/ui/MSkeleton.vue'
 import MButton from '@/components/ui/MButton.vue'
 import PortfolioDonut from '@/components/charts/PortfolioDonut.vue'
@@ -93,6 +94,9 @@ function holdingColorClass(index: number): string {
 
   <!-- Content -->
   <div v-else class="flex flex-col gap-10">
+    <!-- Faucet banner — only when the investor has no testnet USDC -->
+    <MFaucetBanner v-if="portfolio.usdcBalance !== null && portfolio.usdcBalance === 0n" />
+
     <!-- Hero value -->
     <div
       v-motion
