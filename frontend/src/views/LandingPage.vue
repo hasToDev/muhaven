@@ -146,7 +146,7 @@ function scaleIn(delay = 0) {
 
         <!-- Desktop right -->
         <div class="hidden md:flex items-center gap-3">
-          <MDarkToggle />
+          <MDarkToggle data-testid="nav-dark-toggle" />
           <MButton
             :size="isScrolled ? 'sm' : 'sm'"
             class="btn-shimmer rounded-full"

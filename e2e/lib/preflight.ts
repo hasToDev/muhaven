@@ -70,15 +70,25 @@ async function checkIssuer(addr: Address): Promise<Missing> {
 }
 
 /**
- * Re-checks on-chain state up to `maxRetries` times. Pauses for the user to
- * run `setup-e2e` between retries when running interactively. In non-TTY
- * environments (CI, Playwright worker without stdio) it fails fast with an
- * actionable message rather than hanging on readline forever.
+ * Re-checks on-chain state until setup-e2e brings it into compliance.
+ *
+ * TTY mode (direct `tsx` / `ts-node` invocation): pauses with readline between
+ * re-checks — the operator runs setup-e2e in another terminal and presses Enter.
+ *
+ * Non-TTY mode (Playwright worker — `process.stdin.isTTY === false` because
+ * Playwright spawns workers via IPC-piped child processes): prints the
+ * "Missing …" block once, then polls every `pollIntervalMs` until either the
+ * checks pass or `pollTimeoutMs` elapses. The operator runs setup-e2e during
+ * the poll window; the next sweep picks up the new on-chain state and resumes
+ * the test. This is the only way a single `playwright test` invocation can
+ * bridge the fresh-register → setup-e2e → finish handoff without re-registering.
  */
 async function preflight(
   role: 'investor' | 'issuer',
   addr: Address,
   maxRetries = 5,
+  pollIntervalMs = 10_000,
+  pollTimeoutMs = 5 * 60_000,
 ): Promise<void> {
   const check = role === 'investor' ? checkInvestor : checkIssuer
 
@@ -86,14 +96,27 @@ async function preflight(
   const initial = await check(addr)
   if (initial.length === 0) return
 
-  // If we can't prompt (non-TTY), there's no point in looping.
+  // Non-TTY (Playwright worker) — poll, don't prompt.
   if (!stdin.isTTY || !stdout.isTTY) {
     console.log(renderMissing(role, addr, initial))
+    console.log(
+      `\n  (stdin not a TTY — polling every ${pollIntervalMs / 1000}s for up to ${pollTimeoutMs / 60_000} min.\n   Run setup-e2e now; the test will resume automatically.)\n`,
+    )
+    const deadline = Date.now() + pollTimeoutMs
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, pollIntervalMs))
+      const missing = await check(addr)
+      if (missing.length === 0) {
+        console.log(`  ✓ Preflight satisfied for ${addr} — resuming.`)
+        return
+      }
+    }
     throw new Error(
-      `Preflight for ${role} ${addr} incomplete. Stdin is not a TTY — run setup-e2e yourself and re-run tests.`,
+      `Preflight for ${role} ${addr} still incomplete after ${pollTimeoutMs / 60_000} min of polling — giving up.`,
     )
   }
 
+  // TTY (direct invocation) — pause on readline between re-checks.
   console.log(renderMissing(role, addr, initial))
 
   for (let i = 0; i < maxRetries; i++) {

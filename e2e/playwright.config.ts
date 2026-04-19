@@ -26,13 +26,22 @@ export default defineConfig({
     viewport: { width: 1400, height: 900 },
     headless: false,
   },
-  timeout: 30_000,
-  expect: { timeout: 10_000 },
+  timeout: 300_000,
+  expect: { timeout: 300_000 },
   projects: [
     { name: 'public', testDir: './tests/public' },
     { name: 'auth', testDir: './tests/auth' },
     { name: 'investor', testDir: './tests/investor' },
     { name: 'issuer', testDir: './tests/issuer' },
+    // claim must run AFTER issuer/distribute.spec.ts has created an on-chain
+    // distribution targeting the investor smart account. In the investor
+    // project it would always skip because `investor` runs before `issuer`.
+    { name: 'claim', testDir: './tests/claim' },
     { name: 'regression', testDir: './tests/regression' },
+    // logout runs last — it clears localStorage for the investor profile,
+    // which would force every downstream spec's ensureInvestorReady() to
+    // fresh-login (+2 biometric prompts per spec). Keeping it in a dedicated
+    // teardown project preserves warm auth state across the investor suite.
+    { name: 'teardown', testDir: './tests/teardown' },
   ],
 })

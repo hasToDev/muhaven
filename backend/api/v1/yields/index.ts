@@ -5,7 +5,7 @@ import { withAuth } from '../../../src/interface/middleware/with-auth.js';
 import { withCors } from '../../../src/interface/middleware/with-cors.js';
 import { Response } from '../../../src/interface/response.js';
 
-const useCase = new GetYieldsUseCase(container.yieldRecordRepo);
+const useCase = new GetYieldsUseCase(container.yieldRecordRepo, container.escrowRepo);
 
 const handler = createGetHandler({
   operationName: 'GetYields',

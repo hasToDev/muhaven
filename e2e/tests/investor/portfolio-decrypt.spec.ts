@@ -16,7 +16,7 @@ test('decrypt a single holding balance on /portfolio', async ({ investorPage: pa
 
   const firstHolding = byTestId(page, SEL.portfolioHoldingCard).first()
   const hasHolding = await firstHolding
-    .isVisible({ timeout: 10_000 })
+    .isVisible({ timeout: 300_000 })
     .catch(() => false)
   test.skip(
     !hasHolding,

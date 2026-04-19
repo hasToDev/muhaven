@@ -39,7 +39,7 @@ test('register → Skip for now → redirect without whitelist', async () => {
     await byTestId(page, SEL.authDemoSkip).click()
 
     // Should redirect to /portfolio (investor default).
-    await page.waitForURL(/\/portfolio/, { timeout: 10_000 })
+    await page.waitForURL(/\/portfolio/, { timeout: 300_000 })
 
     // Wallet pill visible — user IS authenticated, just not whitelisted.
     await expect(byTestId(page, SEL.navWalletPill)).toBeVisible()

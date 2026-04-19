@@ -127,13 +127,19 @@ async function handleDistribute() {
       investorCount,
       ydAuthorized,
       escrowAuthorized,
-      pusdcBalance,
+      pusdcCtHash,
       operatorSet,
     ] = await Promise.all([
       RegistryService.investorCount(),
       YieldService.isAuthorizedCaller(issuerAddr),
       EscrowService.isAuthorizedCaller(issuerAddr),
-      PusdcService.balanceOf(issuerAddr),
+      // Real PUSDC balance lives in the encrypted euint64 handle. The
+      // plaintext `balanceOf` is a pseudo-random indicator tick (hovers
+      // around ~0.5) that reveals no real information — it false-negatives
+      // legitimate distributes whenever the indicator dips below the yield
+      // amount. Pull the confidential handle instead; we decrypt it below
+      // after initializing the FHE client.
+      PusdcService.confidentialBalanceOf(issuerAddr),
       PusdcService.isOperator(issuerAddr, addresses.yieldDistributor),
     ])
 
@@ -152,6 +158,13 @@ async function handleDistribute() {
         `This account is not authorized on MuHavenEscrow. Run: pnpm hardhat run scripts/setup-e2e.ts --network arb-sepolia -- ${issuerAddr}`,
       )
     }
+
+    // Decrypt the confidential balance via cofhe permit-based view. No
+    // additional biometric vs prior flow — `fhe.initialize()` is idempotent
+    // and the permit is needed downstream for the amount-encrypt step anyway;
+    // this just moves the permit creation a few lines earlier.
+    await fhe.initialize()
+    const pusdcBalance = await fhe.decryptUint64ForView(pusdcCtHash)
     if (pusdcBalance < totalYieldUnits) {
       const have = (Number(pusdcBalance) / 1_000_000).toFixed(6)
       const need = (Number(totalYieldUnits) / 1_000_000).toFixed(6)

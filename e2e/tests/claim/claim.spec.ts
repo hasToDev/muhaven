@@ -11,11 +11,22 @@ test('claim yield → toast + row flips claimable→claimed', async ({ investorP
 
   await page.goto('/yields')
 
+  // `locator.isVisible({ timeout })` is synchronous in practice — it does NOT
+  // auto-retry within the timeout window, so a skip check written that way
+  // fires instantly on a slow-loading page. Use `waitFor` to actually poll,
+  // giving the backend poller up to 90s to flip yield records from
+  // `pending` → `claimable` after a prior distribute.
   const row = byTestId(page, SEL.yieldsClaimRow).first()
-  const hasClaimable = await row.isVisible({ timeout: 10_000 }).catch(() => false)
+  let hasClaimable = false
+  try {
+    await row.waitFor({ state: 'visible', timeout: 90_000 })
+    hasClaimable = true
+  } catch {
+    hasClaimable = false
+  }
   test.skip(
     !hasClaimable,
-    'no claimable yields — run issuer/distribute.spec.ts against this investor first',
+    'no claimable yields after 90s — run issuer/distribute.spec.ts against this investor first, or wait for the backend poller to catch up',
   )
 
   const claimBtn = row.getByTestId(SEL.yieldsClaimCta)

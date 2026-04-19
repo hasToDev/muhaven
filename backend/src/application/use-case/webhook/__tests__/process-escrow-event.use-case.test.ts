@@ -210,10 +210,12 @@ describe('ProcessEscrowEventUseCase', () => {
       expect(escrow!.distributionId).toBe(1);
       expect(escrow!.beneficiary).toBe(BENEFICIARY);
 
-      // Yield record should be created
+      // Yield record should be created. Status is `claimable` at creation
+      // because MuHavenEscrow doesn't emit `EscrowSettled` — see
+      // `createYieldRecord` for the full rationale.
       const yields = await yieldRecordRepo.findByDistributionId(1);
       expect(yields).toHaveLength(1);
-      expect(yields[0].status).toBe('pending');
+      expect(yields[0].status).toBe('claimable');
       expect(yields[0].userId).toBe(user.id);
       expect(yields[0].escrowId).toBe(escrow!.id);
       expect(yields[0].tokenAddress).toBe(TOKEN_ADDRESS);
@@ -230,10 +232,11 @@ describe('ProcessEscrowEventUseCase', () => {
       const updated = await escrowRepo.findByTxHash(TX_HASH);
       expect(updated!.status).toBe(EscrowStatus.ON_CHAIN);
 
-      // Yield record should be created since escrow has distributionId
+      // Yield record should be created since escrow has distributionId.
+      // Status is `claimable` at creation (see createYieldRecord rationale).
       const yields = await yieldRecordRepo.findByDistributionId(5);
       expect(yields).toHaveLength(1);
-      expect(yields[0].status).toBe('pending');
+      expect(yields[0].status).toBe('claimable');
       expect(yields[0].escrowId).toBe(escrow.id);
     });
 

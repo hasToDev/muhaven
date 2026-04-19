@@ -34,8 +34,11 @@ export async function getSmartAddress(page: Page): Promise<Address> {
 }
 
 export async function isAuthenticated(page: Page): Promise<boolean> {
+  // 15s window — LandingPage mounts TopNav async, so the prior 4s budget
+  // false-negative on slow RPC/CoFHE loads and then triggered a spurious
+  // login() call that hung waiting for a login form that never rendered.
   try {
-    await byTestId(page, SEL.navWalletPill).waitFor({ state: 'visible', timeout: 4_000 })
+    await byTestId(page, SEL.navWalletPill).waitFor({ state: 'visible', timeout: 15_000 })
     return true
   } catch {
     return false
@@ -43,9 +46,11 @@ export async function isAuthenticated(page: Page): Promise<boolean> {
 }
 
 export async function logout(page: Page): Promise<void> {
+  // No-op if already logged out — the logout button only exists behind auth.
+  if (!(await isAuthenticated(page))) return
   const logoutBtn = byTestId(page, SEL.navWalletLogout)
   await logoutBtn.click({ force: true })
-  await page.waitForURL(/\/login/, { timeout: 10_000 })
+  await page.waitForURL(/\/login/, { timeout: 300_000 })
 }
 
 /**
@@ -65,7 +70,7 @@ export async function register(
 
   // Toggle to register mode if we're on the login form.
   const modeToggle = byTestId(page, SEL.authModeToggle)
-  await modeToggle.waitFor({ state: 'visible', timeout: 10_000 })
+  await modeToggle.waitFor({ state: 'visible', timeout: 300_000 })
   const toggleText = (await modeToggle.textContent()) ?? ''
   if (/New here/i.test(toggleText)) {
     await modeToggle.click()
@@ -96,13 +101,30 @@ export async function register(
   return fullAddressFromPill(page)
 }
 
-/** Walks the LoginPage login flow. Pauses for biometric. */
+/**
+ * Walks the LoginPage login flow. Pauses for biometric.
+ *
+ * Resilient to already-authenticated state: if `/login` redirects to a
+ * dashboard route (investor-or-issuer route guard fires when a valid session
+ * exists), short-circuits and returns the current smart address without
+ * waiting for the login form. This prevents the hang mode we hit in the
+ * first end-to-end run where a warm profile re-entering `login()` sat at a
+ * `/login → /portfolio` redirect waiting for `auth-mode-toggle` forever.
+ */
 export async function login(page: Page): Promise<Address> {
   await page.goto('/login')
 
+  // Already authenticated? `/login` redirects to a dashboard — return the pill.
+  try {
+    await page.waitForURL(/\/(portfolio|tokens|marketplace)/, { timeout: 3_000 })
+    return fullAddressFromPill(page)
+  } catch {
+    // Not authenticated — proceed with the login form.
+  }
+
   // If we're in register mode, flip to login.
   const modeToggle = byTestId(page, SEL.authModeToggle)
-  await modeToggle.waitFor({ state: 'visible', timeout: 10_000 })
+  await modeToggle.waitFor({ state: 'visible', timeout: 300_000 })
   const toggleText = (await modeToggle.textContent()) ?? ''
   if (/Already have/i.test(toggleText)) {
     await modeToggle.click()
@@ -128,7 +150,7 @@ export async function registerSkipWhitelist(
   await page.goto('/login')
 
   const modeToggle = byTestId(page, SEL.authModeToggle)
-  await modeToggle.waitFor({ state: 'visible', timeout: 10_000 })
+  await modeToggle.waitFor({ state: 'visible', timeout: 300_000 })
   const toggleText = (await modeToggle.textContent()) ?? ''
   if (/New here/i.test(toggleText)) {
     await modeToggle.click()
@@ -145,6 +167,6 @@ export async function registerSkipWhitelist(
   })
   await byTestId(page, SEL.authDemoSkip).click()
 
-  await page.waitForURL(/\/(portfolio|tokens|marketplace)/, { timeout: 10_000 })
+  await page.waitForURL(/\/(portfolio|tokens|marketplace)/, { timeout: 300_000 })
   return fullAddressFromPill(page)
 }

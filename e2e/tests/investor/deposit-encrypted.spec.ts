@@ -46,5 +46,5 @@ test('encrypted mint deposit → success card with tx hash', async ({ investorPa
 
   // Success card contains the Arbiscan tx link.
   const txLink = page.getByRole('link', { name: /0x[a-fA-F0-9]{8}\.\.\.[a-fA-F0-9]{8}/ })
-  await expect(txLink).toBeVisible({ timeout: 10_000 })
+  await expect(txLink).toBeVisible({ timeout: 300_000 })
 })

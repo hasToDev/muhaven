@@ -160,13 +160,20 @@ export class ProcessEscrowEventUseCase {
   }
 
   private async createYieldRecord(escrow: Escrow): Promise<void> {
+    // `MuHavenEscrow` does not emit an `EscrowSettled` event — its design is
+    // "created = immediately redeemable", with per-escrow funding tracked via
+    // the silent-failure `Common.isInitialized(paidAmount)` pattern on redeem.
+    // If we created these records as `pending` they would stay that way
+    // forever because `handleEscrowSettled` never fires for this contract.
+    // Mark them `claimable` at creation time; `handleEscrowRedeemed` still
+    // flips them to `claimed` once the beneficiary redeems on-chain.
     const yieldRecord = new YieldRecord({
       id: randomUUID(),
       userId: escrow.userId,
       distributionId: escrow.distributionId!,
       escrowId: escrow.id,
       tokenAddress: escrow.tokenAddress ?? '',
-      status: 'pending',
+      status: 'claimable',
       createdAt: new Date(),
     });
 

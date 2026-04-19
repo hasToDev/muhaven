@@ -26,14 +26,18 @@ test.describe('landing page', () => {
 
     await page.goto('/')
 
-    // Hero headline (typewriter eventually lands on "Private.")
-    await expect(page.getByText(/Private\./i).first()).toBeVisible({ timeout: 15_000 })
+    // Hero headline — typewriter chain is "Private" → "Portfolios." → "AI-Managed."
+    // (first word has no period; it cascades to the next line). Assert on the
+    // first word so we can run before the chain finishes.
+    await expect(page.getByText(/Private/i).first()).toBeVisible({ timeout: 15_000 })
 
     // Logo + MuHaven brand
     await expect(page.getByAltText('MuHaven').first()).toBeVisible()
 
-    // Launch App CTA anywhere on the page — click the first.
-    const launchCta = page.getByRole('link', { name: /Launch App/i }).first()
+    // Launch App CTA anywhere on the page — every instance is a <button>
+    // (via MButton or a raw <button>), not an <a>. Click the first visible one
+    // and wait for the auth-guard redirect through /portfolio → /login.
+    const launchCta = page.getByRole('button', { name: /Launch App/i }).first()
     await expect(launchCta).toBeVisible()
 
     await launchCta.click()
@@ -52,13 +56,15 @@ test.describe('landing page', () => {
     // Give the 500ms transition time to settle.
     await page.waitForTimeout(600)
 
-    // FAQ anchor — click and verify the FAQ heading enters view.
+    // FAQ anchor — click and verify the FAQ heading enters view. The link in
+    // nav is labelled "FAQ" but the section heading is "Frequently Asked
+    // Questions" — match on either.
     const faqLink = page.getByRole('link', { name: /FAQ/i }).first()
     if (await faqLink.isVisible({ timeout: 2_000 }).catch(() => false)) {
       await faqLink.click()
-      await expect(page.getByRole('heading', { name: /FAQ/i }).first()).toBeInViewport({
-        timeout: 5_000,
-      })
+      await expect(
+        page.getByRole('heading', { name: /Frequently Asked Questions|FAQ/i }).first(),
+      ).toBeInViewport({ timeout: 5_000 })
     }
   })
 

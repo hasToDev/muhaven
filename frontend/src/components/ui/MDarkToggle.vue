@@ -8,7 +8,6 @@ const store = useAppStore()
 <template>
   <button
     @click="store.toggleDark()"
-    data-testid="nav-dark-toggle"
     class="p-2 rounded-lg text-cool hover:text-midnight dark:hover:text-white hover:bg-mist dark:hover:bg-midnight transition-colors duration-200 cursor-pointer"
     :title="store.isDark ? 'Switch to light mode' : 'Switch to dark mode'"
   >

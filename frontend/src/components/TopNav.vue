@@ -177,7 +177,7 @@ onBeforeUnmount(() => {
           </button>
         </div>
 
-        <MDarkToggle />
+        <MDarkToggle data-testid="nav-dark-toggle" />
 
         <!-- Wallet pill with status dot (desktop) — shown whenever wallet address is known -->
         <div
@@ -219,7 +219,7 @@ onBeforeUnmount(() => {
             <span class="font-mono text-xs text-slate dark:text-cool">{{ displayAddress }}</span>
             <Check v-if="copied" :size="12" class="text-positive" />
             <Copy v-else :size="12" class="text-cool/60" />
-            <MSessionStatus />
+            <MSessionStatus data-testid="session-status" />
           </button>
           <!-- Degraded: Sign In to re-authenticate -->
           <button

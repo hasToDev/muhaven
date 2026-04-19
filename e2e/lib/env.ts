@@ -11,7 +11,10 @@ export const ISSUER_PASSKEY_NAME =
   process.env.E2E_ISSUER_PASSKEY_NAME ?? 'E2E Issuer'
 
 export const DEPOSIT_AMOUNT = process.env.E2E_DEPOSIT_AMOUNT ?? '100'
-export const WRAP_AMOUNT = process.env.E2E_WRAP_AMOUNT ?? '10'
+// Must be ≥ MuHavenVault.minInvestment (currently 100 TT on Arb Sepolia) —
+// the vault reverts with BelowMinimum() on smaller wraps. setup-e2e transfers
+// 1000 TT to the smart account, so 100 leaves 10 runs of headroom.
+export const WRAP_AMOUNT = process.env.E2E_WRAP_AMOUNT ?? '100'
 export const DISTRIBUTE_AMOUNT = process.env.E2E_DISTRIBUTE_AMOUNT ?? '0.5'
 
 /** Deployed contract addresses on Arb Sepolia — mirrors deployments/arb-sepolia.json. */

@@ -19,6 +19,14 @@ test('claim disabled when escrow_id is null', async ({ investorPage: page }) => 
 
   await page.goto('/yields')
 
+  // Wait up to 90s for at least one claim button to render — the yields page
+  // is async (backend fetch + store load), and `locator.count()` returns
+  // synchronously so calling it immediately after `goto` reliably finds zero.
+  try {
+    await page.getByTestId(SEL.yieldsClaimCta).first().waitFor({ state: 'visible', timeout: 90_000 })
+  } catch {
+    // No claim rows rendered — handled by the skip below.
+  }
   const claimBtns = page.getByTestId(SEL.yieldsClaimCta)
   const count = await claimBtns.count()
   test.skip(count === 0, 'no claimable rows to inspect')

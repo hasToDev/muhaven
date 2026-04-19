@@ -9,7 +9,11 @@ test('logged-out navigation to /yields → login → land on /yields', async ({
 }) => {
   test.setTimeout(0)
 
-  await page.goto('/')
+  // Must land on a route that mounts TopNav so isAuthenticated() + logout()
+  // can find the wallet pill / logout button. '/' mounts LandingPage which
+  // does not expose the logout control. '/portfolio' auto-redirects to
+  // /login when logged out, so it's safe either way.
+  await page.goto('/portfolio')
   if (await isAuthenticated(page)) {
     await logout(page)
   }
@@ -23,7 +27,10 @@ test('logged-out navigation to /yields → login → land on /yields', async ({
   // Complete login via the CTA on the redirected login page.
   await byTestId(page, SEL.authCta).click({ force: true })
 
-  // Expect the redirect param to resolve to /yields.
-  await page.waitForURL(/\/yields/, { timeout: 180_000 })
+  // Expect the redirect param to resolve to /yields. Match on pathname only
+  // because a naive `/\/yields/` regex also matches `/login?redirect=/yields`
+  // (the pre-click URL contains "/yields" in the query string) and would
+  // resolve the wait instantly against the wrong URL.
+  await page.waitForURL((u) => new URL(u).pathname === '/yields', { timeout: 180_000 })
   expect(new URL(page.url()).pathname).toBe('/yields')
 })

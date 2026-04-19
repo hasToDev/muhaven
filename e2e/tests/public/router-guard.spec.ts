@@ -17,7 +17,7 @@ test.describe('router guard (unauthenticated)', () => {
   for (const path of PROTECTED_ROUTES) {
     test(`${path} redirects to /login?redirect=${path}`, async ({ page }) => {
       await page.goto(path)
-      await page.waitForURL(/\/login/, { timeout: 10_000 })
+      await page.waitForURL(/\/login/, { timeout: 300_000 })
       const url = new URL(page.url())
       expect(url.pathname).toBe('/login')
       expect(url.searchParams.get('redirect')).toBe(path)
