@@ -731,6 +731,18 @@ export const pusdcAbi = [
     outputs: [{ type: 'uint256' }],
   },
   {
+    // Returns the encrypted euint64 balance handle (a 32-byte ctHash packed
+    // into uint256 because the deployed contract predates cofhe-contracts
+    // v0.1.0). Pass the return value to `cofheClient.decryptForView(hash,
+    // FheTypes.Uint64)` to reveal the plaintext — gated by the caller's
+    // self-permit; only the balance holder can decrypt.
+    name: 'confidentialBalanceOf',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'account', type: 'address' }],
+    outputs: [{ type: 'uint256' }],
+  },
+  {
     name: 'isOperator',
     type: 'function',
     stateMutability: 'view',

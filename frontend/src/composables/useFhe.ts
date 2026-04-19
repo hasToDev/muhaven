@@ -60,6 +60,19 @@ export function useFhe() {
   async function doInitialize(): Promise<void> {
     fheStore.setInitializing()
 
+    // After a page reload, the provider module-level state is gone even
+    // though the wallet address is restored from localStorage. Trigger a
+    // lazy passkey reconnect so getViemClients() can produce valid clients.
+    // Matches the pattern used by sendUserOperation / signMessage.
+    try {
+      await walletStore.ensureConnected()
+    } catch (e) {
+      fheStore.setError('Wallet not connected')
+      throw new Error(
+        `Wallet not connected — cannot initialize FHE client (${e instanceof Error ? e.message : 'unknown'})`,
+      )
+    }
+
     const clients = walletStore.getViemClients()
     if (!clients) {
       fheStore.setError('Wallet not connected')
@@ -207,6 +220,19 @@ export function useFhe() {
   }
 
   /**
+   * Decrypt a euint64 ciphertext handle for view (UI display only).
+   * Used for PUSDC confidential balances (6-decimal unsigned 64-bit).
+   */
+  async function decryptUint64ForView(ctHash: bigint | string): Promise<bigint> {
+    const client = await ensureReady()
+    const { FheTypes } = await import('@cofhe/sdk')
+
+    return client
+      .decryptForView(ctHash, FheTypes.Uint64)
+      .execute() as Promise<bigint>
+  }
+
+  /**
    * Return the raw cofhe client for consumers that need direct access
    * (e.g. passing to `new MuHavenClient({ cofheClient, ... })`). Ensures
    * the client is initialized + connected before returning.
@@ -237,6 +263,7 @@ export function useFhe() {
     encryptAddress,
     encryptBatch,
     decryptUint128ForView,
+    decryptUint64ForView,
     getRawClient,
     destroy,
   }

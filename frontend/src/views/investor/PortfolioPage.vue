@@ -11,7 +11,7 @@ import MPrivacyBanner from '@/components/ui/MPrivacyBanner.vue'
 import MSkeleton from '@/components/ui/MSkeleton.vue'
 import MButton from '@/components/ui/MButton.vue'
 import PortfolioDonut from '@/components/charts/PortfolioDonut.vue'
-import { Shield, Lock, Unlock, Eye, DollarSign, Percent, Loader2 } from 'lucide-vue-next'
+import { Shield, Lock, Unlock, Eye, DollarSign, Percent, Loader2, EyeOff } from 'lucide-vue-next'
 import { formatUSD } from '@/lib/utils'
 
 const app = useAppStore()
@@ -39,6 +39,11 @@ async function decryptAll() {
 async function decryptOne(index: number) {
   if (!address.value) return
   await portfolio.decryptHolding(index, address.value as `0x${string}`)
+}
+
+async function decryptPusdc() {
+  if (!address.value) return
+  await portfolio.decryptPusdc(address.value as `0x${string}`)
 }
 
 function formatTokenAmount(value: number): string {
@@ -220,6 +225,75 @@ function holdingColorClass(index: number): string {
           {{ formatUSD(Number(portfolio.usdcBalance) / 1e6) }}
         </p>
         <span class="text-xs text-cool">Standard ERC-20 (not encrypted)</span>
+      </MCard>
+
+      <!-- PUSDC card (confidential stablecoin — plaintext portion + opt-in decrypt for confidential portion) -->
+      <MCard
+        v-if="portfolio.pusdcPublicBalance !== null"
+        hover
+        v-motion
+        :initial="{ opacity: 0, y: 20 }"
+        :visible-once="{ opacity: 1, y: 0, transition: { duration: 400, delay: (portfolio.holdings.length + 1) * 120 } }"
+      >
+        <div class="flex justify-between items-center mb-4">
+          <span class="font-sans font-medium text-base text-midnight dark:text-white">Confidential USDC</span>
+          <MBadge variant="privacy">PUSDC</MBadge>
+        </div>
+
+        <!-- Public portion (readable on-chain) -->
+        <div class="mb-3">
+          <p class="text-xs font-sans text-cool mb-1 uppercase tracking-wider">Public portion</p>
+          <p class="text-2xl font-accent italic text-midnight dark:text-white">
+            {{ formatUSD(Number(portfolio.pusdcPublicBalance) / 1e6) }}
+          </p>
+        </div>
+
+        <!-- Confidential portion — decrypt on demand -->
+        <div class="pt-3 border-t border-haze dark:border-white/8">
+          <p class="text-xs font-sans text-cool mb-2 uppercase tracking-wider">Confidential portion</p>
+          <div v-if="portfolio.pusdcConfidentialBalance !== null" class="flex items-center justify-between gap-3">
+            <p class="text-2xl font-accent italic text-cipher">
+              {{ formatUSD(Number(portfolio.pusdcConfidentialBalance) / 1e6) }}
+            </p>
+            <button
+              @click="decryptPusdc"
+              :disabled="portfolio.pusdcDecrypting"
+              class="text-[11px] font-sans text-cool hover:text-compute transition-colors flex items-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-wait"
+              title="Re-read + decrypt"
+            >
+              <Loader2 v-if="portfolio.pusdcDecrypting" :size="12" class="animate-spin" />
+              <EyeOff v-else :size="12" />
+              Refresh
+            </button>
+          </div>
+          <MButton
+            v-else
+            size="sm"
+            full-width
+            :loading="portfolio.pusdcDecrypting"
+            :disabled="portfolio.pusdcDecrypting"
+            @click="decryptPusdc"
+          >
+            <Eye :size="14" />
+            Decrypt confidential balance
+          </MButton>
+        </div>
+
+        <!-- Scoped error display — a failed decrypt doesn't wipe the page -->
+        <div
+          v-if="portfolio.pusdcError"
+          class="mt-3 flex items-start gap-2 px-3 py-2 rounded-lg bg-negative/8 border border-negative/15"
+        >
+          <p class="text-[11px] font-sans text-negative leading-relaxed">
+            {{ portfolio.pusdcError }}
+          </p>
+        </div>
+
+        <div class="mt-3 pt-3 border-t border-haze dark:border-white/8">
+          <p class="text-[11px] font-sans text-cool leading-relaxed">
+            Total = public + confidential. Only you can decrypt the confidential portion (FHE permit).
+          </p>
+        </div>
       </MCard>
     </div>
 

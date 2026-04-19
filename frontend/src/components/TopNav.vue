@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
@@ -9,9 +9,11 @@ import { useGlassNav } from '@/composables/useGlassNav'
 import { cn, formatAddress } from '@/lib/utils'
 import MDarkToggle from '@/components/ui/MDarkToggle.vue'
 import MSessionStatus from '@/components/ui/MSessionStatus.vue'
+import { toast } from 'vue-sonner'
 import {
   PieChart, ArrowDown, TrendingUp, Activity, Store, Sparkles,
   Coins, Share2, Users, ClipboardCheck, Wallet, LogOut, LogIn, Loader2,
+  Copy, Check,
 } from 'lucide-vue-next'
 
 const route = useRoute()
@@ -84,6 +86,32 @@ function handleSignIn() {
 async function handleLogout() {
   await auth.logout()
 }
+
+// Click-to-copy for the truncated address pill. Copies the full smart account
+// address (not the `0x12b5...f09A` display form). Briefly swaps the Copy icon
+// for a Check via `copied`, then resets. A toast confirms to the user.
+const copied = ref(false)
+let copyResetTimer: ReturnType<typeof setTimeout> | null = null
+
+async function copyAddress() {
+  const full = authStore.walletAddress
+  if (!full) return
+  try {
+    await navigator.clipboard.writeText(full)
+    copied.value = true
+    if (copyResetTimer) clearTimeout(copyResetTimer)
+    copyResetTimer = setTimeout(() => { copied.value = false }, 1500)
+    toast.success('Address copied', { description: full })
+  } catch (e) {
+    toast.error('Copy failed', {
+      description: e instanceof Error ? e.message : 'Clipboard access denied',
+    })
+  }
+}
+
+onBeforeUnmount(() => {
+  if (copyResetTimer) clearTimeout(copyResetTimer)
+})
 </script>
 
 <template>
@@ -155,19 +183,23 @@ async function handleLogout() {
           v-if="authStore.walletAddress"
           class="hidden sm:flex items-center gap-1.5 bg-mist dark:bg-midnight-mid rounded-lg border border-haze dark:border-white/8"
         >
-          <div class="flex items-center gap-2 px-3 py-2">
+          <button
+            type="button"
+            @click="copyAddress"
+            :title="copied ? 'Copied!' : `Copy ${authStore.walletAddress}`"
+            :aria-label="copied ? 'Address copied to clipboard' : `Copy smart account address ${authStore.walletAddress}`"
+            class="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-haze/60 dark:hover:bg-white/5 transition-colors rounded-l-lg"
+          >
             <!-- Connection status dot -->
             <span
               v-if="connectionStatus === 'connecting'"
               class="flex items-center"
-              title="Reconnecting wallet..."
             >
               <Loader2 :size="12" class="animate-spin text-compute" />
             </span>
             <span
               v-else
               class="relative flex h-2 w-2"
-              :title="connectionStatus === 'connected' ? 'Connected' : 'Session expired'"
             >
               <span
                 v-if="connectionStatus === 'connected'"
@@ -182,8 +214,10 @@ async function handleLogout() {
             </span>
             <Wallet :size="14" class="text-cool" />
             <span class="font-mono text-xs text-slate dark:text-cool">{{ displayAddress }}</span>
+            <Check v-if="copied" :size="12" class="text-positive" />
+            <Copy v-else :size="12" class="text-cool/60" />
             <MSessionStatus />
-          </div>
+          </button>
           <!-- Degraded: Sign In to re-authenticate -->
           <button
             v-if="connectionStatus === 'degraded'"
@@ -218,19 +252,23 @@ async function handleLogout() {
         <div class="flex sm:hidden items-center gap-1.5">
           <!-- Wallet known on mobile -->
           <template v-if="authStore.walletAddress">
-            <div class="flex items-center gap-1.5 px-2.5 py-2 bg-mist dark:bg-midnight-mid rounded-lg border border-haze dark:border-white/8">
+            <button
+              type="button"
+              @click="copyAddress"
+              :title="copied ? 'Copied!' : `Copy ${authStore.walletAddress}`"
+              :aria-label="copied ? 'Address copied to clipboard' : `Copy smart account address ${authStore.walletAddress}`"
+              class="flex items-center gap-1.5 px-2.5 py-2 bg-mist dark:bg-midnight-mid rounded-lg border border-haze dark:border-white/8 cursor-pointer active:bg-haze/60 dark:active:bg-white/5 transition-colors"
+            >
               <!-- Status dot -->
               <span
                 v-if="connectionStatus === 'connecting'"
                 class="flex items-center"
-                title="Reconnecting..."
               >
                 <Loader2 :size="10" class="animate-spin text-compute" />
               </span>
               <span
                 v-else
                 class="relative flex h-1.5 w-1.5"
-                :title="connectionStatus === 'connected' ? 'Connected' : 'Session expired'"
               >
                 <span
                   :class="[
@@ -240,8 +278,10 @@ async function handleLogout() {
                 />
               </span>
               <span class="font-mono text-[10px] text-slate dark:text-cool">{{ displayAddress }}</span>
+              <Check v-if="copied" :size="10" class="text-positive" />
+              <Copy v-else :size="10" class="text-cool/60" />
               <MSessionStatus size="sm" />
-            </div>
+            </button>
             <!-- Degraded: re-auth -->
             <button
               v-if="connectionStatus === 'degraded'"

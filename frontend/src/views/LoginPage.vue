@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuth } from '@/composables/useAuth'
 import { cn } from '@/lib/utils'
@@ -41,18 +41,21 @@ const stepLabel = computed(() => {
   }
 })
 
-// Redirect if already authenticated
+// Redirect if already authenticated when the page loads (e.g. someone navigates
+// to /login while they still have a valid JWT). The three active-session paths —
+// login completes, register completes + whitelist, register completes + skip —
+// each call redirectToDashboard explicitly, so no isAuthenticated watcher is
+// needed. A watcher here was the cause of the "banner auto-closes before the
+// user can click Enable demo access" bug: when auth.login() flips isAuthenticated
+// inside setTokens(), Vue's scheduler runs the watcher callback BEFORE
+// handleAuth's await-continuation can set authStep = 'awaiting-whitelist', so the
+// `authStep !== 'awaiting-whitelist'` guard always sees 'working' and redirects.
+// `flush: 'post'` doesn't fix it because Vue's scheduler still queues the update
+// job ahead of the promise continuation.
 onMounted(() => {
   if (auth.isAuthenticated.value) {
     redirectToDashboard()
   }
-})
-
-watch(() => auth.isAuthenticated.value, (v) => {
-  // Suppress auto-redirect while the user is on the post-register whitelist step —
-  // otherwise the watcher fires right after the banner appears and yanks the
-  // page out from under the user before they can click "Enable demo access".
-  if (v && authStep.value !== 'awaiting-whitelist') redirectToDashboard()
 })
 
 function redirectToDashboard() {

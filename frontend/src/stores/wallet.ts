@@ -199,5 +199,9 @@ export const useWalletStore = defineStore('wallet', () => {
     restoreAddress,
     tryReconnect,
     refreshSessionState,
+    // Exposed so callers that need viem clients (e.g. useFhe.initialize)
+    // can lazy-reconnect the provider after a page reload — same pattern
+    // signMessage and sendUserOperation use internally.
+    ensureConnected,
   }
 })

@@ -25,6 +25,18 @@ export async function balanceOf(account: Address): Promise<bigint> {
   return contractRead(addr, pusdcAbi, 'balanceOf', [account], CONTRACT) as Promise<bigint>
 }
 
+/**
+ * Read the encrypted balance handle (euint64). Returns a uint256-packed ctHash
+ * that can be passed to `useFhe.decryptUint64ForView` to reveal the plaintext
+ * 6-decimal PUSDC amount. The permit check happens inside the cofhe SDK —
+ * only the balance holder can decrypt their own handle.
+ */
+export async function confidentialBalanceOf(account: Address): Promise<bigint> {
+  return contractRead(
+    addr, pusdcAbi, 'confidentialBalanceOf', [account], CONTRACT,
+  ) as Promise<bigint>
+}
+
 export async function isOperator(holder: Address, spender: Address): Promise<boolean> {
   return contractRead(
     addr, pusdcAbi, 'isOperator', [holder, spender], CONTRACT,

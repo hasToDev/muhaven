@@ -23,7 +23,7 @@ import MStepProgress from '@/components/ui/MStepProgress.vue'
 import MGoldRule from '@/components/ui/MGoldRule.vue'
 import MPrivacyBanner from '@/components/ui/MPrivacyBanner.vue'
 import MSkeleton from '@/components/ui/MSkeleton.vue'
-import { CheckCircle, AlertTriangle } from 'lucide-vue-next'
+import { CheckCircle, AlertTriangle, Eye, Loader2, RefreshCw } from 'lucide-vue-next'
 
 const RPC_URL = import.meta.env.VITE_RPC_URL || 'https://sepolia-rollup.arbitrum.io/rpc'
 const ARB_SEPOLIA_CHAIN_ID = 421614
@@ -46,6 +46,15 @@ const showReceipt = ref(false)
 const distributionError = ref<string | null>(null)
 const batchProgress = ref({ processed: 0, total: 0 })
 const stageLabel = ref<string | null>(null)
+
+// Issuer's PUSDC surfaces. Public portion is fetched on mount so issuers
+// see their available-to-distribute balance without clicking anything.
+// Confidential portion is opt-in via the decrypt button (passkey required
+// once per session for the cofhe self-permit).
+const pusdcPublicBalance = ref<bigint | null>(null)
+const pusdcConfidentialBalance = ref<bigint | null>(null)
+const pusdcDecrypting = ref(false)
+const pusdcLoading = ref(false)
 const receiptData = ref({
   token: '',
   amount: '',
@@ -230,6 +239,11 @@ async function handleDistribute() {
     toast.success('Distribution complete', {
       description: `Distribution #${result.distributionId} — ${result.escrowIds.length} encrypted escrows funded`,
     })
+    // Refresh public PUSDC balance so the summary strip reflects the debit.
+    // Confidential portion is unchanged; if the user had decrypted it, they
+    // can re-click Refresh on the card to re-decrypt.
+    loadPusdcBalance()
+    pusdcConfidentialBalance.value = null
   } catch (e) {
     distributionError.value = e instanceof Error ? e.message : 'Distribution failed'
     toast.error('Distribution failed', {
@@ -250,6 +264,34 @@ function resetForm() {
   stageLabel.value = null
 }
 
+async function loadPusdcBalance() {
+  if (!walletAddress.value) return
+  pusdcLoading.value = true
+  try {
+    pusdcPublicBalance.value = await PusdcService.balanceOf(walletAddress.value as `0x${string}`)
+  } catch (e) {
+    console.warn('[DistributePage] PUSDC balance fetch failed', e)
+  } finally {
+    pusdcLoading.value = false
+  }
+}
+
+async function decryptPusdcBalance() {
+  if (!walletAddress.value || pusdcDecrypting.value) return
+  pusdcDecrypting.value = true
+  try {
+    const ctHash = await PusdcService.confidentialBalanceOf(walletAddress.value as `0x${string}`)
+    await fhe.initialize()
+    pusdcConfidentialBalance.value = await fhe.decryptUint64ForView(ctHash)
+  } catch (e) {
+    toast.error('PUSDC decrypt failed', {
+      description: e instanceof Error ? e.message : 'Unknown error',
+    })
+  } finally {
+    pusdcDecrypting.value = false
+  }
+}
+
 onMounted(async () => {
   if (!tokenStore.loaded) {
     app.startLoading()
@@ -261,6 +303,9 @@ onMounted(async () => {
   if (activeTokens.value.length > 0 && !selectedToken.value) {
     selectedToken.value = activeTokens.value[0].address
   }
+  // Load public PUSDC so the issuer sees their balance without clicking.
+  // Read-only — no prompt. Confidential portion stays hidden until opt-in.
+  loadPusdcBalance()
 })
 </script>
 
@@ -285,6 +330,56 @@ onMounted(async () => {
       <h1 class="text-4xl font-sans font-bold text-midnight dark:text-white">Distribute Yield</h1>
       <MGoldRule />
     </div>
+
+    <!-- PUSDC balance summary — shown whenever public balance is loaded.
+         Lets the issuer see available-to-distribute at a glance + opt-in
+         reveal the confidential portion for a total view. -->
+    <MCard
+      v-if="pusdcPublicBalance !== null"
+      padding="md"
+      v-motion
+      :initial="{ opacity: 0, y: 16 }"
+      :visible-once="{ opacity: 1, y: 0, transition: { duration: 400, delay: 80 } }"
+    >
+      <div class="flex items-center justify-between flex-wrap gap-4">
+        <div class="flex items-center gap-6 flex-wrap">
+          <div>
+            <p class="text-[11px] font-sans text-cool uppercase tracking-wider">Available PUSDC (public)</p>
+            <p class="text-2xl font-accent italic text-midnight dark:text-white">
+              {{ formatUSD(Number(pusdcPublicBalance) / 1e6) }}
+            </p>
+          </div>
+          <div v-if="pusdcConfidentialBalance !== null" class="border-l border-haze dark:border-white/8 pl-6">
+            <p class="text-[11px] font-sans text-cool uppercase tracking-wider">Confidential portion</p>
+            <p class="text-2xl font-accent italic text-cipher">
+              {{ formatUSD(Number(pusdcConfidentialBalance) / 1e6) }}
+            </p>
+          </div>
+        </div>
+        <div class="flex items-center gap-2">
+          <button
+            v-if="pusdcConfidentialBalance === null"
+            @click="decryptPusdcBalance"
+            :disabled="pusdcDecrypting"
+            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-sans font-medium bg-compute/10 text-compute border border-compute/25 hover:bg-compute/15 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-wait"
+            title="Client-side FHE decrypt — no on-chain tx, no gas."
+          >
+            <Loader2 v-if="pusdcDecrypting" :size="14" class="animate-spin" />
+            <Eye v-else :size="14" />
+            {{ pusdcDecrypting ? 'Decrypting…' : 'Reveal confidential' }}
+          </button>
+          <button
+            @click="() => { pusdcConfidentialBalance = null; loadPusdcBalance(); }"
+            :disabled="pusdcLoading"
+            class="p-1.5 rounded-lg text-cool hover:text-compute hover:bg-mist dark:hover:bg-midnight-mid transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-wait"
+            title="Refresh public balance (hides any decrypted confidential view)"
+          >
+            <Loader2 v-if="pusdcLoading" :size="14" class="animate-spin" />
+            <RefreshCw v-else :size="14" />
+          </button>
+        </div>
+      </div>
+    </MCard>
 
     <!-- Step progress -->
     <div class="px-4 pb-2">

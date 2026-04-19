@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import { portfolioApi, tokensApi, type PortfolioPositionDto, type TokenResponseDto } from '@/services/api'
 import * as TokenService from '@/services/contracts/TokenService'
 import * as Erc20Service from '@/services/contracts/Erc20Service'
+import * as PusdcService from '@/services/contracts/PusdcService'
 import { addresses } from '@/contracts/addresses'
 
 export interface PortfolioHolding {
@@ -24,6 +25,19 @@ export interface PortfolioHolding {
 export const usePortfolioStore = defineStore('portfolio', () => {
   const holdings = ref<PortfolioHolding[]>([])
   const usdcBalance = ref<bigint | null>(null)
+  // PUSDC has two surfaces: `balanceOf` returns only the plaintext portion,
+  // while `confidentialBalanceOf` returns an encrypted euint64 handle. The
+  // total balance = public + confidential, but the confidential portion needs
+  // FHE decrypt (opt-in, costs a passkey for the self-permit first time).
+  const pusdcPublicBalance = ref<bigint | null>(null)
+  const pusdcConfidentialBalance = ref<bigint | null>(null)
+  const pusdcDecrypting = ref(false)
+  // Scoped to the PUSDC card. Writing to the shared `error` ref instead
+  // would flip PortfolioPage.vue into its full-page error state (it has a
+  // top-level `v-else-if="portfolio.error"` branch that replaces the
+  // dashboard with a Retry button), wiping every other loaded card for a
+  // localized PUSDC failure. Keep this local.
+  const pusdcError = ref<string | null>(null)
   const loading = ref(false)
   const error = ref<string | null>(null)
   const loaded = ref(false)
@@ -81,8 +95,16 @@ export const usePortfolioStore = defineStore('portfolio', () => {
         }
       })
 
-      // Load USDC balance (non-encrypted, standard ERC-20)
-      usdcBalance.value = await Erc20Service.balanceOf(addresses.usdc, walletAddress)
+      // Load USDC balance (non-encrypted, standard ERC-20) + the plaintext
+      // portion of PUSDC in parallel. The confidential PUSDC portion stays
+      // null until the user clicks "Decrypt" — same opt-in pattern as
+      // fhERC-20 holdings.
+      const [usdc, pusdcPublic] = await Promise.all([
+        Erc20Service.balanceOf(addresses.usdc, walletAddress),
+        PusdcService.balanceOf(walletAddress),
+      ])
+      usdcBalance.value = usdc
+      pusdcPublicBalance.value = pusdcPublic
 
       loaded.value = true
     } catch (e) {
@@ -119,9 +141,39 @@ export const usePortfolioStore = defineStore('portfolio', () => {
     }
   }
 
+  /**
+   * Decrypt the caller's confidential PUSDC balance for UI display.
+   * Uses cofhe SDK's decryptForView — permit-based, no on-chain tx.
+   * Idempotent: re-clicking refreshes the handle + decrypts again.
+   *
+   * Nulls the displayed value at start so the UI shows a clean loading
+   * state on refresh (matches `decryptHolding`'s pattern).
+   */
+  async function decryptPusdc(walletAddress: `0x${string}`) {
+    if (pusdcDecrypting.value) return
+    pusdcDecrypting.value = true
+    pusdcConfidentialBalance.value = null
+    pusdcError.value = null
+    try {
+      const ctHash = await PusdcService.confidentialBalanceOf(walletAddress)
+      const { useFhe } = await import('@/composables/useFhe')
+      const fhe = useFhe()
+      await fhe.initialize()
+      pusdcConfidentialBalance.value = await fhe.decryptUint64ForView(ctHash)
+    } catch (e) {
+      pusdcError.value = e instanceof Error ? e.message : 'PUSDC decrypt failed'
+    } finally {
+      pusdcDecrypting.value = false
+    }
+  }
+
   function reset() {
     holdings.value = []
     usdcBalance.value = null
+    pusdcPublicBalance.value = null
+    pusdcConfidentialBalance.value = null
+    pusdcDecrypting.value = false
+    pusdcError.value = null
     loading.value = false
     error.value = null
     loaded.value = false
@@ -130,6 +182,10 @@ export const usePortfolioStore = defineStore('portfolio', () => {
   return {
     holdings,
     usdcBalance,
+    pusdcPublicBalance,
+    pusdcConfidentialBalance,
+    pusdcDecrypting,
+    pusdcError,
     loading,
     error,
     loaded,
@@ -137,6 +193,7 @@ export const usePortfolioStore = defineStore('portfolio', () => {
     allDecrypted,
     load,
     decryptHolding,
+    decryptPusdc,
     reset,
   }
 })
