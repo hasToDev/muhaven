@@ -6,6 +6,8 @@ deployment.json
 # Environment
 .env
 .env.local
+.env.stage
+.env.stage.local
 
 # Dependencies
 node_modules/
