@@ -16,7 +16,7 @@ import {
 import { toECDSASigner } from '@zerodev/permissions/signers';
 import { toCallPolicy, CallPolicyVersion } from '@zerodev/permissions/policies';
 import { toTimestampPolicy } from '@zerodev/permissions/policies';
-import { createPublicClient, createWalletClient, http, type Hex, type PublicClient } from 'viem';
+import { createPublicClient, createWalletClient, http, toFunctionSelector, type Hex, type PublicClient } from 'viem';
 import { signMessage as viemSignMessage } from 'viem/actions';
 import { arbitrumSepolia } from 'viem/chains';
 import { entryPoint07Address } from 'viem/account-abstraction';
@@ -106,6 +106,33 @@ const SESSION_PERMISSIONS = [
   { target: CONTRACTS.muhavenEscrow, functionName: 'redeemMultiple', abi: muhavenEscrowAbi, valueLimit: 0n },
   { target: CONTRACTS.pusdc, functionName: 'setOperator', abi: pusdcAbi, valueLimit: 0n },
 ] as const;
+
+/**
+ * Pre-computed `${target}:${selector}` pairs for every entry in
+ * SESSION_PERMISSIONS. Used by sendUserOperation to gate the session-kernel
+ * path — calls outside this set skip the session install/retry entirely and
+ * go straight to the passkey kernel. Without the gate every out-of-scope
+ * UserOp triggers an unnecessary passkey prompt for the enableSig + a
+ * guaranteed-failing bundler roundtrip before the fallback runs.
+ */
+const SESSION_SCOPE_KEYS = new Set<string>(
+  SESSION_PERMISSIONS.map((perm) => {
+    const abiItem = (perm.abi as readonly any[]).find(
+      (item) => item.type === 'function' && item.name === perm.functionName,
+    );
+    if (!abiItem) throw new Error(`SESSION_PERMISSIONS: missing ABI for ${perm.functionName}`);
+    const selector = toFunctionSelector(abiItem).toLowerCase();
+    return `${perm.target.toLowerCase()}:${selector}`;
+  }),
+);
+
+function isCallInSessionScope(call: Call): boolean {
+  const data = (call.data ?? '0x') as Hex;
+  if (data.length < 10) return false;
+  const selector = data.slice(0, 10).toLowerCase();
+  const target = (call.to as string).toLowerCase();
+  return SESSION_SCOPE_KEYS.has(`${target}:${selector}`);
+}
 
 export class ZeroDevProvider implements IWalletProvider {
   private kernelClient: KernelAccountClient | null = null;
@@ -359,15 +386,23 @@ export class ZeroDevProvider implements IWalletProvider {
   }
 
   /**
-   * Send a UserOperation. Prefers the scoped session kernel when available;
-   * falls back to the passkey kernel if the session hasn't been installed
-   * yet, can't be installed, or rejects the call (e.g. an out-of-scope call
-   * the session policy forbids).
+   * Send a UserOperation. Prefers the scoped session kernel when every call
+   * in the batch is covered by SESSION_PERMISSIONS; otherwise goes directly
+   * to the passkey kernel. The legacy "try session, fall back on failure"
+   * flow is retained as a safety net for covered-but-rejected ops (e.g.
+   * session expired mid-flight).
    */
   async sendUserOperation(calls: Call[]): Promise<string> {
     if (!this.kernelClient?.account) throw new Error('Not connected');
 
-    // Try the session path first. Install if absent.
+    // Fast-path: any out-of-scope call → straight to passkey kernel.
+    // Avoids an enableSig passkey prompt + a guaranteed-failing bundler
+    // roundtrip (CallPolicy would revert InvalidCallData for anything not
+    // in SESSION_PERMISSIONS).
+    if (!calls.every(isCallInSessionScope)) {
+      return this.sendViaKernel(this.kernelClient, calls);
+    }
+
     try {
       if (!this.hasSessionKey()) {
         await this.installSessionKey();

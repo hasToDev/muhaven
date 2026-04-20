@@ -460,6 +460,13 @@ export interface WhitelistSelfResult {
   whitelistTxHash: string | null
   accreditTxHash: string | null
   alreadyComplete: boolean
+  // Demo shortcut: investor-granted MINTER_ROLE on MuHavenToken so the
+  // current DepositPage encrypted-mint path (`TokenService.mint`) works.
+  // In Wave 3.5 this is removed — Subscription holds MINTER_ROLE and
+  // investors never do.
+  minterGranted: boolean
+  minterTxHash: string | null
+  minterError: string | null
 }
 
 export const demoApi = {

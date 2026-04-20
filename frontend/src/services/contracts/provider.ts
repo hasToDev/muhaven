@@ -88,6 +88,10 @@ export async function contractWrite<TAbi extends readonly unknown[]>(
     const hash = await wallet.sendUserOperation([{ to: address, data }])
     return hash as TxHash
   } catch (e) {
+    // Re-log the underlying cause so the bundler/validator error is visible.
+    // Without this, DepositPage's toast shows only the wrapper message and
+    // hides the real AA2x / validator revert that we need to debug.
+    console.error(`[contractWrite] ${contractName}.${functionName}() failed:`, e)
     throw new UserOpError(contractName, functionName, undefined, e)
   }
 }

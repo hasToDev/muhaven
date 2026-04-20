@@ -30,6 +30,10 @@ const authStep = ref<'idle' | 'working' | 'done' | 'awaiting-whitelist'>('idle')
 const localError = ref<string | null>(null)
 const whitelistState = ref<'idle' | 'working' | 'done' | 'error'>('idle')
 const whitelistError = ref<string | null>(null)
+// Soft warning surfaced when KYC landed but MINTER_ROLE grant did not — user
+// can still proceed but the encrypted-mint path on Deposit will fail until
+// they retry. Null when mint-grant succeeded or wasn't attempted.
+const minterWarning = ref<string | null>(null)
 
 const isRegister = computed(() => mode.value === 'register')
 const isWorking = computed(() => authStep.value === 'working')
@@ -105,16 +109,19 @@ async function handleAuth() {
 
 async function requestWhitelist() {
   whitelistError.value = null
+  minterWarning.value = null
   whitelistState.value = 'working'
   try {
     const result = await demoApi.whitelistSelf()
+    if (!result.minterGranted) {
+      minterWarning.value = result.minterError ?? 'Mint role grant did not land — encrypted-mint deposit will need retry.'
+    }
     whitelistState.value = 'done'
     // Small pause so the user sees the success state, then continue.
     await new Promise(r => setTimeout(r, 800))
     authStep.value = 'done'
     await new Promise(r => setTimeout(r, 400))
     redirectToDashboard()
-    void result
   } catch (e) {
     whitelistState.value = 'error'
     whitelistError.value = e instanceof Error ? e.message : 'Whitelist request failed'
@@ -235,8 +242,10 @@ function toggleMode() {
                     Demo mode — self-serve KYC
                   </p>
                   <p class="text-xs font-sans text-slate dark:text-cool leading-relaxed">
-                    Production uses issuer-approved whitelisting. For this demo, click below to
-                    whitelist your new passkey so you can transfer tokens and receive yield.
+                    Production uses issuer-approved whitelisting + atomic on-chain purchase
+                    (see Wave 3.5 design). For this demo, click below to whitelist your passkey
+                    and grant it <span class="font-mono">MINTER_ROLE</span> on MuHavenToken so
+                    you can mint encrypted tokens directly.
                   </p>
                 </div>
               </div>
@@ -265,6 +274,22 @@ function toggleMode() {
                 >
                   <AlertCircle :size="16" class="text-negative shrink-0 mt-0.5" />
                   <p class="text-xs font-sans text-negative leading-relaxed">{{ whitelistError }}</p>
+                </div>
+              </transition>
+
+              <transition
+                enter-active-class="transition-all duration-200 ease-out"
+                enter-from-class="opacity-0"
+              >
+                <div
+                  v-if="minterWarning && !whitelistError"
+                  class="mt-3 flex items-start gap-2.5 px-4 py-3 rounded-lg bg-gold/8 border border-gold/25"
+                >
+                  <AlertCircle :size="16" class="text-gold shrink-0 mt-0.5" />
+                  <p class="text-xs font-sans text-slate dark:text-cool leading-relaxed">
+                    KYC landed, but MINTER_ROLE grant failed. You can still use the vault-wrap
+                    deposit path. To retry the mint grant, refresh and click "Enable demo access" again.
+                  </p>
                 </div>
               </transition>
 

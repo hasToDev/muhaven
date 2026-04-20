@@ -373,6 +373,25 @@ function resetForm() {
           </p>
         </div>
 
+        <!-- Demo shortcut disclosure (encrypted-mint only). In Wave 3.5 this path
+             is replaced by MuHavenSubscription.purchase — investors pay PUSDC
+             atomically for encrypted shares, contract mints on their behalf. -->
+        <div
+          v-if="depositPath === 'encrypted-mint'"
+          class="mb-4 p-3 rounded-lg border border-gold/25 bg-gold/5"
+          data-testid="demo-mint-shortcut-note"
+        >
+          <div class="flex items-center gap-2">
+            <span class="text-xs font-medium text-gold">Demo shortcut</span>
+          </div>
+          <p class="text-xs text-cool mt-1">
+            Your kernel was granted <span class="font-mono">MINTER_ROLE</span> at demo signup so
+            this button mints directly. In production (Wave 3.5), investors never mint —
+            <span class="font-mono">MuHavenSubscription</span> pulls PUSDC atomically and mints
+            encrypted shares.
+          </p>
+        </div>
+
         <MButton
           variant="primary"
           full-width

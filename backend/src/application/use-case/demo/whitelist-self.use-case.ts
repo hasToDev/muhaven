@@ -1,5 +1,13 @@
 // DEMO-ONLY: self-serve KYC whitelist endpoint. Signs `addToWhitelist` +
-// `addToAccreditedList` on the ERC3643KYCAdapter with DEMO_WHITELIST_PRIVATE_KEY.
+// `addToAccreditedList` on the ERC3643KYCAdapter AND `grantMinter` on
+// MuHavenToken, all with DEMO_WHITELIST_PRIVATE_KEY.
+//
+// The grantMinter call is a demo shortcut. In production (Wave 3.5) investors
+// never hold MINTER_ROLE — MuHavenSubscription holds it and mints atomically
+// against PUSDC payment. For the current hackathon build the DepositPage
+// "Encrypted Mint" path calls MuHavenToken.mint directly from the investor's
+// kernel, which requires the kernel be in the `minters` mapping. This endpoint
+// puts it there. See PRODUCTION_DESIGN/ARCHITECTURE.md for the target flow.
 //
 // KEY HYGIENE CAVEAT: The adapter has a single admin slot (onlyAdmin checks
 // msg.sender == admin). Until the adapter is upgraded to multi-admin, this key
@@ -48,12 +56,35 @@ const KYC_ADAPTER_ABI = [
   },
 ] as const;
 
+const MUHAVEN_TOKEN_MINTER_ABI = [
+  {
+    name: 'grantMinter',
+    type: 'function',
+    inputs: [{ name: 'minter', type: 'address' }],
+    outputs: [],
+    stateMutability: 'nonpayable',
+  },
+  {
+    name: 'minters',
+    type: 'function',
+    inputs: [{ name: '', type: 'address' }],
+    outputs: [{ type: 'bool' }],
+    stateMutability: 'view',
+  },
+] as const;
+
 export interface WhitelistSelfResult {
   whitelisted: boolean;
   accredited: boolean;
   whitelistTxHash: string | null;
   accreditTxHash: string | null;
   alreadyComplete: boolean;
+  // Demo shortcut: investor-granted MINTER_ROLE on MuHavenToken so
+  // DepositPage encrypted-mint works. In production this field is removed;
+  // Subscription contract holds MINTER_ROLE and investors never do.
+  minterGranted: boolean;
+  minterTxHash: string | null;
+  minterError: string | null;
 }
 
 export class WhitelistSelfUseCase {
@@ -85,8 +116,9 @@ export class WhitelistSelfUseCase {
     });
 
     const target = walletAddress as `0x${string}`;
+    const tokenAddress = env.MUHAVEN_TOKEN_ADDRESS as `0x${string}` | undefined;
 
-    const [alreadyWhitelisted, alreadyAccredited] = await Promise.all([
+    const [alreadyWhitelisted, alreadyAccredited, alreadyMinter] = await Promise.all([
       publicClient.readContract({
         address: kycAddress,
         abi: KYC_ADAPTER_ABI,
@@ -99,15 +131,26 @@ export class WhitelistSelfUseCase {
         functionName: 'isAccredited',
         args: [target],
       }),
+      tokenAddress
+        ? publicClient.readContract({
+            address: tokenAddress,
+            abi: MUHAVEN_TOKEN_MINTER_ABI,
+            functionName: 'minters',
+            args: [target],
+          })
+        : Promise.resolve(false),
     ]);
 
-    if (alreadyWhitelisted && alreadyAccredited) {
+    if (alreadyWhitelisted && alreadyAccredited && alreadyMinter) {
       return {
         whitelisted: true,
         accredited: true,
         whitelistTxHash: null,
         accreditTxHash: null,
         alreadyComplete: true,
+        minterGranted: true,
+        minterTxHash: null,
+        minterError: null,
       };
     }
 
@@ -139,12 +182,43 @@ export class WhitelistSelfUseCase {
       await publicClient.waitForTransactionReceipt({ hash: accreditTxHash });
     }
 
+    // Demo shortcut: grant MINTER_ROLE so investor kernel can call
+    // MuHavenToken.mint directly from DepositPage. Tolerant of failure —
+    // if this fails the investor can still use MuHavenVault.wrap.
+    let minterTxHash: `0x${string}` | null = null;
+    let minterGranted = alreadyMinter;
+    let minterError: string | null = null;
+    if (!tokenAddress) {
+      minterError = 'MUHAVEN_TOKEN_ADDRESS not configured';
+      this.logger.warn({ walletAddress }, 'skipping grantMinter: MUHAVEN_TOKEN_ADDRESS not configured');
+    } else if (!alreadyMinter) {
+      try {
+        minterTxHash = await walletClient.writeContract({
+          account,
+          chain: arbitrumSepolia,
+          address: tokenAddress,
+          abi: MUHAVEN_TOKEN_MINTER_ABI,
+          functionName: 'grantMinter',
+          args: [target],
+        });
+        this.logger.info({ walletAddress, txHash: minterTxHash }, 'grantMinter submitted');
+        await publicClient.waitForTransactionReceipt({ hash: minterTxHash });
+        minterGranted = true;
+      } catch (err) {
+        minterError = err instanceof Error ? err.message : String(err);
+        this.logger.error({ walletAddress, err: minterError }, 'grantMinter failed; investor can still use vault wrap');
+      }
+    }
+
     return {
       whitelisted: true,
       accredited: true,
       whitelistTxHash,
       accreditTxHash,
       alreadyComplete: false,
+      minterGranted,
+      minterTxHash,
+      minterError,
     };
   }
 }

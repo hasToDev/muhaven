@@ -42,7 +42,13 @@ export function useFhe() {
 
   /**
    * Initialize the cofhe client.
-   * Connects to the CoFHE coprocessor, loads TFHE WASM, and creates a self-permit.
+   * Connects to the CoFHE coprocessor and loads TFHE WASM.
+   *
+   * Does NOT create a self-permit here — permit creation is deferred to the
+   * first `decryptXxxForView` call via `ensurePermit()`. Creating a permit at
+   * login time bound it to the kernel's counterfactual address *before* the
+   * kernel had any code, which caused Fhenix ACL to reject the signature
+   * (`PermissionInvalid_IssuerSignature`) when verifying via ERC-1271 later.
    * Idempotent — if already initialized or in progress, returns the existing promise.
    */
   async function initialize(): Promise<void> {
@@ -90,11 +96,11 @@ export function useFhe() {
 
       await client.connect(clients.publicClient as any, clients.walletClient as any)
 
-      // Create self-permit for decrypting own values
-      const address = walletStore.address
-      if (address) {
-        await client.permits.getOrCreateSelfPermit()
-      }
+      // Self-permit creation is deferred — see ensurePermit() below. We used
+      // to call `client.permits.getOrCreateSelfPermit()` here, but for ZeroDev
+      // kernel accounts this signed a permit against the counterfactual
+      // address before the kernel was deployed, which later failed ACL
+      // verification via ERC-1271.
 
       cofheClient = client
       fheStore.setReady()
@@ -116,6 +122,73 @@ export function useFhe() {
     await initialize()
     if (!cofheClient) throw new Error('FHE client not initialized')
     return cofheClient
+  }
+
+  /**
+   * Ensure a valid self-permit exists for the current account, creating one
+   * lazily if needed. Called by the decrypt* helpers, never eagerly.
+   *
+   * Guards: the kernel smart account must have code on-chain before signing
+   * the permit — otherwise the signature is bound to an un-deployed address
+   * and later fails ACL verification via ERC-1271.
+   *
+   * When `forceRefresh` is true we remove any existing active permit and
+   * sign a fresh one. Used by the decrypt retry path when the first attempt
+   * trips `PermissionInvalid_IssuerSignature` (stale counterfactual-era
+   * permit from a prior session).
+   */
+  async function ensurePermit(forceRefresh = false): Promise<void> {
+    const client = await ensureReady()
+
+    const address = walletStore.address
+    if (!address) throw new Error('Wallet not connected')
+
+    const clients = walletStore.getViemClients()
+    if (!clients) throw new Error('Wallet not connected')
+
+    // Verify the kernel has code. Pre-deploy counterfactual signing is the
+    // root cause of `PermissionInvalid_IssuerSignature` — bail with a clear
+    // message so the UI can prompt the user to make their first tx first.
+    const code = await clients.publicClient.getCode({
+      address: address as `0x${string}`,
+    })
+    if (!code || code === '0x') {
+      throw new Error(
+        'Your smart account is not yet deployed on-chain. Complete your first '
+        + 'transaction (e.g. the first encrypted mint) before decrypting — '
+        + 'permits signed pre-deploy fail Fhenix ACL verification.',
+      )
+    }
+
+    if (forceRefresh) {
+      const existing = client.permits.getActivePermit()
+      if (existing) {
+        client.permits.removeActivePermit()
+      }
+      await client.permits.createSelf({})
+      return
+    }
+
+    // Idempotent: returns the existing active permit if one is already set.
+    await client.permits.getOrCreateSelfPermit()
+  }
+
+  /**
+   * Detect the ACL signature-verification failure so the decrypt retry path
+   * can force a fresh permit and try again. Matches the upstream revert name
+   * and selector `0x4c40eccb` from `Permissioned.sol`.
+   */
+  function isIssuerSignatureError(e: unknown): boolean {
+    const raw = e instanceof Error ? e.message : String(e)
+    return /PermissionInvalid_IssuerSignature/.test(raw)
+      || /0x4c40eccb/.test(raw)
+      || /Failed to verify ACL/i.test(raw)
+  }
+
+  /** Detect a TN HTTP 403 — signals an unknown / non-existent ctHash. */
+  function is403Error(e: unknown): boolean {
+    const raw = e instanceof Error ? e.message : String(e)
+    return /HTTP 403/.test(raw) || /403 \(Forbidden\)/.test(raw) || /Forbidden/i.test(raw)
   }
 
   /**
@@ -211,12 +284,7 @@ export function useFhe() {
    * No on-chain transaction needed — purely client-side via CoFHE coprocessor.
    */
   async function decryptUint128ForView(ctHash: bigint | string): Promise<bigint> {
-    const client = await ensureReady()
-    const { FheTypes } = await import('@cofhe/sdk')
-
-    return client
-      .decryptForView(ctHash, FheTypes.Uint128)
-      .execute() as Promise<bigint>
+    return decryptForViewWithRetry(ctHash, 128)
   }
 
   /**
@@ -224,12 +292,59 @@ export function useFhe() {
    * Used for PUSDC confidential balances (6-decimal unsigned 64-bit).
    */
   async function decryptUint64ForView(ctHash: bigint | string): Promise<bigint> {
+    return decryptForViewWithRetry(ctHash, 64)
+  }
+
+  /**
+   * Shared decrypt path with lazy permit + one retry on IssuerSignature.
+   * First attempt uses any existing active permit; on ACL-signature failure
+   * we invalidate the permit (which was likely signed pre-deploy), create
+   * a fresh one against the now-deployed kernel, and retry once.
+   *
+   * Short-circuits on a zero ctHash — the handle a confidential-balance-style
+   * view returns when the account has never received a ciphertext. TN answers
+   * 403 for such handles, so skip the network round-trip and return 0n.
+   */
+  async function decryptForViewWithRetry(
+    ctHash: bigint | string,
+    bits: 64 | 128,
+  ): Promise<bigint> {
+    // Zero handle = no ciphertext exists (e.g. PUSDC.confidentialBalanceOf
+    // on an account that only holds public PUSDC). Returning 0n matches
+    // the semantics the user expects and avoids a TN 403.
+    const hashAsBigInt = typeof ctHash === 'bigint' ? ctHash : BigInt(ctHash)
+    if (hashAsBigInt === 0n) return 0n
+
     const client = await ensureReady()
     const { FheTypes } = await import('@cofhe/sdk')
+    const utype = bits === 64 ? FheTypes.Uint64 : FheTypes.Uint128
 
-    return client
-      .decryptForView(ctHash, FheTypes.Uint64)
-      .execute() as Promise<bigint>
+    await ensurePermit(false)
+
+    try {
+      return (await client
+        .decryptForView(ctHash, utype)
+        .execute()) as bigint
+    } catch (e) {
+      if (isIssuerSignatureError(e)) {
+        // Stale permit (counterfactual-era signature). Re-sign against the
+        // now-deployed kernel and try once more.
+        await ensurePermit(true)
+        return (await client
+          .decryptForView(ctHash, utype)
+          .execute()) as bigint
+      }
+      // 403 from TN usually means the requested ctHash is unknown to the
+      // coprocessor (zero handle, not-yet-committed, or ACL-denied). Translate
+      // to a clearer message rather than leaking the raw HTTP status upstream.
+      if (is403Error(e)) {
+        throw new Error(
+          'Fhenix Threshold Network rejected the decrypt request (HTTP 403). '
+          + 'This usually means the encrypted value does not exist on-chain yet.',
+        )
+      }
+      throw e
+    }
   }
 
   /**

@@ -8,6 +8,7 @@ import { useFhe } from '@/composables/useFhe'
 import { useWallet } from '@/composables/useWallet'
 import * as TokenService from '@/services/contracts/TokenService'
 import { arbiscanTx, arbiscanAddress } from '@/lib/external'
+import { toast } from 'vue-sonner'
 import MButton from './MButton.vue'
 import MBadge from './MBadge.vue'
 import {
@@ -460,7 +461,24 @@ async function revealBalance(idx: number) {
       : decryptUint128ForView
     evt.decryptedBalance = await decryptor(handle)
   } catch (e) {
-    evt.decryptError = e instanceof Error ? e.message : 'Decrypt failed'
+    // Fhenix Threshold Network V2 (/v2/sealoutput) is intermittently
+    // returning HTTP 500 on Arb Sepolia testnet. Detect that case and
+    // surface a friendly toast instead of the raw SDK stack. Any other
+    // error falls through to the inline decryptError field as before.
+    const raw = e instanceof Error ? e.message : String(e)
+    const isTnV2Outage =
+      /500/.test(raw)
+      || /v2\/sealoutput/.test(raw)
+      || /sealoutput request returned no data/i.test(raw)
+      || /Failed to verify ACL/i.test(raw)
+    if (isTnV2Outage) {
+      evt.decryptError = 'Fhenix TN decrypt service is unavailable — retry later.'
+      toast.error('Fhenix TN V2 unavailable', {
+        description: 'Decrypting the encrypted balance requires the Fhenix Threshold Network, which is currently unreachable. Retry in a few minutes.',
+      })
+    } else {
+      evt.decryptError = raw || 'Decrypt failed'
+    }
   } finally {
     evt.decryptingBalance = false
   }

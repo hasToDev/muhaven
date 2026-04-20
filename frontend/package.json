@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@cofhe/sdk": "0.4.0",
+    "@cofhe/sdk": "file:../development/reference/Fhenix/cofhesdk/packages/sdk/cofhe-sdk-0.4.0.tgz",
     "@fontsource-variable/inter": "^5.2.8",
     "@muhaven/sdk": "file:../packages/sdk",
     "@vueuse/core": "^13.0.0",
