@@ -31,7 +31,18 @@ async function main() {
   const net = network.name;
   const isLocal = net === "hardhat" || net === "localhost";
 
-  console.log(`\nDeploying MuHaven to [${net}]`);
+  // Deployment environment — controls the output filename and guards against
+  // accidentally overwriting the prod deployments record from a staging deploy
+  // (and vice versa). Defaults to "prod" so existing deploys are unchanged.
+  const envName = (process.env.MUHAVEN_ENV || "prod").toLowerCase();
+  if (envName !== "prod" && envName !== "staging") {
+    throw new Error(
+      `MUHAVEN_ENV must be 'prod' or 'staging' (got '${envName}')`,
+    );
+  }
+  const envSuffix = envName === "staging" ? ".staging" : "";
+
+  console.log(`\nDeploying MuHaven to [${net}] (env=${envName})`);
   console.log(`Deployer: ${deployer.address}\n`);
 
   // ── Config ──────────────────────────────────────────────────────────────
@@ -244,23 +255,39 @@ async function main() {
   console.log("   muhavenEscrow.setAuthorizedCaller(issuer) ✓");
 
   // ── Save deployments (archive previous if exists) ────────────────────────
+  // File naming: prod → `${net}.json`, staging → `${net}.staging.json`.
+  // The suffix lives in the filename (not a subdirectory) so both files sit
+  // side-by-side and are trivial to diff.
   const outDir = join(__dirname, "..", "deployments");
   mkdirSync(outDir, { recursive: true });
-  const outPath = join(outDir, `${net}.json`);
+  const outPath = join(outDir, `${net}${envSuffix}.json`);
+
+  // Defence in depth: refuse to write to the *other* environment's file even
+  // if someone wires the script up oddly. Staging must never touch the prod
+  // JSON that the live frontend/backend consume.
+  const prodPath = join(outDir, `${net}.json`);
+  const stagingPath = join(outDir, `${net}.staging.json`);
+  if (envName === "staging" && outPath === prodPath) {
+    throw new Error("refusing to overwrite prod deployments file from a staging deploy");
+  }
+  if (envName === "prod" && outPath === stagingPath) {
+    throw new Error("refusing to overwrite staging deployments file from a prod deploy");
+  }
 
   if (existsSync(outPath)) {
     const historyDir = join(outDir, "history");
     mkdirSync(historyDir, { recursive: true });
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
-    const archivePath = join(historyDir, `${net}.${ts}.json`);
+    const archivePath = join(historyDir, `${net}${envSuffix}.${ts}.json`);
     copyFileSync(outPath, archivePath);
-    console.log(`\nArchived previous deployment → deployments/history/${net}.${ts}.json`);
+    console.log(`\nArchived previous deployment → deployments/history/${net}${envSuffix}.${ts}.json`);
   }
   writeFileSync(
     outPath,
     JSON.stringify(
       {
         network: net,
+        env: envName,
         timestamp: new Date().toISOString(),
         deployer: deployer.address,
         contracts: record,
@@ -271,7 +298,7 @@ async function main() {
   );
 
   // ── Summary ──────────────────────────────────────────────────────────────
-  console.log(`\nDeployments saved → deployments/${net}.json`);
+  console.log(`\nDeployments saved → deployments/${net}${envSuffix}.json`);
   console.log("\n=== MuHaven Deployment Summary ===");
   const pad = 22;
   for (const [name, entry] of Object.entries(record)) {

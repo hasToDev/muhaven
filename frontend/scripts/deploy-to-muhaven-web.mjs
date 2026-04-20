@@ -1,13 +1,21 @@
 #!/usr/bin/env node
-// Post-build sync: copies dist/ contents to ../../muhaven-web and mirrors
-// dist/assets/ so stale hashed chunks from previous builds get removed.
+// Post-build sync: copies dist/ contents to a sibling GitHub Pages repo and
+// mirrors dist/assets/ so stale hashed chunks from previous builds get removed.
+//
+// Target resolution:
+//   - MUHAVEN_WEB_TARGET_DIR env var (resolved from frontend/), if set
+//   - otherwise ../../../muhaven-web (sibling of muhaven/, the default)
+//
+// The staging build (`bun run build:stage`) sets
+//   MUHAVEN_WEB_TARGET_DIR=../../muhaven-web-stage
+// so it lands in the staging repo instead of clobbering prod.
 //
 // Root-level files (CNAME, README.md, .nojekyll, logo.jpg, logo.png — anything
 // not under assets/) are NEVER deleted, only overwritten when a same-named
 // file exists in dist/.
 //
-// If ../../muhaven-web doesn't exist, the script exits cleanly with a warning
-// so `bun run build` still succeeds in non-deploy contexts (CI, Vercel, etc.).
+// If the target doesn't exist, the script exits cleanly with a warning so
+// `bun run build` still succeeds in non-deploy contexts (CI, Vercel, etc.).
 
 import { readdir, rm, cp, access } from 'node:fs/promises';
 import { join, resolve, dirname } from 'node:path';
@@ -15,7 +23,10 @@ import { fileURLToPath } from 'node:url';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const dist = resolve(scriptDir, '../dist');
-const target = resolve(scriptDir, '../../../muhaven-web');
+const targetOverride = process.env.MUHAVEN_WEB_TARGET_DIR;
+const target = targetOverride
+  ? resolve(scriptDir, '..', targetOverride)
+  : resolve(scriptDir, '../../../muhaven-web');
 
 async function exists(p) {
   try {

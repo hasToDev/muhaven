@@ -1,6 +1,10 @@
 /**
  * Contract address registry per network.
  * Active network selected by VITE_CHAIN_ID env var.
+ *
+ * Any VITE_*_ADDRESS env var overrides the baked-in default for its slot,
+ * which is how staging builds (`bun run build:stage` → .env.staging) point
+ * at a separate contract deployment without touching this file.
  */
 
 export interface ContractAddresses {
@@ -12,7 +16,7 @@ export interface ContractAddresses {
   riskParams: `0x${string}`
   yieldGate: `0x${string}`
   muhavenEscrow: `0x${string}`
-  // External (ReineiraOS)
+  // External (ReineiraOS) — shared across envs
   usdc: `0x${string}`
   pusdc: `0x${string}`
 }
@@ -36,4 +40,20 @@ const addressMap: Record<string, ContractAddresses> = {
 
 const chainId = import.meta.env.VITE_CHAIN_ID || '421614'
 
-export const addresses: ContractAddresses = addressMap[chainId] ?? arbSepolia
+const base: ContractAddresses = addressMap[chainId] ?? arbSepolia
+
+const pick = (override: string | undefined, fallback: `0x${string}`): `0x${string}` =>
+  override && /^0x[0-9a-fA-F]{40}$/.test(override) ? (override as `0x${string}`) : fallback
+
+export const addresses: ContractAddresses = {
+  muHavenToken: pick(import.meta.env.VITE_MUHAVEN_TOKEN_ADDRESS, base.muHavenToken),
+  muHavenVault: pick(import.meta.env.VITE_MUHAVEN_VAULT_ADDRESS, base.muHavenVault),
+  investorRegistry: pick(import.meta.env.VITE_INVESTOR_REGISTRY_ADDRESS, base.investorRegistry),
+  yieldDistributor: pick(import.meta.env.VITE_YIELD_DISTRIBUTOR_ADDRESS, base.yieldDistributor),
+  kycAdapter: pick(import.meta.env.VITE_KYC_ADAPTER_ADDRESS, base.kycAdapter),
+  riskParams: pick(import.meta.env.VITE_RISK_PARAMS_ADDRESS, base.riskParams),
+  yieldGate: pick(import.meta.env.VITE_YIELD_GATE_ADDRESS, base.yieldGate),
+  muhavenEscrow: pick(import.meta.env.VITE_MUHAVEN_ESCROW_ADDRESS, base.muhavenEscrow),
+  usdc: base.usdc,
+  pusdc: base.pusdc,
+}

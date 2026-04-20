@@ -1,0 +1,73 @@
+# Staging stack — runs alongside the prod stack on the same homelab host.
+#
+# Conventions relative to prod (docker-compose.yml):
+#   - Host ports offset by +1000 (backend 4000, fhe 4001, nav 4002); postgres on 5433.
+#   - Per-service env_file is .env.stage (never .env — that's prod).
+#   - Volume renamed to pgdata_stage so `docker volume ls` is readable.
+#
+# Every homelab command MUST pass both flags — the helper script enforces this:
+#     docker compose -f docker-compose.stage.yml -p muhaven-stage <cmd>
+#
+# Omitting `-f` picks up docker-compose.yml (prod) and will restart live services.
+# See development/STAGING.md for the full runbook.
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "4000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      fhe-worker:
+        condition: service_started
+    env_file: ./backend/.env.stage
+    environment:
+      DB_PROVIDER: postgres
+      DATABASE_URL: postgresql://muhaven:${DB_PASSWORD:-muhaven}@postgres:5432/muhaven
+      FHE_WORKER_URL: http://fhe-worker:3001
+      NAV_WORKER_URL: http://nav-worker:3002
+      PORT: 3000
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata_stage:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: muhaven
+      POSTGRES_USER: muhaven
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-muhaven}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U muhaven"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  fhe-worker:
+    build: ./fhe-worker
+    ports:
+      - "4001:3001"
+    env_file: ./fhe-worker/.env.stage
+    environment:
+      PORT: 3001
+    restart: unless-stopped
+
+  nav-worker:
+    build: ./nav-worker
+    ports:
+      - "4002:3002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: ./nav-worker/.env.stage
+    environment:
+      PORT: 3002
+      DATABASE_URL: postgresql://muhaven:${DB_PASSWORD:-muhaven}@postgres:5432/muhaven
+    restart: unless-stopped
+
+volumes:
+  pgdata_stage:
