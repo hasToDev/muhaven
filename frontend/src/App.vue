@@ -3,6 +3,7 @@ import { watch, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import TopNav from '@/components/TopNav.vue'
+import Sidebar from '@/components/Sidebar.vue'
 import MMeshGradient from '@/components/ui/MMeshGradient.vue'
 import MMobileTabBar from '@/components/ui/MMobileTabBar.vue'
 import AgentFAB from '@/components/agent/AgentFAB.vue'
@@ -44,15 +45,17 @@ onMounted(() => {
     ]"
   >
     <MMeshGradient />
-    <TopNav v-if="showChrome" />
-    <main>
+    <Sidebar v-if="showChrome" />
+    <!-- Mobile top bar: only shows on <md; desktop nav lives in Sidebar -->
+    <TopNav v-if="showChrome" class="md:hidden" />
+    <main :class="showChrome ? 'md:pl-64' : ''">
       <router-view v-slot="{ Component, route: viewRoute }">
         <transition name="page" mode="out-in">
           <div
             :key="viewRoute.path"
             :class="viewRoute.meta.layout === 'landing' || viewRoute.meta.layout === 'login'
               ? ''
-              : 'max-w-screen-2xl mx-auto w-full px-6 sm:px-10 lg:px-16 xl:px-24 pt-10 pb-28 md:pb-32'"
+              : 'max-w-7xl mx-auto w-full px-6 sm:px-10 lg:px-12 pt-8 pb-28 md:pb-16'"
           >
             <component :is="Component" />
           </div>
