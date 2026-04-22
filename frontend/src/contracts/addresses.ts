@@ -3,7 +3,7 @@
  * Active network selected by VITE_CHAIN_ID env var.
  *
  * Any VITE_*_ADDRESS env var overrides the baked-in default for its slot,
- * which is how staging builds (`bun run build:stage` → .env.staging) point
+ * which is how staging builds (`bun run build:stage` → .env.stage) point
  * at a separate contract deployment without touching this file.
  */
 

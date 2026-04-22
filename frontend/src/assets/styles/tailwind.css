@@ -4,26 +4,46 @@
 @variant dark (&:where(.dark, .dark *));
 
 @theme {
-  /* ── Midnight Teal Palette ── */
-  --color-frost: #F0FDFB;
-  --color-mist: #E0F7F4;
-  --color-haze: #B2EBE6;
-  --color-cipher: #4DB8B0;
-  --color-compute: #1B9E8A;
-  --color-compute-hover: #158a78;
-  --color-signal: #A8F5EC;
-  --color-signal-hover: #c8fff8;
-  --color-midnight: #1A1A2E;
-  --color-midnight-mid: #2D2D46;
-  --color-slate: #2E524F;
-  --color-cool: #5E9490;
-  --color-gold: #C9A84C;
-  --color-positive: #1B9E8A;
-  --color-negative: #D44A3A;
+  /* ══════════════════════════════════════════════════════════
+   *  GOLDEN HOUR MIDNIGHT — Wave 3 revamp palette
+   *  Dark canvas (#121315) + warm gold precious accent (#ffdca1 / #ffba20).
+   *  Light companion is warm cream (#FFFDF7 / #FAF5E8) with deep amber text.
+   *  Token names from the legacy teal palette are preserved so every
+   *  existing page keeps compiling — only the hex values change.
+   * ══════════════════════════════════════════════════════════ */
 
-  /* ── Typography ── */
+  /* ── Light-mode surfaces (warm cream) ── */
+  --color-frost: #FFFDF7;        /* page bg — warm white */
+  --color-mist: #FAF5E8;         /* elevated card bg */
+  --color-haze: #EFE4C9;         /* light borders / separators */
+
+  /* ── Primary brand: warm cream-gold → amber ── */
+  --color-compute: #B8860B;      /* deep amber — primary text/accent in LIGHT mode */
+  --color-compute-hover: #9a6f08;
+  --color-signal: #FFDCA1;       /* cream-gold — primary accent in DARK mode */
+  --color-signal-hover: #FFE9C4;
+
+  /* ── Dark-mode canvas (charcoal, reference-matched) ── */
+  --color-midnight: #121315;        /* root bg + raised surfaces */
+  --color-midnight-mid: #1f2022;    /* container */
+  --color-midnight-deep: #0d0e10;   /* lowest — darkest recess */
+
+  /* ── Text tints (warm taupe, not cool teal) ── */
+  --color-slate: #5a4f44;        /* light-mode body */
+  --color-cool: #9E8F78;         /* muted captions / labels */
+  --color-body-dark: #D5C4AB;    /* dark-mode body copy */
+
+  /* ── Tertiary + accent ── */
+  --color-cipher: #D3C4B5;       /* warm tertiary — card accents */
+  --color-gold: #FFBA20;         /* amber — the "precious" highlight */
+  --color-positive: #1B9E8A;     /* keep teal for up/positive states */
+  --color-negative: #D44A3A;     /* keep red for down/error */
+
+  /* ── Typography (reverted to original Inter / Epilogue / DM Mono) ── */
   --font-sans: 'Inter Variable', 'Inter', system-ui, -apple-system, sans-serif;
   --font-accent: 'Epilogue', Georgia, 'Times New Roman', serif;
+  --font-body: 'Inter Variable', 'Inter', system-ui, sans-serif;
+  --font-label: 'Inter Variable', 'Inter', system-ui, sans-serif;
   --font-mono: 'DM Mono', 'Fira Code', 'Consolas', monospace;
 
   /* ── Border radius (rounded, organic) ── */
@@ -36,16 +56,13 @@
   --radius-3xl: 24px;
   --radius-full: 9999px;
 
-  /* ── Extra colors ── */
-  --color-midnight-deep: #121224;
-  --color-body-dark: #D1EDEA;
-
-  /* ── Shadows ── */
-  --shadow-card: 0 2px 12px rgba(15, 61, 58, 0.06);
-  --shadow-card-hover: 0 12px 40px rgba(26, 26, 46, 0.08);
-  --shadow-card-dark: 0 2px 12px rgba(168, 245, 236, 0.04);
-  --shadow-nav: 0 1px 4px rgba(15, 61, 58, 0.06);
-  --shadow-elevated: 0 16px 48px rgba(26, 26, 46, 0.12);
-  --shadow-fab: 0 6px 24px rgba(27, 158, 138, 0.3);
-  --shadow-button: 0 8px 28px rgba(27, 158, 138, 0.3);
+  /* ── Shadows — warm amber in dark mode ── */
+  --shadow-card: 0 2px 12px rgba(63, 46, 12, 0.06);
+  --shadow-card-hover: 0 12px 40px rgba(18, 19, 21, 0.10);
+  --shadow-card-dark: 0 2px 12px rgba(255, 186, 32, 0.04);
+  --shadow-nav: 0 1px 4px rgba(63, 46, 12, 0.06);
+  --shadow-elevated: 0 16px 48px rgba(18, 19, 21, 0.35);
+  --shadow-fab: 0 6px 24px rgba(255, 186, 32, 0.30);
+  --shadow-button: 0 8px 28px rgba(255, 220, 161, 0.22);
+  --shadow-ambient-glow: 0 0 60px -10px rgba(255, 220, 161, 0.10);
 }

@@ -28,8 +28,8 @@ function toggle(index: number, allowMultiple?: boolean) {
       v-for="(item, i) in items"
       :key="i"
       :class="cn(
-        'bg-white dark:bg-midnight-mid border border-haze dark:border-white/8 rounded-xl transition-all duration-300 faq-item',
-        openIndices.has(i) && 'ring-1 ring-compute/15',
+        'bg-white dark:bg-midnight-mid border border-haze dark:border-[#514532]/25 rounded-xl transition-all duration-300 faq-item',
+        openIndices.has(i) && 'ring-1 ring-compute/20 dark:ring-signal/25 dark:border-signal/20',
       )"
     >
       <button

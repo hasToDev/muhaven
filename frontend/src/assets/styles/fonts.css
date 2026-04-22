@@ -1,3 +1,11 @@
+/* ============================================================
+ * Active: Inter Variable + Epilogue + DM Mono (original)
+ * All fonts self-hosted via @fontsource*. No CDN / no Google Fonts.
+ *
+ * Revamp-era block (Manrope / Plus Jakarta Sans / Space Grotesk)
+ * is kept commented below for one-edit revival.
+ * ============================================================ */
+
 /* Inter Variable — primary UI font (all weights via single file) */
 @import '@fontsource-variable/inter';
 
@@ -42,3 +50,61 @@
   src: url('@fontsource/dm-mono/files/dm-mono-latin-500-normal.woff2') format('woff2');
   font-display: swap;
 }
+
+/* ── REVAMP-ERA (Golden Hour reference fonts) — disabled ──
+ * Re-enable by uncommenting this block AND commenting out the Inter/Epilogue
+ * block above. Also flip --font-sans/--font-body/--font-label in tailwind.css
+ * and the body/h1-h6 rules in global.css.
+
+@import '@fontsource-variable/manrope';
+
+@font-face {
+  font-family: 'Plus Jakarta Sans';
+  font-style: normal;
+  font-weight: 400;
+  src: url('@fontsource/plus-jakarta-sans/files/plus-jakarta-sans-latin-400-normal.woff2') format('woff2');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Plus Jakarta Sans';
+  font-style: normal;
+  font-weight: 500;
+  src: url('@fontsource/plus-jakarta-sans/files/plus-jakarta-sans-latin-500-normal.woff2') format('woff2');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Plus Jakarta Sans';
+  font-style: normal;
+  font-weight: 600;
+  src: url('@fontsource/plus-jakarta-sans/files/plus-jakarta-sans-latin-600-normal.woff2') format('woff2');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Plus Jakarta Sans';
+  font-style: italic;
+  font-weight: 400;
+  src: url('@fontsource/plus-jakarta-sans/files/plus-jakarta-sans-latin-400-italic.woff2') format('woff2');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 400;
+  src: url('@fontsource/space-grotesk/files/space-grotesk-latin-400-normal.woff2') format('woff2');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 500;
+  src: url('@fontsource/space-grotesk/files/space-grotesk-latin-500-normal.woff2') format('woff2');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 700;
+  src: url('@fontsource/space-grotesk/files/space-grotesk-latin-700-normal.woff2') format('woff2');
+  font-display: swap;
+}
+*/
