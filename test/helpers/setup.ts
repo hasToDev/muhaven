@@ -52,6 +52,11 @@ export async function deployToken(kycAddress: string, registryAddress: string, i
     ["MuHaven RWA", "MHRWA", kycAddress, registryAddress, issuerAddress, ZERO_ADDRESS],
     { kind: "transparent", initializer: "initialize" }
   );
+  // Wave 3.5 (ADR-006): the initializer no longer auto-grants the issuer as a
+  // minter. Test scaffolding that exercises the Wave 3 `mint` path still relies
+  // on issuer-as-minter, so the grant is applied explicitly here. Production
+  // deployment only grants the Vault and Subscription their respective roles.
+  await token.grantMinter(issuerAddress);
   return token;
 }
 

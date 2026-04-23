@@ -26,19 +26,36 @@ import {IMuHavenToken} from "./interfaces/IMuHavenToken.sol";
 ///   - Balances stored as `euint128` — never visible on-chain in plaintext.
 ///   - Transfer amounts are encrypted client-side via `InEuint128` — calldata
 ///     contains only a ciphertext hash, security zone, and ZK proof.
-///   - `FHE.allow(balance, investor)` grants permit-based decryption: only the
-///     balance owner can call `decryptForView()` client-side with an EIP-712
-///     permit. No on-chain decryption needed for investor balance viewing.
+///   - `FHE.allow(balance, ephemeralEOA)` grants permit-based decryption per
+///     ADR-009 / ADR-021: every mutation producing user-decryptable state
+///     accepts an `ephemeralEOA` parameter and grants it decrypt rights on the
+///     new handle. The user's kernel address is also granted for legacy
+///     compatibility but cannot actually sign permits (ERC-1271 / ERC-6492
+///     gap — see `development/PRODUCTION_DESIGN/PERMIT_DECRYPT_LIFECYCLE.md`).
 ///   - `FHE.select()` silent failure ensures that insufficient-balance transfers
 ///     execute an identical code path (same gas, same trace) as valid transfers —
 ///     an observer cannot distinguish success from failure.
 ///   - Total supply is encrypted by default. The issuer can optionally reveal it
 ///     via `setTotalSupplyPublic()` (one-way toggle using `FHE.allowPublic`).
 ///
+///   Wave 3.5 delta (per ADR-006 / ADR-021 / ADR-022 / ADR-026):
+///   - New `SUBSCRIPTION_ROLE` gates `mintFromSubscription` /
+///     `burnFromSubscription` — the only paid-settlement path. Granted to the
+///     single `MuHavenSubscription` contract via `setSubscription`.
+///   - Wave 3's initialize-time `minters[_issuer] = true` auto-grant is
+///     removed. Issuer holds **zero** mint authority; compromised issuer keys
+///     cannot conjure shares.
+///   - `transfer` / `transferFrom` now also exist as ephemeralEOA-aware
+///     overloads and call `IInvestorRegistry.addHolder(address(this),
+///     recipient)` on every call (idempotent) so P2P recipients are visible
+///     to the per-token holder API (YieldSnapshot, MaxHolders).
+///   - `authorizedReaders` mapping is reserved for Wave 4 (agent-side
+///     encrypted-balance reads). The slot and its admin setter are live;
+///     no read paths consume it yet.
+///
 ///   Known leakage (by design):
 ///   - `Transfer(from, to)` events expose participant addresses. This is
-///     intentional: addresses are already visible in transaction calldata
-///     (`msg.sender`, `to` parameter). The event adds no new information.
+///     intentional: addresses are already visible in transaction calldata.
 ///     Transfer *amounts* are never emitted.
 ///   - `MinterGranted`/`MinterRevoked` events expose role assignments.
 ///   - KYC eligibility check (`kycGate.isEligible`) is a cleartext boolean —
@@ -67,8 +84,21 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
     ///      One-way toggle: FHE.allowPublic() is irreversible for that handle.
     bool public totalSupplyPublic;
 
-    /// @dev Reserved storage for future upgrades
-    uint256[50] private __gap;
+    // ── Wave 3.5 additions (ADR-006 / ADR-021) ───────────────────────────
+
+    /// @notice Single authorised `MuHavenSubscription` contract — the only
+    ///         caller of `mintFromSubscription` / `burnFromSubscription`.
+    address public subscription;
+
+    /// @notice Reserved for Wave 4 agent-side encrypted-balance reads.
+    ///         Not consumed by any Wave 3.5 read path; set via
+    ///         `setAuthorizedReader` as a forward-compatibility hook.
+    mapping(address => bool) public authorizedReaders;
+
+    /// @dev Reserved storage for future upgrades. Decremented by 2 slots to
+    ///      accommodate `subscription` + `authorizedReaders` above,
+    ///      preserving the total storage footprint (proxy-safe).
+    uint256[48] private __gap;
 
     // ── Events ───────────────────────────────────────────────────────────
 
@@ -79,6 +109,8 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
     event RegistryUpdated(address indexed newRegistry);
     event MinterGranted(address indexed minter);
     event MinterRevoked(address indexed minter);
+    event SubscriptionUpdated(address indexed newSubscription);
+    event AuthorizedReaderUpdated(address indexed reader, bool authorized);
     event BalanceDecryptRequested(address indexed account);
     event TotalSupplyMadePublic();
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
@@ -87,10 +119,12 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
 
     error OnlyOwner();
     error OnlyMinter();
+    error OnlySubscription();
     error RecipientNotKYC();
     error NoBalance();
     error ZeroAddress();
     error AlreadyPublic();
+    error InvalidEphemeralEOA();
 
     // ── Modifiers ────────────────────────────────────────────────────────
 
@@ -104,6 +138,13 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         _;
     }
 
+    modifier onlySubscription() {
+        // `msg.sender` is always non-zero in a real call, so comparing against
+        // `subscription` also rejects the unset (address(0)) case implicitly.
+        if (msg.sender != subscription) revert OnlySubscription();
+        _;
+    }
+
     // ── Initializer ──────────────────────────────────────────────────────
 
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -111,6 +152,11 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         _disableInitializers();
     }
 
+    /// @notice Initializes a fresh MuHavenToken proxy.
+    /// @dev Wave 3.5 delta (ADR-006): no automatic `minters[_issuer] = true`
+    ///      auto-grant. Issuer holds zero mint authority by default. The
+    ///      Subscription is wired separately via `setSubscription`, and the
+    ///      Vault (legacy wrap path) via `grantMinter` as in Wave 3.
     function initialize(
         string memory name_,
         string memory symbol_,
@@ -132,26 +178,29 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         issuer = _issuer;
         usdcAddress = _usdcAddress;
         owner = msg.sender;
-
-        minters[_issuer] = true;
-        emit MinterGranted(_issuer);
     }
 
-    // ── View helpers ──────────────────────────────────────���──────────────
+    // ── View helpers ─────────────────────────────────────────────────────
 
     function name() external view returns (string memory) { return _name; }
     function symbol() external view returns (string memory) { return _symbol; }
     function decimals() external pure returns (uint8) { return 18; }
 
-    // ── Mint (encrypted input — standard path) ───────────────────────────
+    // ── Mint (Wave 3 encrypted-input path — kept for test scaffolding) ──
 
+    /// @notice Mints encrypted tokens to a KYC-eligible recipient. Caller must
+    ///         hold `MINTER_ROLE` (Wave 3 legacy; in Wave 3.5 production only
+    ///         the Vault is granted, and it calls `mintFromVault` instead).
+    /// @dev Wave 3 signature preserved for test + diagnostic scripts. New
+    ///      paid-settlement mints go through `mintFromSubscription` which
+    ///      requires an `ephemeralEOA` per ADR-021.
     function mint(address to, InEuint128 memory encryptedAmount) external onlyMinter whenNotPaused {
         if (!kycGate.isEligible(to)) revert RecipientNotKYC();
 
         euint128 amount = FHE.asEuint128(encryptedAmount);
         FHE.allowThis(amount);
 
-        _mintInternal(to, amount);
+        _mintInternal(to, amount, address(0));
     }
 
     // ── Mint (cleartext input — vault path) ──────────────────────────────
@@ -162,19 +211,50 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         euint128 encAmount = FHE.asEuint128(amount);
         FHE.allowThis(encAmount);
 
-        _mintInternal(to, encAmount);
+        _mintInternal(to, encAmount, address(0));
     }
 
-    function _mintInternal(address to, euint128 amount) internal {
+    // ── Mint (Wave 3.5 paid-settlement path — Subscription only) ────────
+
+    /// @notice Mints `encAmount` shares to `to` on behalf of a paid purchase
+    ///         executed through `MuHavenSubscription`. Grants decrypt access
+    ///         on the new balance handle to `ephemeralEOA` per ADR-021.
+    /// @dev Caller is always the authorised Subscription contract. Subscription
+    ///      has already enforced KYC/compliance/cap gates — the KYC check here
+    ///      is a belt-and-braces defense (cheap cleartext) in case a future
+    ///      Subscription upgrade skips it.
+    function mintFromSubscription(
+        address to,
+        euint128 encAmount,
+        address ephemeralEOA
+    ) external onlySubscription whenNotPaused {
+        if (ephemeralEOA == address(0)) revert InvalidEphemeralEOA();
+        if (!kycGate.isEligible(to)) revert RecipientNotKYC();
+
+        // Subscription allows encAmount to this contract before the call, but
+        // explicit allowThis is safe and defensive against future changes.
+        FHE.allowThis(encAmount);
+
+        _mintInternal(to, encAmount, ephemeralEOA);
+    }
+
+    function _mintInternal(address to, euint128 amount, address ephemeralEOA) internal {
         if (Common.isInitialized(_balances[to])) {
             _balances[to] = FHE.add(_balances[to], amount);
         } else {
             _balances[to] = amount;
         }
         FHE.allowThis(_balances[to]);
-        // Grant the investor permit-based decryption of their own balance.
-        // Client calls: cofheClient.decryptForView(ctHash).withPermit().execute()
+
+        // Wave 3 legacy: kernel address grant (not permit-signable per
+        // ADR-009, but harmless and matches Wave 3 behaviour).
         FHE.allow(_balances[to], to);
+
+        // Wave 3.5 canonical: ephemeralEOA grant — the only grant a frontend
+        // permit can actually validate against.
+        if (ephemeralEOA != address(0)) {
+            FHE.allow(_balances[to], ephemeralEOA);
+        }
 
         if (Common.isInitialized(_encryptedTotalSupply)) {
             _encryptedTotalSupply = FHE.add(_encryptedTotalSupply, amount);
@@ -182,26 +262,49 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
             _encryptedTotalSupply = amount;
         }
         FHE.allowThis(_encryptedTotalSupply);
-        // If issuer opted into public total supply, re-grant public access
-        // on the new handle (FHE.add creates a new handle each time).
         if (totalSupplyPublic) {
             FHE.allowPublic(_encryptedTotalSupply);
         }
 
-        registry.register(to);
+        registry.addHolder(address(this), to);
         emit Transfer(address(0), to);
     }
 
-    // ── Transfer ─────────────────────────────────────────────────────────
+    // ── Transfer — Wave 3 legacy overload (no ephemeralEOA) ─────────────
 
+    /// @notice Wave 3 legacy transfer. Grants kernel-only decrypt on the new
+    ///         balance handles. Use the three-arg overload in Wave 3.5 flows
+    ///         to get the ADR-021 ephemeral-EOA grant.
     function transfer(address to, InEuint128 memory encryptedAmount) external whenNotPaused {
         if (!kycGate.isEligible(to)) revert RecipientNotKYC();
 
         euint128 amount = FHE.asEuint128(encryptedAmount);
         FHE.allowThis(amount);
 
-        _transfer(msg.sender, to, amount);
+        _transfer(msg.sender, to, amount, address(0));
     }
+
+    /// @notice Wave 3.5 canonical transfer. Grants `ephemeralEOA` decrypt
+    ///         access on the sender's updated balance handle per ADR-021.
+    ///         The recipient's balance handle still gets only a kernel grant;
+    ///         a dedicated refresh path (deferred) lets the recipient rotate
+    ///         to their own ephemeralEOA on-demand — see
+    ///         `PERMIT_DECRYPT_LIFECYCLE.md §8 Q4`.
+    function transfer(
+        address to,
+        InEuint128 memory encryptedAmount,
+        address ephemeralEOA
+    ) external whenNotPaused {
+        if (ephemeralEOA == address(0)) revert InvalidEphemeralEOA();
+        if (!kycGate.isEligible(to)) revert RecipientNotKYC();
+
+        euint128 amount = FHE.asEuint128(encryptedAmount);
+        FHE.allowThis(amount);
+
+        _transfer(msg.sender, to, amount, ephemeralEOA);
+    }
+
+    // ── TransferFrom — Wave 3 legacy + Wave 3.5 canonical overloads ────
 
     function transferFrom(
         address from,
@@ -213,6 +316,30 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         euint128 amount = FHE.asEuint128(encryptedAmount);
         FHE.allowThis(amount);
 
+        _transferFrom(from, to, amount, address(0));
+    }
+
+    function transferFrom(
+        address from,
+        address to,
+        InEuint128 memory encryptedAmount,
+        address ephemeralEOA
+    ) external whenNotPaused {
+        if (ephemeralEOA == address(0)) revert InvalidEphemeralEOA();
+        if (!kycGate.isEligible(to)) revert RecipientNotKYC();
+
+        euint128 amount = FHE.asEuint128(encryptedAmount);
+        FHE.allowThis(amount);
+
+        _transferFrom(from, to, amount, ephemeralEOA);
+    }
+
+    function _transferFrom(
+        address from,
+        address to,
+        euint128 amount,
+        address ephemeralEOA
+    ) internal {
         // Silent failure: if allowance < amount, effective amount is zero
         ebool allowanceOk = FHE.gte(_allowances[from][msg.sender], amount);
         euint128 zero = FHE.asEuint128(uint256(0));
@@ -224,17 +351,26 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         _allowances[from][msg.sender] = FHE.sub(_allowances[from][msg.sender], approvedAmount);
         FHE.allowThis(_allowances[from][msg.sender]);
 
-        _transfer(from, to, approvedAmount);
+        _transfer(from, to, approvedAmount, ephemeralEOA);
     }
 
-    /// @dev Internal transfer with silent-failure pattern (Pattern 3).
+    /// @dev Internal transfer with silent-failure pattern.
     ///      If sender balance < amount, transfers zero instead of reverting.
     ///
     ///      Side-channel resistance: FHE.select() executes an identical code path
     ///      regardless of whether the balance check passes. Gas cost and execution
     ///      trace are the same for valid and invalid transfers — an observer cannot
     ///      distinguish "transferred 100" from "transferred 0 (insufficient balance)".
-    function _transfer(address from, address to, euint128 amount) internal {
+    ///
+    ///      `ephemeralEOA == address(0)` is the Wave 3 legacy path — kernel-only
+    ///      ACL grants. Non-zero is Wave 3.5 canonical — sender's new balance
+    ///      handle additionally grants `ephemeralEOA`.
+    function _transfer(
+        address from,
+        address to,
+        euint128 amount,
+        address ephemeralEOA
+    ) internal {
         if (!Common.isInitialized(_balances[from])) revert NoBalance();
 
         // Silent failure: if balance < amount, transfer zero
@@ -247,8 +383,11 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         // Update sender balance
         _balances[from] = FHE.sub(_balances[from], transferAmount);
         FHE.allowThis(_balances[from]);
-        // Re-grant sender permit-based decrypt access on new balance handle
+        // Kernel grant (legacy, always) + ephemeralEOA grant (Wave 3.5 canonical)
         FHE.allow(_balances[from], from);
+        if (ephemeralEOA != address(0)) {
+            FHE.allow(_balances[from], ephemeralEOA);
+        }
 
         // Update recipient balance
         if (Common.isInitialized(_balances[to])) {
@@ -257,10 +396,15 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
             _balances[to] = transferAmount;
         }
         FHE.allowThis(_balances[to]);
-        // Grant recipient permit-based decrypt access
+        // Recipient always gets a kernel grant. Their own ephemeralEOA grant
+        // is their responsibility via a future refresh path — see ADR-028 +
+        // PERMIT_DECRYPT_LIFECYCLE §8 Q4.
         FHE.allow(_balances[to], to);
 
-        registry.register(to);
+        // ADR-022: register the recipient in the per-token holder set so
+        // P2P-received tokens participate in yield snapshots + MaxHolders
+        // upper-bound checks. Idempotent at registry level.
+        registry.addHolder(address(this), to);
         emit Transfer(from, to);
     }
 
@@ -276,16 +420,43 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         emit Approval(msg.sender, spender);
     }
 
-    // ── Burn (vault unwrap path) ─────────────────────────────────────────
+    // ── Burn (Wave 3 vault unwrap path) ──────────────────────────────────
 
-    /// @notice Burns tokens from `from` using cleartext amount. Caller must be a minter (vault).
-    ///         Uses silent-failure pattern: if balance < amount, burns zero.
+    /// @notice Burns tokens from `from` using cleartext amount. Caller must be a
+    ///         minter (vault). Uses silent-failure pattern: if balance < amount,
+    ///         burns zero.
     function burnFromVault(address from, uint256 amount) external onlyMinter {
         if (!Common.isInitialized(_balances[from])) revert NoBalance();
 
         euint128 encAmount = FHE.asEuint128(amount);
         FHE.allowThis(encAmount);
 
+        _burnInternal(from, encAmount, address(0));
+    }
+
+    // ── Burn (Wave 3.5 paid-settlement path — Subscription only) ────────
+
+    /// @notice Burns `encAmount` shares from `from` on behalf of a paid redeem
+    ///         executed through `MuHavenSubscription`. Grants decrypt access on
+    ///         the updated balance handle to `ephemeralEOA` per ADR-021.
+    function burnFromSubscription(
+        address from,
+        euint128 encAmount,
+        address ephemeralEOA
+    ) external onlySubscription {
+        if (ephemeralEOA == address(0)) revert InvalidEphemeralEOA();
+        if (!Common.isInitialized(_balances[from])) revert NoBalance();
+
+        FHE.allowThis(encAmount);
+
+        _burnInternal(from, encAmount, ephemeralEOA);
+    }
+
+    function _burnInternal(
+        address from,
+        euint128 encAmount,
+        address ephemeralEOA
+    ) internal {
         // Silent failure on insufficient balance
         ebool hasEnough = FHE.gte(_balances[from], encAmount);
         euint128 zero = FHE.asEuint128(uint256(0));
@@ -296,6 +467,9 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         _balances[from] = FHE.sub(_balances[from], burnAmount);
         FHE.allowThis(_balances[from]);
         FHE.allow(_balances[from], from);
+        if (ephemeralEOA != address(0)) {
+            FHE.allow(_balances[from], ephemeralEOA);
+        }
 
         _encryptedTotalSupply = FHE.sub(_encryptedTotalSupply, burnAmount);
         FHE.allowThis(_encryptedTotalSupply);
@@ -333,7 +507,7 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
     }
 
     /// @notice Read the async-decrypted balance for an account.
-    /// @return result  The decrypted uint128 value (only meaningful if decrypted == true).
+    /// @return result     The decrypted uint128 value (only meaningful if decrypted == true).
     /// @return decrypted  Whether the decryption has completed.
     function getBalanceDecryptResult(address account)
         external
@@ -343,7 +517,7 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         return FHE.getDecryptResultSafe(_balances[account]);
     }
 
-    // ── Total supply visibility toggle ─────────────────────────────────
+    // ── Total supply visibility toggle ───────────────────────────────────
 
     /// @notice Make the encrypted total supply publicly decryptable via
     ///         threshold decryption. One-way: once public, it cannot be
@@ -386,6 +560,23 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         emit MinterRevoked(minter);
     }
 
+    /// @notice Set the authorised `MuHavenSubscription` contract. Wave 3.5
+    ///         gate for `mintFromSubscription` / `burnFromSubscription`.
+    ///         Passing `address(0)` disables the paid-settlement path.
+    function setSubscription(address newSubscription) external onlyOwner {
+        subscription = newSubscription;
+        emit SubscriptionUpdated(newSubscription);
+    }
+
+    /// @notice Mark `reader` as authorised for Wave 4 agent-side encrypted-balance
+    ///         reads. Wave 3.5 exposes the slot + setter only; no read paths
+    ///         consume `authorizedReaders` yet.
+    function setAuthorizedReader(address reader, bool authorized) external onlyOwner {
+        if (reader == address(0)) revert ZeroAddress();
+        authorizedReaders[reader] = authorized;
+        emit AuthorizedReaderUpdated(reader, authorized);
+    }
+
     function setKYCGate(address newGate) external onlyOwner {
         if (newGate == address(0)) revert ZeroAddress();
         kycGate = IKYCGate(newGate);
@@ -411,7 +602,7 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         emit OwnershipTransferred(previousOwner, newOwner);
     }
 
-    // ── EIP-165 ─────────────────────────────────────────────────────────
+    // ── EIP-165 ──────────────────────────────────────────────────────────
 
     function supportsInterface(bytes4 interfaceId)
         public

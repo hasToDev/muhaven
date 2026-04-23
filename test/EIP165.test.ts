@@ -56,8 +56,27 @@ describe("EIP-165 supportsInterface", function () {
 
     it("should support IMuHavenToken", async function () {
       const { token } = await loadFixture(deployAllFixture);
-      // Computed from compiled ABI (FHE types have specific ABI encodings)
-      expect(await token.supportsInterface("0xb70f66dd")).to.be.true;
+      // Wave 3.5: interfaceId is derived from the compiled ABI dynamically so
+      // adding new functions (mintFromSubscription, burnFromSubscription,
+      // subscription, setSubscription) doesn't require hardcoded tweaks.
+      // euint128 / InEuint128 canonical ABI encodings: euint128 = bytes32,
+      // InEuint128 = (uint256,uint8,uint8,bytes).
+      const interfaceId = interfaceIdFromAbi([
+        "function mint(address,(uint256,uint8,uint8,bytes))",
+        "function mintFromVault(address,uint256)",
+        "function burnFromVault(address,uint256)",
+        "function mintFromSubscription(address,bytes32,address)",
+        "function burnFromSubscription(address,bytes32,address)",
+        "function encryptedBalanceOf(address) view returns (bytes32)",
+        "function encryptedTotalSupply() view returns (bytes32)",
+        "function setTotalSupplyPublic()",
+        "function totalSupplyPublic() view returns (bool)",
+        "function pause()",
+        "function unpause()",
+        "function subscription() view returns (address)",
+        "function setSubscription(address)",
+      ]);
+      expect(await token.supportsInterface(interfaceId)).to.be.true;
     });
 
     it("should NOT support invalid interfaceId", async function () {
