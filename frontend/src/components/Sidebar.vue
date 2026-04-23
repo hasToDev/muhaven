@@ -16,6 +16,10 @@ import {
   Copy, Check,
 } from 'lucide-vue-next'
 
+// Role is chosen at login (see LoginPage.vue). The sidebar no longer offers a
+// post-login switcher — users must re-sign-in via a different role if they
+// need to change. Keeping `useAuth()` imported only for logout.
+
 const route = useRoute()
 const router = useRouter()
 const store = useAppStore()
@@ -23,8 +27,6 @@ const authStore = useAuthStore()
 const walletStore = useWalletStore()
 const auth = useAuth()
 const homeTarget = useHomeTarget()
-
-const switchingRole = ref(false)
 
 const investorNav = [
   { path: '/portfolio', label: 'Portfolio', icon: PieChart },
@@ -52,22 +54,6 @@ const connectionStatus = computed(() => {
   if (walletStore.connected || authStore.walletAddress) return 'degraded' as const
   return 'disconnected' as const
 })
-
-async function switchRole(r: 'investor' | 'issuer') {
-  if (r === store.role) return
-  if (switchingRole.value) return
-
-  switchingRole.value = true
-  try {
-    await auth.switchRole(r)
-    router.push(r === 'investor' ? '/portfolio' : '/tokens')
-  } catch {
-    store.setRole(r)
-    router.push(r === 'investor' ? '/portfolio' : '/tokens')
-  } finally {
-    switchingRole.value = false
-  }
-}
 
 function handleSignIn() {
   router.push({ path: '/login', query: { redirect: route.fullPath } })
@@ -158,29 +144,9 @@ onBeforeUnmount(() => {
       </RouterLink>
     </nav>
 
-    <!-- Bottom: role toggle + dark + wallet + logout -->
+    <!-- Bottom: dark + wallet + logout (role toggle removed — role is
+         chosen at login and can't be switched post-login). -->
     <div class="px-5 pt-5 pb-6 border-t border-haze/70 dark:border-white/5 space-y-3">
-      <!-- Role toggle -->
-      <div class="flex bg-mist dark:bg-midnight-mid/70 rounded-lg p-0.5 border border-haze dark:border-white/8">
-        <button
-          v-for="r in (['investor', 'issuer'] as const)"
-          :key="r"
-          @click="switchRole(r)"
-          :disabled="switchingRole"
-          :data-testid="`nav-role-${r}`"
-          :class="cn(
-            'flex-1 px-3 py-1.5 text-[11px] font-sans font-semibold tracking-wide rounded-md transition-all duration-200 capitalize cursor-pointer',
-            'disabled:opacity-70 disabled:cursor-wait',
-            store.role === r
-              ? 'bg-white dark:bg-midnight-deep shadow-sm text-compute dark:text-signal'
-              : 'text-cool hover:text-midnight dark:hover:text-white',
-          )"
-        >
-          <Loader2 v-if="switchingRole && store.role !== r" :size="10" class="animate-spin inline mr-1" />
-          {{ r }}
-        </button>
-      </div>
-
       <!-- Dark toggle row -->
       <div class="flex items-center justify-between px-1">
         <span class="text-[10px] uppercase tracking-[0.18em] text-cool font-sans font-medium">

@@ -1,16 +1,13 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
-import { useAppStore } from '@/stores/app'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useMarketplaceStore } from '@/stores/marketplace'
 import { formatUSD } from '@/lib/utils'
-import MCard from '@/components/ui/MCard.vue'
 import MButton from '@/components/ui/MButton.vue'
-import MBadge from '@/components/ui/MBadge.vue'
-import MGoldRule from '@/components/ui/MGoldRule.vue'
-import MSkeleton from '@/components/ui/MSkeleton.vue'
-import { Search, TrendingUp, Shield, Inbox } from 'lucide-vue-next'
+import MPageLoader from '@/components/ui/MPageLoader.vue'
+import {
+  Search, TrendingUp, ShieldCheck, Inbox, EyeOff,
+} from 'lucide-vue-next'
 
-const app = useAppStore()
 const marketplace = useMarketplaceStore()
 
 const assetClassLabels: Record<string, string> = {
@@ -21,172 +18,361 @@ const assetClassLabels: Record<string, string> = {
   other: 'Other',
 }
 
-const assetClassColors: Record<string, string> = {
-  treasury: 'bg-compute/12 text-compute',
-  money_market: 'bg-gold/12 text-gold',
-  private_credit: 'bg-cipher/20 text-cipher',
-  real_estate: 'bg-signal/12 text-signal',
-  other: 'bg-cool/12 text-cool',
+onMounted(async () => {
+  if (marketplace.loaded) return
+  await marketplace.load()
+})
+
+const showLoader = computed(() =>
+  !marketplace.loaded && !marketplace.error && marketplace.loading,
+)
+
+// Card selection drives the hero spotlight. Default to the first filtered token;
+// clicking a card swaps the hero content. Only the hero's "Invest Now" button
+// navigates to /deposit — cards themselves are selectors, not links.
+const selectedAddress = ref<string>('')
+
+const selected = computed(() =>
+  marketplace.filtered.find(t => t.address === selectedAddress.value)
+    ?? marketplace.filtered[0],
+)
+
+// If the filter/search narrows the list and the currently-selected token
+// drops out, fall back to the new first entry so the hero stays populated.
+watch(
+  () => marketplace.filtered.map(t => t.address).join(','),
+  () => {
+    if (!selected.value && marketplace.filtered.length > 0) {
+      selectedAddress.value = marketplace.filtered[0].address
+    } else if (selected.value) {
+      selectedAddress.value = selected.value.address
+    }
+  },
+  { immediate: true },
+)
+
+function selectToken(address: string) {
+  selectedAddress.value = address
 }
 
-onMounted(async () => {
-  if (!marketplace.loaded) {
-    app.startLoading()
-    await marketplace.load()
-    app.stopLoading()
-  }
+// Generic description shown when the DTO doesn't carry a per-token blurb.
+// Always re-renders with the current token's name + asset class.
+const heroDescription = computed(() => {
+  const t = selected.value
+  if (!t) return ''
+  const asset = assetClassLabels[t.asset_class] || t.asset_class
+  return `${t.name} is a confidential ${asset.toLowerCase()} token on MuHaven — balances settle peer-to-peer with FHE encryption on Arbitrum. Every amount stays in ciphertext until you decrypt your own view.`
 })
 </script>
 
 <template>
-  <div>
-  <!-- Skeleton -->
-  <div v-if="app.isLoading" class="flex flex-col gap-8">
-    <MSkeleton variant="title" width="200px" />
-    <MSkeleton variant="card" height="56px" />
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-      <MSkeleton variant="card" v-for="i in 6" :key="i" height="240px" />
-    </div>
-  </div>
-
-  <!-- Error state -->
-  <div v-else-if="marketplace.error" class="flex flex-col items-center justify-center py-20 gap-4">
-    <p class="text-base text-cool">{{ marketplace.error }}</p>
-    <MButton variant="outline" @click="marketplace.load()">Retry</MButton>
-  </div>
-
-  <!-- Content -->
-  <div v-else class="flex flex-col gap-10">
+  <div class="relative">
+    <!-- Page-level ambient amber bloom (top-right), per reference. -->
     <div
-      v-motion
-      :initial="{ opacity: 0, y: 20 }"
-      :visible-once="{ opacity: 1, y: 0, transition: { duration: 500 } }"
-    >
-      <h1 class="text-4xl font-sans font-bold text-midnight dark:text-white tracking-tight">RWA Marketplace</h1>
-      <MGoldRule />
-      <p class="text-sm text-cool mt-2">Browse confidential RWA tokens with FHE-encrypted balances</p>
+      aria-hidden="true"
+      class="absolute top-0 right-0 w-[600px] h-[600px] rounded-full blur-[150px] pointer-events-none -z-0
+             bg-gold/10 dark:bg-signal/8"
+    />
+
+    <!-- First-fetch loader -->
+    <MPageLoader
+      v-if="showLoader"
+      label="Loading marketplace"
+      caption="Reading available RWA tokens"
+    />
+
+    <!-- Error -->
+    <div v-else-if="marketplace.error" class="relative z-10 flex flex-col items-center justify-center py-20 gap-4">
+      <p class="text-base text-cool">{{ marketplace.error }}</p>
+      <MButton variant="outline" @click="marketplace.load()">Retry</MButton>
     </div>
 
-    <!-- Search + filters -->
-    <div class="flex flex-col sm:flex-row gap-3">
-      <div class="flex-1 relative">
-        <Search :size="16" class="absolute left-3 top-1/2 -translate-y-1/2 text-cool" />
-        <input
-          v-model="marketplace.searchQuery"
-          placeholder="Search tokens..."
-          data-testid="marketplace-search"
-          class="w-full py-2.5 pl-10 pr-4 text-sm font-sans border border-haze dark:border-white/10 rounded-xl bg-white dark:bg-midnight text-midnight dark:text-white placeholder:text-cool focus:outline-none focus:border-compute focus:ring-2 focus:ring-compute/20 transition-colors"
-        />
-      </div>
-
-      <!-- Asset class filter -->
-      <div class="flex gap-1.5 flex-wrap">
-        <button
-          @click="marketplace.assetClassFilter = ''"
-          data-testid="marketplace-filter-all"
-          :class="[
-            'px-3 py-2 text-xs font-medium rounded-lg transition-all duration-200 cursor-pointer',
-            !marketplace.assetClassFilter
-              ? 'bg-compute text-white'
-              : 'border border-haze dark:border-white/10 text-cool hover:text-compute hover:border-compute/30',
-          ]"
-        >
-          All
-        </button>
-        <button
-          v-for="ac in marketplace.assetClasses"
-          :key="ac"
-          @click="marketplace.assetClassFilter = ac as any"
-          :data-testid="`marketplace-filter-${ac}`"
-          :class="[
-            'px-3 py-2 text-xs font-medium rounded-lg transition-all duration-200 cursor-pointer',
-            marketplace.assetClassFilter === ac
-              ? 'bg-compute text-white'
-              : 'border border-haze dark:border-white/10 text-cool hover:text-compute hover:border-compute/30',
-          ]"
-        >
-          {{ assetClassLabels[ac] || ac }}
-        </button>
-      </div>
-    </div>
-
-    <!-- Token grid -->
-    <div v-if="marketplace.filtered.length === 0" class="flex flex-col items-center py-16 gap-3">
-      <Inbox :size="48" class="text-cool/30" />
-      <p class="text-base text-cool">No tokens found</p>
-      <p class="text-sm text-cool/70">Try adjusting your search or filters</p>
-    </div>
-
-    <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-      <MCard
-        v-for="token in marketplace.filtered"
-        :key="token.id"
-        hover
-        glow
-        data-testid="marketplace-token-card"
-        :data-token-address="token.address"
+    <!-- Content -->
+    <div v-else class="relative z-10">
+      <!-- ═══════════════════════════════════════════════════════════
+           Hero — editorial intro (left) + selected token spotlight (right).
+           Clicking a card in the grid updates the right column; the "Invest
+           Now" button is the only navigation.
+           ═══════════════════════════════════════════════════════════ -->
+      <section
+        v-if="selected"
+        v-motion
+        :initial="{ opacity: 0, y: 16 }"
+        :visible-once="{ opacity: 1, y: 0, transition: { duration: 520 } }"
+        class="pb-10 lg:pb-12 border-b border-haze dark:border-white/5"
       >
-        <!-- Header -->
-        <div class="flex justify-between items-start mb-4">
-          <div>
-            <p class="font-sans font-medium text-base text-midnight dark:text-white" data-testid="marketplace-token-name">{{ token.name }}</p>
-            <p class="font-mono text-xs text-cool mt-0.5" data-testid="marketplace-token-symbol">{{ token.symbol }}</p>
+        <div class="flex flex-col xl:flex-row justify-between gap-10 lg:gap-16">
+          <!-- Left: editorial copy + CTA + chip row -->
+          <div class="flex-1 flex flex-col justify-start max-w-2xl">
+            <h2 class="font-sans text-lg lg:text-xl font-extrabold text-midnight dark:text-white mb-2 leading-tight tracking-tight">
+              Ready to expand your portfolio?
+            </h2>
+            <p
+              :key="selected.address"
+              v-motion
+              :initial="{ opacity: 0, y: 4 }"
+              :enter="{ opacity: 1, y: 0, transition: { duration: 260 } }"
+              class="font-sans text-sm text-cool mb-6 max-w-lg leading-relaxed"
+            >
+              {{ heroDescription }}
+            </p>
+
+            <RouterLink :to="`/deposit?token=${selected.address}`" class="self-start mb-6">
+              <button
+                type="button"
+                data-testid="marketplace-invest-cta"
+                :aria-label="`Invest in ${selected.name}`"
+                class="btn-gold-sweep w-full sm:w-auto px-8 py-3 rounded-xl font-sans font-extrabold text-sm tracking-wide cursor-pointer
+                       transition-all duration-300 hover:-translate-y-0.5 active:scale-[0.99]"
+              >
+                Invest Now
+              </button>
+            </RouterLink>
+
+            <div class="flex flex-wrap gap-3">
+              <span class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg
+                           bg-mist/60 dark:bg-white/5 border border-haze dark:border-white/5
+                           text-[10px] font-sans font-bold uppercase tracking-wider
+                           text-slate dark:text-body-dark/80">
+                <ShieldCheck :size="11" :stroke-width="2" aria-hidden="true" class="text-compute dark:text-signal" />
+                FHE Encryption
+              </span>
+              <span class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg
+                           bg-mist/60 dark:bg-white/5 border border-haze dark:border-white/5
+                           text-[10px] font-sans font-bold uppercase tracking-wider
+                           text-slate dark:text-body-dark/80">
+                <EyeOff :size="11" :stroke-width="2" aria-hidden="true" class="text-compute dark:text-signal" />
+                Confidential Balances
+              </span>
+            </div>
           </div>
-          <MBadge :variant="token.status === 'active' ? 'positive' : 'default'">
-            {{ token.status }}
-          </MBadge>
+
+          <!-- Right: featured token spotlight -->
+          <div class="flex-[1.2] flex flex-col justify-end xl:border-l xl:border-haze xl:dark:border-white/5 xl:pl-10">
+            <div class="flex flex-col mb-8 xl:mb-0">
+              <div class="flex items-center gap-3 mb-4 flex-wrap">
+                <span class="inline-flex items-center gap-2 px-3 py-1.5 rounded-md
+                             bg-mist/60 dark:bg-white/5 border border-haze dark:border-white/10
+                             text-[10px] font-sans font-bold uppercase tracking-wider
+                             text-slate dark:text-body-dark/80">
+                  <span class="w-1.5 h-1.5 rounded-full bg-positive" aria-hidden="true" />
+                  {{ selected.status }}
+                </span>
+                <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md
+                             bg-gold/10 dark:bg-signal/10 border border-gold/25 dark:border-signal/25
+                             text-[10px] font-sans font-bold uppercase tracking-wider
+                             text-compute dark:text-signal">
+                  <ShieldCheck :size="12" :stroke-width="2" aria-hidden="true" />
+                  FHE Shielded
+                </span>
+              </div>
+              <h1 class="font-accent italic text-2xl lg:text-3xl text-midnight dark:text-white mb-2 leading-tight tracking-tight">
+                {{ selected.name }}
+              </h1>
+              <p class="font-mono text-sm text-compute/80 dark:text-signal/80 uppercase tracking-widest mb-6">
+                {{ selected.symbol }}
+              </p>
+            </div>
+
+            <div class="flex gap-8 md:gap-16 flex-wrap">
+              <div>
+                <p class="font-sans text-[10px] text-cool uppercase tracking-[0.15em] font-bold mb-2">
+                  Yield (APY)
+                </p>
+                <div class="flex items-center gap-2">
+                  <span class="font-accent italic font-extrabold text-3xl lg:text-4xl text-compute dark:text-signal tabular-nums leading-none">
+                    {{ selected.apy ? `${selected.apy}%` : '—' }}
+                  </span>
+                  <TrendingUp
+                    v-if="selected.apy"
+                    :size="18"
+                    :stroke-width="2"
+                    aria-hidden="true"
+                    class="text-gold dark:text-signal"
+                  />
+                </div>
+              </div>
+              <div>
+                <p class="font-sans text-[10px] text-cool uppercase tracking-[0.15em] font-bold mb-2">
+                  Net Asset Value
+                </p>
+                <div class="flex items-baseline gap-1">
+                  <span class="font-accent italic font-bold text-3xl lg:text-4xl text-midnight dark:text-white tabular-nums leading-none">
+                    {{ selected.latest_nav ? formatUSD(parseFloat(selected.latest_nav.nav)) : '—' }}
+                  </span>
+                  <span v-if="selected.latest_nav" class="font-sans text-sm text-cool">/ Share</span>
+                </div>
+              </div>
+              <div>
+                <p class="font-sans text-[10px] text-cool uppercase tracking-[0.15em] font-bold mb-2">
+                  Min. Entry
+                </p>
+                <span class="font-accent italic font-bold text-3xl lg:text-4xl text-midnight dark:text-white tabular-nums leading-none">
+                  {{ selected.min_investment ? formatUSD(parseFloat(selected.min_investment)) : '—' }}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══════════════════════════════════════════════════════════
+           Toolbar: heading + search (top row) + asset-class pills (bottom)
+           ═══════════════════════════════════════════════════════════ -->
+      <section
+        v-motion
+        :initial="{ opacity: 0, y: 16 }"
+        :visible-once="{ opacity: 1, y: 0, transition: { duration: 480, delay: 140 } }"
+        class="pt-10 lg:pt-12 mb-8 border-b border-haze dark:border-white/5 pb-6"
+      >
+        <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+          <h3 class="font-sans text-xl font-extrabold tracking-tight text-midnight dark:text-white">
+            Available Tokens
+          </h3>
+
+          <label for="marketplace-search" class="sr-only">Search tokens</label>
+          <div class="relative w-full md:w-72">
+            <Search
+              :size="16"
+              :stroke-width="2"
+              aria-hidden="true"
+              class="absolute left-4 top-1/2 -translate-y-1/2 text-cool pointer-events-none"
+            />
+            <input
+              id="marketplace-search"
+              v-model="marketplace.searchQuery"
+              placeholder="Search tokens..."
+              aria-label="Search tokens"
+              data-testid="marketplace-search"
+              class="w-full bg-mist/50 dark:bg-[#171717]
+                     border border-haze dark:border-white/5 rounded-full
+                     pl-12 pr-4 py-3 font-sans text-sm
+                     text-midnight dark:text-white placeholder:text-cool
+                     focus:outline-none focus:border-gold/50 dark:focus:border-signal/40
+                     focus:ring-1 focus:ring-gold/30 dark:focus:ring-signal/30
+                     transition-all"
+            />
+          </div>
         </div>
 
-        <!-- Stats -->
-        <div class="space-y-3 mb-4">
-          <div class="flex justify-between items-center">
-            <span class="text-xs text-cool">APY</span>
-            <span v-if="token.apy" class="text-sm font-medium text-gold flex items-center gap-1">
-              <TrendingUp :size="12" />
-              {{ token.apy }}%
-            </span>
-            <span v-else class="text-xs text-cool">N/A</span>
-          </div>
-
-          <div class="flex justify-between items-center">
-            <span class="text-xs text-cool">NAV</span>
-            <span v-if="token.latest_nav" class="text-sm font-mono text-midnight dark:text-white">
-              {{ formatUSD(parseFloat(token.latest_nav.nav)) }}
-            </span>
-            <span v-else class="text-xs text-cool">—</span>
-          </div>
-
-          <div v-if="token.min_investment" class="flex justify-between items-center">
-            <span class="text-xs text-cool">Min Investment</span>
-            <span class="text-sm font-mono text-midnight dark:text-white">
-              {{ formatUSD(parseFloat(token.min_investment)) }}
-            </span>
-          </div>
+        <div class="flex flex-wrap gap-2">
+          <button
+            type="button"
+            @click="marketplace.assetClassFilter = ''"
+            data-testid="marketplace-filter-all"
+            :class="[
+              'font-sans text-xs font-bold tracking-wide px-5 py-2 rounded-full transition-all duration-200 cursor-pointer',
+              !marketplace.assetClassFilter
+                ? 'bg-gold text-[#2a1e05] dark:bg-signal dark:text-[#2a1e05] shadow-sm'
+                : 'bg-mist/60 dark:bg-[#171717] text-slate dark:text-body-dark/70 hover:text-midnight dark:hover:text-white',
+            ]"
+          >
+            All
+          </button>
+          <button
+            v-for="ac in marketplace.assetClasses"
+            :key="ac"
+            type="button"
+            @click="marketplace.assetClassFilter = ac as any"
+            :data-testid="`marketplace-filter-${ac}`"
+            :class="[
+              'font-sans text-xs font-medium tracking-wide px-5 py-2 rounded-full transition-all duration-200 cursor-pointer',
+              marketplace.assetClassFilter === ac
+                ? 'bg-gold text-[#2a1e05] dark:bg-signal dark:text-[#2a1e05] font-bold shadow-sm'
+                : 'bg-mist/60 dark:bg-[#171717] text-slate dark:text-body-dark/70 hover:text-midnight dark:hover:text-white',
+            ]"
+          >
+            {{ assetClassLabels[ac] || ac }}
+          </button>
         </div>
+      </section>
 
-        <!-- Tags -->
-        <div class="flex gap-2 mb-4">
-          <span :class="['px-2 py-0.5 rounded text-xs font-medium', assetClassColors[token.asset_class] || 'bg-cool/12 text-cool']">
-            {{ assetClassLabels[token.asset_class] || token.asset_class }}
-          </span>
-          <span class="px-2 py-0.5 rounded text-xs font-medium bg-compute/8 text-compute flex items-center gap-1">
-            <Shield :size="10" />
-            FHE
-          </span>
-        </div>
+      <!-- ═══════════════════════════════════════════════════════════
+           Token grid — 4-col on xl, dense cards
+           ═══════════════════════════════════════════════════════════ -->
+      <div
+        v-if="marketplace.filtered.length === 0"
+        class="flex flex-col items-center py-16 gap-3"
+      >
+        <Inbox :size="40" :stroke-width="1.4" class="text-cool/35" />
+        <p class="font-sans text-sm text-cool">No tokens found</p>
+        <p class="font-sans text-xs text-cool/70">Try adjusting your search or filters.</p>
+      </div>
 
-        <!-- Invest button -->
-        <RouterLink :to="`/deposit?token=${token.address}`">
-          <MButton variant="primary" full-width size="sm" data-testid="marketplace-invest-cta">
-            Invest
-          </MButton>
-        </RouterLink>
-      </MCard>
+      <div
+        v-else
+        v-motion
+        :initial="{ opacity: 0, y: 8 }"
+        :visible-once="{ opacity: 1, y: 0, transition: { duration: 320, delay: 200 } }"
+        role="radiogroup"
+        aria-label="Available tokens"
+        class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6"
+      >
+        <button
+          v-for="token in marketplace.filtered"
+          :key="token.id"
+          type="button"
+          role="radio"
+          :aria-checked="token.address === selected?.address"
+          :aria-label="`Select ${token.name} — ${token.symbol}`"
+          @click="selectToken(token.address)"
+          data-testid="marketplace-token-card"
+          :data-token-address="token.address"
+          :class="[
+            'relative overflow-hidden rounded-2xl p-6 text-left cursor-pointer group',
+            'transition-all duration-300 hover:-translate-y-0.5 focus:outline-none',
+            'focus-visible:ring-2 focus-visible:ring-gold/50 dark:focus-visible:ring-signal/40',
+            token.address === selected?.address
+              ? 'border border-gold/40 dark:border-signal/40 bg-white dark:bg-[#0d0e10] shadow-[0_0_30px_-12px_rgba(255,186,32,0.30)]'
+              : 'border border-haze dark:border-white/5 bg-white dark:bg-[#0d0e10] hover:bg-mist/40 dark:hover:bg-[#171717]',
+          ]"
+        >
+          <!-- Always-on gold accent bar on the currently-selected card -->
+          <div
+            v-if="token.address === selected?.address"
+            aria-hidden="true"
+            class="absolute top-0 left-0 right-0 h-1 bg-gold dark:bg-signal"
+          />
+
+          <div class="flex flex-col h-full justify-between gap-8 mt-2">
+            <div>
+              <h4
+                data-testid="marketplace-token-name"
+                class="font-sans font-bold text-lg text-midnight dark:text-white mb-1 line-clamp-1"
+              >
+                {{ token.name }}
+              </h4>
+              <p
+                data-testid="marketplace-token-symbol"
+                :class="[
+                  'font-mono text-xs uppercase tracking-widest',
+                  token.address === selected?.address
+                    ? 'text-compute/80 dark:text-signal/80'
+                    : 'text-cool',
+                ]"
+              >
+                {{ token.symbol }}
+              </p>
+            </div>
+            <div class="flex justify-between items-end gap-3">
+              <span class="font-sans text-[10px] font-bold tracking-wider uppercase px-3 py-1.5 rounded
+                           bg-mist/70 dark:bg-white/5 text-slate dark:text-body-dark/70 border border-haze/70 dark:border-white/5">
+                {{ assetClassLabels[token.asset_class] || token.asset_class }}
+              </span>
+              <span class="font-accent italic font-extrabold text-2xl text-compute dark:text-signal tabular-nums leading-none">
+                {{ token.apy ? `${token.apy}%` : '—' }}
+              </span>
+            </div>
+          </div>
+        </button>
+      </div>
+
+      <p
+        v-if="marketplace.filtered.length > 0"
+        class="mt-10 text-center font-sans text-xs text-cool"
+      >
+        {{ marketplace.filtered.length }} of {{ marketplace.tokens.length }} tokens shown
+      </p>
     </div>
-
-    <p class="text-center text-xs text-cool">
-      {{ marketplace.filtered.length }} of {{ marketplace.tokens.length }} tokens shown
-    </p>
-  </div>
   </div>
 </template>

@@ -5,6 +5,7 @@ import { useWallet } from '@/composables/useWallet'
 import MBadge from '@/components/ui/MBadge.vue'
 import MFaucetBanner from '@/components/ui/MFaucetBanner.vue'
 import MButton from '@/components/ui/MButton.vue'
+import MPageLoader from '@/components/ui/MPageLoader.vue'
 import PortfolioDonut from '@/components/charts/PortfolioDonut.vue'
 import {
   Shield, Lock, ShieldCheck, KeyRound, Key, Eye, EyeOff, ArrowUp,
@@ -88,36 +89,13 @@ const allocationBreakdown = computed(() =>
 <template>
   <div>
     <!-- Loading: branded logo pulse (only on the very first fetch).
-         min-h on the flex container pulls it into true viewport-vertical centering;
-         the outer page already has pt-8/pb-16 so we subtract for that. -->
-    <div
+         Loader component is shared (MPageLoader) so every revamped page uses
+         the same visual language. See D-024. -->
+    <MPageLoader
       v-if="showLoader"
-      class="flex flex-col items-center justify-center gap-6 min-h-[calc(100vh-10rem)]"
-      role="status"
-      aria-live="polite"
-    >
-      <div class="relative flex items-center justify-center">
-        <!-- Amber halo ring -->
-        <div aria-hidden="true" class="loader-halo absolute inset-0 -m-4 rounded-full" />
-        <img
-          src="/logo.png"
-          alt=""
-          aria-hidden="true"
-          class="loader-logo w-14 h-14 rounded-xl relative z-10
-                 mix-blend-multiply dark:mix-blend-normal
-                 dark:drop-shadow-[0_0_18px_rgba(255,186,32,0.55)]"
-        />
-      </div>
-
-      <div class="flex flex-col items-center gap-1.5">
-        <p class="font-accent italic text-xl md:text-2xl text-midnight dark:text-white tracking-tight">
-          <span>Loading your portfolio</span><span class="loader-dots" aria-hidden="true" />
-        </p>
-        <p class="font-sans text-[11px] uppercase tracking-[0.22em] text-cool">
-          Fetching encrypted balances
-        </p>
-      </div>
-    </div>
+      label="Loading your portfolio"
+      caption="Fetching encrypted balances"
+    />
 
     <!-- Error state -->
     <div v-else-if="portfolio.error" class="flex flex-col items-center justify-center py-20 gap-4">
@@ -151,8 +129,11 @@ const allocationBreakdown = computed(() =>
         :visible-once="{ opacity: 1, y: 0, transition: { duration: 520 } }"
       >
         <!-- Tab bar -->
-        <div class="flex items-center gap-6 mb-6 border-b border-haze dark:border-white/5">
+        <div class="flex items-center gap-6 mb-6 border-b border-haze dark:border-white/5" role="tablist">
           <button
+            type="button"
+            role="tab"
+            :aria-selected="activeTab === 'value'"
             @click="activeTab = 'value'"
             :class="cn(
               'font-sans text-[11px] uppercase tracking-[0.22em] pb-3 relative top-px transition-colors duration-200 cursor-pointer',
@@ -164,6 +145,9 @@ const allocationBreakdown = computed(() =>
             Total Portfolio Value
           </button>
           <button
+            type="button"
+            role="tab"
+            :aria-selected="activeTab === 'allocation'"
             @click="activeTab = 'allocation'"
             :class="cn(
               'font-sans text-[11px] uppercase tracking-[0.22em] pb-3 relative top-px transition-colors duration-200 cursor-pointer',
@@ -237,6 +221,7 @@ const allocationBreakdown = computed(() =>
             <!-- Right: Reveal All gold gradient CTA (only when locked) -->
             <button
               v-if="!portfolio.allDecrypted"
+              type="button"
               @click="decryptAll"
               data-testid="portfolio-reveal-all-cta"
               class="btn-gold-sweep z-10 px-8 py-3.5 rounded-lg font-sans font-semibold text-sm tracking-wide
@@ -306,6 +291,7 @@ const allocationBreakdown = computed(() =>
 
               <div class="pt-2">
                 <button
+                  type="button"
                   @click="decryptAll"
                   class="btn-gold-sweep inline-flex items-center gap-2 px-6 py-2.5 rounded-lg font-sans font-semibold text-xs tracking-wide cursor-pointer transition-all duration-300 hover:-translate-y-0.5"
                 >
@@ -401,6 +387,7 @@ const allocationBreakdown = computed(() =>
           </h3>
           <button
             v-if="!portfolio.allDecrypted"
+            type="button"
             @click="decryptAll"
             class="btn-gold-sweep px-5 py-2.5 rounded-lg font-sans font-semibold text-xs tracking-wide
                    flex items-center gap-2 cursor-pointer transition-all duration-300
@@ -494,6 +481,7 @@ const allocationBreakdown = computed(() =>
             <div class="ml-2 md:ml-4 w-28 text-right flex-shrink-0">
               <button
                 v-if="h.decryptedBalance === null"
+                type="button"
                 @click="decryptOne(i)"
                 :disabled="h.decrypting"
                 data-testid="portfolio-decrypt-cta"
@@ -594,6 +582,7 @@ const allocationBreakdown = computed(() =>
                 </p>
                 <button
                   v-if="portfolio.pusdcConfidentialBalance !== null"
+                  type="button"
                   @click="decryptPusdc"
                   :disabled="portfolio.pusdcDecrypting"
                   data-testid="portfolio-pusdc-refresh"
@@ -614,6 +603,7 @@ const allocationBreakdown = computed(() =>
               </div>
               <button
                 v-else
+                type="button"
                 @click="decryptPusdc"
                 :disabled="portfolio.pusdcDecrypting"
                 data-testid="portfolio-pusdc-decrypt-cta"
@@ -666,128 +656,3 @@ const allocationBreakdown = computed(() =>
   </div>
 </template>
 
-<style scoped>
-/* ══════════════════════════════════════════════════════════
- * Gold sweep CTA — left-to-right gradient from deep amber to
- * cream-gold. Reads visually as "shadow → light," which ties
- * conceptually into the Reveal action. A short diagonal sheen
- * (pseudo-element) passes across on hover for a metallic feel.
- * ══════════════════════════════════════════════════════════ */
-.btn-gold-sweep {
-  position: relative;
-  overflow: hidden;
-  background: linear-gradient(
-    90deg,
-    #E8A011 0%,
-    #FFBA20 38%,
-    #FFCB4A 68%,
-    #FFE3B0 100%
-  );
-  color: #2a1e05;
-  box-shadow:
-    0 6px 22px -6px rgba(255, 186, 32, 0.42),
-    inset 0 1px 0 rgba(255, 255, 255, 0.60),
-    inset 0 -1px 0 rgba(140, 94, 8, 0.14);
-  transition:
-    box-shadow 0.3s ease,
-    transform 0.3s ease,
-    filter 0.3s ease;
-}
-
-.btn-gold-sweep:hover {
-  filter: brightness(1.05) saturate(1.04);
-  box-shadow:
-    0 10px 30px -6px rgba(255, 186, 32, 0.55),
-    inset 0 1px 0 rgba(255, 255, 255, 0.72),
-    inset 0 -1px 0 rgba(140, 94, 8, 0.18);
-}
-
-.btn-gold-sweep::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(
-    115deg,
-    transparent 0%,
-    transparent 38%,
-    rgba(255, 255, 255, 0.32) 50%,
-    transparent 62%,
-    transparent 100%
-  );
-  transform: translateX(-120%);
-  transition: transform 0.75s cubic-bezier(0.22, 1, 0.36, 1);
-  pointer-events: none;
-}
-
-.btn-gold-sweep:hover::after {
-  transform: translateX(120%);
-}
-
-.btn-gold-sweep:active {
-  transform: translateY(0) scale(0.985);
-  transition-duration: 80ms;
-}
-
-.btn-gold-sweep:disabled {
-  opacity: 0.65;
-  cursor: wait;
-}
-
-/* ══════════════════════════════════════════════════════════
- * Branded page loader — shown only on cold first-fetch.
- * - Logo gets a gentle breathing scale.
- * - Halo ring pulses an amber glow behind the logo.
- * - Ellipsis cycles through . / .. / ... via pseudo-element content.
- * ══════════════════════════════════════════════════════════ */
-.loader-logo {
-  animation: loader-breathe 2.6s ease-in-out infinite;
-}
-
-.loader-halo {
-  background: radial-gradient(
-    circle at center,
-    rgba(255, 186, 32, 0.22) 0%,
-    rgba(255, 220, 161, 0.10) 45%,
-    transparent 72%
-  );
-  animation: loader-halo 2.6s ease-in-out infinite;
-}
-:global(.dark) .loader-halo {
-  background: radial-gradient(
-    circle at center,
-    rgba(255, 220, 161, 0.28) 0%,
-    rgba(255, 186, 32, 0.14) 45%,
-    transparent 72%
-  );
-}
-
-.loader-dots::after {
-  content: '';
-  display: inline-block;
-  width: 1.6em;
-  text-align: left;
-  animation: loader-ellipsis 1.4s steps(4, end) infinite;
-}
-
-@keyframes loader-breathe {
-  0%, 100% { transform: scale(1); }
-  50%      { transform: scale(1.06); }
-}
-
-@keyframes loader-halo {
-  0%, 100% { opacity: 0.65; transform: scale(1); }
-  50%      { opacity: 1;    transform: scale(1.18); }
-}
-
-@keyframes loader-ellipsis {
-  0%   { content: ''; }
-  25%  { content: '.'; }
-  50%  { content: '..'; }
-  75%  { content: '...'; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .loader-logo, .loader-halo { animation: none; }
-  .loader-dots::after { content: '...'; animation: none; }
-}
-</style>

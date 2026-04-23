@@ -392,3 +392,84 @@ body {
 /* ── No-scrollbar utility ── */
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* ══════════════════════════════════════════════════════════
+ * Gold sweep CTA — left-to-right gradient from deep amber to
+ * cream-gold. Reads as "shadow → light", ties conceptually to
+ * the Reveal action. Diagonal sheen passes across on hover.
+ * Promoted from PortfolioPage.vue (D-022 → D-025).
+ * ══════════════════════════════════════════════════════════ */
+.btn-gold-sweep {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(
+    90deg,
+    #E8A011 0%,
+    #FFBA20 38%,
+    #FFCB4A 68%,
+    #FFE3B0 100%
+  );
+  color: #2a1e05;
+  box-shadow:
+    0 6px 22px -6px rgba(255, 186, 32, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.60),
+    inset 0 -1px 0 rgba(140, 94, 8, 0.14);
+  transition:
+    box-shadow 0.3s ease,
+    transform 0.3s ease,
+    filter 0.3s ease;
+}
+
+.btn-gold-sweep:hover:not(:disabled) {
+  filter: brightness(1.05) saturate(1.04);
+  box-shadow:
+    0 10px 30px -6px rgba(255, 186, 32, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    inset 0 -1px 0 rgba(140, 94, 8, 0.18);
+}
+
+.btn-gold-sweep::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    115deg,
+    transparent 0%,
+    transparent 38%,
+    rgba(255, 255, 255, 0.32) 50%,
+    transparent 62%,
+    transparent 100%
+  );
+  transform: translateX(-120%);
+  transition: transform 0.75s cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
+}
+
+.btn-gold-sweep:hover:not(:disabled)::after {
+  transform: translateX(120%);
+}
+
+.btn-gold-sweep:active:not(:disabled) {
+  transform: translateY(0) scale(0.985);
+  transition-duration: 80ms;
+}
+
+/* Disabled — neutral muted (no gold tint, no wait cursor, no hover effects).
+ * Light mode: cool grey panel + slate text. Dark mode: faint white wash. */
+.btn-gold-sweep:disabled {
+  background: rgba(150, 150, 150, 0.18);
+  color: rgba(120, 120, 120, 0.65);
+  cursor: default;
+  filter: none;
+  box-shadow: none;
+  transform: none;
+}
+
+.dark .btn-gold-sweep:disabled {
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.btn-gold-sweep:disabled::after {
+  display: none;
+}

@@ -15,12 +15,56 @@ const MAX_HISTORY = 10
 
 let nextId = 2
 
+// Generic fallback used when the backend returns no card data — keeps the
+// "Recommended Actions" panel consistent across every agent reply so users
+// always have follow-up affordances.
+const FALLBACK_RECOMMENDED_ACTIONS = {
+  title: 'Recommended Actions',
+  description: 'Pick one to keep exploring — the agent will respond based on your choice.',
+  actions: [
+    { label: 'Show portfolio breakdown', variant: 'primary' as const },
+    { label: 'Optimize my yield allocation', variant: 'secondary' as const },
+    { label: 'Explain the trade-offs', variant: 'ghost' as const },
+  ],
+}
+
+// Always render an action-shaped card under every agent reply. If the backend
+// already returned `card_type === 'action'` with the right shape, use it as-is.
+// Otherwise (no card / different card type / malformed data), fall back so the
+// in-chat Recommended Actions card stays visually consistent.
+function normalizeAgentCard(
+  cardType: AgentCardType | undefined,
+  cardData: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  if (
+    cardType === 'action'
+    && cardData
+    && typeof cardData.title === 'string'
+    && typeof cardData.description === 'string'
+    && Array.isArray(cardData.actions)
+    && cardData.actions.length > 0
+  ) {
+    return cardData
+  }
+  return FALLBACK_RECOMMENDED_ACTIONS
+}
+
 export const useAgentStore = defineStore('agent', () => {
   const messages = ref<AgentMessage[]>([
     {
       id: 1,
       role: 'agent',
       text: 'Welcome back. Your portfolio is up 2.3% this month. Treasury bonds are performing well at 4.8% APY. How can I help you today?',
+      cardType: 'action',
+      cardData: {
+        title: 'Recommended Actions',
+        description: 'Based on your encrypted positions and current rate environment, here are three moves the agent recommends reviewing.',
+        actions: [
+          { label: 'Rebalance to 60% treasuries', variant: 'primary' },
+          { label: 'Increase allocation to private credit', variant: 'secondary' },
+          { label: 'Explain the trade-offs', variant: 'ghost' },
+        ],
+      },
       timestamp: new Date(),
     },
   ])
@@ -58,8 +102,8 @@ export const useAgentStore = defineStore('agent', () => {
         id: nextId++,
         role: 'agent',
         text: result.response.text,
-        cardType: result.response.card_type,
-        cardData: result.response.card_data,
+        cardType: 'action',
+        cardData: normalizeAgentCard(result.response.card_type, result.response.card_data),
         timestamp: new Date(),
       })
     } catch (e) {

@@ -1,200 +1,350 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useIssuerComplianceStore } from '@/stores/issuer-compliance'
 import { useIssuerInvestorsStore } from '@/stores/issuer-investors'
-import { useAppStore } from '@/stores/app'
-import MCard from '@/components/ui/MCard.vue'
+import { formatAddress } from '@/lib/utils'
 import MButton from '@/components/ui/MButton.vue'
-import MBadge from '@/components/ui/MBadge.vue'
-import MSummaryCard from '@/components/ui/MSummaryCard.vue'
-import MGoldRule from '@/components/ui/MGoldRule.vue'
-import MPrivacyBanner from '@/components/ui/MPrivacyBanner.vue'
-import MSkeleton from '@/components/ui/MSkeleton.vue'
+import MPageLoader from '@/components/ui/MPageLoader.vue'
 import InvestorBarChart from '@/components/charts/InvestorBarChart.vue'
-import { Shield, CheckCircle, AlertTriangle, Clock, Ban } from 'lucide-vue-next'
+import {
+  Shield, CheckCircle2, Clock, Ban, Plus, BarChart3, Fingerprint,
+  AlertCircle, ShieldCheck, Map, PencilLine,
+} from 'lucide-vue-next'
 
-const app = useAppStore()
 const store = useIssuerComplianceStore()
 const investorStore = useIssuerInvestorsStore()
-
-function statusVariant(status: string) {
-  if (status === 'active') return 'positive' as const
-  if (status === 'review') return 'gold' as const
-  if (status === 'blocked') return 'negative' as const
-  return 'default' as const
-}
 
 onMounted(async () => {
   const loads: Promise<void>[] = []
   if (!store.loaded) loads.push(store.load())
   if (!investorStore.loaded) loads.push(investorStore.load())
-
   if (loads.length > 0) {
-    app.startLoading()
     await Promise.all(loads)
-    app.stopLoading()
   }
 })
+
+const showLoader = computed(() =>
+  (!store.loaded && !store.error && store.loading)
+  || (!investorStore.loaded && !investorStore.error && investorStore.loading),
+)
 </script>
 
 <template>
   <div>
-  <!-- Skeleton -->
-  <div v-if="store.loading || investorStore.loading" class="flex flex-col gap-8">
-    <div>
-      <MSkeleton variant="title" width="180px" />
-    </div>
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-      <MSkeleton variant="card" v-for="i in 4" :key="i" height="100px" />
-    </div>
-    <MSkeleton variant="card" height="180px" />
-    <MSkeleton variant="card" height="180px" />
-    <MSkeleton variant="card" height="180px" />
-  </div>
+    <!-- First-fetch loader -->
+    <MPageLoader
+      v-if="showLoader"
+      label="Loading compliance state"
+      caption="Reading KYC gate + jurisdiction data"
+    />
 
-  <!-- Error -->
-  <div v-else-if="store.error" class="flex flex-col items-center gap-4 py-16">
-    <p class="text-negative text-sm">{{ store.error }}</p>
-    <MButton variant="ghost" size="sm" @click="store.load()">Retry</MButton>
-  </div>
-
-  <!-- Content -->
-  <div v-else class="flex flex-col gap-10">
-    <div
-      class="flex items-center gap-3"
-      v-motion
-      :initial="{ opacity: 0, y: 20 }"
-      :visible-once="{ opacity: 1, y: 0, transition: { duration: 500 } }"
-    >
-      <div>
-        <h1 class="text-4xl font-sans font-bold text-midnight dark:text-white">Compliance</h1>
-        <MGoldRule />
-      </div>
+    <!-- Error -->
+    <div v-else-if="store.error && !store.loaded" class="flex flex-col items-center gap-4 py-16">
+      <p class="font-sans text-sm text-negative">{{ store.error }}</p>
+      <MButton variant="outline" size="sm" @click="store.load()">Retry</MButton>
     </div>
 
-    <!-- Stats -->
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-      <MSummaryCard
-        label="Total eligible"
-        :value="String(store.stats.totalVerified)"
-        accent
-        size="lg"
-        :icon="CheckCircle"
-        class="col-span-2 md:col-span-1"
-      />
-      <MSummaryCard label="Ineligible" :value="String(store.stats.pendingReview)" :icon="Clock" />
-      <MSummaryCard label="Expiring soon" :value="String(store.stats.expiringSoon)" :icon="AlertTriangle" />
-      <MSummaryCard label="Blocked" :value="String(store.stats.blocked)" :icon="Ban" />
-    </div>
-    <p v-if="store.stats.isPartial" class="text-xs text-cool -mt-6">
-      Stats based on loaded investors. Load all on Investors page for full counts.
-    </p>
+    <!-- Content -->
+    <div v-else class="flex flex-col">
+      <!-- HERO + floating stats overlap zone (relative parent for absolute stats) -->
+      <div class="relative">
+        <!-- Hero bar-chart section (Q2 A) -->
+        <section
+          v-motion
+          :initial="{ opacity: 0, y: 16 }"
+          :visible-once="{ opacity: 1, y: 0, transition: { duration: 520 } }"
+          class="relative overflow-hidden rounded-2xl border border-haze dark:border-white/5
+                 bg-gradient-to-b from-mist/60 dark:from-[#1c1b1b]/60 to-transparent
+                 pt-10 pb-28 px-4 md:px-8"
+        >
+          <!-- ambient bloom -->
+          <div
+            aria-hidden="true"
+            class="absolute -top-24 left-1/2 -translate-x-1/2 w-[520px] h-[260px] rounded-full blur-[120px] pointer-events-none
+                   bg-gold/10 dark:bg-signal/10"
+          />
+          <!-- Title + subtitle centered -->
+          <div class="relative z-10 flex flex-col items-center mb-8 text-center">
+            <div class="flex items-center gap-3 mb-2">
+              <BarChart3 :size="26" :stroke-width="1.7" class="text-compute dark:text-signal" />
+              <h3 class="font-accent italic text-2xl md:text-3xl text-midnight dark:text-white tracking-tight">
+                Investors by Jurisdiction
+              </h3>
+            </div>
+            <p class="font-sans text-sm text-cool max-w-lg">
+              Global distribution profile tracking real-time investor concentration across target markets.
+            </p>
+          </div>
+          <!-- Chart -->
+          <div class="relative z-10 max-w-5xl mx-auto">
+            <InvestorBarChart />
+          </div>
+        </section>
 
-    <!-- KYC Gate Config -->
-    <MCard
-      v-motion
-      :initial="{ opacity: 0, y: 16 }"
-      :visible-once="{ opacity: 1, y: 0, transition: { duration: 400, delay: 100 } }"
-    >
-      <div class="flex items-center justify-between mb-5">
-        <div class="flex items-center gap-2">
-          <Shield :size="16" class="text-compute" />
-          <p class="text-base font-sans font-medium text-midnight dark:text-white">KYC Gate Configuration</p>
-        </div>
-        <MButton variant="ghost" size="sm" disabled>Edit</MButton>
+        <!-- Floating glass-panel stats strip (Q3 A — overlaps hero + content) -->
+        <section
+          v-motion
+          :initial="{ opacity: 0, y: 8 }"
+          :visible-once="{ opacity: 1, y: 0, transition: { duration: 520, delay: 120 } }"
+          class="absolute bottom-0 left-2 right-2 md:left-4 md:right-4 lg:left-8 lg:right-8 translate-y-1/2 z-20"
+        >
+          <div
+            class="rounded-2xl border border-haze dark:border-white/10
+                   bg-white/85 dark:bg-[#262626]/75 backdrop-blur-2xl
+                   shadow-[0_25px_50px_-12px_rgba(63,46,12,0.18)]
+                   dark:shadow-[0_25px_50px_-12px_rgba(0,0,0,0.65)]
+                   p-2 md:p-3
+                   flex flex-col sm:flex-row
+                   sm:divide-x divide-y sm:divide-y-0
+                   divide-haze/70 dark:divide-white/10"
+          >
+            <!-- Eligible -->
+            <div class="flex-1 flex items-center gap-4 px-4 md:px-6 py-3">
+              <div class="w-11 h-11 rounded-2xl bg-positive/12 border border-positive/30 flex items-center justify-center flex-shrink-0">
+                <CheckCircle2 :size="19" :stroke-width="1.8" class="text-positive" />
+              </div>
+              <div class="min-w-0">
+                <p class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool font-bold mb-0.5">
+                  Total Eligible
+                </p>
+                <p class="font-accent italic text-2xl md:text-3xl text-midnight dark:text-white tabular-nums leading-none">
+                  {{ store.stats.totalVerified }}
+                </p>
+              </div>
+            </div>
+            <!-- Ineligible -->
+            <div class="flex-1 flex items-center gap-4 px-4 md:px-6 py-3">
+              <div class="w-11 h-11 rounded-2xl bg-mist/80 dark:bg-white/5 border border-haze dark:border-white/10 flex items-center justify-center flex-shrink-0">
+                <Clock :size="19" :stroke-width="1.8" class="text-slate dark:text-body-dark/80" />
+              </div>
+              <div class="min-w-0">
+                <p class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool font-bold mb-0.5">
+                  Ineligible
+                </p>
+                <p class="font-accent italic text-2xl md:text-3xl text-midnight dark:text-white tabular-nums leading-none">
+                  {{ store.stats.pendingReview }}
+                </p>
+              </div>
+            </div>
+            <!-- Expiring Soon -->
+            <div class="flex-1 flex items-center gap-4 px-4 md:px-6 py-3">
+              <div class="w-11 h-11 rounded-2xl bg-gold/12 dark:bg-signal/12 border border-gold/30 dark:border-signal/30 flex items-center justify-center flex-shrink-0">
+                <AlertCircle :size="19" :stroke-width="1.8" class="text-gold dark:text-signal" />
+              </div>
+              <div class="min-w-0">
+                <p class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool font-bold mb-0.5">
+                  Expiring Soon
+                </p>
+                <p class="font-accent italic text-2xl md:text-3xl text-midnight dark:text-white tabular-nums leading-none">
+                  {{ store.stats.expiringSoon }}
+                </p>
+              </div>
+            </div>
+            <!-- Blocked -->
+            <div class="flex-1 flex items-center gap-4 px-4 md:px-6 py-3">
+              <div class="w-11 h-11 rounded-2xl bg-negative/12 border border-negative/30 flex items-center justify-center flex-shrink-0">
+                <Ban :size="19" :stroke-width="1.8" class="text-negative" />
+              </div>
+              <div class="min-w-0">
+                <p class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool font-bold mb-0.5">
+                  Blocked
+                </p>
+                <p class="font-accent italic text-2xl md:text-3xl text-midnight dark:text-white tabular-nums leading-none">
+                  {{ store.stats.blocked }}
+                </p>
+              </div>
+            </div>
+          </div>
+          <!-- Partial-stats hint (sits under the floating strip) -->
+          <p
+            v-if="store.stats.isPartial"
+            class="font-sans text-[10px] text-cool italic mt-3 text-center"
+          >
+            Stats based on loaded investors — visit Investors to load the full set.
+          </p>
+        </section>
       </div>
-      <div class="grid grid-cols-2 gap-4 text-base">
-        <div class="bg-mist/50 dark:bg-midnight/50 rounded-lg p-3">
-          <p class="text-xs text-cool uppercase tracking-wider mb-1">Provider</p>
-          <p class="text-midnight dark:text-white font-medium">{{ store.kycGateConfig.provider }}</p>
-        </div>
-        <div class="bg-mist/50 dark:bg-midnight/50 rounded-lg p-3">
-          <p class="text-xs text-cool uppercase tracking-wider mb-1">Required Level</p>
-          <p class="text-midnight dark:text-white font-medium">{{ store.kycGateConfig.requiredLevel }}</p>
-        </div>
-        <div class="bg-mist/50 dark:bg-midnight/50 rounded-lg p-3">
-          <p class="text-xs text-cool uppercase tracking-wider mb-1">Auto-Reject</p>
-          <p class="text-midnight dark:text-white font-medium">{{ store.kycGateConfig.autoReject ? 'Enabled' : 'Disabled' }}</p>
-        </div>
-        <div class="bg-mist/50 dark:bg-midnight/50 rounded-lg p-3">
-          <p class="text-xs text-cool uppercase tracking-wider mb-1">Grace Period</p>
-          <p class="text-midnight dark:text-white font-medium">{{ store.kycGateConfig.gracePeriodDays }} days</p>
-        </div>
-      </div>
-    </MCard>
 
-    <!-- Jurisdictions -->
-    <MCard
-      v-motion
-      :initial="{ opacity: 0, x: -16 }"
-      :visible-once="{ opacity: 1, x: 0, transition: { duration: 400, delay: 200 } }"
-    >
-      <div class="flex items-center justify-between mb-5">
-        <p class="text-base font-sans font-medium text-midnight dark:text-white">Jurisdiction Overview</p>
-        <MBadge variant="teal">Preview Data</MBadge>
-      </div>
-      <div
-        v-for="(j, i) in store.jurisdictions"
-        :key="j.code"
-        :class="[
-          'flex items-center gap-4 py-4',
-          i > 0 && 'border-t border-haze/50 dark:border-white/8',
-        ]"
+      <!-- 3-col content grid (Q4 A) — top padding clears the floating strip -->
+      <section
+        class="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-24"
       >
-        <span class="text-lg w-8">{{ j.flag }}</span>
-        <span class="flex-1 text-base text-midnight dark:text-white font-medium">{{ j.name }}</span>
-        <MBadge :variant="statusVariant(j.status)" :pulse="j.status === 'review'">
-          {{ j.status }}
-        </MBadge>
-        <span class="text-sm text-cool w-24 text-right">{{ j.investors }} investors</span>
-      </div>
-    </MCard>
-
-    <!-- Investors by Jurisdiction Chart -->
-    <MCard
-      v-motion
-      :initial="{ opacity: 0, y: 16 }"
-      :visible-once="{ opacity: 1, y: 0, transition: { duration: 400, delay: 250 } }"
-    >
-      <div class="flex items-center justify-between mb-5">
-        <p class="text-base font-sans font-medium text-midnight dark:text-white">Investors by Jurisdiction</p>
-        <MBadge variant="teal">Preview Data</MBadge>
-      </div>
-      <InvestorBarChart />
-    </MCard>
-
-    <!-- Trusted Issuers -->
-    <MCard
-      v-motion
-      :initial="{ opacity: 0, x: 16 }"
-      :visible-once="{ opacity: 1, x: 0, transition: { duration: 400, delay: 300 } }"
-    >
-      <div class="flex items-center justify-between mb-5">
-        <p class="text-base font-sans font-medium text-midnight dark:text-white">Trusted Issuers</p>
-        <div class="flex items-center gap-2">
-          <MBadge variant="teal">Preview Data</MBadge>
-          <MButton variant="ghost" size="sm" disabled>+ Add Issuer</MButton>
+        <!-- Gate Configuration (Q5 A — stacked rows with dividers) -->
+        <div
+          v-motion
+          :initial="{ opacity: 0, y: 16 }"
+          :visible-once="{ opacity: 1, y: 0, transition: { duration: 480, delay: 200 } }"
+          class="flex flex-col"
+        >
+          <div class="flex items-center justify-between mb-4">
+            <div class="flex items-center gap-2.5">
+              <Shield :size="16" :stroke-width="1.8" class="text-compute dark:text-signal" />
+              <h4 class="font-sans text-[11px] uppercase tracking-[0.24em] text-cool font-bold">
+                Gate Configuration
+              </h4>
+            </div>
+            <button
+              type="button"
+              disabled
+              aria-disabled="true"
+              title="Coming soon"
+              class="font-sans text-[10px] uppercase tracking-[0.22em] font-bold
+                     text-compute/70 dark:text-signal/70
+                     flex items-center gap-1
+                     cursor-not-allowed opacity-70"
+            >
+              <PencilLine :size="11" :stroke-width="2" />
+              Edit
+            </button>
+          </div>
+          <div class="flex-1 rounded-2xl border border-haze dark:border-white/5 bg-white dark:bg-[#171717] p-5 md:p-6 flex flex-col">
+            <div class="flex justify-between items-center py-2.5">
+              <span class="font-sans text-xs text-cool">Provider</span>
+              <span class="font-sans text-xs font-semibold text-midnight dark:text-white">{{ store.kycGateConfig.provider }}</span>
+            </div>
+            <div class="h-px bg-haze/60 dark:bg-white/8" aria-hidden="true" />
+            <div class="flex justify-between items-center py-2.5">
+              <span class="font-sans text-xs text-cool">Required Level</span>
+              <span class="font-sans text-xs font-semibold text-midnight dark:text-white">{{ store.kycGateConfig.requiredLevel }}</span>
+            </div>
+            <div class="h-px bg-haze/60 dark:bg-white/8" aria-hidden="true" />
+            <div class="flex justify-between items-center py-2.5">
+              <span class="font-sans text-xs text-cool">Auto-Reject</span>
+              <span
+                :class="[
+                  'font-sans text-xs font-semibold',
+                  store.kycGateConfig.autoReject ? 'text-positive' : 'text-cool',
+                ]"
+              >
+                {{ store.kycGateConfig.autoReject ? 'Enabled' : 'Disabled' }}
+              </span>
+            </div>
+            <div class="h-px bg-haze/60 dark:bg-white/8" aria-hidden="true" />
+            <div class="flex justify-between items-center py-2.5">
+              <span class="font-sans text-xs text-cool">Grace Period</span>
+              <span class="font-sans text-xs font-semibold text-midnight dark:text-white">{{ store.kycGateConfig.gracePeriodDays }} days</span>
+            </div>
+          </div>
         </div>
-      </div>
-      <div
-        v-for="(issuer, i) in store.trustedIssuers"
-        :key="issuer.address"
-        :class="[
-          'flex items-center gap-4 py-4',
-          i > 0 && 'border-t border-haze/50 dark:border-white/8',
-        ]"
-      >
-        <CheckCircle :size="16" class="text-positive flex-shrink-0" />
-        <div class="flex-1">
-          <p class="text-base text-midnight dark:text-white font-medium">{{ issuer.name }}</p>
-          <p class="font-mono text-xs text-cool mt-0.5">{{ issuer.address }}</p>
-        </div>
-        <span class="text-xs text-cool">{{ issuer.claims }} claims</span>
-        <MBadge variant="positive">{{ issuer.status }}</MBadge>
-      </div>
-    </MCard>
 
-    <MPrivacyBanner text="Compliance data is aggregate only. Individual investor KYC details are secured via ERC-3643 ONCHAINID." />
-  </div>
+        <!-- Jurisdictions (Q6 A — flag + name + count, no status pill) -->
+        <div
+          v-motion
+          :initial="{ opacity: 0, y: 16 }"
+          :visible-once="{ opacity: 1, y: 0, transition: { duration: 480, delay: 260 } }"
+          class="flex flex-col"
+        >
+          <div class="flex items-center justify-between mb-4">
+            <div class="flex items-center gap-2.5">
+              <Map :size="16" :stroke-width="1.8" class="text-compute dark:text-signal" />
+              <h4 class="font-sans text-[11px] uppercase tracking-[0.24em] text-cool font-bold">
+                Jurisdiction Overview
+              </h4>
+            </div>
+            <span
+              class="font-sans text-[9px] uppercase tracking-[0.22em] font-bold px-2 py-0.5 rounded-full border
+                     text-gold dark:text-signal border-gold/30 dark:border-signal/30"
+            >
+              Preview
+            </span>
+          </div>
+          <ul class="flex-1 rounded-2xl border border-haze dark:border-white/5 bg-white dark:bg-[#171717] p-2 flex flex-col">
+            <li
+              v-for="j in store.jurisdictions"
+              :key="j.code"
+              class="group flex justify-between items-center p-3 rounded-xl hover:bg-mist/50 dark:hover:bg-white/[0.04] transition-colors cursor-default"
+            >
+              <span class="flex items-center gap-3.5 min-w-0">
+                <span
+                  :class="[
+                    'text-2xl transition-all flex-shrink-0',
+                    'filter grayscale group-hover:grayscale-0',
+                  ]"
+                >
+                  {{ j.flag }}
+                </span>
+                <span class="font-sans text-sm text-slate dark:text-body-dark/80 group-hover:text-midnight dark:group-hover:text-white transition-colors font-medium truncate">
+                  {{ j.name }}
+                </span>
+              </span>
+              <span class="flex items-center gap-2 flex-shrink-0">
+                <span class="font-mono text-xs font-bold text-midnight dark:text-white tabular-nums bg-mist/70 dark:bg-[#0d0e10] border border-haze dark:border-white/10 px-2.5 py-1 rounded-md">
+                  {{ j.investors }}
+                </span>
+                <span
+                  v-if="j.status === 'review'"
+                  aria-hidden="true"
+                  class="w-1.5 h-1.5 rounded-full bg-gold dark:bg-signal animate-pulse shadow-[0_0_8px_rgba(255,186,32,0.6)] dark:shadow-[0_0_8px_rgba(255,220,161,0.6)]"
+                />
+              </span>
+            </li>
+          </ul>
+        </div>
+
+        <!-- Trusted Issuers (Q7 A — icon + name + green dot + address / big claims + CLAIMS) -->
+        <div
+          v-motion
+          :initial="{ opacity: 0, y: 16 }"
+          :visible-once="{ opacity: 1, y: 0, transition: { duration: 480, delay: 320 } }"
+          class="flex flex-col"
+        >
+          <div class="flex items-center justify-between mb-4">
+            <div class="flex items-center gap-2.5">
+              <ShieldCheck :size="16" :stroke-width="1.8" class="text-compute dark:text-signal" />
+              <h4 class="font-sans text-[11px] uppercase tracking-[0.24em] text-cool font-bold">
+                Trusted Issuers
+              </h4>
+            </div>
+            <button
+              type="button"
+              disabled
+              aria-disabled="true"
+              title="Coming soon"
+              class="w-6 h-6 rounded-full flex items-center justify-center
+                     text-compute/60 dark:text-signal/60
+                     cursor-not-allowed opacity-70"
+            >
+              <Plus :size="14" :stroke-width="2" />
+            </button>
+          </div>
+          <div class="flex-1 flex flex-col gap-3">
+            <div
+              v-for="issuer in store.trustedIssuers"
+              :key="issuer.address"
+              class="group rounded-2xl border border-haze dark:border-white/5 bg-white dark:bg-[#171717]
+                     hover:border-gold/30 dark:hover:border-signal/25 transition-colors
+                     p-4 md:p-5
+                     flex items-center justify-between gap-3"
+            >
+              <div class="flex items-center gap-3.5 min-w-0">
+                <div class="w-10 h-10 rounded-full bg-gold/10 dark:bg-signal/10 border border-gold/25 dark:border-signal/25 flex items-center justify-center flex-shrink-0">
+                  <Fingerprint :size="16" :stroke-width="1.8" class="text-compute dark:text-signal" />
+                </div>
+                <div class="min-w-0">
+                  <div class="flex items-center gap-2 mb-0.5">
+                    <span class="font-sans text-sm font-bold text-midnight dark:text-white truncate">{{ issuer.name }}</span>
+                    <span
+                      aria-hidden="true"
+                      class="w-1.5 h-1.5 rounded-full bg-positive flex-shrink-0"
+                    />
+                  </div>
+                  <p class="font-mono text-[10px] text-cool group-hover:text-compute/80 dark:group-hover:text-signal/80 transition-colors truncate">
+                    {{ formatAddress(issuer.address) }}
+                  </p>
+                </div>
+              </div>
+              <div class="text-right flex-shrink-0">
+                <div class="font-accent italic text-xl md:text-2xl text-midnight dark:text-white tabular-nums leading-none">
+                  {{ issuer.claims }}
+                </div>
+                <div class="font-sans text-[9px] uppercase tracking-[0.22em] text-cool font-bold mt-1">
+                  Claims
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
   </div>
 </template>

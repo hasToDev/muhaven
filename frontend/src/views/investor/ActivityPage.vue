@@ -1,18 +1,15 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { useAppStore } from '@/stores/app'
 import { useActivityStore } from '@/stores/activity'
 import { formatUSD } from '@/lib/utils'
-import MCard from '@/components/ui/MCard.vue'
 import MButton from '@/components/ui/MButton.vue'
-import MBadge from '@/components/ui/MBadge.vue'
-import MSummaryCard from '@/components/ui/MSummaryCard.vue'
-import MGoldRule from '@/components/ui/MGoldRule.vue'
-import MSkeleton from '@/components/ui/MSkeleton.vue'
+import MPageLoader from '@/components/ui/MPageLoader.vue'
 import MPrivacyProofPanel from '@/components/ui/MPrivacyProofPanel.vue'
-import { TrendingUp, ArrowDown, Activity, BarChart3, Lock, Inbox, ChevronDown } from 'lucide-vue-next'
+import {
+  TrendingUp, ArrowDown, Activity, BarChart3, Lock, Inbox, ChevronDown,
+  Loader2,
+} from 'lucide-vue-next'
 
-const app = useAppStore()
 const activity = useActivityStore()
 
 type FilterType = 'all' | 'yield' | 'escrow'
@@ -34,16 +31,57 @@ const filterCounts = computed(() => ({
   escrow: activity.items.filter(i => i.type === 'escrow').length,
 }))
 
-const activityMeta: Record<string, { icon: typeof TrendingUp; classes: string; bg: string }> = {
-  yield: { icon: TrendingUp, classes: 'text-gold', bg: 'bg-gold/10 dark:bg-gold/8' },
-  escrow: { icon: ArrowDown, classes: 'text-compute', bg: 'bg-compute/12 dark:bg-compute/8' },
+const yieldsThisWeek = computed(() => {
+  const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000
+  return activity.items.filter(
+    i => i.type === 'yield' && new Date(i.timestamp).getTime() >= sevenDaysAgo,
+  ).length
+})
+
+const activityMeta: Record<string, {
+  icon: typeof TrendingUp
+  iconClass: string
+  iconBg: string
+  iconBorder: string
+  amountClass: string
+}> = {
+  yield: {
+    icon: TrendingUp,
+    iconClass: 'text-positive',
+    iconBg: 'bg-positive/10',
+    iconBorder: 'border-positive/30',
+    amountClass: 'text-positive',
+  },
+  escrow: {
+    icon: ArrowDown,
+    iconClass: 'text-cool',
+    iconBg: 'bg-haze/40 dark:bg-white/5',
+    iconBorder: 'border-haze dark:border-white/10',
+    amountClass: 'text-midnight dark:text-white',
+  },
 }
 
 onMounted(async () => {
-  app.startLoading()
+  if (activity.loaded) return
   await activity.load()
-  app.stopLoading()
 })
+
+const showLoader = computed(() =>
+  !activity.loaded && !activity.error && activity.loading,
+)
+
+function statusAccent(status: string): { text: string; ring: string; bg: string } {
+  switch (status) {
+    case 'claimed':
+      return { text: 'text-positive', ring: 'border-positive/30', bg: 'bg-positive/10' }
+    case 'pending':
+      return { text: 'text-gold', ring: 'border-gold/30', bg: 'bg-gold/10' }
+    case 'claimable':
+      return { text: 'text-compute dark:text-signal', ring: 'border-compute/30 dark:border-signal/30', bg: 'bg-compute/10 dark:bg-signal/10' }
+    default:
+      return { text: 'text-cool', ring: 'border-haze dark:border-white/10', bg: 'bg-haze/30 dark:bg-white/5' }
+  }
+}
 
 function formatTime(timestamp: string): string {
   const d = new Date(timestamp)
@@ -61,132 +99,283 @@ function formatTime(timestamp: string): string {
 
 <template>
   <div>
-  <!-- Skeleton -->
-  <div v-if="app.isLoading" class="flex flex-col gap-8">
-    <MSkeleton variant="title" width="120px" />
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-      <MSkeleton variant="card" v-for="i in 3" :key="i" height="100px" />
-    </div>
-    <MSkeleton variant="card" height="300px" />
-  </div>
+    <!-- First-fetch loader -->
+    <MPageLoader
+      v-if="showLoader"
+      label="Loading activity"
+      caption="Indexing yield + escrow events"
+    />
 
-  <!-- Error state -->
-  <div v-else-if="activity.error" class="flex flex-col items-center justify-center py-20 gap-4">
-    <p class="text-base text-cool">{{ activity.error }}</p>
-    <MButton variant="outline" @click="activity.load()">Retry</MButton>
-  </div>
-
-  <!-- Content -->
-  <div v-else class="flex flex-col gap-10">
-    <div
-      v-motion
-      :initial="{ opacity: 0, y: 20 }"
-      :visible-once="{ opacity: 1, y: 0, transition: { duration: 500 } }"
-    >
-      <h1 class="text-4xl font-sans font-bold text-midnight dark:text-white tracking-tight">Activity</h1>
-      <MGoldRule />
+    <!-- Error -->
+    <div v-else-if="activity.error" class="flex flex-col items-center justify-center py-20 gap-4">
+      <p class="text-base text-cool">{{ activity.error }}</p>
+      <MButton variant="outline" @click="activity.load()">Retry</MButton>
     </div>
 
-    <!-- Summary cards -->
-    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-      <MSummaryCard label="Total Events" :value="String(activity.items.length)" :icon="BarChart3" />
-      <MSummaryCard label="Yield Events" :value="String(filterCounts.yield)" :icon="TrendingUp" />
-      <MSummaryCard label="Escrow Events" :value="String(filterCounts.escrow)" :icon="ArrowDown" />
-    </div>
+    <!-- Content -->
+    <div v-else class="flex flex-col gap-6">
+      <!-- Main grid: timeline (8) + analytics (4) -->
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+        <!-- Timeline column -->
+        <div class="lg:col-span-8 w-full flex flex-col gap-5">
+          <!-- Filter pills -->
+          <div class="flex items-center gap-2.5 overflow-x-auto pb-1 no-scrollbar">
+            <button
+              v-for="f in (['all', 'yield', 'escrow'] as FilterType[])"
+              :key="f"
+              type="button"
+              @click="activeFilter = f"
+              :data-testid="`activity-filter-${f}`"
+              :class="[
+                'font-sans text-xs font-medium px-5 py-2 rounded-full whitespace-nowrap transition-all duration-200 cursor-pointer border',
+                activeFilter === f
+                  ? 'bg-gold/15 dark:bg-signal/15 text-compute dark:text-signal border-gold/40 dark:border-signal/35 shadow-[0_0_12px_-2px_rgba(255,186,32,0.25)]'
+                  : 'bg-mist/50 dark:bg-[#171717] text-cool hover:text-midnight dark:hover:text-white border-transparent hover:border-haze dark:hover:border-white/10',
+              ]"
+            >
+              {{ f === 'all' ? 'All' : f.charAt(0).toUpperCase() + f.slice(1) }}
+              <span class="ml-1.5 opacity-70 tabular-nums">{{ filterCounts[f] }}</span>
+            </button>
+          </div>
 
-    <!-- Filter buttons -->
-    <div class="flex gap-2">
-      <MButton
-        v-for="f in (['all', 'yield', 'escrow'] as FilterType[])"
-        :key="f"
-        :variant="activeFilter === f ? 'primary' : 'outline'"
-        size="sm"
-        :data-testid="`activity-filter-${f}`"
-        @click="activeFilter = f"
-      >
-        {{ f === 'all' ? 'All' : f.charAt(0).toUpperCase() + f.slice(1) }}
-        <span class="ml-1.5 opacity-60">{{ filterCounts[f] }}</span>
-      </MButton>
-    </div>
-
-    <!-- Activity timeline -->
-    <MCard>
-      <div v-if="filtered.length === 0" class="flex flex-col items-center py-12 gap-3">
-        <Inbox :size="32" class="text-cool/30" />
-        <p class="text-sm text-cool">No matching activity</p>
-      </div>
-
-      <div v-else>
-        <div
-          v-for="(item, i) in filtered"
-          :key="item.id"
-          :class="['py-4', i > 0 && 'border-t border-haze/50 dark:border-white/8']"
-        >
-          <div class="flex items-center gap-4">
-            <div :class="['w-10 h-10 rounded-lg flex items-center justify-center', activityMeta[item.type]?.bg || 'bg-mist']">
-              <component
-                :is="activityMeta[item.type]?.icon || Activity"
-                :size="16"
-                :class="activityMeta[item.type]?.classes || 'text-cool'"
-              />
+          <!-- Timeline card -->
+          <section
+            v-motion
+            :initial="{ opacity: 0, y: 20 }"
+            :visible-once="{ opacity: 1, y: 0, transition: { duration: 520, delay: 120 } }"
+            class="rounded-2xl border border-haze dark:border-white/5
+                   bg-white dark:bg-[#171717] overflow-hidden
+                   shadow-[0_14px_40px_-12px_rgba(63,46,12,0.06)]
+                   dark:shadow-[0_20px_60px_-20px_rgba(0,0,0,0.55)]"
+          >
+            <!-- Empty -->
+            <div
+              v-if="filtered.length === 0"
+              class="flex flex-col items-center py-16 gap-3"
+            >
+              <Inbox :size="36" :stroke-width="1.4" class="text-cool/35" />
+              <p class="font-sans text-sm text-cool">No matching activity</p>
             </div>
-            <div class="flex-1 min-w-0">
-              <p class="text-base font-sans font-medium text-midnight dark:text-white">
-                {{ item.type === 'yield' ? 'Yield Distribution' : 'Escrow Event' }}
-                <span v-if="item.amount" class="font-mono text-xs ml-2">{{ formatUSD(parseFloat(item.amount)) }}</span>
-              </p>
-              <div class="flex items-center gap-2 mt-1">
-                <MBadge :variant="item.status === 'claimed' ? 'positive' : item.status === 'pending' ? 'gold' : 'teal'">
-                  {{ item.status }}
-                </MBadge>
-                <span class="text-xs text-cool flex items-center gap-1">
-                  <Lock :size="10" />
-                  FHE encrypted
-                </span>
+
+            <!-- Rows -->
+            <div v-else class="flex flex-col">
+              <div
+                v-for="item in filtered"
+                :key="item.id"
+                class="border-b border-haze/60 dark:border-white/5 last:border-b-0
+                       hover:bg-mist/40 dark:hover:bg-white/[0.02] transition-colors"
+              >
+                <div class="p-5 md:p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div class="flex items-start sm:items-center gap-4 min-w-0">
+                    <div
+                      :class="[
+                        'w-10 h-10 rounded-xl flex items-center justify-center border flex-shrink-0',
+                        activityMeta[item.type]?.iconBg,
+                        activityMeta[item.type]?.iconBorder,
+                      ]"
+                    >
+                      <component
+                        :is="activityMeta[item.type]?.icon ?? Activity"
+                        :size="15"
+                        :stroke-width="1.8"
+                        :class="activityMeta[item.type]?.iconClass ?? 'text-cool'"
+                      />
+                    </div>
+                    <div class="flex flex-col gap-1.5 min-w-0">
+                      <div class="flex items-center gap-2.5 flex-wrap">
+                        <span class="font-sans text-sm font-semibold text-midnight dark:text-white">
+                          {{ item.type === 'yield' ? 'Yield Distribution' : 'Escrow Event' }}
+                        </span>
+                        <span
+                          v-if="item.amount"
+                          :class="['font-mono text-sm font-medium tabular-nums tracking-tight', activityMeta[item.type]?.amountClass]"
+                        >
+                          {{ formatUSD(parseFloat(item.amount)) }}
+                        </span>
+                      </div>
+                      <div class="flex items-center gap-2 flex-wrap">
+                        <span
+                          :class="[
+                            'font-sans text-[9px] uppercase tracking-[0.22em] font-semibold px-2 py-0.5 rounded border',
+                            statusAccent(item.status).text,
+                            statusAccent(item.status).ring,
+                            statusAccent(item.status).bg,
+                          ]"
+                        >
+                          {{ item.status }}
+                        </span>
+                        <div
+                          class="flex items-center gap-1 px-2 py-0.5 rounded border border-haze dark:border-white/10 bg-mist/50 dark:bg-[#0d0e10]"
+                        >
+                          <Lock :size="10" :stroke-width="1.8" class="text-cool" />
+                          <span class="font-mono text-[9px] text-cool uppercase tracking-[0.18em]">FHE encrypted</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="flex items-center gap-4 sm:flex-shrink-0 pl-14 sm:pl-0">
+                    <span class="font-sans text-[11px] text-cool whitespace-nowrap tabular-nums">
+                      {{ formatTime(item.timestamp) }}
+                    </span>
+                    <button
+                      v-if="item.tx_hash"
+                      type="button"
+                      @click="toggleExpand(item.id)"
+                      :data-testid="`activity-row-toggle-${item.id}`"
+                      :aria-expanded="expandedId === item.id"
+                      :aria-controls="`activity-proof-${item.id}`"
+                      class="flex items-center gap-1 font-sans text-[10px] uppercase tracking-[0.2em] font-semibold
+                             text-compute dark:text-signal hover:text-compute/80 dark:hover:text-signal/80
+                             transition-colors cursor-pointer"
+                    >
+                      <span>Proof</span>
+                      <ChevronDown
+                        :size="13"
+                        :stroke-width="2"
+                        aria-hidden="true"
+                        :class="['transition-transform duration-200', expandedId === item.id && 'rotate-180']"
+                      />
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Expanded privacy proof -->
+                <transition
+                  enter-active-class="transition-opacity duration-300 ease-out"
+                  leave-active-class="transition-opacity duration-200 ease-in"
+                  enter-from-class="opacity-0"
+                  leave-to-class="opacity-0"
+                >
+                  <div
+                    v-if="expandedId === item.id && item.tx_hash"
+                    :id="`activity-proof-${item.id}`"
+                    role="region"
+                    :aria-label="`Privacy proof for ${item.type} event`"
+                    class="px-5 md:px-6 pb-5 md:pb-6 sm:pl-20"
+                  >
+                    <MPrivacyProofPanel :tx-hash="item.tx_hash" :default-open="true" />
+                  </div>
+                </transition>
               </div>
             </div>
-            <div class="flex items-center gap-3 shrink-0">
-              <span class="text-xs text-cool whitespace-nowrap">{{ formatTime(item.timestamp) }}</span>
+
+            <!-- Load more footer -->
+            <div
+              v-if="activity.hasMore"
+              class="bg-mist/50 dark:bg-[#0d0e10] p-4 flex justify-center border-t border-haze dark:border-white/5"
+            >
               <button
-                v-if="item.tx_hash"
                 type="button"
-                @click="toggleExpand(item.id)"
-                :data-testid="`activity-row-toggle-${item.id}`"
-                :aria-expanded="expandedId === item.id"
-                class="flex items-center gap-1 text-[11px] font-sans font-medium text-compute hover:text-compute/80 transition-colors cursor-pointer"
+                :disabled="activity.loadingMore"
+                @click="activity.loadMore()"
+                data-testid="activity-load-more"
+                class="flex items-center gap-2 px-6 py-2.5 rounded-lg
+                       border border-haze dark:border-white/10
+                       font-sans text-xs uppercase tracking-[0.2em] font-semibold
+                       text-cool hover:text-compute dark:hover:text-signal
+                       hover:border-gold/40 dark:hover:border-signal/40
+                       transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-wait"
               >
-                Privacy proof
-                <ChevronDown
-                  :size="12"
-                  :class="['transition-transform duration-200', expandedId === item.id && 'rotate-180']"
+                <Loader2
+                  v-if="activity.loadingMore"
+                  :size="13"
+                  class="animate-spin text-compute dark:text-signal"
                 />
+                <span v-else class="w-2 h-2 rounded-full bg-compute/60 dark:bg-signal/60 animate-pulse" />
+                <span>{{ activity.loadingMore ? 'Loading…' : 'Load more' }}</span>
               </button>
+            </div>
+          </section>
+        </div>
+
+        <!-- Analytics column -->
+        <div
+          v-motion
+          :initial="{ opacity: 0, y: 20 }"
+          :visible-once="{ opacity: 1, y: 0, transition: { duration: 520, delay: 200 } }"
+          class="lg:col-span-4 w-full flex flex-col gap-4 lg:sticky lg:top-24"
+        >
+          <h3 class="font-sans text-[10px] uppercase tracking-[0.24em] text-cool font-semibold px-1">
+            System Overview
+          </h3>
+
+          <!-- Total events -->
+          <div
+            class="relative overflow-hidden rounded-2xl p-6
+                   border border-haze dark:border-white/5
+                   bg-white dark:bg-[#171717]
+                   flex flex-col gap-4"
+          >
+            <div class="flex items-center justify-between">
+              <span class="font-sans text-[10px] uppercase tracking-[0.24em] text-cool font-semibold">
+                Total Events
+              </span>
+              <div class="w-11 h-11 rounded-xl bg-gold/10 dark:bg-signal/10 border border-gold/25 dark:border-signal/25 flex items-center justify-center">
+                <BarChart3 :size="18" :stroke-width="1.8" class="text-compute dark:text-signal" />
+              </div>
+            </div>
+            <div class="font-accent italic text-5xl md:text-6xl tracking-tighter text-midnight dark:text-white tabular-nums leading-none">
+              {{ activity.items.length }}
+            </div>
+            <div class="w-full bg-haze/50 dark:bg-white/8 h-1.5 rounded-full overflow-hidden">
+              <div
+                class="h-full bg-gradient-to-r from-gold to-signal dark:from-signal dark:to-gold rounded-full transition-all duration-700"
+                :style="{ width: `${Math.min(activity.items.length * 6, 100)}%` }"
+              />
             </div>
           </div>
 
-          <!-- Expanded privacy proof. We rely on the panel's own internal
-               opacity transition rather than animating max-height here, which
-               brittle-clips on tall content. -->
-          <transition
-            enter-active-class="transition-opacity duration-300 ease-out"
-            leave-active-class="transition-opacity duration-200 ease-in"
-            enter-from-class="opacity-0"
-            leave-to-class="opacity-0"
+          <!-- Yield events -->
+          <div
+            class="relative overflow-hidden rounded-2xl p-6
+                   border border-haze dark:border-white/5
+                   bg-white dark:bg-[#171717]
+                   flex flex-col gap-4"
           >
-            <div v-if="expandedId === item.id && item.tx_hash" class="mt-3 sm:ml-14">
-              <MPrivacyProofPanel :tx-hash="item.tx_hash" :default-open="true" />
+            <div class="flex items-center justify-between">
+              <span class="font-sans text-[10px] uppercase tracking-[0.24em] text-positive font-semibold">
+                Yield Events
+              </span>
+              <div class="w-11 h-11 rounded-xl bg-positive/10 border border-positive/30 flex items-center justify-center">
+                <TrendingUp :size="18" :stroke-width="1.8" class="text-positive" />
+              </div>
             </div>
-          </transition>
+            <div class="font-accent italic text-5xl md:text-6xl tracking-tighter text-midnight dark:text-white tabular-nums leading-none">
+              {{ filterCounts.yield }}
+            </div>
+            <div class="flex items-center gap-1.5">
+              <TrendingUp :size="14" :stroke-width="1.8" class="text-positive" />
+              <span class="font-sans text-[10px] uppercase tracking-[0.22em] font-bold text-positive tabular-nums">
+                {{ yieldsThisWeek }} this week
+              </span>
+            </div>
+          </div>
+
+          <!-- Escrow events -->
+          <div
+            class="relative overflow-hidden rounded-2xl p-6
+                   border border-haze dark:border-white/5
+                   bg-white dark:bg-[#171717]
+                   flex flex-col gap-4"
+          >
+            <div class="flex items-center justify-between">
+              <span class="font-sans text-[10px] uppercase tracking-[0.24em] text-cool font-semibold">
+                Escrow Events
+              </span>
+              <div class="w-11 h-11 rounded-xl bg-compute/10 dark:bg-signal/10 border border-compute/25 dark:border-signal/25 flex items-center justify-center">
+                <ArrowDown :size="18" :stroke-width="1.8" class="text-compute dark:text-signal" />
+              </div>
+            </div>
+            <div class="font-accent italic text-5xl md:text-6xl tracking-tighter text-midnight dark:text-white tabular-nums leading-none">
+              {{ filterCounts.escrow }}
+            </div>
+            <p class="font-sans text-[10px] uppercase tracking-[0.22em] font-bold text-cool italic">
+              Awaiting on-chain settlement
+            </p>
+          </div>
         </div>
       </div>
-
-      <!-- Load more -->
-      <div v-if="activity.hasMore" class="mt-4 text-center">
-        <MButton variant="outline" size="sm" data-testid="activity-load-more" :loading="activity.loadingMore" @click="activity.loadMore()">
-          Load More
-        </MButton>
-      </div>
-    </MCard>
-  </div>
+    </div>
   </div>
 </template>

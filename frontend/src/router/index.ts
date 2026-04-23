@@ -70,7 +70,10 @@ const router = createRouter({
     {
       path: '/agent',
       component: () => import('@/views/AgentPage.vue'),
-      meta: { title: 'Agent' },
+      // `layout: 'agent'` tells App.vue to use a tighter wrapper pb so the
+      // chat container can fill the viewport vertically and the input bar
+      // sits anchored just above the viewport bottom (no page scroll).
+      meta: { title: 'Agent', layout: 'agent' },
     },
   ],
 })

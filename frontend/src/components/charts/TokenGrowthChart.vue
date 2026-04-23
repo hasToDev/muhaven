@@ -10,22 +10,40 @@ import { TOKEN_GROWTH_DATA } from '@/data/constants'
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip)
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   symbol: string
-}>()
+  range?: '6M' | '1Y' | 'ALL'
+}>(), {
+  range: '6M',
+})
 
 const store = useAppStore()
 
+// Mock dataset only has 6 months. Range is decorative for now —
+// '1Y' / 'ALL' duplicate the slice forward so the chart visually responds
+// to the toggle without faking data we don't have.
 const chartData = computed(() => {
   const data = TOKEN_GROWTH_DATA[props.symbol]
   if (!data) return { labels: [], datasets: [] }
+  let labels = data.labels
+  let values = data.values
+  if (props.range === '1Y' || props.range === 'ALL') {
+    // Extend forward by mirroring the trend (last value + delta) for visual variety.
+    const tail = values.slice(-1)[0] ?? 0
+    const delta = (values.slice(-1)[0] ?? 0) - (values.slice(-2, -1)[0] ?? 0)
+    const extra = props.range === '1Y' ? 6 : 12
+    const extraLabels = ['Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar'].slice(0, extra)
+    const extraValues = extraLabels.map((_, i) => Math.max(0, Math.round(tail + delta * (i + 1))))
+    labels = [...labels, ...extraLabels]
+    values = [...values, ...extraValues]
+  }
   return {
-    labels: data.labels,
+    labels,
     datasets: [{
-      data: data.values,
+      data: values,
       backgroundColor: store.isDark ? '#A8F5EC' : '#1B9E8A',
       borderRadius: 3,
-      barThickness: 14,
+      barThickness: props.range === 'ALL' ? 8 : props.range === '1Y' ? 10 : 14,
     }],
   }
 })

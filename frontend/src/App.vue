@@ -53,9 +53,13 @@ onMounted(() => {
         <transition name="page" mode="out-in">
           <div
             :key="viewRoute.path"
-            :class="viewRoute.meta.layout === 'landing' || viewRoute.meta.layout === 'login'
-              ? ''
-              : 'max-w-7xl mx-auto w-full px-6 sm:px-10 lg:px-12 pt-8 pb-28 md:pb-16'"
+            :class="[
+              viewRoute.meta.layout === 'landing' || viewRoute.meta.layout === 'login'
+                ? ''
+                : viewRoute.meta.layout === 'agent'
+                  ? 'max-w-7xl mx-auto w-full px-6 sm:px-10 lg:px-12 pt-8 pb-3'
+                  : 'max-w-7xl mx-auto w-full px-6 sm:px-10 lg:px-12 pt-8 pb-28 md:pb-16',
+            ]"
           >
             <component :is="Component" />
           </div>

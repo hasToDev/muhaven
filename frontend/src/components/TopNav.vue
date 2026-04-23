@@ -26,8 +26,6 @@ const auth = useAuth()
 const { isScrolled } = useGlassNav(20)
 const homeTarget = useHomeTarget()
 
-const switchingRole = ref(false)
-
 const investorNav = [
   { path: '/portfolio', label: 'Portfolio', icon: PieChart },
   { path: '/marketplace', label: 'Marketplace', icon: Store },
@@ -61,25 +59,6 @@ const connectionStatus = computed(() => {
   if (walletStore.connected || authStore.walletAddress) return 'degraded' as const
   return 'disconnected' as const
 })
-
-async function switchRole(r: 'investor' | 'issuer') {
-  if (r === store.role) return
-  if (switchingRole.value) return
-
-  switchingRole.value = true
-  try {
-    await auth.switchRole(r)
-    router.push(r === 'investor' ? '/portfolio' : '/tokens')
-  } catch {
-    // switchRole failed — stay on current role
-    // Error is in authStore.error, but we don't show it in nav
-    // Just do a client-side switch as fallback
-    store.setRole(r)
-    router.push(r === 'investor' ? '/portfolio' : '/tokens')
-  } finally {
-    switchingRole.value = false
-  }
-}
 
 function handleSignIn() {
   router.push({ path: '/login', query: { redirect: route.fullPath } })
@@ -158,27 +137,8 @@ onBeforeUnmount(() => {
       <div class="flex-1" />
 
       <div class="flex items-center gap-2">
-        <!-- Role toggle -->
-        <div class="flex bg-mist dark:bg-midnight-mid rounded-lg p-0.5 border border-haze dark:border-white/8">
-          <button
-            v-for="r in (['investor', 'issuer'] as const)"
-            :key="r"
-            @click="switchRole(r)"
-            :disabled="switchingRole"
-            :data-testid="`nav-role-${r}`"
-            :class="cn(
-              'px-3 py-1.5 text-xs font-sans font-medium rounded-md transition-all duration-200 capitalize cursor-pointer',
-              'disabled:opacity-70 disabled:cursor-wait',
-              store.role === r
-                ? 'bg-white dark:bg-midnight shadow-sm text-compute'
-                : 'text-cool hover:text-midnight dark:hover:text-white',
-            )"
-          >
-            <Loader2 v-if="switchingRole && store.role !== r" :size="12" class="animate-spin inline mr-1" />
-            {{ r }}
-          </button>
-        </div>
-
+        <!-- Role toggle removed: role is chosen at login and can't be
+             switched post-login. -->
         <MDarkToggle data-testid="nav-dark-toggle" />
 
         <!-- Wallet pill with status dot (desktop) — shown whenever wallet address is known -->

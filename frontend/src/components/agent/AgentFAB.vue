@@ -17,8 +17,8 @@ const isAgentPage = computed(() => route.path === '/agent')
       @click="store.agentPanelOpen ? store.closeAgentPanel() : store.openAgentPanel()"
       :class="[
         'fixed bottom-6 right-6 z-40 w-14 h-14 rounded-full flex items-center justify-center',
-        'bg-midnight dark:bg-signal text-white dark:text-midnight shadow-fab hover:shadow-elevated hover:scale-105',
-        'hover:bg-compute dark:hover:bg-signal-hover',
+        'bg-gradient-to-br from-signal via-gold to-compute text-midnight',
+        'shadow-fab hover:shadow-elevated hover:scale-105 hover:brightness-110',
         'transition-all duration-200 cursor-pointer',
       ]"
     >

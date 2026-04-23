@@ -177,8 +177,9 @@ function toggleMode() {
               <img
                 src="/logo.png"
                 alt="MuHaven"
-                class="w-10 h-10 rounded-xl shadow-sm transition-transform duration-300 group-hover:scale-105"
-                style="mix-blend-mode: multiply"
+                class="w-10 h-10 rounded-xl shadow-sm transition-transform duration-300 group-hover:scale-105
+                       mix-blend-multiply dark:mix-blend-normal
+                       dark:drop-shadow-[0_0_10px_rgba(255,186,32,0.45)]"
               />
               <span class="text-2xl font-sans font-bold text-midnight dark:text-white tracking-tight transition-colors group-hover:text-compute">
                 MuHaven

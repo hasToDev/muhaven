@@ -41,6 +41,11 @@ export const useIssuerTokensStore = defineStore('issuer-tokens', () => {
   const error = ref<string | null>(null)
   const loaded = ref(false)
 
+  // Master-detail selection — survives page reload within the session per
+  // user pick Q4 C (D-045). The default token is chosen in `load()` once
+  // tokens populate, so callers never have to worry about an unset value.
+  const selectedAddress = ref<string | null>(null)
+
   const activeTokenCount = computed(() =>
     tokens.value.filter(t => t.status === 'active').length,
   )
@@ -51,6 +56,10 @@ export const useIssuerTokensStore = defineStore('issuer-tokens', () => {
     weightedAPY: stats.value?.weighted_apy ?? null,
     activeTokens: activeTokenCount.value,
   }))
+
+  function selectToken(address: string) {
+    selectedAddress.value = address
+  }
 
   async function load() {
     loading.value = true
@@ -84,6 +93,14 @@ export const useIssuerTokensStore = defineStore('issuer-tokens', () => {
       status: t.status,
       assetClass: t.asset_class,
     }))
+
+    // Default the master-detail selection to the first active token (or
+    // first overall) so the right-hand panel always has something to render
+    // on initial load. Skip if user already picked one this session.
+    if (selectedAddress.value === null && tokens.value.length > 0) {
+      const defaultToken = tokens.value.find(t => t.status === 'active') ?? tokens.value[0]
+      selectedAddress.value = defaultToken.address
+    }
 
     // Stats and investor count are non-critical — degrade gracefully
     if (statsRes.status === 'fulfilled') {
@@ -140,6 +157,7 @@ export const useIssuerTokensStore = defineStore('issuer-tokens', () => {
     stats.value = null
     distributions.value = []
     onChainInvestorCount.value = null
+    selectedAddress.value = null
     loading.value = false
     error.value = null
     loaded.value = false
@@ -151,11 +169,13 @@ export const useIssuerTokensStore = defineStore('issuer-tokens', () => {
     stats,
     distributions,
     onChainInvestorCount,
+    selectedAddress,
     loading,
     error,
     loaded,
     activeTokenCount,
     aggregateStats,
+    selectToken,
     load,
     loadDistributionHistory,
     reset,
