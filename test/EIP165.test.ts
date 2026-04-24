@@ -71,6 +71,9 @@ describe("EIP-165 supportsInterface", function () {
         "function pullFromInvestor(address,bytes32,address)",
         "function returnToInvestor(address,bytes32,address)",
         "function burnFromQueue(bytes32)",
+        // Wave 3.5 Phase 5 — YieldSnapshot ACL-grant reads (ADR-037).
+        "function snapshotBalance(address)",
+        "function snapshotTotalSupply()",
         "function encryptedBalanceOf(address) view returns (bytes32)",
         "function encryptedTotalSupply() view returns (bytes32)",
         "function setTotalSupplyPublic()",
@@ -81,6 +84,8 @@ describe("EIP-165 supportsInterface", function () {
         "function setSubscription(address)",
         "function queue() view returns (address)",
         "function setQueue(address)",
+        "function yieldSnapshot() view returns (address)",
+        "function setYieldSnapshot(address)",
         "function modularCompliance() view returns (address)",
       ]);
       expect(await token.supportsInterface(interfaceId)).to.be.true;

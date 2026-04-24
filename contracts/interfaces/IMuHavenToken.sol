@@ -70,6 +70,29 @@ interface IMuHavenToken {
         euint128 encAmount
     ) external returns (euint128 actualBurned);
 
+    // ── Wave 3.5 Phase 5: YieldSnapshot ACL-grant reads ─────────────────
+    //
+    // `YieldSnapshot` needs read access on `_balances[investor]` and
+    // `_encryptedTotalSupply` to run `FHE.mul` / `FHE.div` inside its
+    // per-epoch claim math. The ACL on those handles is scoped to
+    // MuHavenToken; without an explicit grant the downstream FHE op would
+    // revert with ACL-denied. These helpers let the token re-grant the
+    // caller (the wired `yieldSnapshot`) read access without exposing a
+    // broader "grant any handle" surface. Callable only by the configured
+    // `yieldSnapshot` address — set via `setYieldSnapshot`.
+
+    /// @notice Re-grant the caller (`yieldSnapshot`) ACL on the investor's
+    ///         current balance handle and return it. Fresh zero-handle for
+    ///         never-held accounts so snapshot math always has a valid
+    ///         input. Caller-gated to the wired `yieldSnapshot`.
+    function snapshotBalance(address investor) external returns (euint128);
+
+    /// @notice Re-grant the caller (`yieldSnapshot`) ACL on the encrypted
+    ///         total supply handle and return it. Fresh zero-handle when
+    ///         nothing has been minted yet. Caller-gated to the wired
+    ///         `yieldSnapshot`.
+    function snapshotTotalSupply() external returns (euint128);
+
     // ── Views / admin used by platform contracts ────────────────────────
     function encryptedBalanceOf(address account) external view returns (euint128);
     function encryptedTotalSupply() external view returns (euint128);
@@ -83,6 +106,9 @@ interface IMuHavenToken {
 
     function queue() external view returns (address);
     function setQueue(address newQueue) external;
+
+    function yieldSnapshot() external view returns (address);
+    function setYieldSnapshot(address newYieldSnapshot) external;
 
     function modularCompliance() external view returns (address);
 }

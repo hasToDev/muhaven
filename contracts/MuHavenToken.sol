@@ -116,11 +116,21 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
     ///         `burnFromQueue`.
     address public queue;
 
-    /// @dev Reserved storage for future upgrades. Decremented by 5 slots to
+    // ── Wave 3.5 Phase 5: YieldSnapshot wiring (ADR-037) ─────────────────
+
+    /// @notice Single authorised `YieldSnapshot` contract — the only caller
+    ///         of `snapshotBalance` / `snapshotTotalSupply`. Needed so the
+    ///         snapshot reader can gain FHE ACL access on balance handles
+    ///         owned by this token; without it, downstream `FHE.mul` inside
+    ///         `claimYield` would revert ACL-denied.
+    address public yieldSnapshot;
+
+    /// @dev Reserved storage for future upgrades. Decremented by 6 slots to
     ///      accommodate `subscription`, `authorizedReaders`,
-    ///      `identityRegistry`, `modularCompliance`, and `queue` above,
-    ///      preserving the total storage footprint (proxy-safe).
-    uint256[45] private __gap;
+    ///      `identityRegistry`, `modularCompliance`, `queue`, and
+    ///      `yieldSnapshot` above, preserving the total storage footprint
+    ///      (proxy-safe).
+    uint256[44] private __gap;
 
     // ── Events ───────────────────────────────────────────────────────────
 
@@ -133,6 +143,7 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
     event MinterRevoked(address indexed minter);
     event SubscriptionUpdated(address indexed newSubscription);
     event QueueUpdated(address indexed newQueue);
+    event YieldSnapshotUpdated(address indexed newYieldSnapshot);
     event AuthorizedReaderUpdated(address indexed reader, bool authorized);
     event BalanceDecryptRequested(address indexed account);
     event TotalSupplyMadePublic();
@@ -146,6 +157,7 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
     error OnlyMinter();
     error OnlySubscription();
     error OnlyQueue();
+    error OnlyYieldSnapshot();
     error RecipientNotKYC();
     error NoBalance();
     error ZeroAddress();
@@ -174,6 +186,11 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
 
     modifier onlyQueue() {
         if (msg.sender != queue) revert OnlyQueue();
+        _;
+    }
+
+    modifier onlyYieldSnapshot() {
+        if (msg.sender != yieldSnapshot) revert OnlyYieldSnapshot();
         _;
     }
 
@@ -712,6 +729,40 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         return _encryptedTotalSupply;
     }
 
+    // ── Wave 3.5 Phase 5: YieldSnapshot ACL-grant reads ──────────────────
+
+    /// @inheritdoc IMuHavenToken
+    /// @dev Re-grants the caller (the wired `yieldSnapshot`) FHE ACL access
+    ///      on the investor's current balance handle and returns it. A
+    ///      never-held account maps to a fresh zero-handle (not the
+    ///      uninitialised default) so the snapshot reader has a valid input
+    ///      for downstream `FHE.mul(encBalance, encRatio)`. Caller-gated so
+    ///      arbitrary contracts cannot fish ACL access on private balances.
+    function snapshotBalance(address investor) external onlyYieldSnapshot returns (euint128) {
+        euint128 b = _balances[investor];
+        if (!Common.isInitialized(b)) {
+            b = FHE.asEuint128(uint256(0));
+            FHE.allowThis(b);
+        }
+        FHE.allow(b, msg.sender);
+        return b;
+    }
+
+    /// @inheritdoc IMuHavenToken
+    /// @dev Re-grants the caller ACL access on `_encryptedTotalSupply` and
+    ///      returns it. Pre-mint state maps to a fresh zero-handle so the
+    ///      snapshot finalize path has a usable denominator (though zero
+    ///      total supply will be rejected upstream — see YieldSnapshot).
+    function snapshotTotalSupply() external onlyYieldSnapshot returns (euint128) {
+        euint128 ts = _encryptedTotalSupply;
+        if (!Common.isInitialized(ts)) {
+            ts = FHE.asEuint128(uint256(0));
+            FHE.allowThis(ts);
+        }
+        FHE.allow(ts, msg.sender);
+        return ts;
+    }
+
     // ── Async decrypt for balance viewing (Pattern: createDecryptTask) ───
     // NOTE: The recommended pattern is client-side decryptForView() via CoFHE SDK.
     // This on-chain async flow is kept for backwards compatibility.
@@ -797,6 +848,15 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
     function setQueue(address newQueue) external onlyOwner {
         queue = newQueue;
         emit QueueUpdated(newQueue);
+    }
+
+    /// @notice Set the authorised `YieldSnapshot` contract. Wave 3.5
+    ///         gate for `snapshotBalance` / `snapshotTotalSupply` (the
+    ///         ACL-grant reads the pull-based yield flow needs). Passing
+    ///         `address(0)` disables the snapshot reader surface.
+    function setYieldSnapshot(address newYieldSnapshot) external onlyOwner {
+        yieldSnapshot = newYieldSnapshot;
+        emit YieldSnapshotUpdated(newYieldSnapshot);
     }
 
     /// @notice Mark `reader` as authorised for Wave 4 agent-side encrypted-balance
