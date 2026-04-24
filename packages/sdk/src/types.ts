@@ -37,6 +37,21 @@ export interface MuHavenAddresses {
   yieldGate: Address
 }
 
+/**
+ * Shared construction context for Wave 3.5 clients. Every Wave 3.5 client
+ * (`SubscriptionClient`, `TreasuryClient`, `RedemptionQueueClient`,
+ * `YieldSnapshotClient`, `OracleClient`, `IdentityRegistryClient`) takes
+ * this plus its own contract address. Consumers usually build one context
+ * and hand it to every client, so reads and writes share one public + sender
+ * + cofhe triple. Chain-mismatch validation is a consumer concern — check
+ * `publicClient.getChainId()` / `sender.getChainId()` before issuing writes.
+ */
+export interface MuHavenClientContext {
+  publicClient: PublicClient
+  sender: MuHavenSender
+  cofheClient: CofheLikeClient
+}
+
 export interface MuHavenClientConfig {
   publicClient: PublicClient
   /**
@@ -56,6 +71,7 @@ export interface MuHavenClientConfig {
 }
 
 export type ProgressStage =
+  // Wave 3 yield-distribution pipeline
   | 'encrypt'
   | 'batchCreate'
   | 'setEscrowIds'
@@ -63,6 +79,27 @@ export type ProgressStage =
   | 'startDistribution'
   | 'redeem'
   | 'grantAdminDecrypt'
+  // Wave 3.5 atomic-flow stages (see PRODUCTION_DESIGN/FLOWS.md)
+  | 'purchase'
+  | 'redeemInstant'
+  | 'submitQueued'
+  | 'claimQueued'
+  | 'processEpoch'
+  | 'cancelOnKYCRevocation'
+  | 'openEpoch'
+  | 'snapshotBatch'
+  | 'finalizeSnapshot'
+  | 'fundEpoch'
+  | 'claimYield'
+  | 'sweepExpired'
+  | 'deposit'
+  | 'withdraw'
+  | 'setNAV'
+  | 'acceptPendingNAV'
+  | 'rejectPendingNAV'
+  | 'requestNAV'
+  | 'addWhitelisted'
+  | 'setDevMode'
 
 export interface ProgressEvent {
   stage: ProgressStage
