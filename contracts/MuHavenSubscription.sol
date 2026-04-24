@@ -204,7 +204,8 @@ contract MuHavenSubscription is Initializable, ReentrancyGuardTransient, IMuHave
             if (maxSharesHint < cfg.minInvestment) revert BelowMinInvestment();
 
             _requireEligible(msg.sender);
-            _requireCompliance(token, msg.sender, uint256(maxSharesHint));
+            // Purchase = mint convention (`from == address(0)`).
+            _requireCompliance(token, address(0), msg.sender, uint256(maxSharesHint));
 
             uint256 updatedAt;
             (nav, updatedAt) = IPriceOracle(cfg.oracle).getNAV(token);
@@ -275,18 +276,154 @@ contract MuHavenSubscription is Initializable, ReentrancyGuardTransient, IMuHave
     }
 
     /// @inheritdoc IMuHavenSubscription
-    /// @dev Redeem lands in the next Phase 2 sub-phase. Kept as an explicit
-    ///      revert so any premature caller (frontend / SDK) surfaces loudly
-    ///      instead of silently no-op-ing. Marked `pure` because the stub
-    ///      touches no state — the real implementation drops `pure` once the
-    ///      burn + PUSDC-pay + cap-accounting bodies land.
+    /// @dev Mirrors `purchase` with PUSDC direction flipped + burn substituted
+    ///      for mint + cleartext per-epoch instant cap accounting (ADR-004).
+    ///
+    ///      Cap-exceeded behaviour (Phase 2 instant-only):
+    ///        - The cleartext check `used + maxSharesHint*nav > instantCap`
+    ///          short-circuits the body and emits `Redeemed(escalated=true)`
+    ///          with no state change. The investor's frontend / SDK should
+    ///          re-submit via `RedemptionQueue.submit` (Phase 4 will wire the
+    ///          escalation in-contract; until then the routing is client-side).
+    ///        - `EscalatedToQueue` is intentionally **not** emitted here
+    ///          because no real `requestId` exists yet; emitting with id=0
+    ///          would index a fake request. Phase 4 fires it from the same
+    ///          branch with the actual queue-assigned id.
+    ///
+    ///      Burn + payout mirroring (silent-fail per Rule 5):
+    ///        1. Hint-bound the requested shares to `encSharesBounded`.
+    ///        2. Token's `burnFromSubscription` returns `actualBurned`, which
+    ///           is `encSharesBounded` if the investor has sufficient balance,
+    ///           encrypted-zero otherwise. Subscription receives ACL on the
+    ///           returned handle so it can run the proceeds compute downstream.
+    ///        3. `encProceeds = FHE.mul(actualBurned, nav)` mirrors the burn
+    ///           outcome — the investor only receives PUSDC for shares they
+    ///           actually burned.
+    ///        4. PUSDC pulled `treasury → investor` via the ADR-008 legacy
+    ///           selector. Subscription holds operator rights on the treasury's
+    ///           PUSDC balance (granted at `MuHavenTreasury.initialize`).
+    ///
+    ///      Cleartext counter consumes against `maxSharesHint * nav` per
+    ///      ADR-004 — the user's cap commitment is the hint, not the actual
+    ///      encrypted amount. Counter only increments on the instant-success
+    ///      branch (cap-exceeded escalations don't consume cap).
     function redeem(
-        address /* token */,
-        InEuint128 calldata /* encShares */,
-        uint128 /* maxSharesHint */,
-        address /* ephemeralEOA */
-    ) external pure {
-        revert("Redeem: not yet implemented");
+        address token,
+        InEuint128 calldata encShares,
+        uint128 maxSharesHint,
+        address ephemeralEOA
+    ) external nonReentrant {
+        // ── Cleartext gates (Rule 4 — access control before any FHE op) ──
+        if (ephemeralEOA == address(0)) revert InvalidEphemeralEOA();
+        if (maxSharesHint == 0) revert InvalidMaxSharesHint();
+
+        address treasuryAddr;
+        uint256 nav;
+        uint256 epoch;
+        uint256 hintCost;
+        {
+            ITokenRegistry.TokenConfig memory cfg = tokenRegistry.getConfig(token);
+            if (!cfg.active) revert TokenNotRegistered();
+            if (cfg.paused) revert TokenPaused();
+
+            // ADR-025 — cleartext min-investment lower-bound on the hint.
+            if (maxSharesHint < cfg.minInvestment) revert BelowMinInvestment();
+
+            _requireEligible(msg.sender);
+            // Redeem = burn convention (`to == address(0)`).
+            _requireCompliance(token, msg.sender, address(0), uint256(maxSharesHint));
+
+            uint256 updatedAt;
+            (nav, updatedAt) = IPriceOracle(cfg.oracle).getNAV(token);
+            if (nav == 0) revert OracleReturnedZero();
+            if (block.timestamp - updatedAt > IPriceOracle(cfg.oracle).getMaxStaleness(token)) {
+                revert StaleNAV();
+            }
+
+            treasuryAddr = cfg.treasury;
+            epoch = _epochFor(cfg.epochDuration);
+            // `uint256(maxSharesHint) * nav` cannot realistically overflow: hint
+            // ≤ 2^128 - 1, nav ≤ ~1e18 → product ≪ 2^256. Solidity 0.8 reverts
+            // on the impossible case anyway.
+            hintCost = uint256(maxSharesHint) * nav;
+
+            // ── Cap accounting (ADR-004) ──
+            // Cap-exceeded → silent escalate, no state change. Per ADR-004
+            // the cap is in PUSDC base units; `instantRedeemCap == 0` means
+            // "no instant redemption allowed" — every redeem escalates.
+            uint256 used = instantRedeemedThisEpoch[token][epoch];
+            if (used + hintCost > uint256(cfg.instantRedeemCap)) {
+                emit Redeemed(token, msg.sender, maxSharesHint, true);
+                return;
+            }
+        }
+
+        // ── FHE path (Rule 5 — silent-fail via `FHE.select`) ──
+        // Scratch handles are block-scoped; only `encSharesBounded` outlives
+        // the FHE block (used by both the burn call and the proceeds compute).
+        euint128 encSharesBounded;
+        {
+            euint128 encSharesIn = FHE.asEuint128(encShares);
+            FHE.allowThis(encSharesIn);
+
+            euint128 encHint = FHE.asEuint128(uint256(maxSharesHint));
+            FHE.allowThis(encHint);
+
+            ebool withinHint = FHE.lte(encSharesIn, encHint);
+            FHE.allowThis(withinHint);
+
+            euint128 zero128 = FHE.asEuint128(uint256(0));
+            FHE.allowThis(zero128);
+
+            encSharesBounded = FHE.select(withinHint, encSharesIn, zero128);
+            FHE.allowThis(encSharesBounded);
+        }
+
+        // ── Burn → returns silent-fail-bounded actualBurned ──
+        FHE.allow(encSharesBounded, token);
+        euint128 actualBurned = IMuHavenToken(token).burnFromSubscription(
+            msg.sender,
+            encSharesBounded,
+            ephemeralEOA
+        );
+
+        // ── Compute proceeds against actual burn (mirrors silent-fail) ──
+        euint64 encProceeds;
+        {
+            // `actualBurned` already has ACL granted to this contract by
+            // `burnFromSubscription` — re-grant explicitly for defence-in-depth
+            // against future Token implementations that change that contract.
+            FHE.allowThis(actualBurned);
+
+            euint128 encNav = FHE.asEuint128(nav);
+            FHE.allowThis(encNav);
+
+            euint128 encProceeds128 = FHE.mul(actualBurned, encNav);
+            FHE.allowThis(encProceeds128);
+
+            // Narrow to PUSDC's native width (`euint64`) per ADR-008.
+            encProceeds = FHE.asEuint64(encProceeds128);
+            FHE.allowThis(encProceeds);
+            FHE.allow(encProceeds, pusdc);
+        }
+
+        // ── PUSDC pull treasury → investor (subscription is operator) ──
+        {
+            (bool ok, ) = pusdc.call(
+                abi.encodeWithSelector(
+                    _TRANSFER_FROM_UINT256,
+                    treasuryAddr,
+                    msg.sender,
+                    uint256(euint64.unwrap(encProceeds))
+                )
+            );
+            if (!ok) revert PaymentTransferFailed();
+        }
+
+        // ── Cap consumption (cleartext, against hint per ADR-004) ──
+        instantRedeemedThisEpoch[token][epoch] += hintCost;
+
+        emit Redeemed(token, msg.sender, maxSharesHint, false);
     }
 
     // ── Internal helpers ─────────────────────────────────────────────────
@@ -306,13 +443,22 @@ contract MuHavenSubscription is Initializable, ReentrancyGuardTransient, IMuHave
     }
 
     /// @dev Modular compliance gate. Phase 2 skips when unwired; Phase 3
-    ///      binds modules and this starts gating purchases. `from == 0`
-    ///      signals mint to compliance modules (ERC-3643 convention).
-    function _requireCompliance(address token, address to, uint256 hintAmount) internal view {
+    ///      binds modules and this starts gating purchases / redeems.
+    ///      `from == address(0)` signals **mint** (purchase) to compliance
+    ///      modules and `to == address(0)` signals **burn** (redeem) per
+    ///      `IModularCompliance.canTransfer` natspec — modules may apply
+    ///      different rules to each direction (e.g. lockup blocks burn but
+    ///      not mint, max-balance only triggers on mint).
+    function _requireCompliance(
+        address token,
+        address from,
+        address to,
+        uint256 hintAmount
+    ) internal view {
         if (modularCompliance == address(0)) return;
         if (!IModularCompliance(modularCompliance).canTransfer(
             token,
-            address(0),
+            from,
             to,
             hintAmount
         )) {

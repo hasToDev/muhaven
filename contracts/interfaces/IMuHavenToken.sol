@@ -20,11 +20,18 @@ interface IMuHavenToken {
         euint128 encAmount,
         address ephemeralEOA
     ) external;
+    /// @notice Burn `encAmount` shares from `from` on behalf of a paid redeem
+    ///         executed through `MuHavenSubscription`. Returns the amount that
+    ///         was actually burned: equal to `encAmount` if `from`'s balance
+    ///         covers it, encrypted-zero otherwise (silent-fail per
+    ///         `FHE_ACL_CONVENTIONS.md` Rule 5). The Subscription mirrors the
+    ///         returned handle into the PUSDC payout leg so the investor only
+    ///         receives proceeds for shares they actually held.
     function burnFromSubscription(
         address from,
         euint128 encAmount,
         address ephemeralEOA
-    ) external;
+    ) external returns (euint128 actualBurned);
 
     // ── Views / admin used by platform contracts ────────────────────────
     function encryptedBalanceOf(address account) external view returns (euint128);

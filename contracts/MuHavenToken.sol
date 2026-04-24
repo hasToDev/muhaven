@@ -436,32 +436,39 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
 
     // ── Burn (Wave 3.5 paid-settlement path — Subscription only) ────────
 
-    /// @notice Burns `encAmount` shares from `from` on behalf of a paid redeem
-    ///         executed through `MuHavenSubscription`. Grants decrypt access on
-    ///         the updated balance handle to `ephemeralEOA` per ADR-021.
+    /// @inheritdoc IMuHavenToken
+    /// @dev Returns the silent-fail-bounded actual burn amount so the caller
+    ///      (Subscription) can mirror it into the PUSDC payout leg — paying
+    ///      proceeds for the requested amount when the user lacks sufficient
+    ///      balance would let an investor drain the treasury without holding
+    ///      shares. ACL on the returned handle is granted to the caller so it
+    ///      can run downstream FHE math on the same handle in this tx.
     function burnFromSubscription(
         address from,
         euint128 encAmount,
         address ephemeralEOA
-    ) external onlySubscription {
+    ) external onlySubscription returns (euint128 actualBurned) {
         if (ephemeralEOA == address(0)) revert InvalidEphemeralEOA();
         if (!Common.isInitialized(_balances[from])) revert NoBalance();
 
         FHE.allowThis(encAmount);
 
-        _burnInternal(from, encAmount, ephemeralEOA);
+        actualBurned = _burnInternal(from, encAmount, ephemeralEOA);
+        // Subscription needs ACL to run `FHE.mul(actualBurned, nav)` for the
+        // proceeds compute downstream.
+        FHE.allow(actualBurned, msg.sender);
     }
 
     function _burnInternal(
         address from,
         euint128 encAmount,
         address ephemeralEOA
-    ) internal {
+    ) internal returns (euint128 burnAmount) {
         // Silent failure on insufficient balance
         ebool hasEnough = FHE.gte(_balances[from], encAmount);
         euint128 zero = FHE.asEuint128(uint256(0));
         FHE.allowThis(zero);
-        euint128 burnAmount = FHE.select(hasEnough, encAmount, zero);
+        burnAmount = FHE.select(hasEnough, encAmount, zero);
         FHE.allowThis(burnAmount);
 
         _balances[from] = FHE.sub(_balances[from], burnAmount);

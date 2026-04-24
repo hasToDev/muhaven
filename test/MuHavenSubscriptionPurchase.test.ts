@@ -779,18 +779,8 @@ describe("MuHavenSubscription.purchase", () => {
     });
   });
 
-  // ── redeem() stub ───────────────────────────────────────────────────────
-
-  describe("redeem()", () => {
-    it("reverts with the 'not yet implemented' marker in Phase 2 sub-phase 7", async () => {
-      const { subscription, investor, investorClient, token, eph } =
-        await loadFixture(deploySubscriptionFixture);
-      const enc = await encUint128(investorClient, 1n);
-      await expect(
-        subscription
-          .connect(investor)
-          .redeem(await token.getAddress(), enc, HINT_CAP, eph.address)
-      ).to.be.revertedWith("Redeem: not yet implemented");
-    });
-  });
+  // ── redeem() ────────────────────────────────────────────────────────────
+  // The full redeem behaviour now lives in `test/MuHavenSubscriptionRedeem.test.ts`.
+  // This file's leftover stub assertion was retired when the body landed in
+  // sub-phase 8.
 });

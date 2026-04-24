@@ -77,6 +77,43 @@ contract AllowAllIdentityRegistry is IMuHavenIdentityRegistry {
     function setTrustedIssuersRegistry(address) external {}
 }
 
+/// @title BurnOnlyDenyCompliance
+/// @notice Allows mint (`from == address(0)`) and transfer
+///         (`from != 0 && to != 0`); denies burn (`to == address(0)`).
+///         Used by Phase 2 redeem tests to lock in that
+///         `MuHavenSubscription.redeem` calls `canTransfer` with the burn
+///         convention (`to == address(0)`) — purchase keeps working under
+///         this stub while redeem revertsinside `_requireCompliance`.
+contract BurnOnlyDenyCompliance is IModularCompliance {
+    function canTransfer(
+        address /* token */,
+        address /* from */,
+        address to,
+        uint256 /* amount */
+    ) external pure returns (bool) {
+        return to != address(0);
+    }
+
+    function transferred(address, address, address, uint256) external {}
+    function created(address, address, uint256) external {}
+    function destroyed(address, address, uint256) external {}
+
+    function bindModule(address, address) external {}
+    function unbindModule(address, address) external {}
+
+    function getBoundModules(address) external pure returns (address[] memory) {
+        return new address[](0);
+    }
+
+    function moduleCount(address) external pure returns (uint256) {
+        return 0;
+    }
+
+    function isModuleBound(address, address) external pure returns (bool) {
+        return false;
+    }
+}
+
 /// @title DenyAllIdentityRegistry
 /// @notice Companion stub that always returns `false` from `isVerified`.
 ///         Phase 2 tests use this to prove `MuHavenSubscription.purchase`
