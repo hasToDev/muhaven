@@ -675,6 +675,30 @@ describe("MuHavenSubscription.redeem", () => {
       ).to.be.revertedWithCustomError(subscription, "StaleNAV");
     });
 
+    it("reverts CostOverflowsPUSDCWidth when maxSharesHint * nav exceeds PUSDC's euint64 width", async () => {
+      // Mirror of the purchase-side guard. Without it, `encProceeds =
+      // FHE.asEuint64(encProceeds128)` would silently truncate on an
+      // overflow-sized hint, letting the share burn fire for the full
+      // amount while the PUSDC payout shrank — an investor-UX loss even
+      // though the direction isn't exploitable.
+      const { subscription, oracle, investor, investorClient, token, eph } =
+        await loadFixture(deployRedeemFixture);
+
+      // Re-pin NAV to a tiny value so we can drive `hint * nav` over 2^64-1
+      // with a still-legal uint128 hint. Fresh timestamp to clear staleness.
+      const now = (await hre.ethers.provider.getBlock("latest"))!.timestamp;
+      await oracle.setNAV(await token.getAddress(), 2n, BigInt(now));
+
+      const hugeHint = (1n << 64n) - 1n;
+      const enc = await encUint128(investorClient, 1n);
+
+      await expect(
+        subscription
+          .connect(investor)
+          .redeem(await token.getAddress(), enc, hugeHint, eph.address)
+      ).to.be.revertedWithCustomError(subscription, "CostOverflowsPUSDCWidth");
+    });
+
     it("reverts ComplianceBlocked when wired compliance denies the redeem", async () => {
       const {
         subscription,

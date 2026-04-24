@@ -570,6 +570,71 @@ describe("MuHavenSubscription.purchase", () => {
       ).to.be.revertedWithCustomError(subscription, "StaleNAV");
     });
 
+    it("reverts CostOverflowsPUSDCWidth when maxSharesHint * nav exceeds PUSDC's euint64 width", async () => {
+      // Catches the Phase-2 review bug: `encCost = FHE.asEuint64(encCost128)`
+      // silently truncates when `encSharesBounded * nav > 2^64 - 1`, which
+      // would let an investor mint the full hint's worth of shares while the
+      // PUSDC leg only transferred the truncated (smaller) amount. The
+      // cleartext guard at entry forces the tx to revert loudly so the
+      // silent-fail semantics only ever operate within PUSDC's legitimate
+      // width.
+      const { subscription, oracle, investor, investorClient, token, eph } =
+        await loadFixture(deploySubscriptionFixture);
+
+      // nav = 2 · (type(uint64).max) would overflow. We pick nav = 2 and
+      // maxSharesHint = type(uint64).max so the product is 2^65 - 2 (exceeds
+      // uint64 width but still comfortably within uint256, so Solidity's
+      // unchecked overflow panic doesn't fire before our explicit revert).
+      const now = (await hre.ethers.provider.getBlock("latest"))!.timestamp;
+      await oracle.setNAV(await token.getAddress(), 2n, BigInt(now));
+
+      const enc = await encUint128(investorClient, 1n);
+      const hugeHint = (1n << 64n) - 1n;
+
+      await expect(
+        subscription
+          .connect(investor)
+          .purchase(await token.getAddress(), enc, hugeHint, eph.address)
+      ).to.be.revertedWithCustomError(subscription, "CostOverflowsPUSDCWidth");
+    });
+
+    it("accepts a boundary hint where hint * nav == type(uint64).max (no revert)", async () => {
+      // Complement to the overflow test above: the exact boundary case
+      // where the product fits in uint64 exactly must not revert. Proves
+      // the guard is `>` not `>=`.
+      const {
+        subscription,
+        oracle,
+        investor,
+        investorClient,
+        token,
+        pusdc,
+        eph,
+      } = await loadFixture(deploySubscriptionFixture);
+
+      // nav = 1, hint = type(uint64).max → product = type(uint64).max
+      // (exactly — does not trigger the guard). Sufficient PUSDC must be
+      // available for the pull; give the investor a tiny purchase instead.
+      const now = (await hre.ethers.provider.getBlock("latest"))!.timestamp;
+      await oracle.setNAV(await token.getAddress(), 1n, BigInt(now));
+
+      // Mint additional PUSDC to the investor so the 1-share purchase clears
+      // cleanly against the new 1-unit NAV.
+      await pusdc.mint(investor.address, 1n);
+
+      const boundaryHint = (1n << 64n) - 1n; // type(uint64).max
+      const enc = await encUint128(investorClient, 1n);
+
+      // No revert expected — purchase passes through all gates.
+      await expect(
+        subscription
+          .connect(investor)
+          .purchase(await token.getAddress(), enc, boundaryHint, eph.address)
+      )
+        .to.emit(subscription, "Purchased")
+        .withArgs(await token.getAddress(), investor.address, boundaryHint);
+    });
+
     it("reverts PaymentTransferFailed when investor hasn't set subscription as PUSDC operator", async () => {
       const { subscription, investor, investorClient, token, pusdc, eph } =
         await loadFixture(deploySubscriptionFixture);

@@ -122,6 +122,15 @@ contract MuHavenSubscription is Initializable, ReentrancyGuardTransient, IMuHave
     ///         floor (ADR-025 — cleartext lower-bound on the hint).
     error BelowMinInvestment();
 
+    /// @notice `uint256(maxSharesHint) * nav` exceeds `type(uint64).max` —
+    ///         committing the tx would silently truncate `encCost` during
+    ///         `FHE.asEuint64(encCost128)` and desync the PUSDC leg from
+    ///         the shares leg (purchase: undercharge investor + over-mint;
+    ///         redeem: underpay investor). Cleartext-guarded at entry so
+    ///         the silent-fail semantics only ever apply within PUSDC's
+    ///         legitimate `euint64` width.
+    error CostOverflowsPUSDCWidth();
+
     // ── Events (additive to interface) ───────────────────────────────────
 
     event SubscriptionInitialized(
@@ -207,11 +216,28 @@ contract MuHavenSubscription is Initializable, ReentrancyGuardTransient, IMuHave
             // Purchase = mint convention (`from == address(0)`).
             _requireCompliance(token, address(0), msg.sender, uint256(maxSharesHint));
 
-            uint256 updatedAt;
-            (nav, updatedAt) = IPriceOracle(cfg.oracle).getNAV(token);
+            // Consolidated freshness predicate — folds staleness + L2 sequencer
+            // uptime + grace-window checks (ADR-014). Using `isFresh` here (vs
+            // a raw `block.timestamp - updatedAt` calc) is load-bearing on Arb
+            // One mainnet where the sequencer feed blocks stale-during-outage
+            // quotes. `OracleReturnedZero` is kept as a defense-in-depth check
+            // because `isFresh` implementations differ on whether `nav == 0`
+            // reports as !fresh (IssuerControlledOracle: yes; MockPriceOracle:
+            // previously no, fixed in Phase 2 review).
+            IPriceOracle oracle = IPriceOracle(cfg.oracle);
+            (nav, ) = oracle.getNAV(token);
             if (nav == 0) revert OracleReturnedZero();
-            if (block.timestamp - updatedAt > IPriceOracle(cfg.oracle).getMaxStaleness(token)) {
-                revert StaleNAV();
+            if (!oracle.isFresh(token)) revert StaleNAV();
+
+            // Cleartext upper-bound on the cost so the `FHE.asEuint64` narrow
+            // below cannot silently truncate. A truncated `encCost` would
+            // let the PUSDC leg undercharge while the shares leg minted the
+            // full `encSharesBounded` — see `CostOverflowsPUSDCWidth` natspec.
+            // Unchecked-multiply overflow is caught by Solidity 0.8 panic; a
+            // nav that overflows `uint256` when multiplied by a `uint128`
+            // hint is itself catastrophic config and deserves the loud revert.
+            if (uint256(maxSharesHint) * nav > type(uint64).max) {
+                revert CostOverflowsPUSDCWidth();
             }
 
             treasuryAddr = cfg.treasury;
@@ -333,19 +359,24 @@ contract MuHavenSubscription is Initializable, ReentrancyGuardTransient, IMuHave
             // Redeem = burn convention (`to == address(0)`).
             _requireCompliance(token, msg.sender, address(0), uint256(maxSharesHint));
 
-            uint256 updatedAt;
-            (nav, updatedAt) = IPriceOracle(cfg.oracle).getNAV(token);
+            // Consolidated freshness predicate — see purchase() for the ADR-014
+            // rationale. Redeem paths share the sequencer-uptime gate.
+            IPriceOracle oracle = IPriceOracle(cfg.oracle);
+            (nav, ) = oracle.getNAV(token);
             if (nav == 0) revert OracleReturnedZero();
-            if (block.timestamp - updatedAt > IPriceOracle(cfg.oracle).getMaxStaleness(token)) {
-                revert StaleNAV();
-            }
+            if (!oracle.isFresh(token)) revert StaleNAV();
 
             treasuryAddr = cfg.treasury;
             epoch = _epochFor(cfg.epochDuration);
             // `uint256(maxSharesHint) * nav` cannot realistically overflow: hint
-            // ≤ 2^128 - 1, nav ≤ ~1e18 → product ≪ 2^256. Solidity 0.8 reverts
-            // on the impossible case anyway.
+            // ≤ 2^128 - 1, nav is a well-formed NAV so the product stays well
+            // below 2^256. Solidity 0.8 reverts on the truly impossible case.
             hintCost = uint256(maxSharesHint) * nav;
+
+            // PUSDC-width guard — mirrors the purchase() check. A truncated
+            // `encProceeds = FHE.asEuint64(encProceeds128)` would underpay the
+            // investor while the share burn still executed for the full amount.
+            if (hintCost > type(uint64).max) revert CostOverflowsPUSDCWidth();
 
             // ── Cap accounting (ADR-004) ──
             // Cap-exceeded → silent escalate, no state change. Per ADR-004

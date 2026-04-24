@@ -47,13 +47,18 @@ contract MockPriceOracle is IPriceOracle {
 
     /// @notice Mock has no sequencer integration — freshness is purely a
     ///         function of the pinned `updatedAt` vs the per-token staleness
-    ///         window. A token with `updatedAt == 0` (never pinned) is
-    ///         reported as not fresh.
+    ///         window. A token with `updatedAt == 0` (never pinned) or
+    ///         `nav == 0` (explicitly wiped) is reported as not fresh —
+    ///         matches `IssuerControlledOracle.isFresh` so callers that
+    ///         rely on the consolidated predicate behave identically against
+    ///         mock and production oracles.
     function isFresh(address token) external view returns (bool) {
         uint256 updated = updatedAt[token];
         if (updated == 0) return false;
+        if (nav[token] == 0) return false;
         uint256 custom = maxStalenessPerToken[token];
         uint256 window = custom == 0 ? DEFAULT_MAX_STALENESS : custom;
+        if (block.timestamp < updated) return false;
         return block.timestamp - updated <= window;
     }
 }

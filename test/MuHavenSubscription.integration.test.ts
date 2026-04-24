@@ -379,6 +379,83 @@ describe("Wave 3.5 Phase 2 integration", () => {
     await hre.cofhe.mocks.expectPlaintext(issuerAfter, 10n * ONE_PUSDC);
   });
 
+  // ── Case 6: Sequencer-uptime gate blocks purchase + redeem ──────────────
+
+  it("Case 6 — sequencer down blocks purchase + redeem even with fresh NAV", async () => {
+    // Catches the Phase-2 review bug: Subscription used to do a raw
+    // `block.timestamp - updatedAt > maxStaleness` check that bypassed the
+    // oracle's sequencer-uptime gate. On Arb One mainnet this would let
+    // stale-during-outage quotes settle. Proving the fix: rotate the oracle
+    // onto a MockSequencerUptimeFeed, flip it to DOWN, and confirm both
+    // Subscription paths revert StaleNAV even though `getNAV` returns fresh
+    // cleartext. Then flip the feed back UP (with grace elapsed) and confirm
+    // both paths unblock.
+    const {
+      deployer,
+      subscription,
+      issuer,
+      investor,
+      investorClient,
+      token,
+      oracle,
+      eph,
+    } = await loadFixture(deployIntegrationFixture);
+
+    // Seed NAV so the fresh-NAV leg is genuine — only the sequencer gate
+    // can cause a StaleNAV revert in this test.
+    await oracle.connect(issuer).setNAV(await token.getAddress(), DEFAULT_NAV);
+
+    // Wire a MockSequencerUptimeFeed; start UP so the first purchase works.
+    const now = (await hre.ethers.provider.getBlock("latest"))!.timestamp;
+    const Feed = await hre.ethers.getContractFactory("MockSequencerUptimeFeed");
+    const feed = await Feed.deploy(0, now - 3600 - 10); // up, past grace
+    await oracle.connect(deployer).setSequencerUptimeFeed(await feed.getAddress());
+
+    // Baseline — first purchase succeeds.
+    let enc = await encUint128(investorClient, 1n);
+    await subscription
+      .connect(investor)
+      .purchase(await token.getAddress(), enc, HINT_CAP, eph.address);
+
+    // Flip the sequencer to DOWN. Both Subscription paths must now revert
+    // StaleNAV — `getNAV` still returns the fresh value, so pre-fix the
+    // Subscription would have happily served it.
+    const nowDown = (await hre.ethers.provider.getBlock("latest"))!.timestamp;
+    await feed.setStatus(1, nowDown);
+
+    enc = await encUint128(investorClient, 1n);
+    await expect(
+      subscription
+        .connect(investor)
+        .purchase(await token.getAddress(), enc, HINT_CAP, eph.address)
+    ).to.be.revertedWithCustomError(subscription, "StaleNAV");
+
+    enc = await encUint128(investorClient, 1n);
+    await expect(
+      subscription
+        .connect(investor)
+        .redeem(await token.getAddress(), enc, HINT_CAP, eph.address)
+    ).to.be.revertedWithCustomError(subscription, "StaleNAV");
+
+    // Recover the sequencer; must also clear the grace window (default 1h).
+    const nowRecover = (await hre.ethers.provider.getBlock("latest"))!.timestamp;
+    await feed.setStatus(0, nowRecover);
+    // Inside the grace window — still not fresh.
+    enc = await encUint128(investorClient, 1n);
+    await expect(
+      subscription
+        .connect(investor)
+        .purchase(await token.getAddress(), enc, HINT_CAP, eph.address)
+    ).to.be.revertedWithCustomError(subscription, "StaleNAV");
+
+    // Advance past the 1h grace period — purchase unblocks.
+    await time.increase(3600 + 1);
+    enc = await encUint128(investorClient, 1n);
+    await subscription
+      .connect(investor)
+      .purchase(await token.getAddress(), enc, HINT_CAP, eph.address);
+  });
+
   // ── Case 5: Deviation gate rejects → owner accepts ──────────────────────
 
   it("Case 5 — deviation gate: over-threshold update parks pending; purchase still uses prior NAV; accept commits", async () => {
