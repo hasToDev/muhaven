@@ -80,4 +80,14 @@ interface IMuHavenIdentityRegistry {
 
     function setClaimTopicsRegistry(address newRegistry) external;
     function setTrustedIssuersRegistry(address newRegistry) external;
+
+    // ── Compliance-module data surface (Phase 3 extension) ──────────────
+
+    /// @notice ISO-3166 numeric country code for `account` (0 = unset).
+    ///         Consumed by `CountryAllow` / `CountryRestrict` modules.
+    function countryOf(address account) external view returns (uint16);
+
+    /// @notice Accredited-investor flag for `account` (ERC-735 topic 7
+    ///         equivalent). Consumed by `MaxHolders` accredited counter.
+    function isAccredited(address account) external view returns (bool);
 }

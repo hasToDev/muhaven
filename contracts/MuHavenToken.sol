@@ -16,6 +16,8 @@ import {
 import {IKYCGate} from "./interfaces/IKYCGate.sol";
 import {IInvestorRegistry} from "./interfaces/IInvestorRegistry.sol";
 import {IMuHavenToken} from "./interfaces/IMuHavenToken.sol";
+import {IMuHavenIdentityRegistry} from "./interfaces/IMuHavenIdentityRegistry.sol";
+import {IModularCompliance} from "./interfaces/IModularCompliance.sol";
 
 /// @title MuHavenToken
 /// @notice fhERC-20 RWA token with encrypted balances, transfers, and approvals.
@@ -95,10 +97,23 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
     ///         `setAuthorizedReader` as a forward-compatibility hook.
     mapping(address => bool) public authorizedReaders;
 
-    /// @dev Reserved storage for future upgrades. Decremented by 2 slots to
-    ///      accommodate `subscription` + `authorizedReaders` above,
-    ///      preserving the total storage footprint (proxy-safe).
-    uint256[48] private __gap;
+    // ── Wave 3.5 Phase 3: ERC-3643 compliance wiring (ADR-011) ──────────
+
+    /// @notice Phase 3 identity registry. When non-zero, supersedes
+    ///         `kycGate` for eligibility checks on mint / transfer.
+    address public identityRegistry;
+
+    /// @notice Phase 3 modular compliance coordinator. When non-zero, every
+    ///         transfer / mint / burn consults `canTransfer` and fires the
+    ///         appropriate state hook (`created` / `transferred` /
+    ///         `destroyed`). Zero ⇒ compliance is not gated by this token.
+    address public modularCompliance;
+
+    /// @dev Reserved storage for future upgrades. Decremented by 4 slots to
+    ///      accommodate `subscription`, `authorizedReaders`,
+    ///      `identityRegistry`, and `modularCompliance` above, preserving
+    ///      the total storage footprint (proxy-safe).
+    uint256[46] private __gap;
 
     // ── Events ───────────────────────────────────────────────────────────
 
@@ -114,6 +129,8 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
     event BalanceDecryptRequested(address indexed account);
     event TotalSupplyMadePublic();
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event IdentityRegistryUpdated(address indexed newRegistry);
+    event ModularComplianceUpdated(address indexed newCompliance);
 
     // ── Errors ───────────────────────────────────────────────────────────
 
@@ -125,6 +142,7 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
     error ZeroAddress();
     error AlreadyPublic();
     error InvalidEphemeralEOA();
+    error ComplianceBlocked();
 
     // ── Modifiers ────────────────────────────────────────────────────────
 
@@ -186,6 +204,50 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
     function symbol() external view returns (string memory) { return _symbol; }
     function decimals() external pure returns (uint8) { return 18; }
 
+    // ── Phase 3 eligibility / compliance helpers ─────────────────────────
+
+    /// @dev Resolved KYC check. Uses `identityRegistry.isVerified` when the
+    ///      Phase 3 registry is wired, otherwise falls back to the Wave 3
+    ///      `kycGate.isEligible` so this contract keeps working pre-cutover.
+    function _isEligible(address account) internal view returns (bool) {
+        address reg = identityRegistry;
+        if (reg != address(0)) {
+            return IMuHavenIdentityRegistry(reg).isVerified(account);
+        }
+        return kycGate.isEligible(account);
+    }
+
+    /// @dev Modular compliance gate. No-op when no coordinator is wired.
+    ///      Called before any FHE work on the P2P transfer path.
+    function _requireCompliance(address from, address to, uint256 amount) internal view {
+        address comp = modularCompliance;
+        if (comp == address(0)) return;
+        if (!IModularCompliance(comp).canTransfer(address(this), from, to, amount)) {
+            revert ComplianceBlocked();
+        }
+    }
+
+    /// @dev State-hook dispatch. No-op when no coordinator is wired. Called
+    ///      after successful state changes so stateful modules (MaxHolders,
+    ///      MaxBalance, Lockup) can update their counters.
+    function _notifyMint(address to, uint256 amount) internal {
+        address comp = modularCompliance;
+        if (comp == address(0)) return;
+        IModularCompliance(comp).created(address(this), to, amount);
+    }
+
+    function _notifyBurn(address from, uint256 amount) internal {
+        address comp = modularCompliance;
+        if (comp == address(0)) return;
+        IModularCompliance(comp).destroyed(address(this), from, amount);
+    }
+
+    function _notifyTransfer(address from, address to, uint256 amount) internal {
+        address comp = modularCompliance;
+        if (comp == address(0)) return;
+        IModularCompliance(comp).transferred(address(this), from, to, amount);
+    }
+
     // ── Mint (Wave 3 encrypted-input path — kept for test scaffolding) ──
 
     /// @notice Mints encrypted tokens to a KYC-eligible recipient. Caller must
@@ -195,23 +257,32 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
     ///      paid-settlement mints go through `mintFromSubscription` which
     ///      requires an `ephemeralEOA` per ADR-021.
     function mint(address to, InEuint128 memory encryptedAmount) external onlyMinter whenNotPaused {
-        if (!kycGate.isEligible(to)) revert RecipientNotKYC();
+        if (!_isEligible(to)) revert RecipientNotKYC();
+        // Amount is encrypted; modules get 0 as a cleartext placeholder. Amount-
+        // aware rules (MaxBalance) are loose on this path — Wave 3 scaffolding,
+        // not a production entry point.
+        _requireCompliance(address(0), to, 0);
 
         euint128 amount = FHE.asEuint128(encryptedAmount);
         FHE.allowThis(amount);
 
         _mintInternal(to, amount, address(0));
+        _notifyMint(to, 0);
     }
 
     // ── Mint (cleartext input — vault path) ──────────────────────────────
 
     function mintFromVault(address to, uint256 amount) external onlyMinter whenNotPaused {
-        if (!kycGate.isEligible(to)) revert RecipientNotKYC();
+        if (!_isEligible(to)) revert RecipientNotKYC();
+        // Vault path has cleartext amount — pass through so amount-aware
+        // modules (MaxBalance) can evaluate accurately.
+        _requireCompliance(address(0), to, amount);
 
         euint128 encAmount = FHE.asEuint128(amount);
         FHE.allowThis(encAmount);
 
         _mintInternal(to, encAmount, address(0));
+        _notifyMint(to, amount);
     }
 
     // ── Mint (Wave 3.5 paid-settlement path — Subscription only) ────────
@@ -229,7 +300,7 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         address ephemeralEOA
     ) external onlySubscription whenNotPaused {
         if (ephemeralEOA == address(0)) revert InvalidEphemeralEOA();
-        if (!kycGate.isEligible(to)) revert RecipientNotKYC();
+        if (!_isEligible(to)) revert RecipientNotKYC();
 
         // Subscription allows encAmount to this contract before the call, but
         // explicit allowThis is safe and defensive against future changes.
@@ -276,12 +347,17 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
     ///         balance handles. Use the three-arg overload in Wave 3.5 flows
     ///         to get the ADR-021 ephemeral-EOA grant.
     function transfer(address to, InEuint128 memory encryptedAmount) external whenNotPaused {
-        if (!kycGate.isEligible(to)) revert RecipientNotKYC();
+        if (!_isEligible(to)) revert RecipientNotKYC();
+        // Amount encrypted; cleartext placeholder=0 for compliance modules.
+        // Amount-aware rules are loose on P2P paths per ADR-019's known-loose
+        // behaviour — tightened when an FHE-native compliance variant lands.
+        _requireCompliance(msg.sender, to, 0);
 
         euint128 amount = FHE.asEuint128(encryptedAmount);
         FHE.allowThis(amount);
 
         _transfer(msg.sender, to, amount, address(0));
+        _notifyTransfer(msg.sender, to, 0);
     }
 
     /// @notice Wave 3.5 canonical transfer. Grants `ephemeralEOA` decrypt
@@ -296,12 +372,14 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         address ephemeralEOA
     ) external whenNotPaused {
         if (ephemeralEOA == address(0)) revert InvalidEphemeralEOA();
-        if (!kycGate.isEligible(to)) revert RecipientNotKYC();
+        if (!_isEligible(to)) revert RecipientNotKYC();
+        _requireCompliance(msg.sender, to, 0);
 
         euint128 amount = FHE.asEuint128(encryptedAmount);
         FHE.allowThis(amount);
 
         _transfer(msg.sender, to, amount, ephemeralEOA);
+        _notifyTransfer(msg.sender, to, 0);
     }
 
     // ── TransferFrom — Wave 3 legacy + Wave 3.5 canonical overloads ────
@@ -311,12 +389,14 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         address to,
         InEuint128 memory encryptedAmount
     ) external whenNotPaused {
-        if (!kycGate.isEligible(to)) revert RecipientNotKYC();
+        if (!_isEligible(to)) revert RecipientNotKYC();
+        _requireCompliance(from, to, 0);
 
         euint128 amount = FHE.asEuint128(encryptedAmount);
         FHE.allowThis(amount);
 
         _transferFrom(from, to, amount, address(0));
+        _notifyTransfer(from, to, 0);
     }
 
     function transferFrom(
@@ -326,12 +406,14 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         address ephemeralEOA
     ) external whenNotPaused {
         if (ephemeralEOA == address(0)) revert InvalidEphemeralEOA();
-        if (!kycGate.isEligible(to)) revert RecipientNotKYC();
+        if (!_isEligible(to)) revert RecipientNotKYC();
+        _requireCompliance(from, to, 0);
 
         euint128 amount = FHE.asEuint128(encryptedAmount);
         FHE.allowThis(amount);
 
         _transferFrom(from, to, amount, ephemeralEOA);
+        _notifyTransfer(from, to, 0);
     }
 
     function _transferFrom(
@@ -427,11 +509,15 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
     ///         burns zero.
     function burnFromVault(address from, uint256 amount) external onlyMinter {
         if (!Common.isInitialized(_balances[from])) revert NoBalance();
+        // Vault-driven burn: amount is cleartext, so amount-aware compliance
+        // modules get the real value.
+        _requireCompliance(from, address(0), amount);
 
         euint128 encAmount = FHE.asEuint128(amount);
         FHE.allowThis(encAmount);
 
         _burnInternal(from, encAmount, address(0));
+        _notifyBurn(from, amount);
     }
 
     // ── Burn (Wave 3.5 paid-settlement path — Subscription only) ────────
@@ -588,6 +674,21 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         if (newGate == address(0)) revert ZeroAddress();
         kycGate = IKYCGate(newGate);
         emit KYCGateUpdated(newGate);
+    }
+
+    /// @notice Wire the Phase 3 identity registry. Non-zero supersedes the
+    ///         Wave 3 `kycGate` for `_isEligible` checks. Pass `address(0)`
+    ///         to revert to legacy gating.
+    function setIdentityRegistry(address newRegistry) external onlyOwner {
+        identityRegistry = newRegistry;
+        emit IdentityRegistryUpdated(newRegistry);
+    }
+
+    /// @notice Wire the Phase 3 modular compliance coordinator. Zero
+    ///         disables compliance gating on this token.
+    function setModularCompliance(address newCompliance) external onlyOwner {
+        modularCompliance = newCompliance;
+        emit ModularComplianceUpdated(newCompliance);
     }
 
     function setIssuer(address newIssuer) external onlyOwner {

@@ -298,6 +298,13 @@ contract MuHavenSubscription is Initializable, ReentrancyGuardTransient, IMuHave
         FHE.allow(encSharesBounded, token);
         IMuHavenToken(token).mintFromSubscription(msg.sender, encSharesBounded, ephemeralEOA);
 
+        // ── Compliance state hook (after successful mint) ──
+        // `maxSharesHint` is the cleartext upper bound the investor committed
+        // to — the only amount signal cleartext modules can use. Under-count
+        // cases from silent-fail mints are handled by ADR-019's known-loose
+        // MaxBalance behaviour.
+        _notifyCreated(token, msg.sender, uint256(maxSharesHint));
+
         emit Purchased(token, msg.sender, maxSharesHint);
     }
 
@@ -454,6 +461,11 @@ contract MuHavenSubscription is Initializable, ReentrancyGuardTransient, IMuHave
         // ── Cap consumption (cleartext, against hint per ADR-004) ──
         instantRedeemedThisEpoch[token][epoch] += hintCost;
 
+        // ── Compliance state hook (after successful burn + payout) ──
+        // Passes the cleartext hint for symmetry with purchase. See
+        // `_notifyCreated` comment for the ADR-019 slack.
+        _notifyDestroyed(token, msg.sender, uint256(maxSharesHint));
+
         emit Redeemed(token, msg.sender, maxSharesHint, false);
     }
 
@@ -495,6 +507,22 @@ contract MuHavenSubscription is Initializable, ReentrancyGuardTransient, IMuHave
         )) {
             revert ComplianceBlocked();
         }
+    }
+
+    /// @dev Post-mint state-hook dispatch. No-op when no coordinator is
+    ///      wired. Fires after the Subscription's own mint leg completes so
+    ///      stateful modules (MaxHolders, MaxBalance, Lockup) can update.
+    function _notifyCreated(address token, address to, uint256 hintAmount) internal {
+        if (modularCompliance == address(0)) return;
+        IModularCompliance(modularCompliance).created(token, to, hintAmount);
+    }
+
+    /// @dev Post-burn state-hook dispatch. No-op when no coordinator is
+    ///      wired. Fires after the Subscription's own burn + payout legs
+    ///      complete.
+    function _notifyDestroyed(address token, address from, uint256 hintAmount) internal {
+        if (modularCompliance == address(0)) return;
+        IModularCompliance(modularCompliance).destroyed(token, from, hintAmount);
     }
 
     // ── Views ────────────────────────────────────────────────────────────

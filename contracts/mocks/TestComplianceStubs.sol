@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {IModularCompliance} from "../interfaces/IModularCompliance.sol";
 import {IMuHavenIdentityRegistry} from "../interfaces/IMuHavenIdentityRegistry.sol";
+import {IComplianceModule} from "../interfaces/IComplianceModule.sol";
 
 /// @title DenyAllCompliance
 /// @notice Tiny stub implementing `IModularCompliance.canTransfer` as a blanket
@@ -75,6 +76,9 @@ contract AllowAllIdentityRegistry is IMuHavenIdentityRegistry {
 
     function setClaimTopicsRegistry(address) external {}
     function setTrustedIssuersRegistry(address) external {}
+
+    function countryOf(address) external pure returns (uint16) { return 0; }
+    function isAccredited(address) external pure returns (bool) { return false; }
 }
 
 /// @title BurnOnlyDenyCompliance
@@ -120,6 +124,55 @@ contract BurnOnlyDenyCompliance is IModularCompliance {
 ///         consults the wired `identityRegistry` instead of `kycGate` —
 ///         an investor that passes kycGate still gets blocked by the
 ///         identity-registry-driven `NotEligible` revert.
+/// @title AllowStubModule
+/// @notice Minimal `IComplianceModule` stub for Phase 3 ModularCompliance
+///         coordinator tests. `canTransfer` always returns true; state
+///         hooks record the last call so fan-out tests can assert routing.
+contract AllowStubModule is IComplianceModule {
+    uint8  public lastKind; // 1=created, 2=transferred, 3=destroyed
+    address public lastTo;
+    address public lastFrom;
+    uint256 public lastAmount;
+
+    function canTransfer(address, address, address, uint256) external pure returns (bool) {
+        return true;
+    }
+
+    function transferred(address, address from, address to, uint256 amount) external {
+        lastKind = 2; lastFrom = from; lastTo = to; lastAmount = amount;
+    }
+
+    function created(address, address to, uint256 amount) external {
+        lastKind = 1; lastTo = to; lastAmount = amount;
+    }
+
+    function destroyed(address, address from, uint256 amount) external {
+        lastKind = 3; lastFrom = from; lastAmount = amount;
+    }
+
+    function name() external pure returns (bytes32) {
+        return keccak256("AllowStubModule");
+    }
+}
+
+/// @title DenyStubModule
+/// @notice Minimal `IComplianceModule` stub for Phase 3 tests. `canTransfer`
+///         always returns false — pairs with `AllowStubModule` to exercise
+///         short-circuit behaviour in the coordinator.
+contract DenyStubModule is IComplianceModule {
+    function canTransfer(address, address, address, uint256) external pure returns (bool) {
+        return false;
+    }
+
+    function transferred(address, address, address, uint256) external {}
+    function created(address, address, uint256) external {}
+    function destroyed(address, address, uint256) external {}
+
+    function name() external pure returns (bytes32) {
+        return keccak256("DenyStubModule");
+    }
+}
+
 contract DenyAllIdentityRegistry is IMuHavenIdentityRegistry {
     function isVerified(address /* account */) external pure returns (bool) {
         return false;
@@ -149,4 +202,7 @@ contract DenyAllIdentityRegistry is IMuHavenIdentityRegistry {
 
     function setClaimTopicsRegistry(address) external {}
     function setTrustedIssuersRegistry(address) external {}
+
+    function countryOf(address) external pure returns (uint16) { return 0; }
+    function isAccredited(address) external pure returns (bool) { return false; }
 }
