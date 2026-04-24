@@ -150,6 +150,7 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
     event IdentityRegistryUpdated(address indexed newRegistry);
     event ModularComplianceUpdated(address indexed newCompliance);
+    event DecryptGrantRefreshed(address indexed holder, address indexed ephemeralEOA);
 
     // ── Errors ───────────────────────────────────────────────────────────
 
@@ -761,6 +762,45 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         }
         FHE.allow(ts, msg.sender);
         return ts;
+    }
+
+    // ── Permit/decrypt refresh (ADR-021 + PERMIT_DECRYPT_LIFECYCLE §8 Q4) ─
+
+    /// @notice Re-grant FHE ACL on the caller's own current balance handle
+    ///         to `ephemeralEOA`. Self-service, no privilege required beyond
+    ///         "I am the balance holder". Emits `DecryptGrantRefreshed`.
+    /// @dev Closes the Phase 7 audit gap: a balance handle carries a kernel
+    ///      grant after mint / transfer-in / return-to-investor, but the
+    ///      kernel cannot sign permits (ADR-009). This primitive lets the
+    ///      holder re-bind ACL to a fresh session-scoped ephemeral EOA on
+    ///      demand. Applies to three gap scenarios that had no existing
+    ///      self-service path:
+    ///        1. Fresh kernel that just received a P2P transfer (`_transfer`
+    ///           grants kernel only on recipient balance — ADR-028 §8 Q4).
+    ///        2. Returning investor on a new browser session whose in-memory
+    ///           ephemeral EOA has been regenerated; yesterday's ACL grant is
+    ///           on a private key that no longer exists.
+    ///        3. Passive holder who never initiated a write op but wants to
+    ///           audit their balance.
+    ///
+    ///      Zero-balance short-circuit: if the caller has never held the
+    ///      token (`_balances[msg.sender]` uninitialised) the function
+    ///      emits the event and returns. This keeps the primitive idempotent
+    ///      and race-free with the frontend calling it unconditionally on
+    ///      first decrypt attempt.
+    ///
+    ///      Privacy: does not leak any new information. The caller's balance
+    ///      is already decryptable by the caller via the on-chain async path
+    ///      (`requestBalanceDecrypt`) — this just makes the off-chain permit
+    ///      path work too.
+    function refreshDecryptGrant(address ephemeralEOA) external {
+        if (ephemeralEOA == address(0)) revert InvalidEphemeralEOA();
+        if (Common.isInitialized(_balances[msg.sender])) {
+            // The handle is already allowThis'd from whatever prior op
+            // assigned it; re-granting ephemeralEOA costs one FHE.allow.
+            FHE.allow(_balances[msg.sender], ephemeralEOA);
+        }
+        emit DecryptGrantRefreshed(msg.sender, ephemeralEOA);
     }
 
     // ── Async decrypt for balance viewing (Pattern: createDecryptTask) ───

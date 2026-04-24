@@ -74,6 +74,9 @@ describe("EIP-165 supportsInterface", function () {
         // Wave 3.5 Phase 5 — YieldSnapshot ACL-grant reads (ADR-037).
         "function snapshotBalance(address)",
         "function snapshotTotalSupply()",
+        // Wave 3.5 Phase 7 — self-service ACL refresh (ADR-042 /
+        // PERMIT_DECRYPT_LIFECYCLE §8 Q4).
+        "function refreshDecryptGrant(address)",
         "function encryptedBalanceOf(address) view returns (bytes32)",
         "function encryptedTotalSupply() view returns (bytes32)",
         "function setTotalSupplyPublic()",

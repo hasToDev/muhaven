@@ -93,6 +93,15 @@ interface IMuHavenToken {
     ///         `yieldSnapshot`.
     function snapshotTotalSupply() external returns (euint128);
 
+    // ── Permit/decrypt refresh (ADR-021 + PERMIT_DECRYPT_LIFECYCLE §8 Q4) ─
+    //
+    // Self-service primitive: balance holder re-grants ACL on their own
+    // current balance handle to a fresh ephemeral EOA. Closes the Phase 7
+    // audit gap where a passive recipient / returning investor had no
+    // path to bind decrypt rights to their new session's ephemeral EOA.
+
+    function refreshDecryptGrant(address ephemeralEOA) external;
+
     // ── Views / admin used by platform contracts ────────────────────────
     function encryptedBalanceOf(address account) external view returns (euint128);
     function encryptedTotalSupply() external view returns (euint128);

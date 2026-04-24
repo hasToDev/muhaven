@@ -231,11 +231,15 @@ export function useFhe() {
   // ── Decryption helpers ────────────────────────────────────────────────
 
   async function decryptUint128ForView(ctHash: bigint | string): Promise<bigint> {
+    // Default: withRefresh = true. Used for MuHavenToken balance handles
+    // which Phase 7 `refreshDecryptGrant` can re-bind to the session EOA.
     return decryptForView(ctHash, 128)
   }
 
   async function decryptUint64ForView(ctHash: bigint | string): Promise<bigint> {
-    return decryptForView(ctHash, 64)
+    // PUSDC handles live in a contract we don't own; self-service refresh
+    // is not applicable. Disable the fallback so a 403 surfaces directly.
+    return decryptForView(ctHash, 64, { withRefresh: false })
   }
 
   /**
@@ -243,13 +247,25 @@ export function useFhe() {
    * a zero handle — the TN 403s on unregistered ctHashes and a zero value is
    * the expected "no confidential state yet" reading.
    *
-   * No defer-and-retry: the Wave 3 kernel-permit workaround (M1/M2 in
-   * `PERMIT_DECRYPT_LIFECYCLE.md`) is retired. Permit signing uses the
+   * No Wave 3 kernel-permit defer-and-retry — that workaround (M1/M2 in
+   * `PERMIT_DECRYPT_LIFECYCLE.md`) is retired; permit signing uses the
    * ephemeral EOA, which is always a valid ECDSA signer.
+   *
+   * Wave 3.5 Phase 7 adds a DIFFERENT fallback shape: when the TN 403s on a
+   * MuHavenToken balance handle, try `refreshDecryptGrant(ephemeralEOA)`
+   * once and retry. This closes the `PERMIT_DECRYPT_LIFECYCLE §8 Q4` gap —
+   * the balance holder's ACL grant was valid for a prior session EOA that
+   * no longer exists (or never existed, for P2P recipients). See
+   * `development/DEV_WAVE_3_5/DEV_LOG.md` 2026-04-24 Phase 7 entry.
+   *
+   * Callers can opt out of the refresh via `{ withRefresh: false }` — used
+   * by the PUSDC decrypt path (where the token for the refresh doesn't
+   * apply) and by unit tests that want raw 403 behaviour.
    */
   async function decryptForView(
     ctHash: bigint | string,
     bits: 64 | 128,
+    opts: { withRefresh?: boolean; tokenAddress?: `0x${string}` } = {},
   ): Promise<bigint> {
     const hashAsBigInt = typeof ctHash === 'bigint' ? ctHash : BigInt(ctHash)
     if (hashAsBigInt === 0n) return 0n
@@ -258,11 +274,31 @@ export function useFhe() {
     const { FheTypes } = await import('@cofhe/sdk')
     const utype = bits === 64 ? FheTypes.Uint64 : FheTypes.Uint128
 
+    const runDecrypt = () =>
+      client.decryptForView(ctHash, utype).execute() as Promise<bigint>
+
     try {
-      return (await client
-        .decryptForView(ctHash, utype)
-        .execute()) as bigint
+      return await runDecrypt()
     } catch (e) {
+      // Phase 7 self-service refresh — only for MuHavenToken balance
+      // handles (bits === 128 + withRefresh default true). PUSDC handles
+      // are not ours to refresh; they remain a separate surface governed
+      // by the pending MuHavenStable wrapper work (Phase 7.5).
+      if (is403Error(e) && bits === 128 && opts.withRefresh !== false) {
+        try {
+          const { refreshDecryptGrant } = await import(
+            '@/services/contracts/TokenService'
+          )
+          const { address } = ensureEphemeralKey()
+          await refreshDecryptGrant(address as `0x${string}`)
+          return await runDecrypt()
+        } catch (refreshErr) {
+          // Fall through to the original-error branch below. The refresh
+          // itself failing is recoverable for the user only via retry, so
+          // preserve the original 403 context.
+          console.warn('[useFhe] refreshDecryptGrant fallback failed', refreshErr)
+        }
+      }
       if (is403Error(e)) {
         throw new Error(
           'Fhenix Threshold Network rejected the decrypt request (HTTP 403). '

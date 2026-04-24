@@ -102,6 +102,24 @@ export async function requestBalanceDecrypt(): Promise<TxHash> {
   return contractWrite(addr, muHavenTokenAbi, 'requestBalanceDecrypt', [], CONTRACT)
 }
 
+/**
+ * Wave 3.5 self-service ACL refresh — re-grants FHE decrypt access on the
+ * caller's own current balance handle to `ephemeralEOA`.
+ *
+ * Closes the `PERMIT_DECRYPT_LIFECYCLE.md §8 Q4` gap for callers that:
+ *   - received a P2P transfer (recipient kernel only grant per ADR-028)
+ *   - returned on a new browser session (fresh in-memory ephemeralEOA)
+ *   - have never initiated a write op
+ *
+ * Costs one UserOp. The frontend decrypt path (`useFhe.decryptForView`)
+ * auto-fires this on a first-decrypt 403 before giving up.
+ */
+export async function refreshDecryptGrant(
+  ephemeralEOA: `0x${string}`,
+): Promise<TxHash> {
+  return contractWrite(addr, muHavenTokenAbi, 'refreshDecryptGrant', [ephemeralEOA], CONTRACT)
+}
+
 // ── Convenience: full decrypt flow ─────────────────────────────────
 
 /**

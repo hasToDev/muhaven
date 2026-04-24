@@ -119,6 +119,16 @@ export const muHavenTokenAbi = [
     outputs: [],
   },
   {
+    // Wave 3.5 Phase 7 — self-service ACL refresh. Caller re-grants decrypt
+    // access on their own balance handle to `ephemeralEOA` (ADR-021 +
+    // PERMIT_DECRYPT_LIFECYCLE §8 Q4). Frontend auto-fires on 403 decrypt.
+    name: 'refreshDecryptGrant',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'ephemeralEOA', type: 'address' }],
+    outputs: [],
+  },
+  {
     name: 'getBalanceDecryptResult',
     type: 'function',
     stateMutability: 'view',
