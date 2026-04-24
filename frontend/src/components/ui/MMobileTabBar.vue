@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { cn } from '@/lib/utils'
 import {
-  PieChart, ArrowDown, TrendingUp, Activity,
+  PieChart, ShoppingCart, TrendingUp, Undo2,
   Coins, Share2, Users, ClipboardCheck,
   Sparkles,
 } from 'lucide-vue-next'
@@ -15,9 +15,9 @@ const store = useAppStore()
 
 const investorTabs = [
   { path: '/portfolio', icon: PieChart, label: 'Portfolio' },
-  { path: '/deposit', icon: ArrowDown, label: 'Deposit' },
+  { path: '/buy', icon: ShoppingCart, label: 'Buy' },
   { path: '/yields', icon: TrendingUp, label: 'Yields' },
-  { path: '/activity', icon: Activity, label: 'Activity' },
+  { path: '/redemptions', icon: Undo2, label: 'Redeem' },
 ]
 
 const issuerTabs = [

@@ -5,9 +5,17 @@
  * Any VITE_*_ADDRESS env var overrides the baked-in default for its slot,
  * which is how staging builds (`bun run build:stage` → .env.stage) point
  * at a separate contract deployment without touching this file.
+ *
+ * Wave 3.5 contracts use the `v35` namespace. They are populated from env
+ * vars once the Phase 8 cutover deploys them. Until then, zero-address
+ * defaults signal "not deployed" to UI consumers — they render fallback
+ * states rather than crash.
  */
 
+const ZERO = '0x0000000000000000000000000000000000000000' as `0x${string}`
+
 export interface ContractAddresses {
+  // Wave 3 (shipped + deployed)
   muHavenToken: `0x${string}`
   muHavenVault: `0x${string}`
   investorRegistry: `0x${string}`
@@ -19,6 +27,21 @@ export interface ContractAddresses {
   // External (ReineiraOS) — shared across envs
   usdc: `0x${string}`
   pusdc: `0x${string}`
+}
+
+export interface V35Addresses {
+  // Wave 3.5 — populated via env overrides once deployed (Phase 8)
+  subscription: `0x${string}`
+  tokenRegistry: `0x${string}`
+  identityRegistry: `0x${string}`
+  modularCompliance: `0x${string}`
+  oracle: `0x${string}`
+  /** Per-token treasury — env override is a JSON `{ "0xToken": "0xTreasury" }` map. */
+  treasuries: Record<string, `0x${string}`>
+  /** Per-token queue — same JSON-map shape as treasuries. */
+  queues: Record<string, `0x${string}`>
+  /** Per-token yield snapshot — same JSON-map shape. */
+  yieldSnapshots: Record<string, `0x${string}`>
 }
 
 const arbSepolia: ContractAddresses = {
@@ -35,11 +58,10 @@ const arbSepolia: ContractAddresses = {
 }
 
 const addressMap: Record<string, ContractAddresses> = {
-  '421614': arbSepolia, // Arbitrum Sepolia chain ID
+  '421614': arbSepolia,
 }
 
 const chainId = import.meta.env.VITE_CHAIN_ID || '421614'
-
 const base: ContractAddresses = addressMap[chainId] ?? arbSepolia
 
 const pick = (override: string | undefined, fallback: `0x${string}`): `0x${string}` =>
@@ -56,4 +78,55 @@ export const addresses: ContractAddresses = {
   muhavenEscrow: pick(import.meta.env.VITE_MUHAVEN_ESCROW_ADDRESS, base.muhavenEscrow),
   usdc: base.usdc,
   pusdc: base.pusdc,
+}
+
+/**
+ * Parse a per-token JSON map env override like
+ * `{"0xToken1": "0xTreasury1", "0xToken2": "0xTreasury2"}`. Invalid JSON or
+ * malformed entries fall back to an empty map rather than throwing — the UI
+ * still renders a "contract not available" state for unconfigured tokens.
+ */
+function parsePerTokenMap(raw: string | undefined): Record<string, `0x${string}`> {
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return {}
+    const out: Record<string, `0x${string}`> = {}
+    for (const [k, v] of Object.entries(parsed)) {
+      if (typeof v !== 'string') continue
+      if (!/^0x[0-9a-fA-F]{40}$/.test(k)) continue
+      if (!/^0x[0-9a-fA-F]{40}$/.test(v)) continue
+      out[k.toLowerCase()] = v as `0x${string}`
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+export const v35Addresses: V35Addresses = {
+  subscription: pick(import.meta.env.VITE_SUBSCRIPTION_ADDRESS, ZERO),
+  tokenRegistry: pick(import.meta.env.VITE_TOKEN_REGISTRY_ADDRESS, ZERO),
+  identityRegistry: pick(import.meta.env.VITE_IDENTITY_REGISTRY_ADDRESS, ZERO),
+  modularCompliance: pick(import.meta.env.VITE_MODULAR_COMPLIANCE_ADDRESS, ZERO),
+  oracle: pick(import.meta.env.VITE_ORACLE_ADDRESS, ZERO),
+  treasuries: parsePerTokenMap(import.meta.env.VITE_TREASURIES_JSON),
+  queues: parsePerTokenMap(import.meta.env.VITE_QUEUES_JSON),
+  yieldSnapshots: parsePerTokenMap(import.meta.env.VITE_YIELD_SNAPSHOTS_JSON),
+}
+
+export function isZeroAddress(addr: `0x${string}`): boolean {
+  return addr.toLowerCase() === ZERO
+}
+
+export function getTreasury(token: `0x${string}`): `0x${string}` | null {
+  return v35Addresses.treasuries[token.toLowerCase()] ?? null
+}
+
+export function getQueue(token: `0x${string}`): `0x${string}` | null {
+  return v35Addresses.queues[token.toLowerCase()] ?? null
+}
+
+export function getYieldSnapshot(token: `0x${string}`): `0x${string}` | null {
+  return v35Addresses.yieldSnapshots[token.toLowerCase()] ?? null
 }

@@ -12,7 +12,7 @@ import MDarkToggle from '@/components/ui/MDarkToggle.vue'
 import MSessionStatus from '@/components/ui/MSessionStatus.vue'
 import { toast } from 'vue-sonner'
 import {
-  PieChart, ArrowDown, TrendingUp, Activity, Store, Sparkles,
+  PieChart, ShoppingCart, TrendingUp, Activity, Store, Sparkles, Send, Undo2,
   Coins, Share2, Users, ClipboardCheck, Wallet, LogOut, LogIn, Loader2,
   Copy, Check,
 } from 'lucide-vue-next'
@@ -29,8 +29,10 @@ const homeTarget = useHomeTarget()
 const investorNav = [
   { path: '/portfolio', label: 'Portfolio', icon: PieChart },
   { path: '/marketplace', label: 'Marketplace', icon: Store },
-  { path: '/deposit', label: 'Deposit', icon: ArrowDown },
+  { path: '/buy', label: 'Buy', icon: ShoppingCart },
+  { path: '/transfer', label: 'Transfer', icon: Send },
   { path: '/yields', label: 'Yields', icon: TrendingUp },
+  { path: '/redemptions', label: 'Redemptions', icon: Undo2 },
   { path: '/activity', label: 'Activity', icon: Activity },
   { path: '/agent', label: 'Agent', icon: Sparkles },
 ]

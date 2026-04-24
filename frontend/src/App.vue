@@ -9,11 +9,15 @@ import MMobileTabBar from '@/components/ui/MMobileTabBar.vue'
 import AgentFAB from '@/components/agent/AgentFAB.vue'
 import AgentSidePanel from '@/components/agent/AgentSidePanel.vue'
 import MToastProvider from '@/components/ui/MToastProvider.vue'
+import MDevModeBanner from '@/components/ui/MDevModeBanner.vue'
 
 const route = useRoute()
 const store = useAppStore()
 
-const investorPaths = ['/portfolio', '/deposit', '/yields', '/activity']
+const investorPaths = [
+  '/portfolio', '/marketplace', '/buy', '/deposit', '/wrap', '/transfer',
+  '/yields', '/redemptions', '/activity',
+]
 const issuerPaths = ['/tokens', '/distribute', '/investors', '/compliance']
 
 const isLandingPage = computed(() => route.path === '/' || route.meta.layout === 'landing')
@@ -45,6 +49,10 @@ onMounted(() => {
     ]"
   >
     <MMeshGradient />
+    <!-- ADR-023 dev-mode banner — fixed at the viewport top with z-[60] so
+         it sits above the sidebar (`z-40`). When active, covers the top few
+         px of the sidebar logo — acceptable for a temporary state. -->
+    <MDevModeBanner v-if="showChrome" />
     <Sidebar v-if="showChrome" />
     <!-- Mobile top bar: only shows on <md; desktop nav lives in Sidebar -->
     <TopNav v-if="showChrome" class="md:hidden" />

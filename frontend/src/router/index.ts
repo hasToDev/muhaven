@@ -30,15 +30,36 @@ const router = createRouter({
       component: () => import('@/views/investor/MarketplacePage.vue'),
       meta: { title: 'Marketplace' },
     },
+    // Wave 3.5 canonical: /buy drives MuHavenSubscription.purchase. /deposit
+    // kept as an alias for existing bookmarks / backward compatibility.
+    {
+      path: '/buy',
+      component: () => import('@/views/investor/BuyPage.vue'),
+      meta: { title: 'Buy' },
+    },
     {
       path: '/deposit',
-      component: () => import('@/views/investor/DepositPage.vue'),
-      meta: { title: 'Deposit' },
+      redirect: (to) => ({ path: '/buy', query: to.query }),
+    },
+    {
+      path: '/wrap',
+      component: () => import('@/views/investor/WrapPage.vue'),
+      meta: { title: 'Wrap' },
+    },
+    {
+      path: '/transfer',
+      component: () => import('@/views/investor/TransferPage.vue'),
+      meta: { title: 'Transfer' },
     },
     {
       path: '/yields',
       component: () => import('@/views/investor/YieldsPage.vue'),
       meta: { title: 'Yields' },
+    },
+    {
+      path: '/redemptions',
+      component: () => import('@/views/investor/RedemptionsPage.vue'),
+      meta: { title: 'Redemptions' },
     },
     {
       path: '/activity',

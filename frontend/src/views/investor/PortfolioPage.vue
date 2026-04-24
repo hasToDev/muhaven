@@ -110,8 +110,8 @@ const allocationBreakdown = computed(() =>
       <Shield :size="48" class="text-cool/40" />
       <p class="text-base text-cool">No holdings yet</p>
       <p class="text-sm text-cool/70">Deposit funds and invest in RWA tokens to build your portfolio.</p>
-      <RouterLink to="/deposit">
-        <MButton>Make a Deposit</MButton>
+      <RouterLink to="/buy">
+        <MButton>Buy shares</MButton>
       </RouterLink>
     </div>
 

@@ -72,6 +72,20 @@ export async function transfer(to: `0x${string}`, encrypted: EncryptedInput): Pr
   return contractWrite(addr, muHavenTokenAbi, 'transfer', [to, encrypted], CONTRACT)
 }
 
+/**
+ * Wave 3.5 canonical transfer — `transfer(to, encryptedAmount, ephemeralEOA)`.
+ * The contract grants FHE-decrypt access on the sender's post-transfer balance
+ * handle to `ephemeralEOA` (ADR-021). The overload is resolved by viem via
+ * arg count.
+ */
+export async function transferWithEphemeral(
+  to: `0x${string}`,
+  encrypted: EncryptedInput,
+  ephemeralEOA: `0x${string}`,
+): Promise<TxHash> {
+  return contractWrite(addr, muHavenTokenAbi, 'transfer', [to, encrypted, ephemeralEOA], CONTRACT)
+}
+
 export async function transferFrom(
   from: `0x${string}`,
   to: `0x${string}`,

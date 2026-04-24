@@ -64,6 +64,18 @@ export const muHavenTokenAbi = [
     ],
     outputs: [],
   },
+  // Wave 3.5 canonical transfer — ADR-021 ephemeralEOA overload.
+  {
+    name: 'transfer',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'to', type: 'address' },
+      { name: 'encryptedAmount', ...inEncryptedTuple },
+      { name: 'ephemeralEOA', type: 'address' },
+    ],
+    outputs: [],
+  },
   {
     name: 'transferFrom',
     type: 'function',
