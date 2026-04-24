@@ -67,6 +67,10 @@ describe("EIP-165 supportsInterface", function () {
         "function burnFromVault(address,uint256)",
         "function mintFromSubscription(address,bytes32,address)",
         "function burnFromSubscription(address,bytes32,address)",
+        // Wave 3.5 Phase 4 — RedemptionQueue primitives (ADR-035).
+        "function pullFromInvestor(address,bytes32,address)",
+        "function returnToInvestor(address,bytes32,address)",
+        "function burnFromQueue(bytes32)",
         "function encryptedBalanceOf(address) view returns (bytes32)",
         "function encryptedTotalSupply() view returns (bytes32)",
         "function setTotalSupplyPublic()",
@@ -75,6 +79,9 @@ describe("EIP-165 supportsInterface", function () {
         "function unpause()",
         "function subscription() view returns (address)",
         "function setSubscription(address)",
+        "function queue() view returns (address)",
+        "function setQueue(address)",
+        "function modularCompliance() view returns (address)",
       ]);
       expect(await token.supportsInterface(interfaceId)).to.be.true;
     });

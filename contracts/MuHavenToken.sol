@@ -109,11 +109,18 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
     ///         `destroyed`). Zero ⇒ compliance is not gated by this token.
     address public modularCompliance;
 
-    /// @dev Reserved storage for future upgrades. Decremented by 4 slots to
+    // ── Wave 3.5 Phase 4: RedemptionQueue wiring (ADR-035) ───────────────
+
+    /// @notice Single authorised `RedemptionQueue` contract — the only
+    ///         caller of `pullFromInvestor` / `returnToInvestor` /
+    ///         `burnFromQueue`.
+    address public queue;
+
+    /// @dev Reserved storage for future upgrades. Decremented by 5 slots to
     ///      accommodate `subscription`, `authorizedReaders`,
-    ///      `identityRegistry`, and `modularCompliance` above, preserving
-    ///      the total storage footprint (proxy-safe).
-    uint256[46] private __gap;
+    ///      `identityRegistry`, `modularCompliance`, and `queue` above,
+    ///      preserving the total storage footprint (proxy-safe).
+    uint256[45] private __gap;
 
     // ── Events ───────────────────────────────────────────────────────────
 
@@ -125,6 +132,7 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
     event MinterGranted(address indexed minter);
     event MinterRevoked(address indexed minter);
     event SubscriptionUpdated(address indexed newSubscription);
+    event QueueUpdated(address indexed newQueue);
     event AuthorizedReaderUpdated(address indexed reader, bool authorized);
     event BalanceDecryptRequested(address indexed account);
     event TotalSupplyMadePublic();
@@ -137,6 +145,7 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
     error OnlyOwner();
     error OnlyMinter();
     error OnlySubscription();
+    error OnlyQueue();
     error RecipientNotKYC();
     error NoBalance();
     error ZeroAddress();
@@ -160,6 +169,11 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         // `msg.sender` is always non-zero in a real call, so comparing against
         // `subscription` also rejects the unset (address(0)) case implicitly.
         if (msg.sender != subscription) revert OnlySubscription();
+        _;
+    }
+
+    modifier onlyQueue() {
+        if (msg.sender != queue) revert OnlyQueue();
         _;
     }
 
@@ -573,6 +587,121 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         emit Transfer(from, address(0));
     }
 
+    // ── Wave 3.5 paid-settlement path — RedemptionQueue only (ADR-035) ───
+
+    /// @inheritdoc IMuHavenToken
+    /// @dev Silent-fail pull from `from` (investor) to the queue. Returns
+    ///      the actually-pulled handle per ADR-036 so the queue can store
+    ///      the silent-fail-bounded amount in its request struct — matches
+    ///      the `burnFromSubscription` return-value pattern (ADR-030).
+    ///      Skips KYC + compliance gates on `from`: the queue handles them
+    ///      at its `submit` / `submitFor` entry.
+    function pullFromInvestor(
+        address from,
+        euint128 encAmount,
+        address ephemeralEOA
+    ) external onlyQueue whenNotPaused returns (euint128 actualPulled) {
+        if (ephemeralEOA == address(0)) revert InvalidEphemeralEOA();
+        if (!Common.isInitialized(_balances[from])) revert NoBalance();
+
+        FHE.allowThis(encAmount);
+
+        // Silent-fail on insufficient investor balance (Rule 5).
+        ebool hasEnough = FHE.gte(_balances[from], encAmount);
+        euint128 zero = FHE.asEuint128(uint256(0));
+        FHE.allowThis(zero);
+        actualPulled = FHE.select(hasEnough, encAmount, zero);
+        FHE.allowThis(actualPulled);
+
+        // Deduct from investor. Grant investor's own kernel + ephemeralEOA
+        // decrypt on the new balance handle.
+        _balances[from] = FHE.sub(_balances[from], actualPulled);
+        FHE.allowThis(_balances[from]);
+        FHE.allow(_balances[from], from);
+        FHE.allow(_balances[from], ephemeralEOA);
+
+        // Credit to queue (msg.sender). Kernel-only grant — the queue is a
+        // contract, no ephemeralEOA semantics.
+        if (Common.isInitialized(_balances[msg.sender])) {
+            _balances[msg.sender] = FHE.add(_balances[msg.sender], actualPulled);
+        } else {
+            _balances[msg.sender] = actualPulled;
+        }
+        FHE.allowThis(_balances[msg.sender]);
+        FHE.allow(_balances[msg.sender], msg.sender);
+
+        // Queue needs ACL on the returned handle to run downstream FHE.mul
+        // at processEpoch. Same pattern as burnFromSubscription.
+        FHE.allow(actualPulled, msg.sender);
+
+        emit Transfer(from, msg.sender);
+    }
+
+    /// @inheritdoc IMuHavenToken
+    /// @dev Return shares from the queue's balance to `to` (investor on
+    ///      cancel per ADR-027). Skips KYC / compliance — the investor is
+    ///      by construction KYC-revoked at the caller's precondition, so a
+    ///      compliance gate would block every legitimate cancel.
+    function returnToInvestor(
+        address to,
+        euint128 encAmount,
+        address ephemeralEOA
+    ) external onlyQueue whenNotPaused {
+        if (ephemeralEOA == address(0)) revert InvalidEphemeralEOA();
+        // Queue is the sender; its balance must be initialised.
+        if (!Common.isInitialized(_balances[msg.sender])) revert NoBalance();
+
+        FHE.allowThis(encAmount);
+
+        // Silent-fail on insufficient queue balance — shouldn't happen in
+        // normal operation (queue holds exactly the locked shares) but
+        // defence-in-depth costs a single FHE.gte.
+        ebool hasEnough = FHE.gte(_balances[msg.sender], encAmount);
+        euint128 zero = FHE.asEuint128(uint256(0));
+        FHE.allowThis(zero);
+        euint128 amount = FHE.select(hasEnough, encAmount, zero);
+        FHE.allowThis(amount);
+
+        _balances[msg.sender] = FHE.sub(_balances[msg.sender], amount);
+        FHE.allowThis(_balances[msg.sender]);
+        FHE.allow(_balances[msg.sender], msg.sender);
+
+        if (Common.isInitialized(_balances[to])) {
+            _balances[to] = FHE.add(_balances[to], amount);
+        } else {
+            _balances[to] = amount;
+        }
+        FHE.allowThis(_balances[to]);
+        FHE.allow(_balances[to], to);
+        FHE.allow(_balances[to], ephemeralEOA);
+
+        // Re-register in the holder set. Idempotent at registry level.
+        // The investor is still a holder by virtue of their historical
+        // balance; this just makes the P2P semantics consistent with
+        // other refund paths.
+        registry.addHolder(address(this), to);
+
+        emit Transfer(msg.sender, to);
+    }
+
+    /// @inheritdoc IMuHavenToken
+    /// @dev Burn from the queue's own balance. Silent-fails to zero on
+    ///      insufficient balance per Rule 5. Returns `actualBurned` for
+    ///      the queue's downstream accounting (same pattern as
+    ///      `burnFromSubscription`).
+    function burnFromQueue(
+        euint128 encAmount
+    ) external onlyQueue whenNotPaused returns (euint128 actualBurned) {
+        if (!Common.isInitialized(_balances[msg.sender])) revert NoBalance();
+
+        FHE.allowThis(encAmount);
+
+        actualBurned = _burnInternal(msg.sender, encAmount, address(0));
+        // Grant ACL on actualBurned to the queue so it can mirror into
+        // downstream state-hook amount computations.
+        FHE.allow(actualBurned, msg.sender);
+    }
+
     // ── Encrypted balance views (for contract-to-contract use) ───────────
 
     function encryptedBalanceOf(address account) external view returns (euint128) {
@@ -659,6 +788,15 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
     function setSubscription(address newSubscription) external onlyOwner {
         subscription = newSubscription;
         emit SubscriptionUpdated(newSubscription);
+    }
+
+    /// @notice Set the authorised `RedemptionQueue` contract. Wave 3.5
+    ///         gate for `pullFromInvestor` / `returnToInvestor` /
+    ///         `burnFromQueue`. Passing `address(0)` disables the queue
+    ///         primitive surface.
+    function setQueue(address newQueue) external onlyOwner {
+        queue = newQueue;
+        emit QueueUpdated(newQueue);
     }
 
     /// @notice Mark `reader` as authorised for Wave 4 agent-side encrypted-balance

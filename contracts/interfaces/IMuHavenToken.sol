@@ -33,6 +33,43 @@ interface IMuHavenToken {
         address ephemeralEOA
     ) external returns (euint128 actualBurned);
 
+    // ── Wave 3.5 path — queued redemption via RedemptionQueue ───────────
+    //
+    // Three functions parallel the Subscription pattern. All are callable
+    // only by the bound `queue` address (one-per-token). They skip the
+    // standard compliance + KYC gates because the queue handles those at
+    // its own entry points (submit / cancel own their compliance story),
+    // and they return the silent-fail-bounded `actualPulled` / `actualBurned`
+    // handle so the queue can mirror it into downstream math (same pattern
+    // as `burnFromSubscription` per ADR-030).
+
+    /// @notice Pull `encAmount` shares from `from` into the queue's balance.
+    ///         Silent-fails to zero on insufficient balance per Rule 5.
+    ///         Returns the actually-pulled handle so the queue can mirror it
+    ///         into the request struct (ADR-036).
+    function pullFromInvestor(
+        address from,
+        euint128 encAmount,
+        address ephemeralEOA
+    ) external returns (euint128 actualPulled);
+
+    /// @notice Return `encAmount` shares from the queue's balance to `to`.
+    ///         Used by `cancelOnKYCRevocation` per ADR-027. Skips compliance
+    ///         (the investor is by construction KYC-revoked at the call
+    ///         site — a compliance check would block every legitimate cancel).
+    function returnToInvestor(
+        address to,
+        euint128 encAmount,
+        address ephemeralEOA
+    ) external;
+
+    /// @notice Burn `encAmount` shares from the queue's own balance. Silent-
+    ///         fails to zero on insufficient balance. Returns the actually-
+    ///         burned handle for the queue's downstream math.
+    function burnFromQueue(
+        euint128 encAmount
+    ) external returns (euint128 actualBurned);
+
     // ── Views / admin used by platform contracts ────────────────────────
     function encryptedBalanceOf(address account) external view returns (euint128);
     function encryptedTotalSupply() external view returns (euint128);
@@ -43,4 +80,9 @@ interface IMuHavenToken {
 
     function subscription() external view returns (address);
     function setSubscription(address newSubscription) external;
+
+    function queue() external view returns (address);
+    function setQueue(address newQueue) external;
+
+    function modularCompliance() external view returns (address);
 }

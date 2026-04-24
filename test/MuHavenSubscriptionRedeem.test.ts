@@ -125,6 +125,21 @@ async function deployRedeemFixture() {
     { kind: "transparent", initializer: "initialize" }
   );
 
+  // RedemptionQueue (Phase 4) — initialised before Treasury so Treasury
+  // can grant the queue PUSDC operator rights at init.
+  const QueueFactory = await hre.ethers.getContractFactory("RedemptionQueue");
+  const queue = await upgrades.deployProxy(
+    QueueFactory,
+    [
+      deployer.address,
+      await token.getAddress(),
+      await tokenRegistry.getAddress(),
+      await subscription.getAddress(),
+      await pusdc.getAddress(),
+    ],
+    { kind: "transparent", initializer: "initialize" }
+  );
+
   // Treasury (per-token) — minFloat=0 so the redeem PUSDC pull leg has no
   // solvency reservation to dance around. Treasury solvency-floor behaviour
   // belongs in MuHavenTreasury tests.
@@ -134,7 +149,7 @@ async function deployRedeemFixture() {
     [
       await token.getAddress(),
       await subscription.getAddress(),
-      bob.address, // queue placeholder — not exercised by redeem
+      await queue.getAddress(),
       issuer.address,
       await pusdc.getAddress(),
       0n,
@@ -147,7 +162,7 @@ async function deployRedeemFixture() {
   await tokenRegistry.registerToken(await token.getAddress(), {
     active: true,
     treasury: await treasury.getAddress(),
-    queue: bob.address,
+    queue: await queue.getAddress(),
     oracle: await oracle.getAddress(),
     issuer: issuer.address,
     minInvestment: 0n,
@@ -156,8 +171,9 @@ async function deployRedeemFixture() {
     paused: false,
   });
 
-  // Authorise subscription on token
+  // Authorise subscription + queue on token.
   await token.setSubscription(await subscription.getAddress());
+  await token.setQueue(await queue.getAddress());
 
   // Pin NAV fresh
   const now = (await hre.ethers.provider.getBlock("latest"))!.timestamp;
@@ -203,6 +219,7 @@ async function deployRedeemFixture() {
     token,
     tokenRegistry,
     treasury,
+    queue,
     pusdc,
     oracle,
     subscription,

@@ -173,6 +173,47 @@ contract DenyStubModule is IComplianceModule {
     }
 }
 
+/// @title CountingCompliance
+/// @notice Accepts every transfer and records per-hook call counts.
+///         Phase 4 Queue tests use this to prove state-hook fires are
+///         idempotent on `processEpoch` re-runs (no double-count).
+contract CountingCompliance is IModularCompliance {
+    uint256 public createdCount;
+    uint256 public transferredCount;
+    uint256 public destroyedCount;
+
+    function canTransfer(address, address, address, uint256) external pure returns (bool) {
+        return true;
+    }
+
+    function transferred(address, address, address, uint256) external {
+        transferredCount++;
+    }
+
+    function created(address, address, uint256) external {
+        createdCount++;
+    }
+
+    function destroyed(address, address, uint256) external {
+        destroyedCount++;
+    }
+
+    function bindModule(address, address) external {}
+    function unbindModule(address, address) external {}
+
+    function getBoundModules(address) external pure returns (address[] memory) {
+        return new address[](0);
+    }
+
+    function moduleCount(address) external pure returns (uint256) {
+        return 0;
+    }
+
+    function isModuleBound(address, address) external pure returns (bool) {
+        return false;
+    }
+}
+
 contract DenyAllIdentityRegistry is IMuHavenIdentityRegistry {
     function isVerified(address /* account */) external pure returns (bool) {
         return false;

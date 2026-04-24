@@ -17,6 +17,14 @@ const config: HardhatUserConfig = {
     version: "0.8.28",
     settings: {
       evmVersion: "cancun",
+      // Optimizer enabled so MuHavenToken (Phase 4 Queue primitives pushed
+      // it past the Spurious Dragon 24576-byte deploy limit) fits in a
+      // regular proxy implementation slot. `runs=200` is the OZ/standard
+      // default — tuned low would shave more bytes but hurts hot-path gas.
+      optimizer: {
+        enabled: true,
+        runs: 200,
+      },
     },
   },
   defaultNetwork: "hardhat",

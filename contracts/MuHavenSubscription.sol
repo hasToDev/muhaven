@@ -17,6 +17,7 @@ import {ITokenRegistry} from "./interfaces/ITokenRegistry.sol";
 import {IPriceOracle} from "./interfaces/IPriceOracle.sol";
 import {IMuHavenIdentityRegistry} from "./interfaces/IMuHavenIdentityRegistry.sol";
 import {IModularCompliance} from "./interfaces/IModularCompliance.sol";
+import {IRedemptionQueue} from "./interfaces/IRedemptionQueue.sol";
 
 /// @title MuHavenSubscription
 /// @notice Atomic buy/sell coordinator for Wave 3.5 per ADR-001. The single
@@ -351,6 +352,7 @@ contract MuHavenSubscription is Initializable, ReentrancyGuardTransient, IMuHave
         if (maxSharesHint == 0) revert InvalidMaxSharesHint();
 
         address treasuryAddr;
+        address queueAddr;
         uint256 nav;
         uint256 epoch;
         uint256 hintCost;
@@ -374,6 +376,7 @@ contract MuHavenSubscription is Initializable, ReentrancyGuardTransient, IMuHave
             if (!oracle.isFresh(token)) revert StaleNAV();
 
             treasuryAddr = cfg.treasury;
+            queueAddr = cfg.queue;
             epoch = _epochFor(cfg.epochDuration);
             // `uint256(maxSharesHint) * nav` cannot realistically overflow: hint
             // ≤ 2^128 - 1, nav is a well-formed NAV so the product stays well
@@ -386,11 +389,37 @@ contract MuHavenSubscription is Initializable, ReentrancyGuardTransient, IMuHave
             if (hintCost > type(uint64).max) revert CostOverflowsPUSDCWidth();
 
             // ── Cap accounting (ADR-004) ──
-            // Cap-exceeded → silent escalate, no state change. Per ADR-004
-            // the cap is in PUSDC base units; `instantRedeemCap == 0` means
-            // "no instant redemption allowed" — every redeem escalates.
+            // Cap-exceeded → auto-escalate via queue.submitFor. The queue
+            // pulls shares from the investor + records a request entry;
+            // Subscription emits `EscalatedToQueue(token, investor,
+            // requestId)` so the frontend can render "queued for settlement"
+            // UX with the actual request id.
+            //
+            // Subscription must verify the client-encrypted `encShares`
+            // via its own `FHE.asEuint128` here (not inside the queue)
+            // because CoFHE's `verifyInput` scopes the input to the caller
+            // (Subscription). The queue's `submitFor` takes an already-
+            // verified `euint128` handle — per ADR-035.
             uint256 used = instantRedeemedThisEpoch[token][epoch];
             if (used + hintCost > uint256(cfg.instantRedeemCap)) {
+                if (queueAddr != address(0)) {
+                    euint128 encSharesIn = FHE.asEuint128(encShares);
+                    FHE.allowThis(encSharesIn);
+                    // Grant the queue ACL on the handle so it can run its
+                    // own silent-fail math (FHE.lte, FHE.select).
+                    FHE.allow(encSharesIn, queueAddr);
+                    uint256 requestId = IRedemptionQueue(queueAddr).submitFor(
+                        msg.sender,
+                        encSharesIn,
+                        maxSharesHint,
+                        ephemeralEOA
+                    );
+                    emit EscalatedToQueue(token, msg.sender, requestId);
+                }
+                // `queueAddr == 0` means the token is registered without a
+                // queue (legacy fixtures only); the Redeemed(escalated=true)
+                // event still fires so the frontend/SDK can surface the cap
+                // overflow to the investor.
                 emit Redeemed(token, msg.sender, maxSharesHint, true);
                 return;
             }
