@@ -15,7 +15,7 @@ const store = useAppStore()
 
 const investorTabs = [
   { path: '/portfolio', icon: PieChart, label: 'Portfolio' },
-  { path: '/buy', icon: ShoppingCart, label: 'Buy' },
+  { path: '/trade', icon: ShoppingCart, label: 'Trade' },
   { path: '/yields', icon: TrendingUp, label: 'Yields' },
   { path: '/redemptions', icon: Undo2, label: 'Redeem' },
 ]

@@ -3,6 +3,7 @@ import { test, expect } from '@playwright/test'
 const PROTECTED_ROUTES = [
   '/portfolio',
   '/marketplace',
+  '/trade',
   '/deposit',
   '/yields',
   '/activity',

@@ -33,7 +33,9 @@ test('marketplace — search + filter + Invest navigates with ?token= param', as
   const afterSearchCount = await cards.count()
   expect(afterSearchCount).toBeGreaterThan(0)
 
-  // Clear + click Invest on the first card → /deposit?token=<address>.
+  // Clear + click Invest on the first card → /trade?token=<address>.
+  // Wave 3.5 Phase 6.5 renamed the buy page to /trade (with /buy + /deposit
+  // kept as redirect aliases).
   await byTestId(page, SEL.marketplaceSearch).fill('')
 
   const firstCard = cards.first()
@@ -42,7 +44,7 @@ test('marketplace — search + filter + Invest navigates with ?token= param', as
 
   await firstCard.getByTestId(SEL.marketplaceInvestCta).click({ force: true })
 
-  await page.waitForURL(/\/deposit/)
+  await page.waitForURL(/\/trade/)
   const url = new URL(page.url())
   expect(url.searchParams.get('token')?.toLowerCase()).toBe(tokenAddress!.toLowerCase())
 })

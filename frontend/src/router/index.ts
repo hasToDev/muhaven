@@ -30,16 +30,23 @@ const router = createRouter({
       component: () => import('@/views/investor/MarketplacePage.vue'),
       meta: { title: 'Marketplace' },
     },
-    // Wave 3.5 canonical: /buy drives MuHavenSubscription.purchase. /deposit
-    // kept as an alias for existing bookmarks / backward compatibility.
+    // Wave 3.5 canonical: /trade is a single page with a Buy/Sell mode
+    // toggle (Phase 6.5) — `MuHavenSubscription.purchase` for buy,
+    // `MuHavenSubscription.redeem` for sell with auto-escalate-to-queue
+    // when the instant cap is full. /buy + /deposit kept as aliases for
+    // existing bookmarks; /buy?mode=sell deep-links straight into Sell.
+    {
+      path: '/trade',
+      component: () => import('@/views/investor/TradePage.vue'),
+      meta: { title: 'Trade' },
+    },
     {
       path: '/buy',
-      component: () => import('@/views/investor/BuyPage.vue'),
-      meta: { title: 'Buy' },
+      redirect: (to) => ({ path: '/trade', query: to.query }),
     },
     {
       path: '/deposit',
-      redirect: (to) => ({ path: '/buy', query: to.query }),
+      redirect: (to) => ({ path: '/trade', query: to.query }),
     },
     {
       path: '/wrap',

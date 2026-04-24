@@ -15,7 +15,7 @@ test('buy via Subscription → success card', async ({ investorPage: page }, tes
 
   await ensureInvestorReady(page, testInfo)
 
-  await page.goto('/buy')
+  await page.goto('/trade')
 
   // BuyPage renders <select data-testid="buy-token-select"> only when at
   // least one Wave 3.5 token is registered. Absence = nothing to buy.

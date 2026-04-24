@@ -117,7 +117,7 @@ const heroDescription = computed(() => {
               {{ heroDescription }}
             </p>
 
-            <RouterLink :to="`/buy?token=${selected.address}`" class="self-start mb-6">
+            <RouterLink :to="`/trade?token=${selected.address}`" class="self-start mb-6">
               <button
                 type="button"
                 data-testid="marketplace-invest-cta"

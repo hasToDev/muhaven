@@ -31,7 +31,7 @@ const homeTarget = useHomeTarget()
 const investorNav = [
   { path: '/portfolio', label: 'Portfolio', icon: PieChart },
   { path: '/marketplace', label: 'Marketplace', icon: Store },
-  { path: '/buy', label: 'Buy', icon: ShoppingCart },
+  { path: '/trade', label: 'Trade', icon: ShoppingCart },
   { path: '/transfer', label: 'Transfer', icon: Send },
   { path: '/yields', label: 'Yields', icon: TrendingUp },
   { path: '/redemptions', label: 'Redemptions', icon: Undo2 },

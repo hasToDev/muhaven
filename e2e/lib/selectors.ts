@@ -70,7 +70,12 @@ export const SEL = {
   epochRow: 'epoch-row',
   epochClaimCta: 'epoch-claim-cta',
 
-  // buy (Wave 3.5)
+  // trade — buy/sell mode toggle (Wave 3.5 Phase 6.5)
+  tradeModeToggle: 'trade-mode-toggle',
+  tradeModeBuy: 'trade-mode-buy',
+  tradeModeSell: 'trade-mode-sell',
+
+  // buy mode (Wave 3.5)
   buyTokenSelect: 'buy-token-select',
   buyAmountInput: 'buy-amount-input',
   buyCta: 'buy-cta',
@@ -78,6 +83,24 @@ export const SEL = {
   buyErrorCard: 'buy-error-card',
   buyKycBlocked: 'buy-kyc-blocked',
   buyNavReadout: 'buy-nav-readout',
+
+  // sell mode (Wave 3.5 Phase 6.5)
+  sellTokenSelect: 'sell-token-select',
+  sellAmountInput: 'sell-amount-input',
+  sellNavReadout: 'sell-nav-readout',
+  sellHoldingCard: 'sell-holding-card',
+  sellHoldingReadout: 'sell-holding-readout',
+  sellRevealBalance: 'sell-reveal-balance',
+  sellInstantCap: 'sell-instant-cap',
+  sellFillHalf: 'sell-fill-half',
+  sellFillMax: 'sell-fill-max',
+  sellEscalateWarning: 'sell-escalate-warning',
+  sellExceedsHolding: 'sell-exceeds-holding',
+  redeemCta: 'redeem-cta',
+  redeemInstantSuccessCard: 'redeem-instant-success-card',
+  redeemQueuedSuccessCard: 'redeem-queued-success-card',
+  redeemErrorCard: 'redeem-error-card',
+  redeemKycBlocked: 'redeem-kyc-blocked',
 
   // transfer (Wave 3.5 P2P)
   transferTokenSelect: 'transfer-token-select',
