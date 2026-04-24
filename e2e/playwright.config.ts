@@ -37,6 +37,11 @@ export default defineConfig({
     // distribution targeting the investor smart account. In the investor
     // project it would always skip because `investor` runs before `issuer`.
     { name: 'claim', testDir: './tests/claim' },
+    // Wave 3.5 atomic + queued + pull-yield + P2P specs. Run after the
+    // Wave 3 investor + issuer + claim suites so the same warm profile
+    // can be reused; specs skip cleanly when Wave 3.5 contracts aren't
+    // deployed in the target env.
+    { name: 'v35', testDir: './tests/v35' },
     { name: 'regression', testDir: './tests/regression' },
     // logout runs last — it clears localStorage for the investor profile,
     // which would force every downstream spec's ensureInvestorReady() to

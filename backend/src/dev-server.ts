@@ -4,9 +4,10 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getHealthStatus } from './infrastructure/health.js';
 import { getEnv } from './core/config.js';
-import { BlockchainEventPoller } from './infrastructure/blockchain/index.js';
+import { BlockchainEventPoller, NavWriterCron, TaxEventIndexer } from './infrastructure/blockchain/index.js';
 import { ProcessEscrowEventUseCase } from './application/use-case/webhook/process-escrow-event.use-case.js';
 import { container } from './infrastructure/container.js';
+import type { Address } from 'viem';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const API_DIR = join(__dirname, '..', 'api');
@@ -232,8 +233,62 @@ async function main() {
     console.log('');
   });
 
-  // Start blockchain event poller if enabled
   const env = getEnv();
+  const backgroundShutdown: Array<() => void> = [];
+
+  // Start Wave 3.5 NAV writer cron if enabled. Only runs when all four
+  // pieces are in place: enable flag + RPC + oracle address + writer key.
+  // Otherwise we log the missing slot and stay idle so dev environments
+  // don't burn LINK from a half-configured cron.
+  if (env.NAV_CRON_ENABLED) {
+    const missing: string[] = [];
+    if (!env.RPC_URL) missing.push('RPC_URL');
+    if (!env.ORACLE_ADDRESS) missing.push('ORACLE_ADDRESS');
+    if (!env.NAV_CRON_PRIVATE_KEY) missing.push('NAV_CRON_PRIVATE_KEY');
+    if (missing.length > 0) {
+      console.warn(`[nav-cron] enabled but missing ${missing.join(', ')} — skipping`);
+    } else {
+      const cron = new NavWriterCron(container.rwaTokenRepo, {
+        rpcUrl: env.RPC_URL!,
+        oracleAddress: env.ORACLE_ADDRESS! as Address,
+        navWriterPrivateKey: env.NAV_CRON_PRIVATE_KEY! as `0x${string}`,
+        intervalMs: env.NAV_CRON_INTERVAL_MS,
+      });
+      cron.start(env.NAV_CRON_INTERVAL_MS);
+      backgroundShutdown.push(() => cron.stop());
+      console.log(`[nav-cron] Started (interval: ${env.NAV_CRON_INTERVAL_MS}ms)`);
+    }
+  }
+
+  // Start tax-event indexer if enabled. Independent of nav-cron and the
+  // legacy escrow poller — operators can enable each in isolation.
+  if (env.TAX_EVENT_POLLER_ENABLED) {
+    if (!env.RPC_URL) {
+      console.warn('[tax-events] enabled but RPC_URL missing — skipping');
+    } else {
+      const queueAddrs = parseAddressList(env.REDEMPTION_QUEUE_ADDRESSES_JSON);
+      const snapshotAddrs = parseAddressList(env.YIELD_SNAPSHOT_ADDRESSES_JSON);
+      if (!env.SUBSCRIPTION_ADDRESS && queueAddrs.length === 0 && snapshotAddrs.length === 0) {
+        console.warn(
+          '[tax-events] enabled but no SUBSCRIPTION_ADDRESS / REDEMPTION_QUEUE_ADDRESSES_JSON / YIELD_SNAPSHOT_ADDRESSES_JSON configured — skipping',
+        );
+      } else {
+        const indexer = new TaxEventIndexer(container.taxEventRepo, {
+          rpcUrl: env.RPC_URL,
+          subscriptionAddress: env.SUBSCRIPTION_ADDRESS as Address | undefined,
+          redemptionQueueAddresses: queueAddrs,
+          yieldSnapshotAddresses: snapshotAddrs,
+          oracleAddress: env.ORACLE_ADDRESS as Address | undefined,
+          intervalMs: env.TAX_EVENT_POLLER_INTERVAL_MS,
+        });
+        indexer.start(env.TAX_EVENT_POLLER_INTERVAL_MS);
+        backgroundShutdown.push(() => indexer.stop());
+        console.log(`[tax-events] Started (interval: ${env.TAX_EVENT_POLLER_INTERVAL_MS}ms)`);
+      }
+    }
+  }
+
+  // Start Wave 3 blockchain event poller if enabled
   if (env.BLOCK_POLLER_ENABLED) {
     // REINEIRA_ESCROW_ADDRESS is retained as the env var name for backwards
     // compatibility with existing homelab configs — semantically it now points
@@ -262,17 +317,44 @@ async function main() {
       });
 
       poller.start(env.BLOCK_POLLER_INTERVAL_MS);
-
-      const shutdown = () => {
-        poller.stop();
-        server.close();
-        process.exit(0);
-      };
-      process.on('SIGINT', shutdown);
-      process.on('SIGTERM', shutdown);
+      backgroundShutdown.push(() => poller.stop());
 
       console.log(`[poller] Event poller started (interval: ${env.BLOCK_POLLER_INTERVAL_MS}ms)`);
     }
+  }
+
+  if (backgroundShutdown.length > 0) {
+    const shutdown = () => {
+      for (const stop of backgroundShutdown) {
+        try {
+          stop();
+        } catch (err) {
+          console.warn('[shutdown] background cleanup error:', err);
+        }
+      }
+      server.close();
+      process.exit(0);
+    };
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+  }
+}
+
+/**
+ * Parse a JSON array of addresses from an env var. Invalid entries are
+ * filtered silently — the operator's intent is "add what works, ignore
+ * what doesn't" rather than crash on a single typo.
+ */
+function parseAddressList(raw: string | undefined): Address[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (v): v is Address => typeof v === 'string' && /^0x[0-9a-fA-F]{40}$/.test(v),
+    );
+  } catch {
+    return [];
   }
 }
 

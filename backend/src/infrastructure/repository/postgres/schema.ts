@@ -280,3 +280,57 @@ export const tokenNavHistory = pgTable(
     index('token_nav_history_fetched_at_idx').on(t.fetchedAt),
   ],
 );
+
+/**
+ * Wave 3.5 tax-event marker store (ADR-020). Plaintext markers ONLY — no
+ * encrypted-derived amounts. The investor reconstructs amounts client-side
+ * from their decrypted handle + the recorded NAV-at-time. PRIMARY KEY is
+ * `(tx_hash, log_index)` so reorgs that re-emit the same log don't double-
+ * count, and so backfill replays are idempotent.
+ *
+ * Wave 3.5 contracts emit `Purchased` / `Redeemed` / `QueueClaimed` /
+ * `YieldClaimed` (not the ADR-020 names directly). The indexer maps:
+ *   Purchased         → 'Acquisition'
+ *   Redeemed          → 'Disposition' (instant)
+ *   QueueClaimed      → 'Disposition' (queued)
+ *   YieldClaimed      → 'IncomeAccrual'
+ * `FeeEvent` (paymaster ops) is deferred — the Wave 3.5 paymaster wiring
+ * doesn't surface a per-investor gas charge yet.
+ */
+export const taxEventTypeEnum = pgEnum('tax_event_type', [
+  'Acquisition',
+  'Disposition',
+  'IncomeAccrual',
+  'FeeEvent',
+]);
+
+export const taxEvents = pgTable(
+  'tax_events',
+  {
+    txHash: text('tx_hash').notNull(),
+    logIndex: integer('log_index').notNull(),
+    eventType: taxEventTypeEnum('event_type').notNull(),
+    holderAddress: text('holder_address').notNull(),
+    tokenAddress: text('token_address'),
+    blockNumber: text('block_number').notNull(),
+    blockTimestamp: timestamp('block_timestamp').notNull(),
+    /**
+     * Plaintext NAV at the block timestamp (1e8 fixed-point string). Pulled
+     * from the oracle at index time so the investor doesn't need to back-
+     * resolve historical NAV during CSV export. Null when the event has no
+     * NAV semantic (income-accrual, fee).
+     */
+    navAtTime: numeric('nav_at_time'),
+    /** Snapshot/queue/distribution id referenced by the event, when applicable. */
+    referenceId: text('reference_id'),
+    /** Marker-only metadata (e.g. `escalated` for redeem). Never amounts. */
+    metadata: jsonb('metadata'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.txHash, t.logIndex] }),
+    index('tax_events_holder_address_idx').on(t.holderAddress),
+    index('tax_events_token_address_idx').on(t.tokenAddress),
+    index('tax_events_block_timestamp_idx').on(t.blockTimestamp),
+  ],
+);

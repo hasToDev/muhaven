@@ -21,8 +21,13 @@ import { signMessage as viemSignMessage } from 'viem/actions';
 import { arbitrumSepolia } from 'viem/chains';
 import { entryPoint07Address } from 'viem/account-abstraction';
 import { WindowHelper } from '@/helpers/WindowHelper';
-import { addresses as CONTRACTS } from '@/contracts/addresses';
+import { addresses as CONTRACTS, v35Addresses } from '@/contracts/addresses';
 import { yieldDistributorAbi, muhavenEscrowAbi, pusdcAbi } from '@/contracts/abis';
+import {
+  muhavenSubscriptionAbi,
+  redemptionQueueAbi,
+  yieldSnapshotAbi,
+} from '@muhaven/sdk';
 import {
   generateSessionRecord,
   loadSessionRecord,
@@ -90,14 +95,96 @@ function getRpcUrl(): string {
   return import.meta.env.VITE_RPC_URL || 'https://sepolia-rollup.arbitrum.io/rpc';
 }
 
+// Dedicated single-entry ABI for `MuHavenToken.transfer(address,InEuint128,address)`
+// — the Wave 3.5 overload per ADR-021. The full `muHavenTokenAbi` carries
+// both the Wave 3 and Wave 3.5 transfer signatures, which would make
+// `toCallPolicy`'s selector inference ambiguous. Constraining the scope to
+// the new ephemeralEOA-bearing overload also means a stale frontend that
+// somehow falls back to the legacy 2-arg path would correctly miss session
+// scope and bounce to the passkey kernel.
+const muHavenTokenTransferV35Abi = [
+  {
+    name: 'transfer',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'to', type: 'address' },
+      {
+        name: 'encryptedAmount',
+        type: 'tuple',
+        components: [
+          { name: 'ctHash', type: 'uint256' },
+          { name: 'securityZone', type: 'uint8' },
+          { name: 'utype', type: 'uint8' },
+          { name: 'signature', type: 'bytes' },
+        ],
+      },
+      { name: 'ephemeralEOA', type: 'address' },
+    ],
+    outputs: [],
+  },
+] as const;
+
+const ZERO_ADDR = '0x0000000000000000000000000000000000000000';
+
+function nonZero<T extends { target: string }>(perms: readonly T[]): T[] {
+  return perms.filter((p) => p.target.toLowerCase() !== ZERO_ADDR);
+}
+
 /**
  * The narrow allowlist the session validator is scoped to.
- * Covers the two compounding flows: issuer distribute + investor claim.
+ *
+ * Wave 3 (legacy) flows: issuer distribute + investor escrow redeem +
+ * PUSDC operator setup.
+ *
+ * Wave 3.5 (atomic + queued + pull-yield) flows: investor purchase /
+ * redeem / queued submit+claim / yield claim, plus P2P transfer per
+ * ADR-021's ephemeralEOA-bearing transfer overload.
+ *
+ * RedemptionQueue + YieldSnapshot are deployed per-token, so we expand
+ * each map at module-load time. Any address still defaulting to
+ * `0x0000…0000` (Wave 3.5 not yet onboarded for that env) is filtered
+ * out — including a zero target would let the policy match unrelated
+ * Wave 3 calls to address(0).
+ *
  * Any UserOp targeting a contract/function outside this set will be
- * rejected by the bundler — we detect that and fall back to the passkey
- * kernel for the re-attempt.
+ * rejected by the policy — `isCallInSessionScope` short-circuits the
+ * session install in that case so we don't trigger an enableSig prompt
+ * for a guaranteed-failing UserOp.
  */
+const queuePermissions = nonZero(
+  Object.values(v35Addresses.queues).flatMap((queueAddr) => [
+    { target: queueAddr, functionName: 'submit', abi: redemptionQueueAbi, valueLimit: 0n },
+    { target: queueAddr, functionName: 'claim', abi: redemptionQueueAbi, valueLimit: 0n },
+  ]),
+);
+
+const snapshotPermissions = nonZero(
+  Object.values(v35Addresses.yieldSnapshots).map((snapAddr) => ({
+    target: snapAddr,
+    functionName: 'claimYield',
+    abi: yieldSnapshotAbi,
+    valueLimit: 0n,
+  })),
+);
+
+const subscriptionPermissions = nonZero([
+  {
+    target: v35Addresses.subscription,
+    functionName: 'purchase',
+    abi: muhavenSubscriptionAbi,
+    valueLimit: 0n,
+  },
+  {
+    target: v35Addresses.subscription,
+    functionName: 'redeem',
+    abi: muhavenSubscriptionAbi,
+    valueLimit: 0n,
+  },
+]);
+
 const SESSION_PERMISSIONS = [
+  // Wave 3 legacy
   { target: CONTRACTS.yieldDistributor, functionName: 'startDistribution', abi: yieldDistributorAbi, valueLimit: 0n },
   { target: CONTRACTS.yieldDistributor, functionName: 'setEscrowIds', abi: yieldDistributorAbi, valueLimit: 0n },
   { target: CONTRACTS.yieldDistributor, functionName: 'processBatch', abi: yieldDistributorAbi, valueLimit: 0n },
@@ -105,6 +192,18 @@ const SESSION_PERMISSIONS = [
   { target: CONTRACTS.muhavenEscrow, functionName: 'redeem', abi: muhavenEscrowAbi, valueLimit: 0n },
   { target: CONTRACTS.muhavenEscrow, functionName: 'redeemMultiple', abi: muhavenEscrowAbi, valueLimit: 0n },
   { target: CONTRACTS.pusdc, functionName: 'setOperator', abi: pusdcAbi, valueLimit: 0n },
+  // Wave 3.5 — P2P transfer (ephemeralEOA overload)
+  {
+    target: CONTRACTS.muHavenToken,
+    functionName: 'transfer',
+    abi: muHavenTokenTransferV35Abi,
+    valueLimit: 0n,
+  },
+  // Wave 3.5 — Subscription / Queues / Snapshots (any may be empty when
+  // the env has not yet onboarded Wave 3.5 contracts)
+  ...subscriptionPermissions,
+  ...queuePermissions,
+  ...snapshotPermissions,
 ] as const;
 
 /**

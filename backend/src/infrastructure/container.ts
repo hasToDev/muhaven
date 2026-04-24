@@ -18,6 +18,7 @@ import {
   PgYieldRecordRepository,
   PgRwaTokenRepository,
   PgNavHistoryRepository,
+  PgTaxEventRepository,
 } from './repository/postgres/index.js';
 import { getDb } from './repository/postgres/db.js';
 import { JwtService } from './auth/jwt.service.js';
@@ -36,6 +37,7 @@ import type { IPortfolioRepository } from '../domain/portfolio/repository/portfo
 import type { IYieldRecordRepository } from '../domain/yield-history/repository/yield-record.repository.js';
 import type { IRwaTokenRepository } from '../domain/token-registry/repository/rwa-token.repository.js';
 import type { INavHistoryRepository } from '../domain/nav-history/repository/nav-history.repository.js';
+import type { ITaxEventRepository } from '../domain/tax-event/repository/tax-event.repository.js';
 
 interface Repositories {
   nonceRepo: INonceRepository;
@@ -51,6 +53,7 @@ interface MuHavenRepositories {
   portfolioRepo: IPortfolioRepository;
   rwaTokenRepo: IRwaTokenRepository;
   navHistoryRepo: INavHistoryRepository;
+  taxEventRepo: ITaxEventRepository;
 }
 
 function createMemoryRepos(): Repositories {
@@ -84,6 +87,7 @@ function createMuHavenRepos(): MuHavenRepositories {
     portfolioRepo: new PgPortfolioRepository(db),
     rwaTokenRepo: new PgRwaTokenRepository(db),
     navHistoryRepo: new PgNavHistoryRepository(db),
+    taxEventRepo: new PgTaxEventRepository(db),
   };
 }
 
@@ -144,6 +148,9 @@ export const container = {
   },
   get navHistoryRepo() {
     return getMuHavenRepos().navHistoryRepo;
+  },
+  get taxEventRepo() {
+    return getMuHavenRepos().taxEventRepo;
   },
   get nonceService() {
     return new NonceService(getRepos().nonceRepo);

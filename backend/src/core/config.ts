@@ -62,6 +62,31 @@ const EnvSchema = z.object({
   // effectively the deployer key until the adapter is upgraded to multi-admin.
   // Leave blank to disable the endpoint entirely (returns 503).
   DEMO_WHITELIST_PRIVATE_KEY: z.string().optional(),
+
+  // ── Wave 3.5 ───────────────────────────────────────────────────────
+  // PriceOracle deployment used by the issuer NAV endpoints + NAV writer
+  // cron. Same address regardless of token (per-token routing happens via
+  // the `token` arg).
+  ORACLE_ADDRESS: z.string().optional(),
+
+  // NAV writer cron — pulls a fresh NAV from the Chainlink Functions
+  // oracle for every registered Wave 3.5 token. Leave disabled in dev.
+  NAV_CRON_ENABLED: z.coerce.boolean().default(false),
+  NAV_CRON_INTERVAL_MS: z.coerce.number().default(60 * 60 * 1000), // 1h
+  // EOA that has been granted `navRequester` on the ChainlinkFunctionsOracle.
+  // Without it the cron logs a warning and stays idle.
+  NAV_CRON_PRIVATE_KEY: z.string().optional(),
+
+  // Tax-event indexer — polls Wave 3.5 contract events and stores
+  // plaintext markers per ADR-020. Independent of the Wave 3 escrow
+  // poller toggle so each can be turned on/off in isolation.
+  TAX_EVENT_POLLER_ENABLED: z.coerce.boolean().default(false),
+  TAX_EVENT_POLLER_INTERVAL_MS: z.coerce.number().default(15_000),
+  SUBSCRIPTION_ADDRESS: z.string().optional(),
+  // RedemptionQueue + YieldSnapshot deployments are per-token. The indexer
+  // watches all addresses in these JSON arrays. Empty = disable that path.
+  REDEMPTION_QUEUE_ADDRESSES_JSON: z.string().optional(),
+  YIELD_SNAPSHOT_ADDRESSES_JSON: z.string().optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

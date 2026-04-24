@@ -61,9 +61,38 @@ export const SEL = {
   portfolioPusdcDecryptCta: 'portfolio-pusdc-decrypt-cta',
   portfolioPusdcRefresh: 'portfolio-pusdc-refresh',
 
-  // yields
+  // yields (Wave 3 legacy)
   yieldsClaimRow: 'yields-claim-row',
   yieldsClaimCta: 'yields-claim-cta',
+  legacyClaimCta: 'legacy-claim-cta',
+
+  // yields (Wave 3.5 epoch-based pull)
+  epochRow: 'epoch-row',
+  epochClaimCta: 'epoch-claim-cta',
+
+  // buy (Wave 3.5)
+  buyTokenSelect: 'buy-token-select',
+  buyAmountInput: 'buy-amount-input',
+  buyCta: 'buy-cta',
+  buySuccessCard: 'buy-success-card',
+  buyErrorCard: 'buy-error-card',
+  buyKycBlocked: 'buy-kyc-blocked',
+  buyNavReadout: 'buy-nav-readout',
+
+  // transfer (Wave 3.5 P2P)
+  transferTokenSelect: 'transfer-token-select',
+  transferRecipientInput: 'transfer-recipient-input',
+  transferSimReadout: 'transfer-sim-readout',
+  transferAmountInput: 'transfer-amount-input',
+  transferCta: 'transfer-cta',
+  transferSuccessCard: 'transfer-success-card',
+  transferErrorCard: 'transfer-error-card',
+
+  // redemptions (Wave 3.5 queued)
+  redemptionsRefresh: 'redemptions-refresh',
+  redemptionRow: 'redemption-row',
+  redemptionDecryptProceeds: 'redemption-decrypt-proceeds',
+  redemptionClaimCta: 'redemption-claim-cta',
 
   // activity
   activityFilterAll: 'activity-filter-all',

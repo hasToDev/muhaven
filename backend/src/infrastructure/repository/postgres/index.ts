@@ -8,3 +8,4 @@ export { PgPortfolioRepository } from './pg-portfolio.repository.js';
 export { PgYieldRecordRepository } from './pg-yield-record.repository.js';
 export { PgRwaTokenRepository } from './pg-rwa-token.repository.js';
 export { PgNavHistoryRepository } from './pg-nav-history.repository.js';
+export { PgTaxEventRepository } from './pg-tax-event.repository.js';
