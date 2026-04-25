@@ -1,0 +1,601 @@
+/**
+ * Phase 7.5-B regression — re-run the five Phase 2 Subscription integration
+ * cases against a topology where the PUSDC pointer is `MuHavenStable` (not
+ * legacy MockPUSDC). Locks in that the wrapper is a drop-in replacement
+ * — silent-fail semantics, freshness gates, deviation gate behaviour all
+ * survive the rotation.
+ *
+ * Mirrors `MuHavenSubscription.integration.test.ts` except the Subscription /
+ * Treasury are deployed with `pusdc = mhUSDC` from the start. Investor +
+ * issuer flows interact in mhUSDC; legacy PUSDC only surfaces as the
+ * underlying collateral the wrapper holds 1:1.
+ */
+
+import { loadFixture, time } from "@nomicfoundation/hardhat-toolbox/network-helpers";
+import hre, { upgrades } from "hardhat";
+import { Encryptable } from "@cofhe/sdk";
+import { expect } from "chai";
+
+import {
+  deployKYCAdapter,
+  deployRegistry,
+  deployToken,
+  deployMockPUSDC,
+  ZERO_ADDRESS,
+} from "./helpers/setup";
+import { createEphemeralEOA } from "./helpers/fixturesV2";
+
+const ONE_PUSDC = 1_000_000n;
+const HINT_CAP = 1_000_000n;
+const DEFAULT_NAV = ONE_PUSDC;
+const EPOCH_DURATION = 60 * 60;
+const INSTANT_CAP = 1_000_000_000n * ONE_PUSDC;
+const STALENESS_WINDOW_SECONDS = 36n * 60n * 60n;
+const FOREVER = 2n ** 47n - 1n;
+
+async function encUint128(client: any, value: bigint) {
+  const [enc] = await client.encryptInputs([Encryptable.uint128(value)]).execute();
+  return enc;
+}
+
+async function encUint64(client: any, value: bigint) {
+  const [enc] = await client.encryptInputs([Encryptable.uint64(value)]).execute();
+  return enc;
+}
+
+async function deployWrapperFixture() {
+  await hre.run("task:cofhe-mocks:deploy");
+
+  const [deployer, issuer, investor, alice] = await hre.ethers.getSigners();
+
+  const kyc = await deployKYCAdapter();
+  await kyc.addToWhitelist(investor.address);
+  await kyc.addToWhitelist(alice.address);
+
+  const registry = await deployRegistry();
+
+  const token = await deployToken(
+    await kyc.getAddress(),
+    await registry.getAddress(),
+    issuer.address
+  );
+  await registry.setAuthorizedCaller(await token.getAddress(), true);
+
+  // Legacy PUSDC + the wrapper that Subscription / Treasury will actually
+  // talk to.
+  const pusdc = await deployMockPUSDC();
+
+  const Stable = await hre.ethers.getContractFactory("MuHavenStable");
+  const mhUSDC = await upgrades.deployProxy(
+    Stable,
+    [
+      "MuHaven Confidential USD",
+      "mhUSDC",
+      deployer.address,
+      await pusdc.getAddress(),
+    ],
+    { kind: "transparent", initializer: "initialize" }
+  );
+
+  // Real IssuerControlledOracle (matches the Phase 2 integration fixture).
+  const OracleFactory = await hre.ethers.getContractFactory(
+    "IssuerControlledOracle"
+  );
+  const oracle = await upgrades.deployProxy(
+    OracleFactory,
+    [deployer.address, ZERO_ADDRESS],
+    { kind: "transparent", initializer: "initialize" }
+  );
+
+  const TR = await hre.ethers.getContractFactory("TokenRegistry");
+  const tokenRegistry = await upgrades.deployProxy(
+    TR,
+    [deployer.address],
+    { kind: "transparent", initializer: "initialize" }
+  );
+
+  // Subscription wired to mhUSDC (not legacy PUSDC).
+  const SubFactory = await hre.ethers.getContractFactory("MuHavenSubscription");
+  const subscription = await upgrades.deployProxy(
+    SubFactory,
+    [
+      deployer.address,
+      await tokenRegistry.getAddress(),
+      await kyc.getAddress(),
+      await mhUSDC.getAddress(),
+    ],
+    { kind: "transparent", initializer: "initialize" }
+  );
+
+  // Treasury wired to mhUSDC.
+  const TreasuryFactory = await hre.ethers.getContractFactory("MuHavenTreasury");
+  const treasury = await upgrades.deployProxy(
+    TreasuryFactory,
+    [
+      await token.getAddress(),
+      await subscription.getAddress(),
+      alice.address, // queue placeholder — not exercised in these cases
+      issuer.address,
+      await mhUSDC.getAddress(),
+      0n,
+      deployer.address,
+    ],
+    { kind: "transparent", initializer: "initialize" }
+  );
+
+  await tokenRegistry.registerToken(await token.getAddress(), {
+    active: true,
+    treasury: await treasury.getAddress(),
+    queue: alice.address,
+    oracle: await oracle.getAddress(),
+    issuer: issuer.address,
+    minInvestment: 0n,
+    instantRedeemCap: INSTANT_CAP,
+    epochDuration: EPOCH_DURATION,
+    paused: false,
+  });
+
+  await token.setSubscription(await subscription.getAddress());
+
+  await oracle.setNavWriter(await token.getAddress(), issuer.address);
+  await oracle.setMaxDeviationBps(await token.getAddress(), 25n);
+
+  // Investor pre-wraps PUSDC → mhUSDC so the subscription pulls work.
+  // Mint 200 PUSDC, wrap 200 → 200 mhUSDC.
+  await pusdc.mint(investor.address, 200n * ONE_PUSDC);
+  await pusdc
+    .connect(investor)
+    .setOperator(await mhUSDC.getAddress(), FOREVER);
+
+  const investorClient = await hre.cofhe.createClientWithBatteries(investor);
+  const issuerClient = await hre.cofhe.createClientWithBatteries(issuer);
+
+  const eph = createEphemeralEOA();
+
+  // Wrap full balance into mhUSDC.
+  const encWrap = await encUint64(investorClient, 200n * ONE_PUSDC);
+  await mhUSDC.connect(investor).wrap(encWrap, eph.address);
+
+  // Investor approves Subscription as operator on mhUSDC (the new pull source).
+  await mhUSDC
+    .connect(investor)
+    .setOperator(await subscription.getAddress(), FOREVER);
+
+  return {
+    deployer,
+    issuer,
+    investor,
+    alice,
+    kyc,
+    registry,
+    token,
+    tokenRegistry,
+    treasury,
+    pusdc,
+    mhUSDC,
+    oracle,
+    subscription,
+    investorClient,
+    issuerClient,
+    eph,
+  };
+}
+
+describe("Phase 7.5-B — Subscription integration against MuHavenStable", () => {
+  it("Case 1 — fresh buy: investor purchases via mhUSDC", async () => {
+    const {
+      subscription,
+      issuer,
+      investor,
+      investorClient,
+      token,
+      mhUSDC,
+      treasury,
+      oracle,
+      eph,
+    } = await loadFixture(deployWrapperFixture);
+
+    await oracle.connect(issuer).setNAV(await token.getAddress(), DEFAULT_NAV);
+
+    const shares = 10n;
+    const enc = await encUint128(investorClient, shares);
+
+    await expect(
+      subscription
+        .connect(investor)
+        .purchase(await token.getAddress(), enc, HINT_CAP, eph.address)
+    )
+      .to.emit(subscription, "Purchased")
+      .withArgs(await token.getAddress(), investor.address, HINT_CAP);
+
+    const bal = await token.encryptedBalanceOf(investor.address);
+    await hre.cofhe.mocks.expectPlaintext(bal, shares);
+
+    // Treasury holds the mhUSDC — wrapper-side accounting.
+    const treasuryBal = await mhUSDC.confidentialBalanceOf(
+      await treasury.getAddress()
+    );
+    await hre.cofhe.mocks.expectPlaintext(treasuryBal, shares * ONE_PUSDC);
+  });
+
+  it("Case 2 — subsequent buy: balance accumulates with NAV refresh", async () => {
+    const {
+      subscription,
+      issuer,
+      investor,
+      investorClient,
+      token,
+      mhUSDC,
+      treasury,
+      oracle,
+      eph,
+    } = await loadFixture(deployWrapperFixture);
+
+    await oracle.connect(issuer).setNAV(await token.getAddress(), DEFAULT_NAV);
+
+    let enc = await encUint128(investorClient, 5n);
+    await subscription
+      .connect(investor)
+      .purchase(await token.getAddress(), enc, HINT_CAP, eph.address);
+
+    // Refresh NAV in-band (within 25 bps).
+    const newNav = 1_002_400n;
+    await oracle.connect(issuer).setNAV(await token.getAddress(), newNav);
+
+    enc = await encUint128(investorClient, 4n);
+    await subscription
+      .connect(investor)
+      .purchase(await token.getAddress(), enc, HINT_CAP, eph.address);
+
+    const bal = await token.encryptedBalanceOf(investor.address);
+    await hre.cofhe.mocks.expectPlaintext(bal, 9n);
+
+    const treasuryBal = await mhUSDC.confidentialBalanceOf(
+      await treasury.getAddress()
+    );
+    await hre.cofhe.mocks.expectPlaintext(
+      treasuryBal,
+      5n * ONE_PUSDC + 4n * newNav
+    );
+  });
+
+  it("Case 3 — stale NAV blocks purchase against the wrapper too", async () => {
+    const {
+      subscription,
+      issuer,
+      investor,
+      investorClient,
+      token,
+      oracle,
+      eph,
+    } = await loadFixture(deployWrapperFixture);
+
+    await oracle.connect(issuer).setNAV(await token.getAddress(), DEFAULT_NAV);
+
+    // Advance past staleness window.
+    await time.increase(Number(STALENESS_WINDOW_SECONDS) + 60);
+
+    const enc = await encUint128(investorClient, 5n);
+    await expect(
+      subscription
+        .connect(investor)
+        .purchase(await token.getAddress(), enc, HINT_CAP, eph.address)
+    ).to.be.revertedWithCustomError(subscription, "StaleNAV");
+  });
+
+  it("Case 4 — silent-fail wrapper pull does not revert the purchase", async () => {
+    // Swap from the Phase-2 treasury-drain case (which needs withdraw +
+    // queue wired) to a more focused check: the wrapper's silent-fail
+    // semantics on the pull leg mean a short-balance purchase still
+    // executes without reverting. Investor's mhUSDC balance is preserved
+    // (silent-fail returned zero); the share-mint side of Subscription
+    // records `encSharesBounded` shares. The point: observers cannot
+    // distinguish a successful pull from a silent-failed one via gas.
+    const {
+      subscription,
+      issuer,
+      investor,
+      investorClient,
+      token,
+      mhUSDC,
+      oracle,
+      eph,
+    } = await loadFixture(deployWrapperFixture);
+
+    await oracle.connect(issuer).setNAV(await token.getAddress(), DEFAULT_NAV);
+
+    // Investor has 200 mhUSDC. Try to buy 500 shares @ 1.0 = 500 mhUSDC cost.
+    const enc = await encUint128(investorClient, 500n);
+    await subscription
+      .connect(investor)
+      .purchase(await token.getAddress(), enc, 500n, eph.address);
+
+    // mhUSDC pull silent-failed: investor's balance is intact.
+    const investorMh = await mhUSDC.confidentialBalanceOf(investor.address);
+    await hre.cofhe.mocks.expectPlaintext(investorMh, 200n * ONE_PUSDC);
+  });
+
+  it("Case 5 — deviation gate rejects → owner accepts → new NAV in force (wrapper-agnostic)", async () => {
+    const {
+      subscription,
+      issuer,
+      deployer,
+      investor,
+      investorClient,
+      token,
+      oracle,
+      eph,
+    } = await loadFixture(deployWrapperFixture);
+
+    // Seed NAV.
+    await oracle.connect(issuer).setNAV(await token.getAddress(), DEFAULT_NAV);
+
+    // Try a 5% (500 bps) update — over the 25 bps gate.
+    const newNav = (DEFAULT_NAV * 105n) / 100n;
+    await oracle.connect(issuer).setNAV(await token.getAddress(), newNav);
+
+    // Pending NAV parked; current NAV unchanged.
+    const [navAfter, ] = await oracle.getNAV(await token.getAddress());
+    expect(navAfter).to.equal(DEFAULT_NAV);
+
+    // Purchase still works against the *prior* NAV.
+    let enc = await encUint128(investorClient, 3n);
+    await subscription
+      .connect(investor)
+      .purchase(await token.getAddress(), enc, HINT_CAP, eph.address);
+    const bal = await token.encryptedBalanceOf(investor.address);
+    await hre.cofhe.mocks.expectPlaintext(bal, 3n);
+
+    // Owner accepts pending NAV → next purchase pays against the new NAV.
+    await oracle.connect(deployer).acceptPendingNAV(await token.getAddress());
+    const [navCommitted, ] = await oracle.getNAV(await token.getAddress());
+    expect(navCommitted).to.equal(newNav);
+
+    enc = await encUint128(investorClient, 2n);
+    await subscription
+      .connect(investor)
+      .purchase(await token.getAddress(), enc, HINT_CAP, eph.address);
+
+    const bal2 = await token.encryptedBalanceOf(investor.address);
+    await hre.cofhe.mocks.expectPlaintext(bal2, 5n);
+  });
+});
+
+// ── migrateToWrapper helper coverage ─────────────────────────────────────
+
+describe("Phase 7.5-B — MuHavenTreasury.migrateToWrapper", () => {
+  /**
+   * Treasury starts wired to legacy PUSDC, holds a float, then migrates
+   * to MuHavenStable in one tx. After migration:
+   *   - `treasury.pusdc()` points at mhUSDC.
+   *   - The wrapper holds the legacy PUSDC custody (1:1 backing).
+   *   - The wrapper's totalSupply equals what the treasury just received.
+   *   - The treasury's mhUSDC balance equals the migrated float.
+   */
+  async function deployMigrationFixture() {
+    await hre.run("task:cofhe-mocks:deploy");
+
+    const [deployer, issuer, investor, alice] = await hre.ethers.getSigners();
+
+    const kyc = await deployKYCAdapter();
+    await kyc.addToWhitelist(investor.address);
+
+    const registry = await deployRegistry();
+    const token = await deployToken(
+      await kyc.getAddress(),
+      await registry.getAddress(),
+      issuer.address
+    );
+    await registry.setAuthorizedCaller(await token.getAddress(), true);
+
+    const pusdc = await deployMockPUSDC();
+
+    // Subscription pre-deployed (placeholder for Treasury init).
+    const TR = await hre.ethers.getContractFactory("TokenRegistry");
+    const tokenRegistry = await upgrades.deployProxy(
+      TR,
+      [deployer.address],
+      { kind: "transparent", initializer: "initialize" }
+    );
+
+    const SubFactory = await hre.ethers.getContractFactory("MuHavenSubscription");
+    const subscription = await upgrades.deployProxy(
+      SubFactory,
+      [
+        deployer.address,
+        await tokenRegistry.getAddress(),
+        await kyc.getAddress(),
+        await pusdc.getAddress(), // initial: legacy
+      ],
+      { kind: "transparent", initializer: "initialize" }
+    );
+
+    const TreasuryFactory = await hre.ethers.getContractFactory("MuHavenTreasury");
+    const treasury = await upgrades.deployProxy(
+      TreasuryFactory,
+      [
+        await token.getAddress(),
+        await subscription.getAddress(),
+        alice.address, // queue placeholder
+        issuer.address,
+        await pusdc.getAddress(),
+        0n,
+        deployer.address,
+      ],
+      { kind: "transparent", initializer: "initialize" }
+    );
+
+    // Seed treasury with legacy PUSDC float. MockPUSDC.mint is a test
+    // helper that takes cleartext; in production the issuer would call
+    // `confidentialTransfer` from their own balance, but the on-chain
+    // outcome is the same — treasury holds an encrypted balance handle.
+    await pusdc.mint(await treasury.getAddress(), 50n * ONE_PUSDC);
+
+    // Wrapper deployed (post-treasury-fund).
+    const Stable = await hre.ethers.getContractFactory("MuHavenStable");
+    const mhUSDC = await upgrades.deployProxy(
+      Stable,
+      [
+        "MuHaven Confidential USD",
+        "mhUSDC",
+        deployer.address,
+        await pusdc.getAddress(),
+      ],
+      { kind: "transparent", initializer: "initialize" }
+    );
+
+    return {
+      deployer,
+      issuer,
+      investor,
+      alice,
+      treasury,
+      subscription,
+      pusdc,
+      mhUSDC,
+      token,
+    };
+  }
+
+  it("migrateToWrapper wraps the float and rotates the pointer", async () => {
+    const { treasury, issuer, alice, subscription, pusdc, mhUSDC } =
+      await loadFixture(deployMigrationFixture);
+
+    // Pre-state: treasury PUSDC balance handle is initialised.
+    const preBalRaw = await pusdc.confidentialBalanceOf(
+      await treasury.getAddress()
+    );
+    await hre.cofhe.mocks.expectPlaintext(preBalRaw, 50n * ONE_PUSDC);
+
+    await expect(treasury.connect(issuer).migrateToWrapper(await mhUSDC.getAddress()))
+      .to.emit(treasury, "TreasuryMigrated")
+      .withArgs(await pusdc.getAddress(), await mhUSDC.getAddress());
+
+    // Pointer rotated.
+    expect(await treasury.pusdc()).to.equal(await mhUSDC.getAddress());
+
+    // Wrapper holds the legacy PUSDC.
+    const wrapperPusdcBal = await pusdc.confidentialBalanceOf(
+      await mhUSDC.getAddress()
+    );
+    await hre.cofhe.mocks.expectPlaintext(wrapperPusdcBal, 50n * ONE_PUSDC);
+
+    // Treasury's mhUSDC balance matches the migrated float.
+    const treasuryMh = await mhUSDC.confidentialBalanceOf(
+      await treasury.getAddress()
+    );
+    await hre.cofhe.mocks.expectPlaintext(treasuryMh, 50n * ONE_PUSDC);
+
+    // Wrapper total supply == migrated float (1:1 invariant).
+    const ts = await mhUSDC.confidentialTotalSupply();
+    await hre.cofhe.mocks.expectPlaintext(ts, 50n * ONE_PUSDC);
+
+    // Subscription / Queue gained operator rights on the wrapper.
+    expect(
+      await mhUSDC.isOperator(
+        await treasury.getAddress(),
+        await subscription.getAddress()
+      )
+    ).to.equal(true);
+    expect(
+      await mhUSDC.isOperator(await treasury.getAddress(), alice.address)
+    ).to.equal(true);
+  });
+
+  it("migrateToWrapper rejects calling with the current pointer", async () => {
+    const { treasury, issuer, pusdc } =
+      await loadFixture(deployMigrationFixture);
+
+    await expect(
+      treasury.connect(issuer).migrateToWrapper(await pusdc.getAddress())
+    ).to.be.revertedWithCustomError(treasury, "AlreadyMigrated");
+  });
+
+  it("migrateToWrapper rejects zero address", async () => {
+    const { treasury, issuer } = await loadFixture(deployMigrationFixture);
+    await expect(
+      treasury.connect(issuer).migrateToWrapper(hre.ethers.ZeroAddress)
+    ).to.be.revertedWithCustomError(treasury, "ZeroAddress");
+  });
+
+  it("migrateToWrapper is issuer-only", async () => {
+    const { treasury, alice, mhUSDC } =
+      await loadFixture(deployMigrationFixture);
+    await expect(
+      treasury.connect(alice).migrateToWrapper(await mhUSDC.getAddress())
+    ).to.be.revertedWithCustomError(treasury, "OnlyIssuer");
+  });
+
+  it("migrateToWrapper short-circuits on empty treasury (only rotates pointer)", async () => {
+    // Fresh fixture without seeding the treasury.
+    await hre.run("task:cofhe-mocks:deploy");
+    const [deployer, issuer, investor, alice] = await hre.ethers.getSigners();
+
+    const kyc = await deployKYCAdapter();
+    await kyc.addToWhitelist(investor.address);
+    const registry = await deployRegistry();
+    const token = await deployToken(
+      await kyc.getAddress(),
+      await registry.getAddress(),
+      issuer.address
+    );
+    await registry.setAuthorizedCaller(await token.getAddress(), true);
+
+    const pusdc = await deployMockPUSDC();
+
+    const TR = await hre.ethers.getContractFactory("TokenRegistry");
+    const tokenRegistry = await upgrades.deployProxy(
+      TR,
+      [deployer.address],
+      { kind: "transparent", initializer: "initialize" }
+    );
+
+    const SubFactory = await hre.ethers.getContractFactory("MuHavenSubscription");
+    const subscription = await upgrades.deployProxy(
+      SubFactory,
+      [
+        deployer.address,
+        await tokenRegistry.getAddress(),
+        await kyc.getAddress(),
+        await pusdc.getAddress(),
+      ],
+      { kind: "transparent", initializer: "initialize" }
+    );
+
+    const TreasuryFactory = await hre.ethers.getContractFactory("MuHavenTreasury");
+    const treasury = await upgrades.deployProxy(
+      TreasuryFactory,
+      [
+        await token.getAddress(),
+        await subscription.getAddress(),
+        alice.address,
+        issuer.address,
+        await pusdc.getAddress(),
+        0n,
+        deployer.address,
+      ],
+      { kind: "transparent", initializer: "initialize" }
+    );
+
+    const Stable = await hre.ethers.getContractFactory("MuHavenStable");
+    const mhUSDC = await upgrades.deployProxy(
+      Stable,
+      [
+        "MuHaven Confidential USD",
+        "mhUSDC",
+        deployer.address,
+        await pusdc.getAddress(),
+      ],
+      { kind: "transparent", initializer: "initialize" }
+    );
+
+    // Treasury never received PUSDC — short-circuit branch.
+    await expect(treasury.connect(issuer).migrateToWrapper(await mhUSDC.getAddress()))
+      .to.emit(treasury, "TreasuryMigrated");
+
+    // Pointer rotated; wrapper supply still uninitialised.
+    expect(await treasury.pusdc()).to.equal(await mhUSDC.getAddress());
+    const ts = await mhUSDC.confidentialTotalSupply();
+    expect(ts).to.equal(hre.ethers.ZeroHash);
+  });
+});

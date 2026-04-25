@@ -141,6 +141,62 @@ export async function deployV2Fixture() {
   };
 }
 
+// ── Phase 7.5 — MuHavenStable wrapper fixture variant ────────────────────
+
+/**
+ * Wave 3.5 stack with `MuHavenStable` standing in for legacy PUSDC. Used by
+ * the Phase 7.5-B regression cases to confirm silent-fail semantics survive
+ * the wrapper rotation. Returns the same shape as `deployV2Fixture` plus
+ * `mhUSDC`; the `pusdc` slot still points at the underlying legacy mock so
+ * tests can seed wrap balances + assert the 1:1 invariant.
+ *
+ * Topology:
+ *   - MockPUSDC  → underlying legacy confidential USDC.
+ *   - mhUSDC     → MuHavenStable proxy backed by MockPUSDC.
+ *   - investor pre-wraps `wrapAmount` PUSDC → mhUSDC so subsequent test
+ *     flows have a starting mhUSDC balance to spend.
+ *
+ *   Subscription / Treasury / Queue / YieldSnapshot are NOT wired here —
+ *   the regression suite below only covers the surface that Phase 7.5-A
+ *   shipped. Phase 7.5-C will take a follow-up pass.
+ */
+export async function deployV2FixtureWithWrapper(wrapAmount: bigint = 100_000_000n) {
+  const base = await deployV2Fixture();
+  const { deployer, investor, pusdc } = base;
+
+  const Stable = await hre.ethers.getContractFactory("MuHavenStable");
+  const mhUSDC = await upgrades.deployProxy(
+    Stable,
+    [
+      "MuHaven Confidential USD",
+      "mhUSDC",
+      deployer.address,
+      await pusdc.getAddress(),
+    ],
+    { kind: "transparent", initializer: "initialize" }
+  );
+
+  // Pre-seed investor with PUSDC and wrap part of it into mhUSDC so the
+  // regression cases can transact in mhUSDC immediately.
+  await pusdc.mint(investor.address, wrapAmount * 2n);
+  await pusdc
+    .connect(investor)
+    .setOperator(await mhUSDC.getAddress(), 2n ** 47n - 1n);
+
+  const investorClient = await hre.cofhe.createClientWithBatteries(investor);
+  const [encWrap] = await investorClient
+    .encryptInputs([Encryptable.uint64(wrapAmount)])
+    .execute();
+  await mhUSDC
+    .connect(investor)
+    .wrap(encWrap, base.ephemeralEOA.address);
+
+  return {
+    ...base,
+    mhUSDC,
+  };
+}
+
 // ── Re-exports for convenience ────────────────────────────────────────────
 
 export { Encryptable, ZERO_ADDRESS, ONE_TOKEN };

@@ -13,6 +13,7 @@ import {
 } from "@fhenixprotocol/cofhe-contracts/FHE.sol";
 import {IFHERC20} from "./interfaces/IFHERC20.sol";
 import {IMuHavenTreasury} from "./interfaces/IMuHavenTreasury.sol";
+import {IMuHavenStable} from "./interfaces/IMuHavenStable.sol";
 
 /// @title MuHavenTreasury
 /// @notice Per-token PUSDC float custodian per ADR-002. One treasury per
@@ -106,6 +107,12 @@ contract MuHavenTreasury is Initializable, ReentrancyGuardTransient, IMuHavenTre
 
     error PaymentTransferFailed();
 
+    /// @notice `migrateToWrapper(addr)` called with the current PUSDC pointer.
+    ///         Idempotency guard — a second migration would no-op the wrap
+    ///         (handle already lives in mhUSDC) but still grant operators
+    ///         redundantly, so we reject loudly.
+    error AlreadyMigrated();
+
     // ── Events (additive to interface) ───────────────────────────────────
 
     event TreasuryInitialized(
@@ -117,6 +124,11 @@ contract MuHavenTreasury is Initializable, ReentrancyGuardTransient, IMuHavenTre
         address owner,
         uint256 minFloat
     );
+
+    /// @notice One-shot wrapper migration completed. Cleartext payload only:
+    ///         exact PUSDC amount migrated stays encrypted. Off-chain
+    ///         observers track the migration by indexing this event.
+    event TreasuryMigrated(address indexed oldPusdc, address indexed newPusdc);
 
     // ── Modifiers ────────────────────────────────────────────────────────
 
@@ -299,6 +311,69 @@ contract MuHavenTreasury is Initializable, ReentrancyGuardTransient, IMuHavenTre
         address previous = owner;
         owner = newOwner;
         emit OwnershipTransferred(previous, newOwner);
+    }
+
+    // ── Phase 7.5 — MuHavenStable wrapper migration (ADR-041) ────────────
+
+    /// @notice One-shot helper that wraps the treasury's entire legacy PUSDC
+    ///         float into MuHavenStable mhUSDC and rotates the `pusdc`
+    ///         pointer to point at the wrapper. Issuer-only per the
+    ///         `MHUSD_WRAPPER_PLAN.md` migration order.
+    /// @dev Steps:
+    ///        1. Read the treasury's encrypted legacy PUSDC balance.
+    ///        2. If the balance handle is initialised, grant the wrapper
+    ///           operator rights on legacy PUSDC and call
+    ///           `wrapHandle(currentBal, address(0))` to round-trip the
+    ///           full float into mhUSDC. The wrapper mints the mhUSDC
+    ///           back to this treasury.
+    ///        3. Rotate `pusdc` to the wrapper address. The bound
+    ///           Subscription / Queue need operator rights on the wrapper
+    ///           too — granted here in the same tx so no follow-up is
+    ///           required.
+    ///
+    ///      `ephemeralEOA = address(0)` on the `wrapHandle` call: the
+    ///      treasury is a contract with no decrypt path. Subscription /
+    ///      Queue gain ACL on the treasury's mhUSDC balance via the
+    ///      operator + `_doTransfer` path on every subsequent withdraw —
+    ///      no per-call grant from this migration tx is required.
+    ///
+    ///      Idempotency / safety:
+    ///        - Reverts `AlreadyMigrated` if the wrapper address matches
+    ///          the current `pusdc` pointer.
+    ///        - Treasury must have ACL on its own legacy PUSDC balance
+    ///          handle (granted by legacy PUSDC's `_doTransfer` on every
+    ///          deposit). Contracts that have never received PUSDC will
+    ///          take the empty-treasury short-circuit and only rotate the
+    ///          pointer + grant operators.
+    function migrateToWrapper(address mhUSDC) external onlyIssuer nonReentrant {
+        if (mhUSDC == address(0)) revert ZeroAddress();
+        address oldPusdc = pusdc;
+        if (mhUSDC == oldPusdc) revert AlreadyMigrated();
+
+        euint64 currentBal = IFHERC20(oldPusdc).confidentialBalanceOf(address(this));
+        if (Common.isInitialized(currentBal)) {
+            // Grant the wrapper operator rights on legacy PUSDC so it can
+            // pull the float during `wrapHandle`. Wrapper will hold the
+            // PUSDC custody after the wrap.
+            IFHERC20(oldPusdc).setOperator(mhUSDC, type(uint48).max);
+
+            // Re-grant ACL on `currentBal` to the wrapper so the wrapper
+            // can pass the handle to legacy PUSDC for the transferFrom.
+            FHE.allowThis(currentBal);
+            FHE.allow(currentBal, mhUSDC);
+
+            // ephemeralEOA = address(0) — treasury is a contract.
+            IMuHavenStable(mhUSDC).wrapHandle(currentBal, address(0));
+        }
+
+        // Rotate pointer + grant the wrapper operator rights to the bound
+        // Subscription / Queue so the existing redeem / claim paths keep
+        // working against the wrapper without further config.
+        pusdc = mhUSDC;
+        IFHERC20(mhUSDC).setOperator(subscription, type(uint48).max);
+        IFHERC20(mhUSDC).setOperator(queue, type(uint48).max);
+
+        emit TreasuryMigrated(oldPusdc, mhUSDC);
     }
 
     // ── Views ────────────────────────────────────────────────────────────
