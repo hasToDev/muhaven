@@ -69,6 +69,15 @@ const EnvSchema = z.object({
   // the `token` arg).
   ORACLE_ADDRESS: z.string().optional(),
 
+  // ── Wave 3.5 Phase 7.5 — `MuHavenStable` confidential-USDC wrapper ──
+  // Address of the deployed wrapper that replaces every Wave 3.5 use of
+  // legacy PUSDC per `MHUSD_WRAPPER_PLAN.md` + ADR-041. Pre-cutover this
+  // is unset; calldata-preparing endpoints that touch the cash leg should
+  // refuse to encode against a missing slot rather than fall back to the
+  // legacy PUSDC selector. Tax indexer is unaffected — Subscription /
+  // Queue / YieldSnapshot events are still the source of truth.
+  STABLE_ADDRESS: z.string().optional(),
+
   // NAV writer cron — pulls a fresh NAV from the Chainlink Functions
   // oracle for every registered Wave 3.5 token. Leave disabled in dev.
   NAV_CRON_ENABLED: z.coerce.boolean().default(false),

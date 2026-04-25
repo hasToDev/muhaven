@@ -18,6 +18,7 @@ import { v35Addresses, isZeroAddress } from '@/contracts/addresses'
 import { buildWriteContext, buildReadContext, getPublicClient } from '@/services/v35/context'
 import { portfolioApi, balanceApi, type TokenResponseDto } from '@/services/api'
 import * as Erc20Service from '@/services/contracts/Erc20Service'
+import * as MuHavenStableService from '@/services/contracts/MuHavenStableService'
 import { addresses } from '@/contracts/addresses'
 import { CIRCLE_FAUCET_URL, arbiscanTx } from '@/lib/external'
 import { formatUSD } from '@/lib/utils'
@@ -26,7 +27,7 @@ import { muHavenTokenAbi } from '@/contracts/abis'
 import {
   CheckCircle2, Lock, ShieldCheck, EyeOff, TrendingUp, ChevronDown, ArrowRight,
   Loader2, Copy, Check, RefreshCw, ExternalLink, AlertTriangle, ShoppingCart, Undo2,
-  Eye, Inbox, Zap,
+  Eye, Inbox, Zap, Coins,
 } from 'lucide-vue-next'
 
 // TradePage — Wave 3.5 atomic buy + instant-redeem against
@@ -44,7 +45,8 @@ const route = useRoute()
 const router = useRouter()
 const marketplace = useMarketplaceStore()
 const { address, connected } = useWallet()
-const { encryptUint128, getEphemeralEOA, decryptUint128ForView } = useFhe()
+const fhe = useFhe()
+const { encryptUint128, getEphemeralEOA, decryptUint128ForView, decryptMhUsdcForView, initialize: initFhe } = fhe
 
 const isXl = useMediaQuery('(min-width: 1280px)')
 
@@ -227,6 +229,42 @@ const exceedsHolding = computed<boolean>(() => {
   if (mode.value !== 'sell' || holdingBalance.value === null) return false
   const shares = BigInt(Math.floor(numericAmount.value || 0))
   return shares > holdingBalance.value
+})
+
+// ── Phase 7.5 — mhUSDC pre-flight (buy mode) ───────────────────────────
+//
+// Buy flow pulls mhUSDC from the investor via Subscription's silent-fail
+// pull. If balance < cost, the contract zeros out — investor pays gas
+// for nothing. We surface a pre-flight warning + inline "Wrap PUSDC
+// first" CTA so the failure mode lands as UI instead of an empty tx.
+
+const mhUsdcAvailable = computed(() => MuHavenStableService.isAvailable())
+const mhUsdcBalance = ref<bigint | null>(null)
+const mhUsdcDecrypting = ref(false)
+
+async function decryptMhUsdcBalance() {
+  if (!address.value || mhUsdcDecrypting.value) return
+  if (!mhUsdcAvailable.value) {
+    mhUsdcBalance.value = null
+    return
+  }
+  mhUsdcDecrypting.value = true
+  try {
+    await initFhe()
+    const ctHash = await MuHavenStableService.confidentialBalanceOf(address.value as Address)
+    mhUsdcBalance.value = await decryptMhUsdcForView(ctHash)
+  } catch (e) {
+    console.warn('[TradePage] mhUSDC decrypt failed', e)
+    mhUsdcBalance.value = null
+  } finally {
+    mhUsdcDecrypting.value = false
+  }
+}
+
+const insufficientMhUsdc = computed<boolean>(() => {
+  if (mode.value !== 'buy') return false
+  if (mhUsdcBalance.value === null || estimatedCostPusdc.value === null) return false
+  return estimatedCostPusdc.value > mhUsdcBalance.value
 })
 
 watch(selectedToken, () => {
@@ -997,6 +1035,74 @@ const ctaDisabled = computed(() => {
               <ArrowRight v-if="!isProcessing" :size="16" :stroke-width="2" />
             </button>
 
+            <!-- mhUSDC pre-flight: surface the silent-fail risk + an
+                 inline wrap CTA. Only shown in buy mode when the wrapper
+                 is configured AND the user has decrypted their mhUSDC
+                 balance and it falls short of the estimated cost. -->
+            <div
+              v-if="mode === 'buy' && insufficientMhUsdc"
+              data-testid="buy-insufficient-mhusdc"
+              class="rounded-lg p-4 border border-gold/35 dark:border-signal/30
+                     bg-gold/8 dark:bg-signal/8 flex flex-col gap-3"
+            >
+              <div class="flex items-start gap-3">
+                <Coins :size="16" :stroke-width="1.8" class="text-gold dark:text-signal mt-0.5 flex-shrink-0" />
+                <div class="flex-1 space-y-1">
+                  <p class="font-sans text-sm font-semibold text-midnight dark:text-white">
+                    Not enough mhUSDC for this buy
+                  </p>
+                  <p class="font-sans text-[11px] text-cool leading-relaxed">
+                    Your decrypted mhUSDC balance is below the estimated cost.
+                    The Subscription pull would silent-fail to zero — wrap more
+                    PUSDC first to keep the buy intact.
+                  </p>
+                </div>
+              </div>
+              <div class="flex flex-wrap items-center gap-3 pl-7">
+                <span class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool tabular-nums">
+                  have <span class="text-midnight dark:text-white">{{ mhUsdcBalance !== null ? formatUSD(Number(mhUsdcBalance) / 1e6) : '—' }}</span>
+                  · need <span class="text-midnight dark:text-white">{{ estimatedCostPusdc !== null ? formatUSD(Number(estimatedCostPusdc) / 1e6) : '—' }}</span>
+                </span>
+                <button
+                  type="button"
+                  @click="goWrap"
+                  data-testid="buy-wrap-mhusdc-cta"
+                  class="ml-auto inline-flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.22em] font-semibold
+                         text-compute dark:text-signal hover:opacity-80 transition-opacity cursor-pointer"
+                >
+                  Wrap PUSDC
+                  <ArrowRight :size="11" :stroke-width="2" />
+                </button>
+              </div>
+            </div>
+
+            <!-- mhUSDC reveal — opt-in. Hidden once decrypted; the
+                 banner above takes over when the balance lands short. -->
+            <div
+              v-if="mode === 'buy' && mhUsdcAvailable && mhUsdcBalance === null"
+              class="flex items-center justify-between gap-2 rounded-lg p-3
+                     border border-haze dark:border-white/8 bg-mist/30 dark:bg-[#1c1b1b]/60"
+            >
+              <div class="flex items-center gap-2">
+                <Coins :size="14" :stroke-width="1.8" class="text-cool" />
+                <span class="font-sans text-[11px] text-cool leading-tight">
+                  Pre-flight: reveal mhUSDC balance to catch silent-fail pulls.
+                </span>
+              </div>
+              <button
+                type="button"
+                @click="decryptMhUsdcBalance"
+                :disabled="mhUsdcDecrypting"
+                data-testid="buy-reveal-mhusdc"
+                class="inline-flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.22em] font-semibold
+                       text-compute dark:text-signal hover:opacity-80 transition-opacity cursor-pointer disabled:opacity-50"
+              >
+                <Loader2 v-if="mhUsdcDecrypting" :size="11" class="animate-spin" />
+                <Eye v-else :size="11" />
+                Reveal
+              </button>
+            </div>
+
             <!-- Wrap link only makes sense in Buy mode -->
             <button
               v-if="mode === 'buy'"
@@ -1007,7 +1113,7 @@ const ctaDisabled = computed(() => {
                      text-cool hover:text-compute dark:hover:text-signal transition-colors
                      inline-flex items-center justify-center gap-1.5 self-center cursor-pointer"
             >
-              Or wrap an external ERC-20 token
+              {{ mhUsdcAvailable ? 'Or wrap an external ERC-20 token' : 'Or wrap an external ERC-20 token' }}
               <ArrowRight :size="11" :stroke-width="2" />
             </button>
           </div>

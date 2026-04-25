@@ -3,7 +3,8 @@ import { ref, computed } from 'vue'
 import { portfolioApi, tokensApi, type PortfolioPositionDto, type TokenResponseDto } from '@/services/api'
 import * as TokenService from '@/services/contracts/TokenService'
 import * as Erc20Service from '@/services/contracts/Erc20Service'
-import * as PusdcService from '@/services/contracts/PusdcService'
+import * as LegacyPusdcService from '@/services/contracts/LegacyPusdcService'
+import * as MuHavenStableService from '@/services/contracts/MuHavenStableService'
 import { addresses } from '@/contracts/addresses'
 
 export interface PortfolioHolding {
@@ -96,12 +97,17 @@ export const usePortfolioStore = defineStore('portfolio', () => {
       })
 
       // Load USDC balance (non-encrypted, standard ERC-20) + the plaintext
-      // portion of PUSDC in parallel. The confidential PUSDC portion stays
+      // portion of legacy PUSDC in parallel. The confidential portion stays
       // null until the user clicks "Decrypt" — same opt-in pattern as
       // fhERC-20 holdings.
+      //
+      // Phase 7.5: PUSDC public surface still comes from the legacy
+      // contract (mhUSDC has no plaintext shadow — it's confidential-only).
+      // The "decrypted PUSDC" card on PortfolioPage reads mhUSDC when the
+      // wrapper is configured, falling back to legacy PUSDC otherwise.
       const [usdc, pusdcPublic] = await Promise.all([
         Erc20Service.balanceOf(addresses.usdc, walletAddress),
-        PusdcService.balanceOf(walletAddress),
+        LegacyPusdcService.balanceOf(walletAddress),
       ])
       usdcBalance.value = usdc
       pusdcPublicBalance.value = pusdcPublic
@@ -142,12 +148,16 @@ export const usePortfolioStore = defineStore('portfolio', () => {
   }
 
   /**
-   * Decrypt the caller's confidential PUSDC balance for UI display.
+   * Decrypt the caller's confidential stablecoin balance for UI display.
    * Uses cofhe SDK's decryptForView — permit-based, no on-chain tx.
    * Idempotent: re-clicking refreshes the handle + decrypts again.
    *
-   * Nulls the displayed value at start so the UI shows a clean loading
-   * state on refresh (matches `decryptHolding`'s pattern).
+   * Phase 7.5 (`MHUSD_WRAPPER_PLAN.md` + ADR-041): when the
+   * `MuHavenStable` wrapper is configured we read its `euint64` handle
+   * and decrypt with the auto-refresh path (`decryptMhUsdcForView`) so
+   * fresh sessions don't 403 on the kernel-only ACL grant. Pre-cutover
+   * builds fall back to legacy PUSDC reads which can still 403 — that's
+   * the gap the wrapper closes.
    */
   async function decryptPusdc(walletAddress: `0x${string}`) {
     if (pusdcDecrypting.value) return
@@ -155,11 +165,17 @@ export const usePortfolioStore = defineStore('portfolio', () => {
     pusdcConfidentialBalance.value = null
     pusdcError.value = null
     try {
-      const ctHash = await PusdcService.confidentialBalanceOf(walletAddress)
       const { useFhe } = await import('@/composables/useFhe')
       const fhe = useFhe()
       await fhe.initialize()
-      pusdcConfidentialBalance.value = await fhe.decryptUint64ForView(ctHash)
+
+      if (MuHavenStableService.isAvailable()) {
+        const ctHash = await MuHavenStableService.confidentialBalanceOf(walletAddress)
+        pusdcConfidentialBalance.value = await fhe.decryptMhUsdcForView(ctHash)
+      } else {
+        const ctHash = await LegacyPusdcService.confidentialBalanceOf(walletAddress)
+        pusdcConfidentialBalance.value = await fhe.decryptUint64ForView(ctHash)
+      }
     } catch (e) {
       pusdcError.value = e instanceof Error ? e.message : 'PUSDC decrypt failed'
     } finally {

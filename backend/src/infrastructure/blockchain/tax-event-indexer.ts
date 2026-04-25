@@ -21,6 +21,13 @@
  * unique token-per-tick (cached in-memory across the same tick) — that's a
  * "best effort" snapshot, not a per-block historical lookup. ADR-020 says
  * the field is for UX sorting; investors compute final amounts client-side.
+ *
+ * Phase 7.5 note (`MHUSD_WRAPPER_PLAN.md` + ADR-041): the wrapper sits
+ * between Subscription/Queue/YieldSnapshot and the legacy PUSDC contract
+ * but emits no events of its own that affect tax markers — every taxable
+ * transition still surfaces on the upstream Wave 3.5 contracts. This
+ * indexer is therefore wrapper-agnostic; pointer rotation in any of the
+ * upstream contracts is invisible here.
  */
 import {
   createPublicClient,

@@ -13,7 +13,8 @@ import { createZeroDevSender } from '@/services/contracts/zeroDevSender'
 import * as YieldService from '@/services/contracts/YieldService'
 import * as RegistryService from '@/services/contracts/RegistryService'
 import * as EscrowService from '@/services/contracts/EscrowService'
-import * as PusdcService from '@/services/contracts/PusdcService'
+import * as LegacyPusdcService from '@/services/contracts/LegacyPusdcService'
+import * as MuHavenStableService from '@/services/contracts/MuHavenStableService'
 import { addresses } from '@/contracts/addresses'
 import { formatUSD } from '@/lib/utils'
 import MButton from '@/components/ui/MButton.vue'
@@ -113,6 +114,12 @@ async function handleDistribute() {
 
     stageLabel.value = 'Pre-flight checks'
 
+    // Wave 3 yield-distribution flow uses legacy PUSDC + YieldDistributor.
+    // Phase 7.5 mhUSDC wrapper exists alongside but this distribute path
+    // pulls from the legacy PUSDC operator approval — `confidentialBalanceOf`
+    // / `isOperator` here intentionally stay on `LegacyPusdcService`. The
+    // Wave 3.5 fund-epoch path lives in a separate (future) view that will
+    // run against `YieldSnapshot` + mhUSDC.
     const [
       investorCount,
       ydAuthorized,
@@ -123,8 +130,8 @@ async function handleDistribute() {
       RegistryService.investorCount(),
       YieldService.isAuthorizedCaller(issuerAddr),
       EscrowService.isAuthorizedCaller(issuerAddr),
-      PusdcService.confidentialBalanceOf(issuerAddr),
-      PusdcService.isOperator(issuerAddr, addresses.yieldDistributor),
+      LegacyPusdcService.confidentialBalanceOf(issuerAddr),
+      LegacyPusdcService.isOperator(issuerAddr, addresses.yieldDistributor),
     ])
 
     if (investorCount === 0n) {
@@ -156,7 +163,7 @@ async function handleDistribute() {
     if (!operatorSet) {
       stageLabel.value = 'Granting YieldDistributor operator approval (one-time)'
       const expiry = BigInt(Math.floor(Date.now() / 1000) + OPERATOR_EXPIRY_SECONDS)
-      await PusdcService.setOperator(addresses.yieldDistributor, expiry)
+      await LegacyPusdcService.setOperator(addresses.yieldDistributor, expiry)
       toast.info('Operator approval granted', {
         description: 'One-time setup — subsequent distributes skip this step',
       })
@@ -249,7 +256,9 @@ async function loadPusdcBalance() {
   if (!walletAddress.value) return
   pusdcLoading.value = true
   try {
-    pusdcPublicBalance.value = await PusdcService.balanceOf(walletAddress.value as `0x${string}`)
+    // Public-balance shadow lives on legacy PUSDC only (mhUSDC has no
+    // cleartext surface). Same shape regardless of wrapper presence.
+    pusdcPublicBalance.value = await LegacyPusdcService.balanceOf(walletAddress.value as `0x${string}`)
   } catch (e) {
     console.warn('[DistributePage] PUSDC balance fetch failed', e)
   } finally {
@@ -261,9 +270,17 @@ async function decryptPusdcBalance() {
   if (!walletAddress.value || pusdcDecrypting.value) return
   pusdcDecrypting.value = true
   try {
-    const ctHash = await PusdcService.confidentialBalanceOf(walletAddress.value as `0x${string}`)
     await fhe.initialize()
-    pusdcConfidentialBalance.value = await fhe.decryptUint64ForView(ctHash)
+    // Phase 7.5: prefer the mhUSDC handle when the wrapper is configured —
+    // its decrypt path auto-refreshes the ACL grant for fresh sessions
+    // (ADR-041, mirror of ADR-042). Fall back to legacy PUSDC otherwise.
+    if (MuHavenStableService.isAvailable()) {
+      const ctHash = await MuHavenStableService.confidentialBalanceOf(walletAddress.value as `0x${string}`)
+      pusdcConfidentialBalance.value = await fhe.decryptMhUsdcForView(ctHash)
+    } else {
+      const ctHash = await LegacyPusdcService.confidentialBalanceOf(walletAddress.value as `0x${string}`)
+      pusdcConfidentialBalance.value = await fhe.decryptUint64ForView(ctHash)
+    }
   } catch (e) {
     toast.error('PUSDC decrypt failed', {
       description: e instanceof Error ? e.message : 'Unknown error',

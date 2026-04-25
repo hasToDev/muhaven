@@ -2,26 +2,48 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useMediaQuery } from '@vueuse/core'
 import { toast } from 'vue-sonner'
+import { StableClient } from '@muhaven/sdk'
 import { useWallet } from '@/composables/useWallet'
+import { useFhe } from '@/composables/useFhe'
+import { buildWriteContext } from '@/services/v35/context'
 import * as VaultService from '@/services/contracts/VaultService'
 import * as Erc20Service from '@/services/contracts/Erc20Service'
-import { addresses } from '@/contracts/addresses'
+import * as LegacyPusdcService from '@/services/contracts/LegacyPusdcService'
+import * as MuHavenStableService from '@/services/contracts/MuHavenStableService'
+import { addresses, v35Addresses, isZeroAddress } from '@/contracts/addresses'
 import { balanceApi } from '@/services/api'
 import { CIRCLE_FAUCET_URL, arbiscanTx } from '@/lib/external'
 import { formatUSD } from '@/lib/utils'
 import MButton from '@/components/ui/MButton.vue'
 import {
-  CheckCircle2, Lock, Shield, EyeOff, ArrowRight, Loader2, Copy, Check, RefreshCw, ExternalLink,
+  CheckCircle2, Lock, Shield, EyeOff, ArrowRight, Loader2, Copy, Check,
+  RefreshCw, ExternalLink, Coins, Layers,
 } from 'lucide-vue-next'
 
-// WrapPage — MuHavenVault.wrap path, unchanged from Wave 3 behaviour. Wraps
-// an external ERC-20 RWA into the confidential fhERC-20. Kept as its own
-// route (split out of the Wave 3 DepositPage per Phase 6 plan) so BuyPage
-// can focus on the primary Subscription.purchase flow without a mode toggle.
+// WrapPage — Phase 7.5 two-mode wizard.
+//
+//   • "Cash" mode (default, when MuHavenStable is configured):
+//       legacy PUSDC → mhUSDC via `MuHavenStable.wrap`. Investors land
+//       here from the TradePage "wrap PUSDC first" CTA when their mhUSDC
+//       balance is short of their intended buy.
+//
+//   • "Asset" mode (existing Wave 3 RWA wrap):
+//       underlying ERC-20 RWA → fhERC-20 RWA via `MuHavenVault.wrap`.
+//       Unchanged path for issuers/admins onboarding tokenised assets.
+//
+// The mode toggle defaults to Cash when the wrapper is wired; otherwise
+// Asset is the only supported mode and the toggle is hidden.
+
+type Mode = 'cash' | 'asset'
 
 const { address, connected } = useWallet()
+const { initialize: initFhe, getEphemeralEOA } = useFhe()
 
 const isXl = useMediaQuery('(min-width: 1280px)')
+
+const wrapperAvailable = computed(() => MuHavenStableService.isAvailable())
+
+const mode = ref<Mode>(wrapperAvailable.value ? 'cash' : 'asset')
 
 const amount = ref('')
 const currentStep = ref(0)
@@ -30,35 +52,63 @@ const showSuccess = ref(false)
 const txHash = ref<string | null>(null)
 const errMsg = ref<string | null>(null)
 
-const steps = [
+// Cash-mode operator state — once granted, future wraps skip the approval.
+const operatorSet = ref<boolean | null>(null)
+
+const cashSteps = [
+  { label: 'Enter Amount', description: 'Define wrap amount' },
+  { label: 'Approve', description: 'Operator approval on legacy PUSDC' },
+  { label: 'Wrap', description: 'MuHavenStable.wrap — mhUSDC minted 1:1' },
+]
+const assetSteps = [
   { label: 'Enter Amount', description: 'Define wrap amount' },
   { label: 'Approve', description: 'Approve ERC-20 to vault' },
   { label: 'Wrap', description: 'Wrap into fhERC-20' },
 ]
+const steps = computed(() => mode.value === 'cash' ? cashSteps : assetSteps)
+const railHeight = computed(() => Math.min(100, ((currentStep.value + 1) / steps.value.length) * 100))
 
-const railHeight = computed(() => Math.min(100, ((currentStep.value + 1) / steps.length) * 100))
 const quickAmounts = ['100', '1000', '5000']
 const numericAmount = computed(() => parseFloat(amount.value.replace(/,/g, '')) || 0)
 
-// ── Wallet aside ────────────────────────────────────────────────────────
+// ── Wallet aside readouts ──────────────────────────────────────────────
 
 const copied = ref(false)
 const balancesLoading = ref(false)
 const usdcBalance = ref<bigint | null>(null)
+const pusdcPublicBalance = ref<bigint | null>(null)
 const formattedBackendBalance = ref<string | null>(null)
 
 async function loadBalances() {
   if (!address.value) return
   balancesLoading.value = true
   try {
-    const [usdc, backend] = await Promise.allSettled([
+    const [usdc, pusdc, backend] = await Promise.allSettled([
       Erc20Service.balanceOf(addresses.usdc, address.value as `0x${string}`),
+      LegacyPusdcService.balanceOf(address.value as `0x${string}`),
       balanceApi.get(),
     ])
     usdcBalance.value = usdc.status === 'fulfilled' ? usdc.value : null
+    pusdcPublicBalance.value = pusdc.status === 'fulfilled' ? pusdc.value : null
     formattedBackendBalance.value = backend.status === 'fulfilled' ? backend.value.formatted_balance : null
   } finally {
     balancesLoading.value = false
+  }
+}
+
+async function refreshOperatorStatus() {
+  if (!address.value || mode.value !== 'cash' || !wrapperAvailable.value) {
+    operatorSet.value = null
+    return
+  }
+  try {
+    operatorSet.value = await LegacyPusdcService.isOperator(
+      address.value as `0x${string}`,
+      v35Addresses.muHavenStable,
+    )
+  } catch (e) {
+    console.warn('[WrapPage] operator status read failed', e)
+    operatorSet.value = null
   }
 }
 
@@ -69,12 +119,101 @@ async function copyAddress() {
   setTimeout(() => { copied.value = false }, 2000)
 }
 
-watch(connected, (val) => { if (val) loadBalances() })
-onMounted(() => { if (connected.value) loadBalances() })
+watch(connected, (val) => {
+  if (val) {
+    loadBalances()
+    refreshOperatorStatus()
+  }
+})
 
-// ── Handler ─────────────────────────────────────────────────────────────
+watch(mode, () => {
+  // Reset progress + scoped state when toggling between flows so a half-
+  // finished asset wrap doesn't leak into a cash-mode progress rail.
+  currentStep.value = 0
+  amount.value = ''
+  showSuccess.value = false
+  txHash.value = null
+  errMsg.value = null
+  refreshOperatorStatus()
+})
 
-async function handleWrap() {
+onMounted(() => {
+  if (connected.value) {
+    loadBalances()
+    refreshOperatorStatus()
+  }
+})
+
+// ── Mode switcher ──────────────────────────────────────────────────────
+
+function setMode(next: Mode) {
+  if (mode.value === next) return
+  if (next === 'cash' && !wrapperAvailable.value) return
+  mode.value = next
+}
+
+// ── Submit ─────────────────────────────────────────────────────────────
+
+async function handleSubmit() {
+  if (mode.value === 'cash') return handleCashWrap()
+  return handleAssetWrap()
+}
+
+const OPERATOR_EXPIRY_SECONDS = 365 * 24 * 60 * 60
+
+/** PUSDC → mhUSDC wrap. 6-decimal cents on `amount`. */
+async function handleCashWrap() {
+  if (!amount.value || isProcessing.value || !address.value) return
+  if (!wrapperAvailable.value) {
+    errMsg.value = 'MuHavenStable wrapper not configured for this build.'
+    return
+  }
+  isProcessing.value = true
+  errMsg.value = null
+
+  try {
+    // Convert cleartext PUSDC dollars → 6-decimal base units. `Math.round`
+    // is fine — the input is constrained to a decimal string.
+    const amountUnits = BigInt(Math.round(numericAmount.value * 1_000_000))
+    if (amountUnits <= 0n) throw new Error('Amount must be positive')
+
+    // Step 1 → operator approval on legacy PUSDC if missing.
+    currentStep.value = 1
+    if (operatorSet.value !== true) {
+      const expiry = BigInt(Math.floor(Date.now() / 1000) + OPERATOR_EXPIRY_SECONDS)
+      await LegacyPusdcService.setOperator(v35Addresses.muHavenStable, expiry)
+      operatorSet.value = true
+      toast.info('Operator approval granted', {
+        description: 'One-time setup — subsequent wraps skip this step',
+      })
+    }
+
+    // Step 2 → MuHavenStable.wrap via the SDK (encrypts client-side,
+    // grants ACL on the new mhUSDC handle to the active session EOA).
+    currentStep.value = 2
+    await initFhe()
+    const ctx = await buildWriteContext()
+    const stable = new StableClient(ctx, v35Addresses.muHavenStable)
+    const eph = getEphemeralEOA() as `0x${string}`
+
+    const hash = await stable.wrap(amountUnits, eph)
+    txHash.value = hash
+    currentStep.value = 3
+    showSuccess.value = true
+    toast.success('Wrap confirmed', {
+      description: 'PUSDC wrapped 1:1 into mhUSDC — ready for atomic buys.',
+    })
+    loadBalances()
+  } catch (e) {
+    errMsg.value = e instanceof Error ? e.message : 'Wrap failed'
+    toast.error('Wrap failed', { description: errMsg.value })
+  } finally {
+    isProcessing.value = false
+  }
+}
+
+/** Existing RWA wrap — underlying ERC-20 → fhERC-20 via MuHavenVault. */
+async function handleAssetWrap() {
   if (!amount.value || isProcessing.value || !address.value) return
   isProcessing.value = true
   errMsg.value = null
@@ -110,6 +249,32 @@ function resetForm() {
   txHash.value = null
   errMsg.value = null
 }
+
+// ── Mode-aware copy ────────────────────────────────────────────────────
+
+const headerTitle = computed(() =>
+  mode.value === 'cash' ? 'Wrap to mhUSDC' : 'Vault Wrap',
+)
+const headerSubtitle = computed(() =>
+  mode.value === 'cash'
+    ? 'Wrap legacy PUSDC into the modern confidential mhUSDC.'
+    : 'Wrap an existing RWA ERC-20 into a confidential fhERC-20.',
+)
+const amountLabel = computed(() =>
+  mode.value === 'cash' ? 'Amount (PUSDC, 6 decimals)' : 'Amount (18 decimals)',
+)
+const ctaLabel = computed(() => {
+  if (isProcessing.value) return mode.value === 'cash' ? 'Wrapping…' : 'Wrapping…'
+  return mode.value === 'cash' ? 'Wrap to mhUSDC' : 'Approve & Wrap'
+})
+const successTitle = computed(() =>
+  mode.value === 'cash' ? 'mhUSDC ready' : 'Wrap confirmed',
+)
+const successCopy = computed(() =>
+  mode.value === 'cash'
+    ? 'PUSDC was pulled and minted 1:1 as mhUSDC — balance encrypted to this session.'
+    : 'ERC-20 wrapped into fhERC-20 — your balance is now encrypted on-chain.',
+)
 </script>
 
 <template>
@@ -127,9 +292,68 @@ function resetForm() {
         <div aria-hidden="true"
              class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-gold/60 dark:via-signal/50 to-transparent" />
         <div aria-hidden="true"
-             class="absolute -top-24 -right-24 w-72 h-72 rounded-full blur-[90px] pointer-events-none bg-gold/8 dark:bg-signal/8" />
+             class="absolute -top-24 -right-24 w-72 h-72 rounded-full blur-[90px] pointer-events-none"
+             :class="mode === 'cash' ? 'bg-compute/8 dark:bg-signal/8' : 'bg-gold/8 dark:bg-signal/8'" />
 
         <div class="p-8 md:p-10 relative">
+          <!-- Mode toggle — only when both flows are available -->
+          <div
+            v-if="!showSuccess && !errMsg && wrapperAvailable"
+            data-testid="wrap-mode-toggle"
+            class="relative inline-flex items-center gap-1 mb-8
+                   rounded-full border border-haze dark:border-white/10
+                   bg-mist/40 dark:bg-[#1c1b1b]/80 p-1
+                   shadow-[inset_0_1px_2px_rgba(63,46,12,0.04)]
+                   dark:shadow-[inset_0_1px_2px_rgba(0,0,0,0.4)]"
+          >
+            <div
+              aria-hidden="true"
+              class="absolute top-1 bottom-1 w-[calc(50%-0.25rem)] rounded-full
+                     bg-gradient-to-r transition-all duration-300 ease-out
+                     shadow-[0_2px_10px_-2px_rgba(255,186,32,0.45)]
+                     dark:shadow-[0_2px_14px_-2px_rgba(255,220,161,0.35)]"
+              :class="[
+                mode === 'cash'
+                  ? 'left-1 from-compute to-gold dark:from-signal dark:to-signal/85'
+                  : 'left-[calc(50%+0.05rem)] from-gold to-gold/90 dark:from-signal dark:to-signal/70',
+              ]"
+            />
+            <button
+              type="button"
+              @click="setMode('cash')"
+              :disabled="isProcessing"
+              data-testid="wrap-mode-cash"
+              :class="[
+                'relative z-10 inline-flex items-center justify-center gap-2 px-5 py-2 min-w-[130px] rounded-full',
+                'font-sans text-[11px] uppercase tracking-[0.22em] font-semibold cursor-pointer',
+                'transition-colors duration-200',
+                mode === 'cash'
+                  ? 'text-midnight'
+                  : 'text-cool hover:text-midnight dark:hover:text-white',
+              ]"
+            >
+              <Coins :size="13" :stroke-width="2" />
+              Cash · mhUSDC
+            </button>
+            <button
+              type="button"
+              @click="setMode('asset')"
+              :disabled="isProcessing"
+              data-testid="wrap-mode-asset"
+              :class="[
+                'relative z-10 inline-flex items-center justify-center gap-2 px-5 py-2 min-w-[130px] rounded-full',
+                'font-sans text-[11px] uppercase tracking-[0.22em] font-semibold cursor-pointer',
+                'transition-colors duration-200',
+                mode === 'asset'
+                  ? 'text-midnight'
+                  : 'text-cool hover:text-midnight dark:hover:text-white',
+              ]"
+            >
+              <Layers :size="13" :stroke-width="2" />
+              Asset · RWA
+            </button>
+          </div>
+
           <div v-if="showSuccess" data-testid="wrap-success-card" class="flex flex-col items-center gap-5 py-6">
             <div
               v-motion
@@ -140,10 +364,8 @@ function resetForm() {
               <CheckCircle2 :size="32" :stroke-width="1.8" class="text-positive" />
             </div>
             <div class="text-center space-y-1.5">
-              <p class="font-accent italic text-2xl md:text-3xl text-midnight dark:text-white tracking-tight">Wrap confirmed</p>
-              <p class="font-sans text-sm text-cool max-w-md">
-                ERC-20 wrapped into fhERC-20 — your balance is now encrypted on-chain.
-              </p>
+              <p class="font-accent italic text-2xl md:text-3xl text-midnight dark:text-white tracking-tight">{{ successTitle }}</p>
+              <p class="font-sans text-sm text-cool max-w-md">{{ successCopy }}</p>
             </div>
             <p v-if="txHash" class="font-mono text-[11px] text-cool">
               tx:
@@ -170,14 +392,14 @@ function resetForm() {
                 <Shield :size="18" :stroke-width="1.8" />
               </div>
               <div>
-                <p class="font-accent italic text-xl text-midnight dark:text-white leading-tight">Vault Wrap</p>
-                <p class="font-sans text-[11px] text-cool mt-0.5 leading-relaxed">Wrap an existing RWA ERC-20 into a confidential fhERC-20.</p>
+                <p class="font-accent italic text-xl text-midnight dark:text-white leading-tight">{{ headerTitle }}</p>
+                <p class="font-sans text-[11px] text-cool mt-0.5 leading-relaxed">{{ headerSubtitle }}</p>
               </div>
             </div>
 
             <div class="flex flex-col gap-3">
               <label for="wrap-amount-input" class="font-sans text-[11px] uppercase tracking-[0.22em] text-cool font-medium">
-                Amount (18 decimals)
+                {{ amountLabel }}
               </label>
               <div class="flex items-end gap-2 border-b border-haze dark:border-white/10 pb-2 transition-colors focus-within:border-gold dark:focus-within:border-signal">
                 <span aria-hidden="true" class="font-accent italic text-3xl md:text-4xl text-cool pb-0.5 leading-none">$</span>
@@ -211,11 +433,18 @@ function resetForm() {
                   ${{ Number(qa).toLocaleString() }}
                 </button>
               </div>
+              <p
+                v-if="mode === 'cash'"
+                class="font-sans text-[10px] text-cool/80 leading-relaxed"
+                data-testid="wrap-cash-hint"
+              >
+                1:1 backed: every wrapped PUSDC stays held by the wrapper as collateral. Unwrap any time.
+              </p>
             </div>
 
             <button
               type="button"
-              @click="handleWrap"
+              @click="handleSubmit"
               :disabled="isProcessing || !amount.trim() || numericAmount <= 0"
               data-testid="wrap-cta"
               class="btn-gold-sweep w-full py-4 rounded-lg font-sans font-semibold text-sm tracking-wide
@@ -224,9 +453,7 @@ function resetForm() {
             >
               <Loader2 v-if="isProcessing" :size="16" class="animate-spin" />
               <Shield v-else :size="16" :stroke-width="2" />
-              <span class="uppercase tracking-[0.18em]">
-                {{ isProcessing ? 'Wrapping…' : 'Approve & Wrap' }}
-              </span>
+              <span class="uppercase tracking-[0.18em]">{{ ctaLabel }}</span>
               <ArrowRight v-if="!isProcessing" :size="16" :stroke-width="2" />
             </button>
           </div>
@@ -268,6 +495,12 @@ function resetForm() {
                 <span class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool">USDC Balance</span>
                 <span class="font-accent italic text-xl text-midnight dark:text-white tabular-nums">
                   {{ usdcBalance !== null ? formatUSD(Number(usdcBalance) / 1e6) : '—' }}
+                </span>
+              </div>
+              <div class="rounded-lg p-4 border border-haze dark:border-white/8 bg-mist/40 dark:bg-[#1c1b1b]/60 flex flex-col gap-1">
+                <span class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool">Legacy PUSDC (public)</span>
+                <span class="font-accent italic text-xl text-midnight dark:text-white tabular-nums" data-testid="wrap-pusdc-public-balance">
+                  {{ pusdcPublicBalance !== null ? formatUSD(Number(pusdcPublicBalance) / 1e6) : '—' }}
                 </span>
               </div>
               <div class="rounded-lg p-4 border border-haze dark:border-white/8 bg-mist/40 dark:bg-[#1c1b1b]/60 flex flex-col gap-1">
@@ -343,7 +576,9 @@ function resetForm() {
           <div class="rounded-lg p-4 border border-gold/25 bg-gold/5 flex items-start gap-3">
             <EyeOff :size="16" :stroke-width="1.8" class="text-gold mt-0.5 flex-shrink-0" />
             <p class="font-sans text-[11px] text-cool leading-relaxed">
-              ERC-20 approval and wrap amounts are visible on-chain. Balance becomes encrypted after wrapping.
+              {{ mode === 'cash'
+                ? 'PUSDC pull amount is encrypted via Fhenix FHE. mhUSDC balance grants decrypt rights to this session only.'
+                : 'ERC-20 approval and wrap amounts are visible on-chain. Balance becomes encrypted after wrapping.' }}
             </p>
           </div>
         </div>

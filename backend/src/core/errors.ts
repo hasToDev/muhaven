@@ -35,4 +35,8 @@ export class ApplicationHttpError extends Error {
   static internalError(message = 'Internal server error'): ApplicationHttpError {
     return new ApplicationHttpError(500, message);
   }
+
+  static serviceUnavailable(message = 'Service unavailable'): ApplicationHttpError {
+    return new ApplicationHttpError(503, message);
+  }
 }

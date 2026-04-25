@@ -237,9 +237,26 @@ export function useFhe() {
   }
 
   async function decryptUint64ForView(ctHash: bigint | string): Promise<bigint> {
-    // PUSDC handles live in a contract we don't own; self-service refresh
-    // is not applicable. Disable the fallback so a 403 surfaces directly.
+    // Legacy PUSDC handles live in a contract we don't own; self-service
+    // refresh is not applicable. Disable the fallback so a 403 surfaces
+    // directly. For Wave 3.5 mhUSDC handles, callers should use
+    // `decryptMhUsdcForView` instead — that path does refresh-on-403 via
+    // `MuHavenStable.refreshDecryptGrant` (ADR-041, mirror of ADR-042).
     return decryptForView(ctHash, 64, { withRefresh: false })
+  }
+
+  /**
+   * Phase 7.5 — decrypt an mhUSDC (`MuHavenStable`) `euint64` handle for
+   * UI display. On 403, calls `MuHavenStable.refreshDecryptGrant` once
+   * with the active ephemeral EOA and retries — closes the same kernel-
+   * only-grant gap that ADR-042 closes for `MuHavenToken`.
+   *
+   * Returns 0n for a zero handle (matches `decryptForView` short-circuit).
+   * If the initial decrypt 403s and the wrapper isn't configured for
+   * this build, the refresh path throws — there's nothing else to try.
+   */
+  async function decryptMhUsdcForView(ctHash: bigint | string): Promise<bigint> {
+    return decryptForView(ctHash, 64, { withRefresh: true, kind: 'muHavenStable' })
   }
 
   /**
@@ -265,7 +282,11 @@ export function useFhe() {
   async function decryptForView(
     ctHash: bigint | string,
     bits: 64 | 128,
-    opts: { withRefresh?: boolean; tokenAddress?: `0x${string}` } = {},
+    opts: {
+      withRefresh?: boolean
+      tokenAddress?: `0x${string}`
+      kind?: 'muHavenToken' | 'muHavenStable'
+    } = {},
   ): Promise<bigint> {
     const hashAsBigInt = typeof ctHash === 'bigint' ? ctHash : BigInt(ctHash)
     if (hashAsBigInt === 0n) return 0n
@@ -277,25 +298,37 @@ export function useFhe() {
     const runDecrypt = () =>
       client.decryptForView(ctHash, utype).execute() as Promise<bigint>
 
+    // Default `kind` — uint128 = MuHavenToken (Phase 7), uint64 = legacy
+    // PUSDC (no refresh). Callers wanting the mhUSDC path pass
+    // `kind: 'muHavenStable'` (or use `decryptMhUsdcForView`).
+    const kind: 'muHavenToken' | 'muHavenStable' | 'none' =
+      opts.kind ?? (bits === 128 ? 'muHavenToken' : 'none')
+
     try {
       return await runDecrypt()
     } catch (e) {
-      // Phase 7 self-service refresh — only for MuHavenToken balance
-      // handles (bits === 128 + withRefresh default true). PUSDC handles
-      // are not ours to refresh; they remain a separate surface governed
-      // by the pending MuHavenStable wrapper work (Phase 7.5).
-      if (is403Error(e) && bits === 128 && opts.withRefresh !== false) {
+      if (is403Error(e) && opts.withRefresh !== false && kind !== 'none') {
         try {
-          const { refreshDecryptGrant } = await import(
-            '@/services/contracts/TokenService'
-          )
           const { address } = ensureEphemeralKey()
-          await refreshDecryptGrant(address as `0x${string}`)
+          if (kind === 'muHavenToken') {
+            const { refreshDecryptGrant } = await import(
+              '@/services/contracts/TokenService'
+            )
+            await refreshDecryptGrant(address as `0x${string}`)
+          } else if (kind === 'muHavenStable') {
+            const { refreshDecryptGrant, isAvailable } = await import(
+              '@/services/contracts/MuHavenStableService'
+            )
+            if (!isAvailable()) {
+              throw new Error(
+                'MuHavenStable wrapper not configured for this build — '
+                + 'cannot self-refresh ACL on the mhUSDC handle.',
+              )
+            }
+            await refreshDecryptGrant(address as `0x${string}`)
+          }
           return await runDecrypt()
         } catch (refreshErr) {
-          // Fall through to the original-error branch below. The refresh
-          // itself failing is recoverable for the user only via retry, so
-          // preserve the original 403 context.
           console.warn('[useFhe] refreshDecryptGrant fallback failed', refreshErr)
         }
       }
@@ -340,6 +373,7 @@ export function useFhe() {
     encryptBatch,
     decryptUint128ForView,
     decryptUint64ForView,
+    decryptMhUsdcForView,
     getRawClient,
     destroy,
   }

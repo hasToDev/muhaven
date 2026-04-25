@@ -100,6 +100,10 @@ export type ProgressStage =
   | 'requestNAV'
   | 'addWhitelisted'
   | 'setDevMode'
+  // Wave 3.5 Phase 7.5 — MuHavenStable wrapper
+  | 'wrap'
+  | 'unwrap'
+  | 'transfer'
 
 export interface ProgressEvent {
   stage: ProgressStage

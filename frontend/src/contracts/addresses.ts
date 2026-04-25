@@ -36,6 +36,13 @@ export interface V35Addresses {
   identityRegistry: `0x${string}`
   modularCompliance: `0x${string}`
   oracle: `0x${string}`
+  /**
+   * Phase 7.5 — `MuHavenStable` confidential-USDC wrapper. Replaces every
+   * Wave 3.5 use of legacy PUSDC per `MHUSD_WRAPPER_PLAN.md` + ADR-041.
+   * Zero address signals "wrapper not deployed" — UI consumers fall back
+   * to legacy PUSDC reads in that mode.
+   */
+  muHavenStable: `0x${string}`
   /** Per-token treasury — env override is a JSON `{ "0xToken": "0xTreasury" }` map. */
   treasuries: Record<string, `0x${string}`>
   /** Per-token queue — same JSON-map shape as treasuries. */
@@ -110,6 +117,7 @@ export const v35Addresses: V35Addresses = {
   identityRegistry: pick(import.meta.env.VITE_IDENTITY_REGISTRY_ADDRESS, ZERO),
   modularCompliance: pick(import.meta.env.VITE_MODULAR_COMPLIANCE_ADDRESS, ZERO),
   oracle: pick(import.meta.env.VITE_ORACLE_ADDRESS, ZERO),
+  muHavenStable: pick(import.meta.env.VITE_MUHAVEN_STABLE_ADDRESS, ZERO),
   treasuries: parsePerTokenMap(import.meta.env.VITE_TREASURIES_JSON),
   queues: parsePerTokenMap(import.meta.env.VITE_QUEUES_JSON),
   yieldSnapshots: parsePerTokenMap(import.meta.env.VITE_YIELD_SNAPSHOTS_JSON),

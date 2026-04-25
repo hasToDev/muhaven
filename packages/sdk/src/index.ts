@@ -50,6 +50,7 @@ export { yieldSnapshotAbi } from './abi/yieldSnapshot.js'
 export { priceOracleAbi } from './abi/oracle.js'
 export { identityRegistryAbi } from './abi/identityRegistry.js'
 export { tokenRegistryAbi } from './abi/tokenRegistry.js'
+export { muHavenStableAbi } from './abi/muHavenStable.js'
 
 // ── Wave 3.5 clients ────────────────────────────────────────────────────
 export { SubscriptionClient } from './clients/subscription.js'
@@ -64,3 +65,4 @@ export {
 } from './clients/yieldSnapshot.js'
 export { OracleClient } from './clients/oracle.js'
 export { IdentityRegistryClient } from './clients/identityRegistry.js'
+export { StableClient } from './clients/stable.js'
