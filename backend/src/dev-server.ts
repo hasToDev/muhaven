@@ -245,6 +245,15 @@ async function main() {
     if (!env.RPC_URL) missing.push('RPC_URL');
     if (!env.ORACLE_ADDRESS) missing.push('ORACLE_ADDRESS');
     if (!env.NAV_CRON_PRIVATE_KEY) missing.push('NAV_CRON_PRIVATE_KEY');
+    // Shape-check the key BEFORE handing it to viem. A placeholder like
+    // "<<FILL_*>>" or any non-hex string would otherwise crash the boot
+    // inside privateKeyToAccount.
+    if (
+      env.NAV_CRON_PRIVATE_KEY &&
+      !/^0x[0-9a-fA-F]{64}$/.test(env.NAV_CRON_PRIVATE_KEY)
+    ) {
+      missing.push('NAV_CRON_PRIVATE_KEY (set but not a 0x-prefixed 32-byte hex)');
+    }
     if (missing.length > 0) {
       console.warn(`[nav-cron] enabled but missing ${missing.join(', ')} — skipping`);
     } else {
