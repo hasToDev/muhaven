@@ -784,5 +784,18 @@ export const pusdcAbi = [
     ],
     outputs: [],
   },
+  {
+    // Cleartext USDC → encrypted PUSDC. Caller must have ERC-20 approved
+    // the PUSDC contract for `amount` first (PUSDC pulls via
+    // safeTransferFrom internally).
+    name: 'wrap',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'to', type: 'address' },
+      { name: 'amount', type: 'uint256' },
+    ],
+    outputs: [],
+  },
 ] as const
 

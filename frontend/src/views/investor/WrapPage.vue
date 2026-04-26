@@ -56,9 +56,9 @@ const errMsg = ref<string | null>(null)
 const operatorSet = ref<boolean | null>(null)
 
 const cashSteps = [
-  { label: 'Enter Amount', description: 'Define wrap amount' },
-  { label: 'Approve', description: 'Operator approval on legacy PUSDC' },
-  { label: 'Wrap', description: 'MuHavenStable.wrap — mhUSDC minted 1:1' },
+  { label: 'Enter Amount', description: 'How much USDC to convert' },
+  { label: 'Approve USDC', description: 'ERC-20 allowance for the PUSDC layer' },
+  { label: 'Mint mhUSDC', description: 'USDC → encrypted mhUSDC, ready to spend' },
 ]
 const assetSteps = [
   { label: 'Enter Amount', description: 'Define wrap amount' },
@@ -161,7 +161,22 @@ async function handleSubmit() {
 
 const OPERATOR_EXPIRY_SECONDS = 365 * 24 * 60 * 60
 
-/** PUSDC → mhUSDC wrap. 6-decimal cents on `amount`. */
+/**
+ * USDC → encrypted mhUSDC. Investors hold cleartext Circle USDC after
+ * funding their kernel from the Circle faucet; mhUSDC is what
+ * `MuHavenSubscription.purchase` pulls. Two on-chain wraps happen
+ * sequentially under the user-visible "Mint mhUSDC" step:
+ *   a. legacy PUSDC contract pulls USDC + mints PUSDC to the kernel
+ *      (`pusdc.wrap(kernel, amount)`)
+ *   b. MuHavenStable pulls PUSDC + mints mhUSDC 1:1
+ *      (`stable.wrap(encAmount, ephemeralEOA)`)
+ * We surface them as one UX step because the investor doesn't care about
+ * the intermediate PUSDC layer — they just want spendable mhUSDC.
+ *
+ * Approvals (USDC ERC-20 to the PUSDC contract, PUSDC operator to the
+ * stable contract) are checked + granted only when missing. Subsequent
+ * wraps skip the approvals.
+ */
 async function handleCashWrap() {
   if (!amount.value || isProcessing.value || !address.value) return
   if (!wrapperAvailable.value) {
@@ -172,25 +187,45 @@ async function handleCashWrap() {
   errMsg.value = null
 
   try {
-    // Convert cleartext PUSDC dollars → 6-decimal base units. `Math.round`
-    // is fine — the input is constrained to a decimal string.
+    // USDC and PUSDC both use 6 decimals — same scaling.
     const amountUnits = BigInt(Math.round(numericAmount.value * 1_000_000))
     if (amountUnits <= 0n) throw new Error('Amount must be positive')
 
-    // Step 1 → operator approval on legacy PUSDC if missing.
+    const kernel = address.value as `0x${string}`
+
+    // ── Step 2 (display) → Approve USDC for the PUSDC contract ───────
+    // Approve only when allowance < amount. Approve `amountUnits` exactly
+    // (not max) so the surface area stays tight; investors who repeat
+    // wraps will pay a fresh approve each time but it's a 1-tx ERC-20
+    // call — minor cost vs. perpetual unlimited approval risk.
     currentStep.value = 1
+    const allowance = await Erc20Service.allowance(
+      addresses.usdc, kernel, addresses.pusdc,
+    )
+    if (allowance < amountUnits) {
+      await Erc20Service.approve(addresses.usdc, addresses.pusdc, amountUnits)
+      toast.info('USDC approved', {
+        description: 'PUSDC contract can now pull your USDC',
+      })
+    }
+
+    // ── Step 3 (display) → USDC → PUSDC → mhUSDC ─────────────────────
+    currentStep.value = 2
+
+    // (a) USDC → PUSDC. Mints PUSDC to the kernel.
+    await LegacyPusdcService.wrap(kernel, amountUnits)
+
+    // (b) PUSDC operator approval on MuHavenStable, if missing. Wraps
+    //     2 and onward skip this step — operator is granted with a
+    //     long expiry.
     if (operatorSet.value !== true) {
       const expiry = BigInt(Math.floor(Date.now() / 1000) + OPERATOR_EXPIRY_SECONDS)
       await LegacyPusdcService.setOperator(v35Addresses.muHavenStable, expiry)
       operatorSet.value = true
-      toast.info('Operator approval granted', {
-        description: 'One-time setup — subsequent wraps skip this step',
-      })
     }
 
-    // Step 2 → MuHavenStable.wrap via the SDK (encrypts client-side,
-    // grants ACL on the new mhUSDC handle to the active session EOA).
-    currentStep.value = 2
+    // (c) PUSDC → mhUSDC via the SDK (encrypts client-side, grants ACL
+    //     on the new mhUSDC handle to the active session EOA).
     await initFhe()
     const ctx = await buildWriteContext()
     const stable = new StableClient(ctx, v35Addresses.muHavenStable)
@@ -201,7 +236,7 @@ async function handleCashWrap() {
     currentStep.value = 3
     showSuccess.value = true
     toast.success('Wrap confirmed', {
-      description: 'PUSDC wrapped 1:1 into mhUSDC — ready for atomic buys.',
+      description: 'USDC converted 1:1 into mhUSDC — ready for atomic buys.',
     })
     loadBalances()
   } catch (e) {
@@ -253,26 +288,26 @@ function resetForm() {
 // ── Mode-aware copy ────────────────────────────────────────────────────
 
 const headerTitle = computed(() =>
-  mode.value === 'cash' ? 'Wrap to mhUSDC' : 'Vault Wrap',
+  mode.value === 'cash' ? 'Convert USDC to mhUSDC' : 'Vault Wrap',
 )
 const headerSubtitle = computed(() =>
   mode.value === 'cash'
-    ? 'Wrap legacy PUSDC into the modern confidential mhUSDC.'
+    ? 'Convert your Circle USDC into encrypted mhUSDC. Required once before your first purchase — subsequent buys spend your existing mhUSDC.'
     : 'Wrap an existing RWA ERC-20 into a confidential fhERC-20.',
 )
 const amountLabel = computed(() =>
-  mode.value === 'cash' ? 'Amount (PUSDC, 6 decimals)' : 'Amount (18 decimals)',
+  mode.value === 'cash' ? 'Amount (USDC)' : 'Amount (18 decimals)',
 )
 const ctaLabel = computed(() => {
-  if (isProcessing.value) return mode.value === 'cash' ? 'Wrapping…' : 'Wrapping…'
-  return mode.value === 'cash' ? 'Wrap to mhUSDC' : 'Approve & Wrap'
+  if (isProcessing.value) return mode.value === 'cash' ? 'Converting…' : 'Wrapping…'
+  return mode.value === 'cash' ? 'Convert to mhUSDC' : 'Approve & Wrap'
 })
 const successTitle = computed(() =>
   mode.value === 'cash' ? 'mhUSDC ready' : 'Wrap confirmed',
 )
 const successCopy = computed(() =>
   mode.value === 'cash'
-    ? 'PUSDC was pulled and minted 1:1 as mhUSDC — balance encrypted to this session.'
+    ? 'USDC converted 1:1 into mhUSDC — your balance is encrypted to this session and ready to spend on the Trade page.'
     : 'ERC-20 wrapped into fhERC-20 — your balance is now encrypted on-chain.',
 )
 </script>

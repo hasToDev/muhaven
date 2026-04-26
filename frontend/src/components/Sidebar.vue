@@ -233,9 +233,11 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- ADR-023 dev-mode pill — bottom of the sidebar so it's always
-           visible without dominating the chrome. Renders nothing when
-           devMode is off or unconfigured. -->
-      <MDevModeBanner />
+           visible without dominating the chrome. Tighter top spacing
+           (`!mt-1.5` overrides the parent's `space-y-3` gap) keeps the
+           pill visually attached to the wallet section above. Renders
+           nothing when devMode is off or unconfigured. -->
+      <MDevModeBanner class="!mt-1.5" />
     </div>
   </aside>
 </template>

@@ -69,3 +69,16 @@ export async function isOperator(holder: Address, spender: Address): Promise<boo
 export async function setOperator(spender: Address, until: bigint): Promise<TxHash> {
   return contractWrite(addr, pusdcAbi, 'setOperator', [spender, until], CONTRACT)
 }
+
+/**
+ * Wrap cleartext USDC into encrypted PUSDC. The PUSDC contract pulls
+ * `amount` USDC from the caller via `safeTransferFrom`, so the caller
+ * must have ERC-20 approved the PUSDC contract for at least `amount`
+ * first (use `Erc20Service.approve(addresses.usdc, addresses.pusdc, ...)`).
+ *
+ * Used by the WrapPage Cash flow (USDC → PUSDC → mhUSDC) so investors
+ * who only hold USDC don't have to manually deal with the PUSDC layer.
+ */
+export async function wrap(to: Address, amount: bigint): Promise<TxHash> {
+  return contractWrite(addr, pusdcAbi, 'wrap', [to, amount], CONTRACT)
+}

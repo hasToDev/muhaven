@@ -45,8 +45,16 @@ export default defineConfig(() => ({
     dedupe: ['viem', 'isows', '@cofhe/sdk'],
   },
   optimizeDeps: {
-    // Exclude tfhe from pre-bundling — it has WASM that needs special handling
-    exclude: ['tfhe'],
+    // Exclude packages that ship web workers + WASM — Vite's pre-bundler
+    // copies them into node_modules/.vite/deps/ but doesn't relocate the
+    // sibling worker files (e.g. zkProve.worker.js), so the runtime
+    // request for the worker 404s and the cofhe SDK's Worker Manager
+    // surfaces a generic "Worker error event" with no message.
+    //
+    // `tfhe` ships the WASM blob; `@cofhe/sdk` ships the worker manager
+    // that loads `zkProve.worker.js`. Both must serve from their
+    // unbundled source location for worker URLs to resolve.
+    exclude: ['tfhe', '@cofhe/sdk'],
   },
   worker: {
     format: 'es',
