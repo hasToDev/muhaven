@@ -34,49 +34,39 @@ interface TokenSourceConfig {
   primaryOnChain?: () => Promise<{ value: number; timestamp: Date; aum?: number } | null>;
 }
 
-// Token → source mapping
+/**
+ * Token → source mapping for the Wave 3.5 reference-rate cron.
+ *
+ * Addresses are env-driven so staging and prod can populate from their
+ * respective deployments (NAV_TBILL1_ADDRESS / NAV_GOLD1_ADDRESS in each
+ * env file). Defaults baked in below match the staging deployment in
+ * `deployments/arb-sepolia-v2.staging.json` so a fresh dev box works
+ * without setup.
+ *
+ * Tokens with no env override AND a falsey default are filtered out at
+ * cycle time so the worker doesn't run against zero-address tokens.
+ *
+ * Wave 3 history note: this used to list 8 demo placeholders at
+ * 0x0000…0001 through 0x0000…0008 — meaningless writes against orphan
+ * addresses. Removed in Phase 8 cutover.
+ */
+const STAGING_TBILL1 = '0x3E570bDb3928488b0092FBE149d4B7E8d12cb178';
+const STAGING_GOLD1  = '0x4963e942A846e7F537358fe0CC18C7aA9B554375';
+
 const TOKEN_SOURCES: TokenSourceConfig[] = [
   {
-    tokenAddress: '0x0000000000000000000000000000000000000001',
-    symbol: 'MHTB',
+    tokenAddress: process.env.NAV_TBILL1_ADDRESS || STAGING_TBILL1,
+    symbol: 'TBILL1',
     primaryFredSeries: 'DGS3MO', // 3-month Treasury Bill rate
   },
   {
-    tokenAddress: '0x0000000000000000000000000000000000000002',
-    symbol: 'MHMM',
-    primaryFredSeries: 'SOFR', // Secured Overnight Financing Rate
+    tokenAddress: process.env.NAV_GOLD1_ADDRESS || STAGING_GOLD1,
+    symbol: 'GOLD1',
+    // London PM gold fix in USD per troy ounce. Stored as a price-like
+    // NAV (raw $/oz, not par) — see priceLikeSeries in fredToNav.
+    primaryFredSeries: 'GOLDPMGBD228NLBM',
   },
-  {
-    tokenAddress: '0x0000000000000000000000000000000000000003',
-    symbol: 'BUIDL',
-    primaryOnChain: fetchBuidlNav, // BlackRock fund — totalSupply on Ethereum mainnet
-  },
-  {
-    tokenAddress: '0x0000000000000000000000000000000000000004',
-    symbol: 'USDY',
-    primaryOnChain: fetchUsdyPrice, // Ondo yield token — oracle on Ethereum mainnet
-  },
-  {
-    tokenAddress: '0x0000000000000000000000000000000000000005',
-    symbol: 'MH10Y',
-    primaryFredSeries: 'DGS10', // 10-Year Treasury Constant Maturity Rate
-  },
-  {
-    tokenAddress: '0x0000000000000000000000000000000000000006',
-    symbol: 'MHIG',
-    primaryFredSeries: 'AAA', // Moody's Seasoned Aaa Corporate Bond Yield
-  },
-  {
-    tokenAddress: '0x0000000000000000000000000000000000000007',
-    symbol: 'MHHY',
-    primaryFredSeries: 'BAMLH0A0HYM2EY', // ICE BofA US High Yield Index Effective Yield
-  },
-  {
-    tokenAddress: '0x0000000000000000000000000000000000000008',
-    symbol: 'MHRE',
-    primaryFredSeries: 'MORTGAGE30US', // 30-Year Fixed Rate Mortgage Average
-  },
-];
+].filter(t => /^0x[0-9a-fA-F]{40}$/.test(t.tokenAddress) && !/^0x0+$/.test(t.tokenAddress));
 
 /**
  * Check if the new snapshot is within tolerance of the latest DB entry.
@@ -139,14 +129,24 @@ const ON_CHAIN_SOURCE_NAMES = new Map<Function, string>([
 ]);
 
 /**
- * Derive NAV from a FRED yield rate.
- * - Coupon-like tokens (treasuries, bonds, mortgages): NAV stays ~1.0, rate is the yield
- * - Accruing tokens (money market/SOFR): NAV grows with accumulated yield
+ * Derive NAV from a FRED data series. Three series families:
+ *   - Coupon-like (treasuries, bonds, mortgages): NAV stays at par (~1.0),
+ *     rate is the yield (stored separately in apy/yieldRate).
+ *   - Accruing (money market / SOFR): NAV grows with accumulated yield.
+ *   - Price-like (gold, commodities): rate IS the price — store raw.
+ *     Wave 3.5 GOLD1 reference; the on-chain oracle still provides the
+ *     authoritative purchase/redeem NAV, so the unit mismatch with par
+ *     tokens is acceptable for the marketplace display.
  */
 export function fredToNav(series: string, rate: number): number {
   const accruingSeries = ['SOFR'];
+  const priceLikeSeries = ['GOLDPMGBD228NLBM'];
+
   if (accruingSeries.includes(series)) {
     return 1 + rate / 100 / 12; // Simplified monthly accrual
+  }
+  if (priceLikeSeries.includes(series)) {
+    return rate; // Raw spot price (USD per troy oz for gold)
   }
   return 1.0; // Coupon-paying: NAV stays at par
 }
