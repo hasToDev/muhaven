@@ -21,7 +21,8 @@
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
-    "seed:tokens": "tsx scripts/seed-tokens.ts"
+    "seed:tokens": "tsx scripts/seed-tokens.ts",
+    "seed:tokens:v35": "tsx scripts/seed-tokens-v35.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.40",
