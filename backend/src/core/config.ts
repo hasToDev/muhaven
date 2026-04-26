@@ -96,6 +96,13 @@ const EnvSchema = z.object({
   // watches all addresses in these JSON arrays. Empty = disable that path.
   REDEMPTION_QUEUE_ADDRESSES_JSON: z.string().optional(),
   YIELD_SNAPSHOT_ADDRESSES_JSON: z.string().optional(),
+
+  // ── Wave 3.5 Phase 8 — TokenRegistry (read by seed-tokens-v35 script) ──
+  // Source of truth for "which tokens are registered". The seed script
+  // calls `getRegisteredTokens` to discover symbols + addresses without a
+  // filesystem dependency on the deployments JSON (which doesn't ship into
+  // the backend container).
+  TOKEN_REGISTRY_ADDRESS: z.string().optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
