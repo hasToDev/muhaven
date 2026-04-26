@@ -130,6 +130,52 @@ contract MockPUSDC is IFHERC20 {
         return uint256(euint64.unwrap(result));
     }
 
+    // ── Modern-surface shims (Phase 7.6 / ADR-NEW-1) ──────────────────────
+    //
+    // After Phase 7.6, MuHavenSubscription / RedemptionQueue call PUSDC via
+    // the modern `IMuHavenStable.transferFrom(...)` selector exclusively
+    // (legacy ADR-008 low-level call dropped). MockPUSDC keeps the legacy
+    // selectors above for Wave 3 callers + adds these modern-surface shims
+    // so existing test fixtures don't have to wire MuHavenStable on top of
+    // MockPUSDC just to deploy.
+    //
+    // The mock has no silent-fail (legacy IFHERC20 reverts on insufficient
+    // balance via underflow; modern wrapper silent-fails to zero), so the
+    // shims always return the *requested* amount. That keeps the
+    // share/cash silent-fail mirror happy-path consistent: `actualPaid ==
+    // encAmount` ⇒ `fullPay = true` ⇒ shares mint as requested. Tests that
+    // exercise the silent-fail asymmetry must use the real MuHavenStable
+    // wrapper fixture (`deployV2FixtureWithWrapper` /
+    // `MuHavenStable.integration.test.ts`).
+
+    /// @notice Modern-surface transferFrom (on-chain handle).
+    function transferFrom(
+        address from,
+        address to,
+        euint64 encAmount,
+        address /* ephemeralEOA */
+    ) external returns (euint64) {
+        _requireOperator(from, msg.sender);
+        FHE.allowThis(encAmount);
+        _doTransfer(from, to, encAmount);
+        // No silent-fail on MockPUSDC — actualPaid == encAmount.
+        return encAmount;
+    }
+
+    /// @notice Modern-surface transferFrom (client-encrypted input).
+    function transferFrom(
+        address from,
+        address to,
+        InEuint64 memory encAmount,
+        address /* ephemeralEOA */
+    ) external returns (euint64) {
+        _requireOperator(from, msg.sender);
+        euint64 amount = FHE.asEuint64(encAmount);
+        FHE.allowThis(amount);
+        _doTransfer(from, to, amount);
+        return amount;
+    }
+
     // ── IFHERC20: Operator model ──────────────────────────────────────────
 
     function setOperator(address operator, uint48 until) external {

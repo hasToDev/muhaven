@@ -18,6 +18,7 @@ import {IPriceOracle} from "./interfaces/IPriceOracle.sol";
 import {IMuHavenIdentityRegistry} from "./interfaces/IMuHavenIdentityRegistry.sol";
 import {IModularCompliance} from "./interfaces/IModularCompliance.sol";
 import {IRedemptionQueue} from "./interfaces/IRedemptionQueue.sol";
+import {IMuHavenStable} from "./interfaces/IMuHavenStable.sol";
 
 /// @title MuHavenSubscription
 /// @notice Atomic buy/sell coordinator for Wave 3.5 per ADR-001. The single
@@ -39,15 +40,19 @@ import {IRedemptionQueue} from "./interfaces/IRedemptionQueue.sol";
 ///           zero PUSDC (both legs mirror).
 ///        3. Compute cost — `encCost128 = FHE.mul(encSharesBounded, encNav)`
 ///           then narrow to `euint64` for PUSDC's native width (ADR-008).
-///        4. Pull PUSDC — low-level call on the legacy `confidentialTransferFrom
-///           (address,address,uint256)` selector per ADR-008, moving `encCost`
-///           from `msg.sender` to `cfg.treasury`. Reverts on operator-not-set /
-///           sender-uninitialised / PUSDC-side failure; no silent-fail on the
-///           PUSDC leg itself (the silent-fail is on the shares side via the
-///           hint gate's mirrored zero-cost).
+///        4. Pull mhUSDC — modern-surface `IMuHavenStable.transferFrom(...)`
+///           per Phase 7.6 / ADR-NEW-1, capturing the silent-fail-bounded
+///           `actualPaid` return. Replaces the Phase 2 ADR-008 low-level
+///           selector path: the wrapper guarantees `actualPaid` is either
+///           `encCost` (full pull succeeded) or `0` (silent-fail), so the
+///           share leg can mirror via `actualShares = FHE.select(fullPay,
+///           encSharesBounded, 0)`.
 ///        5. Mint — `MuHavenToken.mintFromSubscription(msg.sender,
-///           encSharesBounded, ephemeralEOA)`. The token grants `ephemeralEOA`
-///           decrypt on the resulting balance handle per ADR-021.
+///           actualShares, ephemeralEOA)`. The token grants `ephemeralEOA`
+///           decrypt on the resulting balance handle per ADR-021. When the
+///           wrapper silent-fails the cash leg, `actualShares` is encrypted-
+///           zero and the mint is a no-op against the investor's balance —
+///           closing the A-6 audit finding from `MHUSD_AUDIT_PREP.md`.
 ///
 ///      PUSDC unit convention: `FHE.mul(shares, nav)` produces cost in PUSDC
 ///      base units directly — i.e., `nav` is scaled to "PUSDC base units per
@@ -62,9 +67,12 @@ import {IRedemptionQueue} from "./interfaces/IRedemptionQueue.sol";
 ///          wires `identityRegistry`; when non-zero it supersedes `kycGate`.
 ///        - `modularCompliance` is zero in Phase 2 (no modules bound); Phase 3
 ///          wires an address and non-empty modules tighten gating.
-///        - `pusdc` is the PUSDC (ConfidentialUSDC) address — rotatable via
-///          `setPUSDC` in case PUSDC redeploys under `cofhe-contracts ≥ v0.1.0`
-///          (ADR-008 exit).
+///        - `pusdc` is the `MuHavenStable` (mhUSDC) wrapper address per Phase
+///          7.5 / ADR-041 — rotatable via `setPUSDC` for emergency wrapper
+///          rotation (peg-break runbook in `HOMELAB_DEPLOY.md`). Phase 7.6
+///          retired the ADR-008 low-level selector path: this contract calls
+///          the wrapper's modern surface exclusively. Pre-cutover deploys
+///          MUST point `pusdc` at `MuHavenStable`, not raw legacy PUSDC.
 contract MuHavenSubscription is Initializable, ReentrancyGuardTransient, IMuHavenSubscription {
 
     // ── Storage ──────────────────────────────────────────────────────────
@@ -103,20 +111,14 @@ contract MuHavenSubscription is Initializable, ReentrancyGuardTransient, IMuHave
     ///      `TokenRegistry` / `IssuerControlledOracle`).
     uint256[43] private __gap;
 
-    // ── Constants ────────────────────────────────────────────────────────
-
-    /// @dev Selector for `confidentialTransferFrom(address,address,uint256)` —
-    ///      legacy pre-v0.1.0 ConfidentialUSDC ABI per ADR-008. Pre-computed
-    ///      to avoid runtime keccak256 on every purchase.
-    bytes4 private constant _TRANSFER_FROM_UINT256 =
-        bytes4(keccak256("confidentialTransferFrom(address,address,uint256)"));
-
     // ── Errors (additive to interface) ───────────────────────────────────
 
-    /// @notice PUSDC low-level call reverted (operator unset / balance
-    ///         uninitialised / PUSDC-internal failure). Loud revert: the
-    ///         whole purchase tx reverts so the investor retains their
-    ///         shares state and can debug upstream.
+    /// @notice mhUSDC wrapper call reverted on the cash leg (operator unset /
+    ///         wrapper paused / setPUSDC pointed at a non-wrapper). Loud
+    ///         revert: the whole tx reverts so the investor's shares state
+    ///         is unaffected and they can debug upstream. Phase 7.6 retains
+    ///         this error name for ABI compatibility (the SDK + frontend
+    ///         already pattern-match against it).
     error PaymentTransferFailed();
 
     /// @notice `maxSharesHint` is below the token's cleartext `minInvestment`
@@ -282,28 +284,52 @@ contract MuHavenSubscription is Initializable, ReentrancyGuardTransient, IMuHave
             FHE.allow(encCost, pusdc);
         }
 
-        // ── PUSDC pull (ADR-008 legacy selector) ──
+        // ── mhUSDC pull (Phase 7.6 / ADR-NEW-1 modern surface) ──
+        // Capture the wrapper's silent-fail-bounded `actualPaid` return so
+        // the share leg can mirror cash-leg success. A loud revert here only
+        // fires for structural failures (operator unset / wrapper paused / a
+        // misconfigured `pusdc` slot pointing at a non-wrapper); the
+        // insufficient-balance path silent-fails through `actualPaid == 0`.
+        euint64 actualPaid;
         {
-            (bool ok, ) = pusdc.call(
-                abi.encodeWithSelector(
-                    _TRANSFER_FROM_UINT256,
-                    msg.sender,
-                    treasuryAddr,
-                    uint256(euint64.unwrap(encCost))
-                )
+            actualPaid = IMuHavenStable(pusdc).transferFrom(
+                msg.sender,
+                treasuryAddr,
+                encCost,
+                ephemeralEOA
             );
-            if (!ok) revert PaymentTransferFailed();
+            FHE.allowThis(actualPaid);
         }
 
-        // ── Mint shares (ephemeralEOA grant handled inside the token) ──
-        FHE.allow(encSharesBounded, token);
-        IMuHavenToken(token).mintFromSubscription(msg.sender, encSharesBounded, ephemeralEOA);
+        // ── Silent-fail mirror — share leg follows cash leg ──
+        // `fullPay` ⇔ wrapper moved exactly the requested `encCost`. On a
+        // wrapper silent-fail (sender mhUSDC short), `actualPaid == 0` and
+        // `fullPay == false`, so `actualShares` zeroes out — preserving the
+        // forward-leg silent-fail-to-zero shape from ADR-NEW-1.
+        euint128 actualShares;
+        {
+            ebool fullPay = FHE.eq(actualPaid, encCost);
+            FHE.allowThis(fullPay);
+
+            euint128 zero128 = FHE.asEuint128(uint256(0));
+            FHE.allowThis(zero128);
+
+            actualShares = FHE.select(fullPay, encSharesBounded, zero128);
+            FHE.allowThis(actualShares);
+        }
+
+        // ── Mint actualShares (ephemeralEOA grant handled inside the token) ──
+        // Mints `actualShares` (not `encSharesBounded`) so a silent-failed
+        // wrapper pull mints zero shares — closes the A-6 audit finding.
+        FHE.allow(actualShares, token);
+        IMuHavenToken(token).mintFromSubscription(msg.sender, actualShares, ephemeralEOA);
 
         // ── Compliance state hook (after successful mint) ──
         // `maxSharesHint` is the cleartext upper bound the investor committed
         // to — the only amount signal cleartext modules can use. Under-count
         // cases from silent-fail mints are handled by ADR-019's known-loose
-        // MaxBalance behaviour.
+        // MaxBalance behaviour. Stays bound to the hint per ADR-004 / ADR-019;
+        // the actual-shares mirror lives strictly on the encrypted leg.
         _notifyCreated(token, msg.sender, uint256(maxSharesHint));
 
         emit Purchased(token, msg.sender, maxSharesHint);
@@ -331,11 +357,19 @@ contract MuHavenSubscription is Initializable, ReentrancyGuardTransient, IMuHave
     ///           encrypted-zero otherwise. Subscription receives ACL on the
     ///           returned handle so it can run the proceeds compute downstream.
     ///        3. `encProceeds = FHE.mul(actualBurned, nav)` mirrors the burn
-    ///           outcome — the investor only receives PUSDC for shares they
+    ///           outcome — the investor only receives mhUSDC for shares they
     ///           actually burned.
-    ///        4. PUSDC pulled `treasury → investor` via the ADR-008 legacy
-    ///           selector. Subscription holds operator rights on the treasury's
-    ///           PUSDC balance (granted at `MuHavenTreasury.initialize`).
+    ///        4. mhUSDC pulled `treasury → investor` via the wrapper's modern
+    ///           surface (Phase 7.6 / ADR-NEW-1), capturing `actualPaid`.
+    ///           Subscription holds operator rights on the treasury's mhUSDC
+    ///           balance (granted at `MuHavenTreasury.initialize`).
+    ///        5. Refund-on-shortfall: if `actualPaid != encProceeds` (treasury
+    ///           was short), re-mint `actualBurned` shares back to the investor
+    ///           via `mintFromSubscription`. Investor's net position is zero —
+    ///           neither shares lost nor mhUSDC gained. Reverse-leg refund is
+    ///           all-or-nothing per ADR-NEW-1 (fractional refund deferred to
+    ///           auditor Q3); the wrapper's silent-fail is binary so the
+    ///           pessimism only fires on a true treasury-empty scenario.
     ///
     ///      Cleartext counter consumes against `maxSharesHint * nav` per
     ///      ADR-004 — the user's cap commitment is the hint, not the actual
@@ -446,7 +480,51 @@ contract MuHavenSubscription is Initializable, ReentrancyGuardTransient, IMuHave
             FHE.allowThis(encSharesBounded);
         }
 
-        // ── Burn → returns silent-fail-bounded actualBurned ──
+        // ── Burn → cash pull → refund-on-shortfall ──
+        // Extracted into `_settleRedeem` to keep this function under the
+        // 0.8.28 stack-frame limit without `viaIR`. The helper handles the
+        // burn, proceeds compute, mhUSDC pull (capturing the wrapper's
+        // silent-fail-bounded `actualPaid`), and the refund mint when the
+        // treasury was short.
+        _settleRedeem(token, treasuryAddr, encSharesBounded, nav, ephemeralEOA);
+
+        // ── Cap consumption (cleartext, against hint per ADR-004) ──
+        // Counter still consumes the hint's worth even on a fully-refunded
+        // path. This is the load-bearing slack from ADR-004 / ADR-019: the
+        // hint is the user's cap-rate commitment, not a settlement counter.
+        // A treasury-empty redeem still occupies the investor's per-epoch
+        // cap budget, which is fine — the rate-limit isn't load-bearing on
+        // any settlement invariant.
+        instantRedeemedThisEpoch[token][epoch] += hintCost;
+
+        // ── Compliance state hook (after successful burn + payout) ──
+        // Passes the cleartext hint for symmetry with purchase. See
+        // `_notifyCreated` comment for the ADR-019 slack. Fires even on the
+        // refund path — destroyed/created hooks are symmetric, and a
+        // refunded mint keeps the investor's holder-set membership intact
+        // (registry.addHolder is idempotent inside `_mintInternal`).
+        _notifyDestroyed(token, msg.sender, uint256(maxSharesHint));
+
+        emit Redeemed(token, msg.sender, maxSharesHint, false);
+    }
+
+    // ── Internal helpers ─────────────────────────────────────────────────
+
+    /// @dev Per-redeem settlement helper — burn shares against the
+    ///      investor's encrypted balance, pull mhUSDC `treasury → investor`
+    ///      via the wrapper's modern surface (Phase 7.6 / ADR-NEW-1), and
+    ///      mirror the cash-leg outcome back onto the share leg via a
+    ///      refund mint when the treasury was short. Extracted from
+    ///      `redeem` to keep the outer frame under the 0.8.28 stack-frame
+    ///      limit without `viaIR`.
+    function _settleRedeem(
+        address token,
+        address treasuryAddr,
+        euint128 encSharesBounded,
+        uint256 nav,
+        address ephemeralEOA
+    ) internal {
+        // Burn → returns silent-fail-bounded actualBurned.
         FHE.allow(encSharesBounded, token);
         euint128 actualBurned = IMuHavenToken(token).burnFromSubscription(
             msg.sender,
@@ -454,51 +532,50 @@ contract MuHavenSubscription is Initializable, ReentrancyGuardTransient, IMuHave
             ephemeralEOA
         );
 
-        // ── Compute proceeds against actual burn (mirrors silent-fail) ──
-        euint64 encProceeds;
-        {
-            // `actualBurned` already has ACL granted to this contract by
-            // `burnFromSubscription` — re-grant explicitly for defence-in-depth
-            // against future Token implementations that change that contract.
-            FHE.allowThis(actualBurned);
+        // Compute proceeds against actual burn (mirrors silent-fail).
+        // `actualBurned` already has ACL granted to this contract by
+        // `burnFromSubscription` — re-grant explicitly for defence-in-depth
+        // against future Token implementations that change that contract.
+        FHE.allowThis(actualBurned);
 
-            euint128 encNav = FHE.asEuint128(nav);
-            FHE.allowThis(encNav);
+        euint128 encNav = FHE.asEuint128(nav);
+        FHE.allowThis(encNav);
 
-            euint128 encProceeds128 = FHE.mul(actualBurned, encNav);
-            FHE.allowThis(encProceeds128);
+        euint128 encProceeds128 = FHE.mul(actualBurned, encNav);
+        FHE.allowThis(encProceeds128);
 
-            // Narrow to PUSDC's native width (`euint64`) per ADR-008.
-            encProceeds = FHE.asEuint64(encProceeds128);
-            FHE.allowThis(encProceeds);
-            FHE.allow(encProceeds, pusdc);
-        }
+        // Narrow to mhUSDC's native width (`euint64`).
+        euint64 encProceeds = FHE.asEuint64(encProceeds128);
+        FHE.allowThis(encProceeds);
+        // Wrapper needs ACL on the handle to run its silent-fail math
+        // (`FHE.lte`, `FHE.select`) inside `transferFrom`.
+        FHE.allow(encProceeds, pusdc);
 
-        // ── PUSDC pull treasury → investor (subscription is operator) ──
-        {
-            (bool ok, ) = pusdc.call(
-                abi.encodeWithSelector(
-                    _TRANSFER_FROM_UINT256,
-                    treasuryAddr,
-                    msg.sender,
-                    uint256(euint64.unwrap(encProceeds))
-                )
-            );
-            if (!ok) revert PaymentTransferFailed();
-        }
+        // mhUSDC pull treasury → investor via the wrapper's modern surface.
+        // `actualPaid` is silent-fail-bounded by treasury balance: either
+        // `encProceeds` (full pull) or 0 (treasury short).
+        euint64 actualPaid = IMuHavenStable(pusdc).transferFrom(
+            treasuryAddr,
+            msg.sender,
+            encProceeds,
+            ephemeralEOA
+        );
+        FHE.allowThis(actualPaid);
 
-        // ── Cap consumption (cleartext, against hint per ADR-004) ──
-        instantRedeemedThisEpoch[token][epoch] += hintCost;
+        // Refund-on-shortfall: if `actualPaid != encProceeds`, re-mint
+        // `actualBurned` shares to the investor so the burn is reversed.
+        // All-or-nothing per ADR-NEW-1 (the wrapper's silent-fail is binary).
+        ebool fullPay = FHE.eq(actualPaid, encProceeds);
+        FHE.allowThis(fullPay);
 
-        // ── Compliance state hook (after successful burn + payout) ──
-        // Passes the cleartext hint for symmetry with purchase. See
-        // `_notifyCreated` comment for the ADR-019 slack.
-        _notifyDestroyed(token, msg.sender, uint256(maxSharesHint));
+        euint128 zero128 = FHE.asEuint128(uint256(0));
+        FHE.allowThis(zero128);
 
-        emit Redeemed(token, msg.sender, maxSharesHint, false);
+        euint128 refundShares = FHE.select(fullPay, zero128, actualBurned);
+        FHE.allowThis(refundShares);
+        FHE.allow(refundShares, token);
+        IMuHavenToken(token).mintFromSubscription(msg.sender, refundShares, ephemeralEOA);
     }
-
-    // ── Internal helpers ─────────────────────────────────────────────────
 
     /// @dev KYC check. Phase 2 consults `kycGate`; Phase 3 delegates to
     ///      `IdentityRegistry` when wired. A non-zero `identityRegistry`

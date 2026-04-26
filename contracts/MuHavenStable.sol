@@ -585,6 +585,14 @@ contract MuHavenStable is
             FHE.allow(_balances[to], ephemeralEOA);
         }
 
+        // Grant the caller ACL on the silent-fail-bounded `transferAmount`
+        // so downstream FHE ops (e.g. `FHE.eq(actualPaid, encCost)` for the
+        // Phase 7.6 / ADR-NEW-1 share/cash silent-fail mirror in
+        // `MuHavenSubscription` + `RedemptionQueue`) can read the handle.
+        // Without this grant, contract callers of `transfer` / `transferFrom`
+        // could not consume the silent-fail-bounded return at all.
+        FHE.allow(transferAmount, msg.sender);
+
         emit Transfer(from, to);
     }
 }

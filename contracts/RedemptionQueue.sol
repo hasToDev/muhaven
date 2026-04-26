@@ -17,6 +17,7 @@ import {ITokenRegistry} from "./interfaces/ITokenRegistry.sol";
 import {IPriceOracle} from "./interfaces/IPriceOracle.sol";
 import {IMuHavenIdentityRegistry} from "./interfaces/IMuHavenIdentityRegistry.sol";
 import {IModularCompliance} from "./interfaces/IModularCompliance.sol";
+import {IMuHavenStable} from "./interfaces/IMuHavenStable.sol";
 
 /// @title RedemptionQueue
 /// @notice Per-token overflow redemption queue per ADR-004. Settles the
@@ -24,7 +25,7 @@ import {IModularCompliance} from "./interfaces/IModularCompliance.sol";
 ///         through the per-epoch instant-redeem cap. Deployed behind an
 ///         OZ Transparent Proxy — one instance per RWA token.
 ///
-/// @dev Flow:
+/// @dev Flow (Phase 7.6 / ADR-NEW-1 — settlement collapsed into processEpoch):
 ///      - Investor direct: investor calls `submit(encShares, maxSharesHint,
 ///        ephemeralEOA)`. The queue calls `token.pullFromInvestor(investor,
 ///        encSharesBounded, eph)` which silent-fails on insufficient balance
@@ -36,17 +37,27 @@ import {IModularCompliance} from "./interfaces/IModularCompliance.sol";
 ///        `investor` is the one on the request (not Subscription).
 ///      - Settlement: issuer calls `processEpoch(epochId, startIdx, endIdx)`
 ///        in paginated slices. One oracle read drives
-///        `encProceeds = FHE.mul(encShares, nav)`; each request's proceeds
-///        are narrowed to `euint64` (cleartext `maxSharesHint * nav` guard
-///        per ADR-031 prevents truncation), ACL-granted to the captured
-///        `ephemeralEOA`, and marked settled. The queue also burns its own
-///        share balance equal to each request's `encShares` via
-///        `token.burnFromQueue` — this fires the token-side `Transfer(from,
-///        0)` and keeps `encryptedTotalSupply` consistent with circulating.
-///      - Claim: investor calls `claim(requestId)` to pull PUSDC from the
-///        treasury. PUSDC transfer uses the legacy `confidentialTransferFrom
-///        (address,address,uint256)` selector per ADR-008; the treasury
-///        pre-granted queue operator rights at its `initialize`.
+///        `encProceeds = FHE.mul(encShares, nav)` per request, narrowed to
+///        `euint64` (cleartext `maxSharesHint * nav` guard per ADR-031
+///        prevents truncation). Per Phase 7.6 / ADR-NEW-1 the same loop now
+///        also pulls mhUSDC `treasury → request.investor` via the wrapper's
+///        modern surface, captures `actualPaid`, and conditionally burns or
+///        refunds the locked shares using the share/cash silent-fail mirror:
+///          - cash-paid (`actualPaid == encProceeds`):
+///              `burnFromQueue(r.encShares)` + `returnToInvestor(0)`
+///          - cash-short (`actualPaid == 0` per the wrapper's binary
+///            silent-fail): `burnFromQueue(0)` + `returnToInvestor(r.encShares)`
+///        Both branches reduce queue balance by exactly `r.encShares` so the
+///        `encryptedTotalSupply`-vs-circulating invariant holds. Settlement
+///        flips both `r.settled` and `r.claimed` so the legacy `claim()` path
+///        becomes vestigial.
+///      - Claim: vestigial as of Phase 7.6 — `processEpoch` already paid the
+///        investor's mhUSDC at settlement (or refunded the shares on
+///        treasury-short). Calling `claim(requestId)` after settlement
+///        reverts with `AlreadyClaimed`. Kept on the surface for ABI /
+///        frontend / SDK compatibility during cutover; pre-cutover deploys
+///        that still hold un-settled requests under the Phase 5 model can
+///        retire `claim` once those requests drain.
 ///
 ///      Storage is derived from `TokenRegistry` (oracle / treasury / issuer
 ///      / epochDuration), matching `MuHavenSubscription`'s pattern. Rotations
@@ -70,7 +81,9 @@ contract RedemptionQueue is Initializable, ReentrancyGuardTransient, IRedemption
     /// @notice Bound RWA token — immutable post-init.
     address public override token;
 
-    /// @notice PUSDC (ConfidentialUSDC) address — immutable post-init.
+    /// @notice mhUSDC wrapper address (`MuHavenStable`). Immutable post-init.
+    ///         Phase 7.6 calls the wrapper's modern `transferFrom` exclusively;
+    ///         no legacy ADR-008 selector path remains in this contract.
     address public pusdc;
 
     /// @notice Per-token config registry (ADR-024). Source of truth for
@@ -102,15 +115,6 @@ contract RedemptionQueue is Initializable, ReentrancyGuardTransient, IRedemption
     ///      own-storage footprint totals 50 (matches TokenRegistry /
     ///      Subscription / Treasury convention).
     uint256[41] private __gap;
-
-    // ── Constants ────────────────────────────────────────────────────────
-
-    /// @dev Selector for `confidentialTransferFrom(address,address,uint256)` —
-    ///      legacy pre-v0.1.0 ConfidentialUSDC ABI per ADR-008. Pulls PUSDC
-    ///      from the treasury (queue is a pre-granted operator) to the
-    ///      claiming investor.
-    bytes4 private constant _TRANSFER_FROM_UINT256 =
-        bytes4(keccak256("confidentialTransferFrom(address,address,uint256)"));
 
     // ── Modifiers ────────────────────────────────────────────────────────
 
@@ -207,38 +211,24 @@ contract RedemptionQueue is Initializable, ReentrancyGuardTransient, IRedemption
     }
 
     /// @inheritdoc IRedemptionQueue
+    /// @dev Vestigial as of Phase 7.6 / ADR-NEW-1 — `processEpoch` now pays
+    ///      mhUSDC + flips `r.claimed` atomically at settlement. This
+    ///      function is retained on the surface for ABI / SDK / frontend
+    ///      compatibility during cutover; in steady state every call here
+    ///      reverts on one of the existing precondition checks
+    ///      (`AlreadyClaimed` for processed requests, `NotSettled` for
+    ///      pending ones, `AlreadyCancelled` / `UnknownRequest` /
+    ///      `WrongInvestor` for the obvious cases). No external call paths
+    ///      remain.
     function claim(uint256 requestId) external nonReentrant {
         Request storage r = _requests[requestId];
         if (r.investor == address(0)) revert UnknownRequest();
         if (msg.sender != r.investor) revert WrongInvestor();
         if (r.cancelled) revert AlreadyCancelled();
         if (!r.settled) revert NotSettled();
+        // Phase 7.6: every settled request has `claimed == true` already
+        // (set inside `processEpoch`), so this branch is the only landing.
         if (r.claimed) revert AlreadyClaimed();
-
-        // Flip the flag BEFORE the external PUSDC call. Transient
-        // reentrancy guard is the primary defence; this is belt + braces.
-        r.claimed = true;
-
-        // Narrow-copy the stored 128-bit proceeds handle to PUSDC's 64-bit
-        // width. At processEpoch we guaranteed the true value fits in
-        // euint64 (ADR-031 cleartext width guard), so the narrow cannot
-        // truncate.
-        euint64 encProceeds = FHE.asEuint64(r.encProceeds);
-        FHE.allowThis(encProceeds);
-        FHE.allow(encProceeds, pusdc);
-
-        address treasuryAddr = _treasury();
-        (bool ok, ) = pusdc.call(
-            abi.encodeWithSelector(
-                _TRANSFER_FROM_UINT256,
-                treasuryAddr,
-                msg.sender,
-                uint256(euint64.unwrap(encProceeds))
-            )
-        );
-        if (!ok) revert PaymentTransferFailed();
-
-        emit QueueClaimed(msg.sender, requestId);
     }
 
     // ── Issuer cold path ─────────────────────────────────────────────────
@@ -251,6 +241,29 @@ contract RedemptionQueue is Initializable, ReentrancyGuardTransient, IRedemption
     ///      can drift during the queue window). Already-terminal requests
     ///      (settled / cancelled) are skipped silently — idempotent
     ///      re-runs over the same slice are safe.
+    ///
+    ///      Phase 7.6 / ADR-NEW-1: settlement now pulls mhUSDC `treasury →
+    ///      r.investor` per request via `IMuHavenStable.transferFrom` and
+    ///      conditionally burns / refunds the locked shares using the
+    ///      share/cash silent-fail mirror. Investor's per-request outcome:
+    ///        - `actualPaid == encProceeds` (cash-paid): burn r.encShares,
+    ///          refund 0. Investor: -shares, +mhUSDC.
+    ///        - `actualPaid == 0` (treasury-short, wrapper silent-fail):
+    ///          burn 0, refund r.encShares. Investor: 0 net change.
+    ///      Both branches reduce queue's balance by exactly r.encShares so
+    ///      the encryptedTotalSupply-vs-circulating invariant holds. The
+    ///      flag flip is `settled = claimed = true` so the legacy
+    ///      `claim(requestId)` path is closed for processed requests.
+    /// @dev In-memory bundle of hot pointers passed into per-request
+    ///      settlement so the loop doesn't redundantly SLOAD / staticcall
+    ///      per iteration and the helper stays under the 0.8.28 stack-frame
+    ///      limit without `viaIR`. Memory-struct-by-ref counts as one
+    ///      stack slot regardless of field count.
+    struct SettleContext {
+        address treasuryAddr;
+        address comp;
+    }
+
     function processEpoch(
         uint256 epochId,
         uint256 startIdx,
@@ -273,11 +286,12 @@ contract RedemptionQueue is Initializable, ReentrancyGuardTransient, IRedemption
         euint128 encNav = FHE.asEuint128(nav);
         FHE.allowThis(encNav);
 
-        IMuHavenToken muToken = IMuHavenToken(token);
-        // Cache the token's compliance coordinator so the state-hook fire
-        // doesn't do a staticcall per request. ADR-032: queue fires
-        // `destroyed` on settlement; cleartext amount = `maxSharesHint`.
-        address comp = _tokenCompliance();
+        // Cache hot pointers for the per-request loop. ADR-032: queue
+        // fires `destroyed` on settlement; cleartext amount = `maxSharesHint`.
+        SettleContext memory ctx = SettleContext({
+            treasuryAddr: cfg.treasury,
+            comp: _tokenCompliance()
+        });
 
         uint256 processed = 0;
         for (uint256 i = startIdx; i < endIdx; i++) {
@@ -285,61 +299,135 @@ contract RedemptionQueue is Initializable, ReentrancyGuardTransient, IRedemption
             Request storage r = _requests[rid];
 
             // Skip already-terminal requests so re-running processEpoch over
-            // the same slice is idempotent. Crucially — the `destroyed`
-            // state-hook fire also lives inside this branch so a re-run
-            // doesn't double-count module trackers (MaxHolders,
+            // the same slice is idempotent. Crucially — every observable
+            // side-effect (mhUSDC pull, share burn, refund, state-hook
+            // fire) lives inside this branch so a re-run can't double-pay
+            // an investor or double-count module trackers (MaxHolders,
             // MaxBalance, Lockup).
             if (r.settled || r.cancelled) continue;
 
-            // Cleartext width guard per ADR-031. Loud-reverts (structural
-            // overflow, not normal silent-fail). Per-request because each
-            // investor picks their own bound.
-            if (uint256(r.maxSharesHint) * nav > type(uint64).max) {
-                revert CostOverflowsPUSDCWidth();
-            }
-
-            // r.encShares is the silent-fail-bounded actualPulled from
-            // submit. Guaranteed `actualPulled <= maxSharesHint` via the
-            // submit-time hint gate, so actualProceeds <= hint*nav <= u64.
-            FHE.allowThis(r.encShares);
-
-            euint128 encProceeds128 = FHE.mul(r.encShares, encNav);
-            FHE.allowThis(encProceeds128);
-
-            // Grant investor's ephemeralEOA on the stored 128-bit handle
-            // per Rule 2. PUSDC-side ACL is granted at claim-time narrow.
-            FHE.allow(encProceeds128, r.ephemeralEOA);
-            r.encProceeds = encProceeds128;
-
-            // Burn the queue's locked shares for this request — keeps
-            // encryptedTotalSupply consistent with circulating supply and
-            // fires the token-side `Transfer(queue, 0)` event. Silent-
-            // fails to zero if the queue's balance is somehow below the
-            // request amount (shouldn't happen — shares were just pulled
-            // at submit — but defence-in-depth).
-            euint128 actualBurned = muToken.burnFromQueue(r.encShares);
-            // `actualBurned` is not consumed further; it's returned for
-            // symmetry with `burnFromSubscription`. Granted ACL to this
-            // contract inside the token so downstream operators of the
-            // handle don't ACL-fail if we ever extend settlement logic.
-            FHE.allowThis(actualBurned);
-
-            r.settled = true;
+            _settleRequest(r, rid, encNav, nav, ctx);
             processed++;
-
-            // Compliance `destroyed` state-hook fire (ADR-032). One fan-
-            // out per newly-settled request so per-wallet counters
-            // (MaxHolders, MaxBalance) see each settlement exactly once.
-            if (comp != address(0)) {
-                IModularCompliance(comp).destroyed(
-                    token,
-                    r.investor,
-                    uint256(r.maxSharesHint)
-                );
-            }
         }
 
         emit EpochProcessed(epochId, processed);
+    }
+
+    /// @dev Per-request settlement path — extracted so `processEpoch`
+    ///      stays under the stack-frame limit at 0.8.28 without `viaIR`.
+    ///      Computes the cleartext width guard + NAV-driven proceeds, then
+    ///      delegates to `_pullAndMirror` for the mhUSDC pull + conditional
+    ///      burn/refund mirror. Final state-hook fan-out + flag flip lives
+    ///      here so the helper has the request reference + cached `comp`
+    ///      pointer in a single slot frame. Caller must have already
+    ///      validated the request is non-terminal.
+    function _settleRequest(
+        Request storage r,
+        uint256 requestId,
+        euint128 encNav,
+        uint256 navCleartext,
+        SettleContext memory ctx
+    ) internal {
+        // Cleartext width guard per ADR-031. Loud-reverts (structural
+        // overflow, not normal silent-fail). Per-request because each
+        // investor picks their own bound.
+        if (uint256(r.maxSharesHint) * navCleartext > type(uint64).max) {
+            revert CostOverflowsPUSDCWidth();
+        }
+
+        // r.encShares is the silent-fail-bounded actualPulled from submit.
+        // Guaranteed `actualPulled <= maxSharesHint` via the submit-time
+        // hint gate, so actualProceeds <= hint*nav <= u64.
+        FHE.allowThis(r.encShares);
+
+        // Compute proceeds + narrow to mhUSDC width.
+        euint128 encProceeds128 = FHE.mul(r.encShares, encNav);
+        FHE.allowThis(encProceeds128);
+        FHE.allow(encProceeds128, r.ephemeralEOA);
+        r.encProceeds = encProceeds128;
+
+        euint64 encProceeds64 = FHE.asEuint64(encProceeds128);
+        FHE.allowThis(encProceeds64);
+        // Wrapper needs ACL on the handle to run its silent-fail math
+        // (`FHE.lte`, `FHE.select`) inside `transferFrom`.
+        FHE.allow(encProceeds64, pusdc);
+
+        // Pull mhUSDC + mirror cash-leg outcome onto the share leg.
+        _pullAndMirror(r, encProceeds64, ctx.treasuryAddr);
+
+        // Flip terminal flags atomically. Both `settled` and `claimed` are
+        // set so the vestigial `claim()` surface always reverts
+        // `AlreadyClaimed` on processed requests (Phase 7.6 / ADR-NEW-1).
+        r.settled = true;
+        r.claimed = true;
+
+        // Compliance `destroyed` state-hook (ADR-032). Fires on both
+        // cash-paid AND refund branches — hooks are bound to the cleartext
+        // hint per ADR-019, not to settlement outcome. The refund branch
+        // doesn't fire a compensating `created` (`returnToInvestor` doesn't
+        // re-notify), matching the Subscription.redeem-refund behaviour
+        // where mintFromSubscription also skips the state-hook fan-out.
+        if (ctx.comp != address(0)) {
+            IModularCompliance(ctx.comp).destroyed(
+                token,
+                r.investor,
+                uint256(r.maxSharesHint)
+            );
+        }
+
+        // Settlement payout event (mhUSDC pulled to investor OR refund
+        // shares returned). Mirrors the legacy `QueueClaimed` shape so
+        // existing indexers track auto-claim events without delta.
+        emit QueueClaimed(r.investor, requestId);
+    }
+
+    /// @dev mhUSDC pull + share-leg mirror. Pulls `encProceeds64` from
+    ///      `treasuryAddr` to `r.investor` via the wrapper's modern surface,
+    ///      captures the silent-fail-bounded `actualPaid`, then either:
+    ///        - cash-paid (`actualPaid == encProceeds64`): burn `r.encShares`
+    ///          from queue, return 0 to investor.
+    ///        - cash-short (`actualPaid == 0`): burn 0 from queue, return
+    ///          `r.encShares` to investor.
+    ///      Both branches reduce queue's balance by exactly `r.encShares`,
+    ///      preserving the `encryptedTotalSupply`-vs-circulating invariant.
+    function _pullAndMirror(
+        Request storage r,
+        euint64 encProceeds64,
+        address treasuryAddr
+    ) internal {
+        // mhUSDC pull treasury → investor. The wrapper's `actualPaid` is
+        // silent-fail-bounded: `encProceeds64` if treasury can cover, 0
+        // otherwise.
+        euint64 actualPaid = IMuHavenStable(pusdc).transferFrom(
+            treasuryAddr,
+            r.investor,
+            encProceeds64,
+            r.ephemeralEOA
+        );
+        FHE.allowThis(actualPaid);
+
+        // Build conditional share amounts — burn full + refund 0 on
+        // cash-paid; burn 0 + refund full on cash-short.
+        ebool fullPay = FHE.eq(actualPaid, encProceeds64);
+        FHE.allowThis(fullPay);
+
+        euint128 zero128 = FHE.asEuint128(uint256(0));
+        FHE.allowThis(zero128);
+
+        euint128 sharesToBurn = FHE.select(fullPay, r.encShares, zero128);
+        FHE.allowThis(sharesToBurn);
+        FHE.allow(sharesToBurn, token);
+
+        euint128 sharesToReturn = FHE.select(fullPay, zero128, r.encShares);
+        FHE.allowThis(sharesToReturn);
+        FHE.allow(sharesToReturn, token);
+
+        // `actualBurned` from burnFromQueue is granted ACL to this contract
+        // inside the token but not used further — kept as a hook for any
+        // future settlement extension that wants to mirror burn outcome.
+        euint128 actualBurned = IMuHavenToken(token).burnFromQueue(sharesToBurn);
+        FHE.allowThis(actualBurned);
+        IMuHavenToken(token).returnToInvestor(r.investor, sharesToReturn, r.ephemeralEOA);
     }
 
     /// @inheritdoc IRedemptionQueue
