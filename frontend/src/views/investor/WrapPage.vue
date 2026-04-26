@@ -532,10 +532,17 @@ const successCopy = computed(() =>
                   {{ usdcBalance !== null ? formatUSD(Number(usdcBalance) / 1e6) : '—' }}
                 </span>
               </div>
-              <div class="rounded-lg p-4 border border-haze dark:border-white/8 bg-mist/40 dark:bg-[#1c1b1b]/60 flex flex-col gap-1">
-                <span class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool">Legacy PUSDC (public)</span>
+              <div
+                class="rounded-lg p-4 border border-haze dark:border-white/8 bg-mist/40 dark:bg-[#1c1b1b]/60 flex flex-col gap-1"
+                title="ERC-7984 cleartext shadow only. Your full PUSDC holding lives in `confidentialBalanceOf` — encrypted, not shown here. The Convert flow operates on the encrypted balance via `confidentialTransferFrom`."
+              >
+                <span class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool">Legacy PUSDC (cleartext shadow)</span>
                 <span class="font-accent italic text-xl text-midnight dark:text-white tabular-nums" data-testid="wrap-pusdc-public-balance">
-                  {{ pusdcPublicBalance !== null ? formatUSD(Number(pusdcPublicBalance) / 1e6) : '—' }}
+                  {{ pusdcPublicBalance !== null ? formatUSD(Number(pusdcPublicBalance) / 1e6, 4) : '—' }}
+                </span>
+                <span class="font-sans text-[9px] text-cool/70 leading-tight">
+                  Tiny dust slice. Bulk holding is encrypted in
+                  <code class="font-mono">confidentialBalanceOf</code>.
                 </span>
               </div>
               <div class="rounded-lg p-4 border border-haze dark:border-white/8 bg-mist/40 dark:bg-[#1c1b1b]/60 flex flex-col gap-1">
