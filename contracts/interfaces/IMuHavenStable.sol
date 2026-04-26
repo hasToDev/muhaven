@@ -114,6 +114,32 @@ interface IMuHavenStable {
         address ephemeralEOA
     ) external returns (euint64 actualTransferred);
 
+    /// @notice Modern-surface transferFrom with split per-leg `ephemeralEOA`
+    ///         grants. Phase 7.6-E / ADR-044 — closes audit-prep §A-9 (the
+    ///         Phase 7.6-D walkthrough finding): contract-mediated callers
+    ///         (`MuHavenSubscription`, `RedemptionQueue`) need to grant the
+    ///         investor's session decrypt access on ONLY their own leg of the
+    ///         transfer. Pass `address(0)` for the counterparty leg to suppress
+    ///         that leg's grant.
+    ///
+    ///         Direct EOA / P2P callers continue to use the 4-arg overload
+    ///         which delegates here with `fromEph == toEph == ephemeralEOA`
+    ///         (the original Phase 7.5-A both-leg behavior is preserved on the
+    ///         legacy entrypoint).
+    ///
+    ///         Wrapper grants:
+    ///           - `fromEph != address(0)` → `FHE.allow(_balances[from], fromEph)`
+    ///           - `toEph != address(0)`   → `FHE.allow(_balances[to], toEph)`
+    ///         Kernel grants on `from` / `to` always fire (matches legacy
+    ///         PUSDC recipient-decrypt UX).
+    function transferFrom(
+        address from,
+        address to,
+        euint64 encAmount,
+        address fromEph,
+        address toEph
+    ) external returns (euint64 actualTransferred);
+
     // ── Operator model (mirrors legacy PUSDC) ──────────────────────────
 
     function setOperator(address operator, uint48 until) external;

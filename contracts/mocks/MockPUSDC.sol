@@ -176,6 +176,26 @@ contract MockPUSDC is IFHERC20 {
         return amount;
     }
 
+    /// @notice Modern-surface transferFrom (on-chain handle, split-grant
+    ///         per Phase 7.6-E / ADR-044). MockPUSDC has no ACL grants
+    ///         past `_doTransfer`'s own kernel grants, so `fromEph` /
+    ///         `toEph` are accepted-and-ignored — happy-path calls land
+    ///         exactly the same way the 4-arg overload does. Tests that
+    ///         need to exercise the split-grant ACL behavior MUST use the
+    ///         real `MuHavenStable` wrapper fixture.
+    function transferFrom(
+        address from,
+        address to,
+        euint64 encAmount,
+        address /* fromEph */,
+        address /* toEph */
+    ) external returns (euint64) {
+        _requireOperator(from, msg.sender);
+        FHE.allowThis(encAmount);
+        _doTransfer(from, to, encAmount);
+        return encAmount;
+    }
+
     // ── IFHERC20: Operator model ──────────────────────────────────────────
 
     function setOperator(address operator, uint48 until) external {

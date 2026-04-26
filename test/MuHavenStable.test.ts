@@ -543,6 +543,238 @@ describe("MuHavenStable — Phase 7.5-A", () => {
         ](alice.address, bob.address, xferEnc, aliceEph.address)
       ).to.be.revertedWithCustomError(stable, "PausedSurface");
     });
+
+    // ── Phase 7.6-E / ADR-044 — split-grant 5-arg transferFrom ────────
+    //
+    // Closes audit-prep §A-9: contract-mediated callers must be able to
+    // suppress the counterparty's `ephemeralEOA` ACL grant. The 4-arg
+    // overload's both-leg behavior is intentionally preserved (P2P EOA
+    // calls go through it); the 5-arg variant is the new entrypoint for
+    // Subscription / Queue.
+
+    it("5-arg transferFrom: fromEph-only suppresses recipient leg's eph grant", async () => {
+      // Used by `MuHavenSubscription.purchase` shape: investor →
+      // treasury, only investor's eph relevant. Treasury's resulting
+      // mhUSDC balance handle stays kernel-only — investor's session
+      // gains zero decrypt access on the treasury's mhUSDC float.
+      const { stable, pusdc, alice, bob, aliceClient, bobClient, acl } =
+        await loadFixture(deployStableFixture);
+
+      // Alice (sender) holds mhUSDC; bob (recipient, stand-in for
+      // treasury) needs an existing balance for the recipient-leg ACL
+      // assertion to be meaningful (a fresh mint creates a NEW handle
+      // either way; but with an existing balance the post-add handle is
+      // also fresh and we can directly assert the missing eph grant).
+      await seedAndApprove(pusdc, stable, alice, 100n * ONE_PUSDC);
+      await seedAndApprove(pusdc, stable, bob, 100n * ONE_PUSDC);
+
+      const aliceEph = createEphemeralEOA();
+      const bobEph = createEphemeralEOA();
+      await stable
+        .connect(alice)
+        .wrap(await encUint64(aliceClient, 50n * ONE_PUSDC), aliceEph.address);
+      await stable
+        .connect(bob)
+        .wrap(await encUint64(bobClient, 50n * ONE_PUSDC), bobEph.address);
+
+      // Alice spends her own balance via the 5-arg variant (self-as-
+      // operator works without explicit approval — see existing test).
+      // Pass aliceEph for fromEph, address(0) for toEph.
+      const xferAmount = 20n * ONE_PUSDC;
+
+      // Need an on-chain euint64 handle as the second-overload input.
+      // Wrap-then-spend: encrypt off-chain, then run a contract path
+      // that gives us a handle. Use existing modern transfer to bob to
+      // generate a handle, then call the 5-arg variant ourselves.
+      // Simpler: use the InEuint64 4-arg overload first to set up state
+      // and then the 5-arg overload directly via low-level call with
+      // alice's current balance handle as input.
+      //
+      // But the 5-arg overload accepts euint64 (on-chain handle), so we
+      // need a handle to feed in. The cleanest way: use the InEuint64
+      // 4-arg overload to do a separate transfer, then assert ACL on
+      // resulting balances. But that's the BOTH-leg path. To exercise
+      // the 5-arg variant we need to call it via low-level call.
+
+      const sel = hre.ethers.id(
+        "transferFrom(address,address,bytes32,address,address)"
+      ).slice(0, 10);
+
+      // The on-chain handle for the transfer amount: encrypt off-chain
+      // via aliceClient, then materialise via a no-op contract path.
+      // CoFHE mock allows raw input via the uint256 → bytes32 wrap of
+      // the encrypted ciphertext hash, but the modern surface needs a
+      // handle that's already passed `verifyInput`. The simplest way is
+      // to use alice's own balance handle (silent-fail bound trims to
+      // requested anyway when balance >= amount).
+      //
+      // Since we want a SPECIFIC amount (not "all of alice"), we'll
+      // first do a 4-arg transferFrom to get a verified amount handle
+      // (via CoFHE's input pipeline), then re-encrypt the same amount
+      // for the 5-arg call. CoFHE mock content-addresses handles, so
+      // the same input across two encrypts produces the same handle.
+      const handleEnc = await encUint64(aliceClient, xferAmount);
+
+      // Use the InEuint64 4-arg overload to materialise the handle on-
+      // chain (via the trivial encrypt path in the mock). The actual
+      // call we want to test is the 5-arg euint64 variant — invoke it
+      // by ABI encoding directly. To get the on-chain handle without
+      // performing the actual transfer, we re-use alice's balance
+      // handle as a known on-chain handle for the bytes32 slot.
+      //
+      // For the test purpose: invoke the 5-arg variant with alice's
+      // balance handle as the amount (silent-fail bound caps at the
+      // available balance). This validates the per-leg eph grant
+      // behavior even though the amount = alice's whole balance.
+      const aliceBalHandle = await stable.confidentialBalanceOf(alice.address);
+
+      const data = sel + hre.ethers.AbiCoder.defaultAbiCoder().encode(
+        ["address", "address", "bytes32", "address", "address"],
+        [alice.address, bob.address, aliceBalHandle, aliceEph.address, hre.ethers.ZeroAddress]
+      ).slice(2);
+
+      await alice.sendTransaction({ to: await stable.getAddress(), data });
+
+      const aliceBalAfter = await stable.confidentialBalanceOf(alice.address);
+      const bobBalAfter = await stable.confidentialBalanceOf(bob.address);
+
+      // Sender's new balance: aliceEph granted (fromEph != 0).
+      expect(
+        await acl.isAllowed(handleToUint(aliceBalAfter), aliceEph.address)
+      ).to.equal(true);
+      // Recipient's new balance: aliceEph NOT granted (toEph == 0).
+      // This is the audit-prep §A-9 invariant — investor-side eph
+      // does not gain decrypt access on the recipient's mhUSDC handle.
+      expect(
+        await acl.isAllowed(handleToUint(bobBalAfter), aliceEph.address)
+      ).to.equal(false);
+      // Recipient's own kernel grant still fires (per Rule 2 baseline).
+      expect(
+        await acl.isAllowed(handleToUint(bobBalAfter), bob.address)
+      ).to.equal(true);
+      // Recipient's own existing eph grant unchanged on bob's side
+      // (bobEph was granted on bob's pre-transfer balance handle, not
+      // on this new post-add handle).
+      expect(
+        await acl.isAllowed(handleToUint(bobBalAfter), bobEph.address)
+      ).to.equal(false);
+    });
+
+    it("5-arg transferFrom: toEph-only suppresses sender leg's eph grant", async () => {
+      // Used by `MuHavenSubscription._settleRedeem` and
+      // `RedemptionQueue._pullAndMirror` shape: treasury → investor,
+      // only investor's eph relevant. Treasury's resulting mhUSDC
+      // balance handle stays kernel-only.
+      const { stable, pusdc, alice, bob, aliceClient, bobClient, acl } =
+        await loadFixture(deployStableFixture);
+
+      // Alice = "treasury" (sender, contract-side). Bob = "investor"
+      // (recipient, gets the toEph grant).
+      await seedAndApprove(pusdc, stable, alice, 100n * ONE_PUSDC);
+      await seedAndApprove(pusdc, stable, bob, 100n * ONE_PUSDC);
+
+      const aliceEph = createEphemeralEOA();
+      const bobEph = createEphemeralEOA();
+      await stable
+        .connect(alice)
+        .wrap(await encUint64(aliceClient, 50n * ONE_PUSDC), aliceEph.address);
+      await stable
+        .connect(bob)
+        .wrap(await encUint64(bobClient, 50n * ONE_PUSDC), bobEph.address);
+
+      const sel = hre.ethers.id(
+        "transferFrom(address,address,bytes32,address,address)"
+      ).slice(0, 10);
+
+      // Use bob as the spender — bob's session calls transferFrom on
+      // alice's balance with alice's pre-existing operator approval.
+      // For this test, alice (self-operator) calls transferFrom from
+      // alice → bob with toEph = bobEph, fromEph = address(0).
+      const aliceBalHandle = await stable.confidentialBalanceOf(alice.address);
+
+      const data = sel + hre.ethers.AbiCoder.defaultAbiCoder().encode(
+        ["address", "address", "bytes32", "address", "address"],
+        [alice.address, bob.address, aliceBalHandle, hre.ethers.ZeroAddress, bobEph.address]
+      ).slice(2);
+
+      await alice.sendTransaction({ to: await stable.getAddress(), data });
+
+      const aliceBalAfter = await stable.confidentialBalanceOf(alice.address);
+      const bobBalAfter = await stable.confidentialBalanceOf(bob.address);
+
+      // Sender's new balance: aliceEph NOT granted (fromEph == 0).
+      // The treasury-leak-fixed direction.
+      expect(
+        await acl.isAllowed(handleToUint(aliceBalAfter), aliceEph.address)
+      ).to.equal(false);
+      // Sender's own kernel grant still fires.
+      expect(
+        await acl.isAllowed(handleToUint(aliceBalAfter), alice.address)
+      ).to.equal(true);
+      // Recipient's new balance: bobEph granted (toEph != 0).
+      expect(
+        await acl.isAllowed(handleToUint(bobBalAfter), bobEph.address)
+      ).to.equal(true);
+      // Bob also gets his kernel grant.
+      expect(
+        await acl.isAllowed(handleToUint(bobBalAfter), bob.address)
+      ).to.equal(true);
+    });
+
+    it("5-arg transferFrom: rejects (fromEph=0, toEph=0) as InvalidEphemeralEOA", async () => {
+      // Defence-in-depth — passing both as zero would lose the
+      // session's decrypt access on both legs. The 4-arg overload
+      // rejects `eph == 0` for the same reason; the 5-arg variant
+      // rejects only the fully-zero case (one-leg-zero is the
+      // intended split-grant entry).
+      const { stable, pusdc, alice, bob, aliceClient } =
+        await loadFixture(deployStableFixture);
+      await seedAndApprove(pusdc, stable, alice, 100n * ONE_PUSDC);
+
+      const aliceEph = createEphemeralEOA();
+      await stable
+        .connect(alice)
+        .wrap(await encUint64(aliceClient, 10n * ONE_PUSDC), aliceEph.address);
+
+      const sel = hre.ethers.id(
+        "transferFrom(address,address,bytes32,address,address)"
+      ).slice(0, 10);
+      const aliceBalHandle = await stable.confidentialBalanceOf(alice.address);
+
+      const data = sel + hre.ethers.AbiCoder.defaultAbiCoder().encode(
+        ["address", "address", "bytes32", "address", "address"],
+        [alice.address, bob.address, aliceBalHandle, hre.ethers.ZeroAddress, hre.ethers.ZeroAddress]
+      ).slice(2);
+
+      await expect(
+        alice.sendTransaction({ to: await stable.getAddress(), data })
+      ).to.be.reverted;
+    });
+
+    it("5-arg transferFrom: rejects zero recipient", async () => {
+      const { stable, pusdc, alice, aliceClient } =
+        await loadFixture(deployStableFixture);
+      await seedAndApprove(pusdc, stable, alice, 100n * ONE_PUSDC);
+
+      const aliceEph = createEphemeralEOA();
+      await stable
+        .connect(alice)
+        .wrap(await encUint64(aliceClient, 10n * ONE_PUSDC), aliceEph.address);
+
+      const sel = hre.ethers.id(
+        "transferFrom(address,address,bytes32,address,address)"
+      ).slice(0, 10);
+      const aliceBalHandle = await stable.confidentialBalanceOf(alice.address);
+
+      const data = sel + hre.ethers.AbiCoder.defaultAbiCoder().encode(
+        ["address", "address", "bytes32", "address", "address"],
+        [alice.address, hre.ethers.ZeroAddress, aliceBalHandle, aliceEph.address, hre.ethers.ZeroAddress]
+      ).slice(2);
+
+      await expect(
+        alice.sendTransaction({ to: await stable.getAddress(), data })
+      ).to.be.reverted;
+    });
   });
 
   // ── Operator / admin / refresh ────────────────────────────────────────
@@ -712,6 +944,8 @@ describe("MuHavenStable — Phase 7.5-A", () => {
         "function transfer(address,bytes32,address) returns (bytes32)",
         "function transferFrom(address,address,(uint256,uint8,uint8,bytes),address) returns (bytes32)",
         "function transferFrom(address,address,bytes32,address) returns (bytes32)",
+        // Phase 7.6-E / ADR-044 — split-grant 5-arg variant.
+        "function transferFrom(address,address,bytes32,address,address) returns (bytes32)",
         "function setOperator(address,uint48)",
         "function isOperator(address,address) view returns (bool)",
         "function confidentialBalanceOf(address) view returns (bytes32)",

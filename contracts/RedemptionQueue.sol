@@ -398,11 +398,19 @@ contract RedemptionQueue is Initializable, ReentrancyGuardTransient, IRedemption
         // mhUSDC pull treasury → investor. The wrapper's `actualPaid` is
         // silent-fail-bounded: `encProceeds64` if treasury can cover, 0
         // otherwise.
+        //
+        // Phase 7.6-E / ADR-044 — split-grant 5-arg surface: investor's
+        // `r.ephemeralEOA` grants only on the recipient (investor) leg; the
+        // sender (treasury) leg's resulting balance handle stays kernel-only.
+        // Closes audit-prep §A-9 — without this split, every queue
+        // settlement would leak the treasury's mhUSDC float to the
+        // settling investor's session.
         euint64 actualPaid = IMuHavenStable(pusdc).transferFrom(
             treasuryAddr,
             r.investor,
             encProceeds64,
-            r.ephemeralEOA
+            address(0),         // fromEph — suppress treasury-leg grant
+            r.ephemeralEOA      // toEph   — investor's session
         );
         FHE.allowThis(actualPaid);
 

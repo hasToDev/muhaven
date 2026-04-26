@@ -854,6 +854,154 @@ describe("Phase 7.6 — RedemptionQueue refund-on-shortfall", () => {
     expect(r.settled).to.equal(true);
     expect(r.claimed).to.equal(true);
   });
+
+  it("Case 2 — Phase 7.6-E: investor's eph cannot decrypt treasury's mhUSDC after settlement", async () => {
+    // Counterpart of Phase 7.6-E Case 1/Case 2 against the queue
+    // settlement path. The wrapper's modern surface (Phase 7.6-E
+    // 5-arg variant) must keep the treasury's post-settlement mhUSDC
+    // handle out of the investor's session ACL.
+    const {
+      subscription,
+      queue,
+      treasury,
+      issuer,
+      investor,
+      investorClient,
+      token,
+      mhUSDC,
+      eph,
+    } = await loadFixture(deployQueueWrapperFixture);
+
+    // Buy 50 shares (cost 50 mhUSDC) → treasury holds 50 mhUSDC.
+    const encBuy = await encUint128(investorClient, 50n);
+    await subscription
+      .connect(investor)
+      .purchase(await token.getAddress(), encBuy, HINT_CAP, eph.address);
+
+    // Investor submits 30 shares to the queue.
+    const encSubmit = await encUint128(investorClient, 30n);
+    await queue.connect(investor).submit(encSubmit, HINT_CAP, eph.address);
+
+    // Process epoch — happy path (treasury can cover).
+    const epoch = await queue.currentEpoch();
+    await queue.connect(issuer).processEpoch(epoch, 0, 1);
+
+    const treasuryBal = await mhUSDC.confidentialBalanceOf(
+      await treasury.getAddress()
+    );
+    const acl = await hre.cofhe.mocks.getMockACL();
+
+    // Treasury's POST-settlement mhUSDC handle: investor's eph NOT granted.
+    expect(await acl.isAllowed(BigInt(treasuryBal), eph.address)).to.equal(
+      false
+    );
+    // Investor's mhUSDC handle: investor's eph IS granted (recipient leg).
+    const investorMh = await mhUSDC.confidentialBalanceOf(investor.address);
+    expect(await acl.isAllowed(BigInt(investorMh), eph.address)).to.equal(
+      true
+    );
+  });
+});
+
+// ── Phase 7.6-E / ADR-044 — split-grant treasury-leak fix ────────────────
+
+describe("Phase 7.6-E — treasury-leak fix (split-grant transferFrom)", () => {
+  /**
+   * Closes audit-prep §A-9 surfaced during the Phase 7.6-D self-review:
+   * before this fix, the wrapper's 4-arg `transferFrom` granted the
+   * passed `ephemeralEOA` on BOTH legs, so contract-mediated paths
+   * (Subscription.purchase, _settleRedeem, RedemptionQueue settlement)
+   * leaked the treasury's mhUSDC balance handle to the investor's
+   * session. Phase 7.6-E switches those call sites to the new 5-arg
+   * variant which suppresses the counterparty leg's grant.
+   *
+   * These cases lock in the post-fix invariant: after a contract-
+   * mediated transfer touching the treasury, the investor's eph has
+   * NO ACL on the treasury's resulting mhUSDC balance handle.
+   */
+
+  it("Case 1 — purchase: investor's eph cannot decrypt treasury's post-pull mhUSDC", async () => {
+    const {
+      subscription,
+      issuer,
+      investor,
+      investorClient,
+      token,
+      mhUSDC,
+      treasury,
+      oracle,
+      eph,
+    } = await loadFixture(deployWrapperFixture);
+
+    await oracle.connect(issuer).setNAV(await token.getAddress(), DEFAULT_NAV);
+
+    const enc = await encUint128(investorClient, 10n);
+    await subscription
+      .connect(investor)
+      .purchase(await token.getAddress(), enc, HINT_CAP, eph.address);
+
+    const treasuryBal = await mhUSDC.confidentialBalanceOf(
+      await treasury.getAddress()
+    );
+    const acl = await hre.cofhe.mocks.getMockACL();
+
+    // Investor's eph must NOT be granted on the treasury's mhUSDC handle.
+    expect(await acl.isAllowed(BigInt(treasuryBal), eph.address)).to.equal(
+      false
+    );
+    // Treasury's own kernel grant still fires.
+    expect(
+      await acl.isAllowed(BigInt(treasuryBal), await treasury.getAddress())
+    ).to.equal(true);
+    // Investor's eph IS granted on their own mhUSDC handle (sender leg).
+    const investorMh = await mhUSDC.confidentialBalanceOf(investor.address);
+    expect(await acl.isAllowed(BigInt(investorMh), eph.address)).to.equal(
+      true
+    );
+  });
+
+  it("Case 2 — redeem: investor's eph cannot decrypt treasury's post-payout mhUSDC", async () => {
+    const {
+      subscription,
+      issuer,
+      investor,
+      investorClient,
+      token,
+      mhUSDC,
+      treasury,
+      oracle,
+      eph,
+    } = await loadFixture(deployWrapperFixture);
+
+    await oracle.connect(issuer).setNAV(await token.getAddress(), DEFAULT_NAV);
+
+    // Buy 10 shares → treasury accumulates 10 mhUSDC.
+    let enc = await encUint128(investorClient, 10n);
+    await subscription
+      .connect(investor)
+      .purchase(await token.getAddress(), enc, HINT_CAP, eph.address);
+
+    // Redeem 5 shares → treasury → investor pull moves 5 mhUSDC.
+    enc = await encUint128(investorClient, 5n);
+    await subscription
+      .connect(investor)
+      .redeem(await token.getAddress(), enc, HINT_CAP, eph.address);
+
+    const treasuryBal = await mhUSDC.confidentialBalanceOf(
+      await treasury.getAddress()
+    );
+    const acl = await hre.cofhe.mocks.getMockACL();
+
+    // Treasury's POST-redeem balance handle: investor's eph NOT granted.
+    expect(await acl.isAllowed(BigInt(treasuryBal), eph.address)).to.equal(
+      false
+    );
+    // Investor's eph IS granted on their own mhUSDC handle (recipient leg).
+    const investorMh = await mhUSDC.confidentialBalanceOf(investor.address);
+    expect(await acl.isAllowed(BigInt(investorMh), eph.address)).to.equal(
+      true
+    );
+  });
 });
 
 // ── migrateToWrapper helper coverage ─────────────────────────────────────

@@ -284,19 +284,27 @@ contract MuHavenSubscription is Initializable, ReentrancyGuardTransient, IMuHave
             FHE.allow(encCost, pusdc);
         }
 
-        // ── mhUSDC pull (Phase 7.6 / ADR-NEW-1 modern surface) ──
+        // ── mhUSDC pull (Phase 7.6 / ADR-043 modern surface) ──
         // Capture the wrapper's silent-fail-bounded `actualPaid` return so
         // the share leg can mirror cash-leg success. A loud revert here only
         // fires for structural failures (operator unset / wrapper paused / a
         // misconfigured `pusdc` slot pointing at a non-wrapper); the
         // insufficient-balance path silent-fails through `actualPaid == 0`.
+        //
+        // Phase 7.6-E / ADR-044 — uses the split-grant 5-arg surface so the
+        // wrapper grants the investor's `ephemeralEOA` ONLY on the sender
+        // (investor) leg, NOT on the recipient (treasury) leg. Without this
+        // (4-arg legacy surface granted on both legs per Phase 7.5-A), the
+        // investor's session would gain decrypt access to the treasury's
+        // resulting mhUSDC balance — see `MHUSD_AUDIT_PREP.md > A-9`.
         euint64 actualPaid;
         {
             actualPaid = IMuHavenStable(pusdc).transferFrom(
                 msg.sender,
                 treasuryAddr,
                 encCost,
-                ephemeralEOA
+                ephemeralEOA,   // fromEph — investor's session
+                address(0)      // toEph   — suppress treasury-leg grant
             );
             FHE.allowThis(actualPaid);
         }
@@ -554,11 +562,18 @@ contract MuHavenSubscription is Initializable, ReentrancyGuardTransient, IMuHave
         // mhUSDC pull treasury → investor via the wrapper's modern surface.
         // `actualPaid` is silent-fail-bounded by treasury balance: either
         // `encProceeds` (full pull) or 0 (treasury short).
+        //
+        // Phase 7.6-E / ADR-044 — split-grant 5-arg surface: investor's
+        // `ephemeralEOA` grants only on the recipient (investor) leg; the
+        // sender (treasury) leg's resulting balance handle stays kernel-only.
+        // Closes audit-prep §A-9 — the investor's session would otherwise
+        // gain decrypt access to the treasury's mhUSDC float for one tx.
         euint64 actualPaid = IMuHavenStable(pusdc).transferFrom(
             treasuryAddr,
             msg.sender,
             encProceeds,
-            ephemeralEOA
+            address(0),     // fromEph — suppress treasury-leg grant
+            ephemeralEOA    // toEph   — investor's session
         );
         FHE.allowThis(actualPaid);
 

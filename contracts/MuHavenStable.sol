@@ -272,7 +272,7 @@ contract MuHavenStable is
         euint64 amount = FHE.asEuint64(encAmount);
         FHE.allowThis(amount);
 
-        return _doTransfer(msg.sender, to, amount, ephemeralEOA);
+        return _doTransfer(msg.sender, to, amount, ephemeralEOA, ephemeralEOA);
     }
 
     /// @inheritdoc IMuHavenStable
@@ -286,7 +286,7 @@ contract MuHavenStable is
 
         FHE.allowThis(encAmount);
 
-        return _doTransfer(msg.sender, to, encAmount, ephemeralEOA);
+        return _doTransfer(msg.sender, to, encAmount, ephemeralEOA, ephemeralEOA);
     }
 
     /// @inheritdoc IMuHavenStable
@@ -303,7 +303,7 @@ contract MuHavenStable is
         euint64 amount = FHE.asEuint64(encAmount);
         FHE.allowThis(amount);
 
-        return _doTransfer(from, to, amount, ephemeralEOA);
+        return _doTransfer(from, to, amount, ephemeralEOA, ephemeralEOA);
     }
 
     /// @inheritdoc IMuHavenStable
@@ -319,7 +319,30 @@ contract MuHavenStable is
 
         FHE.allowThis(encAmount);
 
-        return _doTransfer(from, to, encAmount, ephemeralEOA);
+        return _doTransfer(from, to, encAmount, ephemeralEOA, ephemeralEOA);
+    }
+
+    /// @inheritdoc IMuHavenStable
+    /// @dev Phase 7.6-E / ADR-044 split-grant variant. Either `fromEph` or
+    ///      `toEph` may be `address(0)` to suppress that leg's grant; the
+    ///      other side must be non-zero (rejecting `(0, 0)` blocks an
+    ///      accidental call that would lose the session's decrypt access on
+    ///      both legs). The 4-arg overload delegates here with `eph, eph`,
+    ///      preserving the original Phase 7.5-A both-leg P2P behavior.
+    function transferFrom(
+        address from,
+        address to,
+        euint64 encAmount,
+        address fromEph,
+        address toEph
+    ) external whenNotPaused returns (euint64 actualTransferred) {
+        if (fromEph == address(0) && toEph == address(0)) revert InvalidEphemeralEOA();
+        if (to == address(0)) revert ZeroAddress();
+        _requireOperator(from, msg.sender);
+
+        FHE.allowThis(encAmount);
+
+        return _doTransfer(from, to, encAmount, fromEph, toEph);
     }
 
     // ── Legacy IFHERC20 shim selectors (for ADR-008 callers) ────────────
@@ -334,7 +357,7 @@ contract MuHavenStable is
         if (to == address(0)) revert ZeroAddress();
         euint64 amount = FHE.asEuint64(inValue);
         FHE.allowThis(amount);
-        return _doTransfer(msg.sender, to, amount, address(0));
+        return _doTransfer(msg.sender, to, amount, address(0), address(0));
     }
 
     /// @notice Legacy `confidentialTransfer(address,euint64)` shim.
@@ -344,7 +367,7 @@ contract MuHavenStable is
     ) external whenNotPaused returns (euint64) {
         if (to == address(0)) revert ZeroAddress();
         FHE.allowThis(value);
-        return _doTransfer(msg.sender, to, value, address(0));
+        return _doTransfer(msg.sender, to, value, address(0), address(0));
     }
 
     /// @notice Legacy `confidentialTransfer(address,uint256)` shim — the
@@ -358,7 +381,7 @@ contract MuHavenStable is
         if (to == address(0)) revert ZeroAddress();
         euint64 amount = euint64.wrap(bytes32(value));
         FHE.allowThis(amount);
-        euint64 result = _doTransfer(msg.sender, to, amount, address(0));
+        euint64 result = _doTransfer(msg.sender, to, amount, address(0), address(0));
         return uint256(euint64.unwrap(result));
     }
 
@@ -372,7 +395,7 @@ contract MuHavenStable is
         _requireOperator(from, msg.sender);
         euint64 amount = FHE.asEuint64(inValues);
         FHE.allowThis(amount);
-        return _doTransfer(from, to, amount, address(0));
+        return _doTransfer(from, to, amount, address(0), address(0));
     }
 
     /// @notice Legacy `confidentialTransferFrom(address,address,euint64)` shim.
@@ -384,7 +407,7 @@ contract MuHavenStable is
         if (to == address(0)) revert ZeroAddress();
         _requireOperator(from, msg.sender);
         FHE.allowThis(value);
-        return _doTransfer(from, to, value, address(0));
+        return _doTransfer(from, to, value, address(0), address(0));
     }
 
     /// @notice Legacy `confidentialTransferFrom(address,address,uint256)` —
@@ -398,7 +421,7 @@ contract MuHavenStable is
         _requireOperator(from, msg.sender);
         euint64 amount = euint64.wrap(bytes32(value));
         FHE.allowThis(amount);
-        euint64 result = _doTransfer(from, to, amount, address(0));
+        euint64 result = _doTransfer(from, to, amount, address(0), address(0));
         return uint256(euint64.unwrap(result));
     }
 
@@ -552,28 +575,40 @@ contract MuHavenStable is
     }
 
     /// @dev Internal transfer with silent-fail bound on sender balance
-    ///      per Rule 5. `ephemeralEOA == address(0)` is the legacy-shim
-    ///      path: only kernel grants on both legs.
+    ///      per Rule 5. Per-leg ephemeralEOA grants per Phase 7.6-E /
+    ///      ADR-044:
+    ///        - `fromEph != address(0)` → grant on sender's new balance
+    ///        - `toEph   != address(0)` → grant on recipient's new balance
+    ///      Both `address(0)` is the legacy-shim path: only kernel grants
+    ///      on both legs (matches pre-Phase-7.6-E legacy PUSDC UX).
+    ///
+    ///      The 4-arg public surface delegates here with `eph, eph`,
+    ///      preserving the original Phase 7.5-A both-leg P2P behavior. The
+    ///      5-arg public surface (`transferFrom(from, to, amount, fromEph,
+    ///      toEph)`) lets contract callers (`MuHavenSubscription`,
+    ///      `RedemptionQueue`) suppress the counterparty's grant — the
+    ///      audit-prep §A-9 fix.
     function _doTransfer(
         address from,
         address to,
         euint64 amount,
-        address ephemeralEOA
+        address fromEph,
+        address toEph
     ) internal returns (euint64 transferAmount) {
         if (!Common.isInitialized(_balances[from])) revert NoBalance();
 
         // Silent-fail bound to sender balance (Rule 5).
         transferAmount = _silentFailBound(_balances[from], amount);
 
-        // Update sender. Kernel grant always; ephemeralEOA grant if non-zero.
+        // Update sender. Kernel grant always; fromEph grant if non-zero.
         _balances[from] = FHE.sub(_balances[from], transferAmount);
         FHE.allowThis(_balances[from]);
         FHE.allow(_balances[from], from);
-        if (ephemeralEOA != address(0)) {
-            FHE.allow(_balances[from], ephemeralEOA);
+        if (fromEph != address(0)) {
+            FHE.allow(_balances[from], fromEph);
         }
 
-        // Update recipient. Kernel grant always; ephemeralEOA grant if non-zero.
+        // Update recipient. Kernel grant always; toEph grant if non-zero.
         if (Common.isInitialized(_balances[to])) {
             _balances[to] = FHE.add(_balances[to], transferAmount);
         } else {
@@ -581,13 +616,13 @@ contract MuHavenStable is
         }
         FHE.allowThis(_balances[to]);
         FHE.allow(_balances[to], to);
-        if (ephemeralEOA != address(0)) {
-            FHE.allow(_balances[to], ephemeralEOA);
+        if (toEph != address(0)) {
+            FHE.allow(_balances[to], toEph);
         }
 
         // Grant the caller ACL on the silent-fail-bounded `transferAmount`
         // so downstream FHE ops (e.g. `FHE.eq(actualPaid, encCost)` for the
-        // Phase 7.6 / ADR-NEW-1 share/cash silent-fail mirror in
+        // Phase 7.6 / ADR-043 share/cash silent-fail mirror in
         // `MuHavenSubscription` + `RedemptionQueue`) can read the handle.
         // Without this grant, contract callers of `transfer` / `transferFrom`
         // could not consume the silent-fail-bounded return at all.
