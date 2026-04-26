@@ -595,7 +595,12 @@ describe("MuHaven SDK Wave 3.5 clients (integration)", function () {
   // ────────────────────────────────────────────────────────────────────────
 
   describe("RedemptionQueueClient", function () {
-    it("submit → processEpoch → claim: end-to-end payout", async function () {
+    it("submit → processEpoch: end-to-end single-tx payout (Phase 7.6 / ADR-043)", async function () {
+      // Phase 7.6 / ADR-043: settlement collapses into processEpoch — the
+      // legacy claim() round-trip is vestigial. The SDK's `claim` method
+      // still ships for ABI / cutover compatibility but the cash payout
+      // happens in processEpoch and any subsequent claim() reverts
+      // AlreadyClaimed.
       const {
         deployer, issuer, alice, subscription, token, pusdc, queue, treasury,
       } = await loadFixture(deployV2IntegrationFixture);
@@ -627,7 +632,11 @@ describe("MuHaven SDK Wave 3.5 clients (integration)", function () {
         70n,
       );
 
-      // Issuer processes the epoch through the SDK.
+      // Snapshot pre-process Alice PUSDC balance.
+      const aliceBefore = await pusdc.confidentialBalanceOf(alice.address);
+
+      // Issuer processes the epoch through the SDK — pays cash leg in
+      // the same tx (Phase 7.6).
       const issuerCtx = await makeContext(HARDHAT_PK_1, 1);
       const issuerQueueClient = new RedemptionQueueClient(
         issuerCtx,
@@ -643,20 +652,19 @@ describe("MuHaven SDK Wave 3.5 clients (integration)", function () {
         BigInt(epochRequests.length),
       );
 
+      // Post-processEpoch: settled AND claimed flipped atomically.
       const afterProcess = await queueClient.getRequest(requestId);
       expect(afterProcess.settled).to.equal(true);
-      expect(afterProcess.claimed).to.equal(false);
+      expect(afterProcess.claimed).to.equal(true);
 
-      // Alice claims — PUSDC moves from treasury to alice.
-      const aliceBefore = await pusdc.confidentialBalanceOf(alice.address);
-      await queueClient.claim(requestId);
+      // Alice received the PUSDC inside processEpoch (no claim() needed).
       const aliceAfter = await pusdc.confidentialBalanceOf(alice.address);
       const beforeVal = await hre.cofhe.mocks.getPlaintext(aliceBefore);
       const afterVal = await hre.cofhe.mocks.getPlaintext(aliceAfter);
       expect(afterVal - beforeVal).to.equal(30n * DEFAULT_NAV);
 
-      const claimed = await queueClient.getRequest(requestId);
-      expect(claimed.claimed).to.equal(true);
+      // Vestigial claim() call reverts AlreadyClaimed.
+      await expect(queueClient.claim(requestId)).to.be.rejected;
     });
 
     it("submit rejects shares > hint pre-flight", async function () {

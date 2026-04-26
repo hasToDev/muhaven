@@ -181,7 +181,12 @@ async function deployQueueIntegrationFixture() {
 describe("Wave 3.5 Phase 4 integration — RedemptionQueue end-to-end", () => {
   // ── Case 1: submit → processEpoch → claim ───────────────────────────────
 
-  it("Case 1 — full queued redemption: submit → processEpoch → claim (live NAV)", async () => {
+  it("Case 1 — full queued redemption: submit → processEpoch (live NAV, single-tx settlement)", async () => {
+    // Phase 7.6 / ADR-043: settlement collapsed into processEpoch. The cash
+    // pull lives in the issuer's processEpoch loop alongside the share burn
+    // (cash-paid branch) or share refund (cash-short branch). The legacy
+    // claim() second-tx is now vestigial — see the Phase 7.6 follow-up
+    // assertion at the bottom of this case.
     const {
       queue,
       issuer,
@@ -214,28 +219,30 @@ describe("Wave 3.5 Phase 4 integration — RedemptionQueue end-to-end", () => {
       qty
     );
 
-    // Process epoch
+    // Pre-processEpoch treasury balance.
+    const treasuryBefore = await pusdc.confidentialBalanceOf(await treasury.getAddress());
+    await hre.cofhe.mocks.expectPlaintext(treasuryBefore, 600n * ONE_PUSDC);
+
+    // Process epoch — fires QueueClaimed alongside EpochProcessed because
+    // settlement now pays the investor in the same tx (Phase 7.6 / ADR-043).
     const epoch = await queue.currentEpoch();
-    await queue.connect(issuer).processEpoch(epoch, 0, 1);
+    await expect(queue.connect(issuer).processEpoch(epoch, 0, 1))
+      .to.emit(queue, "QueueClaimed")
+      .withArgs(investor.address, 1n)
+      .and.to.emit(queue, "EpochProcessed")
+      .withArgs(epoch, 1n);
 
     const r = await queue.getRequest(1n);
     expect(r.settled).to.equal(true);
+    expect(r.claimed).to.equal(true);
     await hre.cofhe.mocks.expectPlaintext(r.encProceeds, qty * ONE_PUSDC);
 
-    // Burn from queue balance was done inside processEpoch (keeps total
-    // supply consistent). Queue's token balance returns to zero.
+    // Burn from queue balance done inside processEpoch — total supply
+    // consistent. Queue's token balance returns to zero.
     await hre.cofhe.mocks.expectPlaintext(
       await token.encryptedBalanceOf(await queue.getAddress()),
       0n
     );
-
-    // Claim
-    const treasuryBefore = await pusdc.confidentialBalanceOf(await treasury.getAddress());
-    await hre.cofhe.mocks.expectPlaintext(treasuryBefore, 600n * ONE_PUSDC);
-
-    await expect(queue.connect(investor).claim(1n))
-      .to.emit(queue, "QueueClaimed")
-      .withArgs(investor.address, 1n);
 
     // Investor PUSDC: 900 (after purchase) + qty = 925.
     await hre.cofhe.mocks.expectPlaintext(
@@ -249,12 +256,18 @@ describe("Wave 3.5 Phase 4 integration — RedemptionQueue end-to-end", () => {
       600n * ONE_PUSDC - qty * ONE_PUSDC
     );
 
-    expect((await queue.getRequest(1n)).claimed).to.equal(true);
+    // Vestigial claim() reverts AlreadyClaimed (settlement already
+    // flipped the flag inside processEpoch).
+    await expect(queue.connect(investor).claim(1n))
+      .to.be.revertedWithCustomError(queue, "AlreadyClaimed");
   });
 
   // ── Case 2: auto-escalate on cap overflow ───────────────────────────────
 
-  it("Case 2 — Subscription.redeem escalates over-cap → processEpoch → claim", async () => {
+  it("Case 2 — Subscription.redeem escalates over-cap → processEpoch (single-tx settlement)", async () => {
+    // Phase 7.6 / ADR-043: processEpoch pays the cash leg directly; no
+    // follow-up claim() call. Test asserts the escalated path lands the
+    // mhUSDC payout inside processEpoch.
     const {
       subscription,
       queue,
@@ -290,16 +303,19 @@ describe("Wave 3.5 Phase 4 integration — RedemptionQueue end-to-end", () => {
     const r = await queue.getRequest(1n);
     expect(r.investor).to.equal(investor.address);
 
-    // Process + claim.
+    // processEpoch settles the cash leg in a single tx (Phase 7.6).
     const epoch = await queue.currentEpoch();
     await queue.connect(issuer).processEpoch(epoch, 0, 1);
-    await queue.connect(investor).claim(1n);
 
-    // Investor PUSDC up by qty (claim payout).
+    // Investor PUSDC up by qty (paid inside processEpoch).
     await hre.cofhe.mocks.expectPlaintext(
       await pusdc.confidentialBalanceOf(investor.address),
       900n * ONE_PUSDC + qty * ONE_PUSDC
     );
+
+    // Vestigial claim() reverts AlreadyClaimed.
+    await expect(queue.connect(investor).claim(1n))
+      .to.be.revertedWithCustomError(queue, "AlreadyClaimed");
 
     // Instant cap counter unchanged — escalation doesn't consume the
     // instant-redeem cap.
@@ -368,11 +384,11 @@ describe("Wave 3.5 Phase 4 integration — RedemptionQueue end-to-end", () => {
 
   // ── Case 4: Queue + Treasury solvency interplay (paginated) ─────────────
 
-  it("Case 4 — paginated settlement: many submits, partial processEpoch, claims interleave", async () => {
+  it("Case 4 — paginated settlement: many submits, partial processEpoch, single-tx pay", async () => {
     // Four distinct submits from the same investor; issuer processes in
-    // two slices [0,2) and [2,4). Investor claims in any order as long as
-    // the request is settled. Locks in the paginated-settlement gas
-    // profile + out-of-order claim semantics.
+    // two slices [0,2) and [2,4). Phase 7.6 / ADR-043: cash payouts land
+    // alongside the share burns inside each processEpoch slice — no
+    // separate claim() round-trip per request.
     const {
       queue,
       issuer,
@@ -389,27 +405,32 @@ describe("Wave 3.5 Phase 4 integration — RedemptionQueue end-to-end", () => {
     }
 
     const epoch = await queue.currentEpoch();
+    const slice1Total = qtys[0] + qtys[1]; // 3 + 7 = 10
 
-    // First slice: settle requests 1, 2.
+    // First slice: settle requests 1, 2 — investor receives `slice1Total` PUSDC.
     await queue.connect(issuer).processEpoch(epoch, 0, 2);
     expect((await queue.getRequest(1n)).settled).to.equal(true);
     expect((await queue.getRequest(2n)).settled).to.equal(true);
-    // Requests 3, 4 still unsettled → claim before settlement reverts.
+    expect((await queue.getRequest(1n)).claimed).to.equal(true);
+    expect((await queue.getRequest(2n)).claimed).to.equal(true);
+
+    // Vestigial claim() on a settled request reverts AlreadyClaimed.
+    await expect(queue.connect(investor).claim(2n))
+      .to.be.revertedWithCustomError(queue, "AlreadyClaimed");
+    // Vestigial claim() on an unsettled request still surfaces NotSettled.
     await expect(queue.connect(investor).claim(3n))
       .to.be.revertedWithCustomError(queue, "NotSettled");
 
-    // Investor claims request 2 out of insertion order — works.
-    await queue.connect(investor).claim(2n);
+    // Investor PUSDC after slice 1: 900 (post-purchase) + 10 = 910.
+    await hre.cofhe.mocks.expectPlaintext(
+      await pusdc.confidentialBalanceOf(investor.address),
+      900n * ONE_PUSDC + slice1Total * ONE_PUSDC
+    );
 
-    // Second slice: settle requests 3, 4.
+    // Second slice: settle requests 3, 4 — investor receives `slice2Total` PUSDC.
     await queue.connect(issuer).processEpoch(epoch, 2, 4);
 
-    // Claim the remaining three.
-    await queue.connect(investor).claim(1n);
-    await queue.connect(investor).claim(3n);
-    await queue.connect(investor).claim(4n);
-
-    // Investor PUSDC final = 900 (post-purchase) + sum(qtys) = 900 + 34 = 934.
+    // Final investor PUSDC = 900 + sum(qtys) = 900 + 34 = 934.
     const total = qtys.reduce((a, b) => a + b, 0n);
     await hre.cofhe.mocks.expectPlaintext(
       await pusdc.confidentialBalanceOf(investor.address),

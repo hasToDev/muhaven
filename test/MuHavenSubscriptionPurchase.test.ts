@@ -635,7 +635,12 @@ describe("MuHavenSubscription.purchase", () => {
         .withArgs(await token.getAddress(), investor.address, boundaryHint);
     });
 
-    it("reverts PaymentTransferFailed when investor hasn't set subscription as PUSDC operator", async () => {
+    it("propagates the wrapper's NotOperator revert when investor hasn't set subscription as mhUSDC operator", async () => {
+      // Phase 7.6 / ADR-043: the legacy ADR-008 low-level call is gone, so
+      // wrapper reverts (NotOperator / paused / etc.) propagate verbatim
+      // instead of being wrapped as `PaymentTransferFailed`. The error
+      // definition stays in MuHavenSubscription for ABI compatibility but
+      // no code path raises it anymore (see ADR-043 "Consequences").
       const { subscription, investor, investorClient, token, pusdc, eph } =
         await loadFixture(deploySubscriptionFixture);
 
@@ -649,7 +654,7 @@ describe("MuHavenSubscription.purchase", () => {
         subscription
           .connect(investor)
           .purchase(await token.getAddress(), enc, HINT_CAP, eph.address)
-      ).to.be.revertedWithCustomError(subscription, "PaymentTransferFailed");
+      ).to.be.revertedWithCustomError(pusdc, "NotOperator");
     });
   });
 

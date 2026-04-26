@@ -283,14 +283,14 @@ describe("Phase 7.5-B — Subscription integration against MuHavenStable", () =>
     ).to.be.revertedWithCustomError(subscription, "StaleNAV");
   });
 
-  it("Case 4 — silent-fail wrapper pull does not revert the purchase", async () => {
-    // Swap from the Phase-2 treasury-drain case (which needs withdraw +
-    // queue wired) to a more focused check: the wrapper's silent-fail
-    // semantics on the pull leg mean a short-balance purchase still
-    // executes without reverting. Investor's mhUSDC balance is preserved
-    // (silent-fail returned zero); the share-mint side of Subscription
-    // records `encSharesBounded` shares. The point: observers cannot
-    // distinguish a successful pull from a silent-failed one via gas.
+  it("Case 4 — silent-fail wrapper pull mirrors to zero-share mint (Phase 7.6 / ADR-043)", async () => {
+    // The wrapper's silent-fail semantics on the pull leg mean a
+    // short-balance purchase still executes without reverting. Phase 7.6 /
+    // ADR-043 closes the A-6 audit finding: the share-mint side now
+    // mirrors the cash-leg silent-fail via FHE.eq + FHE.select, so a
+    // wrapper pull that moved 0 mhUSDC mints 0 shares (was: minted
+    // `encSharesBounded` regardless, which let an investor mint shares
+    // without paying — the original A-6 free-money branch).
     const {
       subscription,
       issuer,
@@ -298,6 +298,7 @@ describe("Phase 7.5-B — Subscription integration against MuHavenStable", () =>
       investorClient,
       token,
       mhUSDC,
+      treasury,
       oracle,
       eph,
     } = await loadFixture(deployWrapperFixture);
@@ -313,6 +314,93 @@ describe("Phase 7.5-B — Subscription integration against MuHavenStable", () =>
     // mhUSDC pull silent-failed: investor's balance is intact.
     const investorMh = await mhUSDC.confidentialBalanceOf(investor.address);
     await hre.cofhe.mocks.expectPlaintext(investorMh, 200n * ONE_PUSDC);
+
+    // Treasury didn't receive anything (cash leg silent-failed).
+    const treasuryMh = await mhUSDC.confidentialBalanceOf(
+      await treasury.getAddress()
+    );
+    await hre.cofhe.mocks.expectPlaintext(treasuryMh, 0n);
+
+    // Share leg mirrors the cash leg → zero shares minted. This is the
+    // Phase 7.6 fix — pre-fix this would have been 500 (free shares).
+    const shares = await token.encryptedBalanceOf(investor.address);
+    await hre.cofhe.mocks.expectPlaintext(shares, 0n);
+  });
+
+  // ── Phase 7.6 share/cash silent-fail mirror — purchase asymmetry ────────
+
+  it("Case 6 — full-pay path mints exactly encSharesBounded (identity check)", async () => {
+    // Mirror of Case 4 / Case 1 happy-path under the wrapper, framed as
+    // an identity check on the new mirror. When `actualPaid == encCost`
+    // (treasury fully receives), `actualShares = encSharesBounded`. The
+    // mirror reduces to a no-op on the happy path.
+    const {
+      subscription,
+      issuer,
+      investor,
+      investorClient,
+      token,
+      mhUSDC,
+      treasury,
+      oracle,
+      eph,
+    } = await loadFixture(deployWrapperFixture);
+
+    await oracle.connect(issuer).setNAV(await token.getAddress(), DEFAULT_NAV);
+
+    // Buy 50 shares @ 1.0 NAV = 50 mhUSDC. Investor has 200 mhUSDC.
+    const shares = 50n;
+    const enc = await encUint128(investorClient, shares);
+    await subscription
+      .connect(investor)
+      .purchase(await token.getAddress(), enc, shares, eph.address);
+
+    // Identity: shares minted == encSharesBounded == requested 50.
+    await hre.cofhe.mocks.expectPlaintext(
+      await token.encryptedBalanceOf(investor.address),
+      shares
+    );
+    // Cash moved exactly the cost.
+    await hre.cofhe.mocks.expectPlaintext(
+      await mhUSDC.confidentialBalanceOf(await treasury.getAddress()),
+      shares * ONE_PUSDC
+    );
+    await hre.cofhe.mocks.expectPlaintext(
+      await mhUSDC.confidentialBalanceOf(investor.address),
+      200n * ONE_PUSDC - shares * ONE_PUSDC
+    );
+  });
+
+  it("Case 7 — ephemeralEOA decrypt grant survives silent-failed mint (Rule 2 + ADR-021)", async () => {
+    // Locks in that the silent-failed branch still grants ephemeralEOA
+    // ACL on the post-mint balance handle (mint with encrypted-zero still
+    // creates a fresh handle). Without this, the investor's frontend
+    // can't decrypt their (zero) share balance after the silent-fail —
+    // forces a full ephemeralEOA refresh round-trip for what should be
+    // a single read. Cheap regression check on the existing
+    // mintFromSubscription ACL fan-out.
+    const {
+      subscription,
+      issuer,
+      investor,
+      investorClient,
+      token,
+      oracle,
+      eph,
+    } = await loadFixture(deployWrapperFixture);
+
+    await oracle.connect(issuer).setNAV(await token.getAddress(), DEFAULT_NAV);
+
+    // 500-share over-buy → cash silent-fails → share mints zero.
+    const enc = await encUint128(investorClient, 500n);
+    await subscription
+      .connect(investor)
+      .purchase(await token.getAddress(), enc, 500n, eph.address);
+
+    // ephemeralEOA must be allowed on the resulting balance handle.
+    const balHandle = await token.encryptedBalanceOf(investor.address);
+    const acl = await hre.cofhe.mocks.getMockACL();
+    expect(await acl.isAllowed(BigInt(balHandle), eph.address)).to.equal(true);
   });
 
   it("Case 5 — deviation gate rejects → owner accepts → new NAV in force (wrapper-agnostic)", async () => {
@@ -358,6 +446,413 @@ describe("Phase 7.5-B — Subscription integration against MuHavenStable", () =>
 
     const bal2 = await token.encryptedBalanceOf(investor.address);
     await hre.cofhe.mocks.expectPlaintext(bal2, 5n);
+  });
+});
+
+// ── Phase 7.6 — Subscription.redeem refund-on-shortfall mirror ───────────
+
+describe("Phase 7.6 — Subscription.redeem refund-on-shortfall", () => {
+  /**
+   * Phase 7.6 / ADR-043 reverse leg: when the wrapper's treasury → investor
+   * pull silent-fails (treasury short of `actualBurned * nav`), the share
+   * leg must refund the full `actualBurned` back to the investor via
+   * `mintFromSubscription`. Net position: zero shares lost + zero mhUSDC
+   * gained.
+   *
+   * The pre-Phase-7.6 path burned the shares first and then silently
+   * underpaid through the legacy ADR-008 selector — the investor lost
+   * shares without compensation. This case locks in the refund mirror.
+   */
+
+  it("Case 1 — refunds shares when treasury can't cover the redeem", async () => {
+    const {
+      subscription,
+      treasury,
+      issuer,
+      investor,
+      investorClient,
+      issuerClient,
+      token,
+      mhUSDC,
+      oracle,
+      eph,
+    } = await loadFixture(deployWrapperFixture);
+
+    await oracle.connect(issuer).setNAV(await token.getAddress(), DEFAULT_NAV);
+
+    // Buy 100 shares costing 100 mhUSDC. After: investor has 100 mhUSDC + 100 shares;
+    // treasury has 100 mhUSDC.
+    const buyShares = 100n;
+    const encBuy = await encUint128(investorClient, buyShares);
+    await subscription
+      .connect(investor)
+      .purchase(await token.getAddress(), encBuy, HINT_CAP, eph.address);
+
+    await hre.cofhe.mocks.expectPlaintext(
+      await token.encryptedBalanceOf(investor.address),
+      buyShares
+    );
+    await hre.cofhe.mocks.expectPlaintext(
+      await mhUSDC.confidentialBalanceOf(await treasury.getAddress()),
+      buyShares * ONE_PUSDC
+    );
+
+    // Issuer drains 60 mhUSDC out of treasury via the legacy-shim withdraw
+    // (silent-fail bounded by minFloat=0 → maxWithdraw = 100). Treasury
+    // ends at 40 mhUSDC; less than the upcoming 100-mhUSDC redeem cost.
+    const drainAmount = 60n * ONE_PUSDC;
+    const encDrain = await encUint128(issuerClient, drainAmount);
+    await treasury.connect(issuer).withdraw(encDrain);
+
+    await hre.cofhe.mocks.expectPlaintext(
+      await mhUSDC.confidentialBalanceOf(await treasury.getAddress()),
+      40n * ONE_PUSDC
+    );
+
+    // Snapshot pre-redeem investor mhUSDC for the net-zero invariant.
+    const preInvestorMh = await mhUSDC.confidentialBalanceOf(investor.address);
+    await hre.cofhe.mocks.expectPlaintext(preInvestorMh, 100n * ONE_PUSDC);
+
+    // Redeem the full 100 shares (cost would be 100 mhUSDC; treasury has 40).
+    // Wrapper silent-fails the pull → actualPaid = 0 → fullPay = false →
+    // refundShares = actualBurned = 100. Net position: investor still holds
+    // 100 shares + 100 mhUSDC, treasury still holds 40 mhUSDC.
+    const encRedeem = await encUint128(investorClient, 100n);
+    await subscription
+      .connect(investor)
+      .redeem(await token.getAddress(), encRedeem, 100n, eph.address);
+
+    // Investor's share balance is restored via the refund mint.
+    await hre.cofhe.mocks.expectPlaintext(
+      await token.encryptedBalanceOf(investor.address),
+      buyShares
+    );
+
+    // Investor's mhUSDC balance is unchanged.
+    await hre.cofhe.mocks.expectPlaintext(
+      await mhUSDC.confidentialBalanceOf(investor.address),
+      100n * ONE_PUSDC
+    );
+
+    // Treasury still holds the post-drain 40 mhUSDC.
+    await hre.cofhe.mocks.expectPlaintext(
+      await mhUSDC.confidentialBalanceOf(await treasury.getAddress()),
+      40n * ONE_PUSDC
+    );
+  });
+
+  it("Case 2 — refund mint preserves investor's holder-set membership (registry idempotent)", async () => {
+    // The Phase 7.6 refund routes through `mintFromSubscription`, which
+    // lands in `_mintInternal` → `addHolder`. addHolder is idempotent
+    // (per ADR-022 `add-only` semantics + InvestorRegistry's duplicate
+    // short-circuit), so a refund mint MUST NOT inflate the holder
+    // count or fire a second registry registration.
+    const {
+      subscription,
+      treasury,
+      issuer,
+      investor,
+      investorClient,
+      issuerClient,
+      token,
+      registry,
+      oracle,
+      eph,
+    } = await loadFixture(deployWrapperFixture);
+
+    await oracle.connect(issuer).setNAV(await token.getAddress(), DEFAULT_NAV);
+
+    const encBuy = await encUint128(investorClient, 100n);
+    await subscription
+      .connect(investor)
+      .purchase(await token.getAddress(), encBuy, HINT_CAP, eph.address);
+
+    expect(await registry.holderCount(await token.getAddress())).to.equal(1n);
+
+    // Drain treasury so the redeem leg refunds.
+    const drainAmount = 60n * ONE_PUSDC;
+    const encDrain = await encUint128(issuerClient, drainAmount);
+    await treasury.connect(issuer).withdraw(encDrain);
+
+    const encRedeem = await encUint128(investorClient, 100n);
+    await subscription
+      .connect(investor)
+      .redeem(await token.getAddress(), encRedeem, 100n, eph.address);
+
+    // Holder count still 1 — refund mint short-circuited inside addHolder.
+    expect(await registry.holderCount(await token.getAddress())).to.equal(1n);
+    expect(
+      await registry.isHolder(await token.getAddress(), investor.address)
+    ).to.equal(true);
+  });
+
+  it("Case 3 — full-pay redeem identity check (cash leg succeeds → refundShares = 0)", async () => {
+    const {
+      subscription,
+      treasury,
+      issuer,
+      investor,
+      investorClient,
+      token,
+      mhUSDC,
+      oracle,
+      eph,
+    } = await loadFixture(deployWrapperFixture);
+
+    await oracle.connect(issuer).setNAV(await token.getAddress(), DEFAULT_NAV);
+
+    // Buy 50 shares. Treasury holds 50 mhUSDC after.
+    const encBuy = await encUint128(investorClient, 50n);
+    await subscription
+      .connect(investor)
+      .purchase(await token.getAddress(), encBuy, HINT_CAP, eph.address);
+
+    // Redeem 50 — treasury can fully cover. Refund branch never fires.
+    const encRedeem = await encUint128(investorClient, 50n);
+    await subscription
+      .connect(investor)
+      .redeem(await token.getAddress(), encRedeem, 50n, eph.address);
+
+    // Net: investor has 0 shares, full mhUSDC restored. Treasury empty.
+    await hre.cofhe.mocks.expectPlaintext(
+      await token.encryptedBalanceOf(investor.address),
+      0n
+    );
+    await hre.cofhe.mocks.expectPlaintext(
+      await mhUSDC.confidentialBalanceOf(investor.address),
+      200n * ONE_PUSDC
+    );
+    await hre.cofhe.mocks.expectPlaintext(
+      await mhUSDC.confidentialBalanceOf(await treasury.getAddress()),
+      0n
+    );
+  });
+});
+
+// ── Phase 7.6 — RedemptionQueue.processEpoch refund-on-shortfall ─────────
+
+describe("Phase 7.6 — RedemptionQueue refund-on-shortfall", () => {
+  /**
+   * Mirror of the Subscription.redeem refund cases above against the
+   * RedemptionQueue settlement path. Phase 7.6 / ADR-043 collapses the
+   * cash pull into processEpoch — when the wrapper silent-fails the
+   * treasury → investor pull, the queue refunds `r.encShares` back to
+   * the investor (instead of burning them) so the investor's net
+   * position over submit + settlement is zero.
+   *
+   * MockPUSDC has no silent-fail, so the cash-short branch can only be
+   * exercised against a real `MuHavenStable` fixture. Builds a full
+   * Subscription + Treasury + Queue topology around the wrapper.
+   */
+
+  async function deployQueueWrapperFixture() {
+    await hre.run("task:cofhe-mocks:deploy");
+
+    const [deployer, issuer, investor, alice] = await hre.ethers.getSigners();
+
+    const kyc = await deployKYCAdapter();
+    await kyc.addToWhitelist(investor.address);
+    await kyc.addToWhitelist(alice.address);
+
+    const registry = await deployRegistry();
+
+    const token = await deployToken(
+      await kyc.getAddress(),
+      await registry.getAddress(),
+      issuer.address
+    );
+    await registry.setAuthorizedCaller(await token.getAddress(), true);
+
+    const pusdc = await deployMockPUSDC();
+
+    // Wrapper.
+    const Stable = await hre.ethers.getContractFactory("MuHavenStable");
+    const mhUSDC = await upgrades.deployProxy(
+      Stable,
+      [
+        "MuHaven Confidential USD",
+        "mhUSDC",
+        deployer.address,
+        await pusdc.getAddress(),
+      ],
+      { kind: "transparent", initializer: "initialize" }
+    );
+
+    const OracleFactory = await hre.ethers.getContractFactory("MockPriceOracle");
+    const oracle = await OracleFactory.deploy();
+
+    const TR = await hre.ethers.getContractFactory("TokenRegistry");
+    const tokenRegistry = await upgrades.deployProxy(
+      TR,
+      [deployer.address],
+      { kind: "transparent", initializer: "initialize" }
+    );
+
+    const SubFactory = await hre.ethers.getContractFactory("MuHavenSubscription");
+    const subscription = await upgrades.deployProxy(
+      SubFactory,
+      [
+        deployer.address,
+        await tokenRegistry.getAddress(),
+        await kyc.getAddress(),
+        await mhUSDC.getAddress(),
+      ],
+      { kind: "transparent", initializer: "initialize" }
+    );
+
+    const QueueFactory = await hre.ethers.getContractFactory("RedemptionQueue");
+    const queue = await upgrades.deployProxy(
+      QueueFactory,
+      [
+        deployer.address,
+        await token.getAddress(),
+        await tokenRegistry.getAddress(),
+        await subscription.getAddress(),
+        await mhUSDC.getAddress(),
+      ],
+      { kind: "transparent", initializer: "initialize" }
+    );
+
+    const TreasuryFactory = await hre.ethers.getContractFactory("MuHavenTreasury");
+    const treasury = await upgrades.deployProxy(
+      TreasuryFactory,
+      [
+        await token.getAddress(),
+        await subscription.getAddress(),
+        await queue.getAddress(),
+        issuer.address,
+        await mhUSDC.getAddress(),
+        0n,
+        deployer.address,
+      ],
+      { kind: "transparent", initializer: "initialize" }
+    );
+
+    await tokenRegistry.registerToken(await token.getAddress(), {
+      active: true,
+      treasury: await treasury.getAddress(),
+      queue: await queue.getAddress(),
+      oracle: await oracle.getAddress(),
+      issuer: issuer.address,
+      minInvestment: 0n,
+      instantRedeemCap: INSTANT_CAP,
+      epochDuration: EPOCH_DURATION,
+      paused: false,
+    });
+
+    await token.setSubscription(await subscription.getAddress());
+    await token.setQueue(await queue.getAddress());
+
+    const now = (await hre.ethers.provider.getBlock("latest"))!.timestamp;
+    await oracle.setNAV(await token.getAddress(), DEFAULT_NAV, BigInt(now));
+
+    // Investor pre-wraps PUSDC → mhUSDC.
+    await pusdc.mint(investor.address, 200n * ONE_PUSDC);
+    await pusdc
+      .connect(investor)
+      .setOperator(await mhUSDC.getAddress(), FOREVER);
+
+    const investorClient = await hre.cofhe.createClientWithBatteries(investor);
+    const issuerClient = await hre.cofhe.createClientWithBatteries(issuer);
+
+    const eph = createEphemeralEOA();
+
+    const encWrap = await encUint64(investorClient, 200n * ONE_PUSDC);
+    await mhUSDC.connect(investor).wrap(encWrap, eph.address);
+
+    await mhUSDC
+      .connect(investor)
+      .setOperator(await subscription.getAddress(), FOREVER);
+
+    return {
+      deployer,
+      issuer,
+      investor,
+      alice,
+      kyc,
+      registry,
+      token,
+      tokenRegistry,
+      treasury,
+      queue,
+      pusdc,
+      mhUSDC,
+      oracle,
+      subscription,
+      investorClient,
+      issuerClient,
+      eph,
+    };
+  }
+
+  it("Case 1 — refunds queue-locked shares when treasury can't cover", async () => {
+    const {
+      subscription,
+      queue,
+      treasury,
+      issuer,
+      investor,
+      investorClient,
+      issuerClient,
+      token,
+      mhUSDC,
+      eph,
+    } = await loadFixture(deployQueueWrapperFixture);
+
+    // Buy 100 shares (cost 100 mhUSDC). Treasury holds 100 mhUSDC.
+    const encBuy = await encUint128(investorClient, 100n);
+    await subscription
+      .connect(investor)
+      .purchase(await token.getAddress(), encBuy, HINT_CAP, eph.address);
+
+    // Drain treasury to 40 mhUSDC.
+    const encDrain = await encUint128(issuerClient, 60n * ONE_PUSDC);
+    await treasury.connect(issuer).withdraw(encDrain);
+
+    // Investor submits 100 shares to the queue.
+    const encSubmit = await encUint128(investorClient, 100n);
+    await queue.connect(investor).submit(encSubmit, HINT_CAP, eph.address);
+
+    // Queue holds 100 shares; investor's balance is 0.
+    await hre.cofhe.mocks.expectPlaintext(
+      await token.encryptedBalanceOf(await queue.getAddress()),
+      100n
+    );
+    await hre.cofhe.mocks.expectPlaintext(
+      await token.encryptedBalanceOf(investor.address),
+      0n
+    );
+
+    // Process epoch. Cash leg silent-fails (treasury short of 100 mhUSDC).
+    // Queue burns 0, returns r.encShares = 100 back to investor.
+    const epoch = await queue.currentEpoch();
+    await queue.connect(issuer).processEpoch(epoch, 0, 1);
+
+    // Investor balance restored to 100 (refund mint).
+    await hre.cofhe.mocks.expectPlaintext(
+      await token.encryptedBalanceOf(investor.address),
+      100n
+    );
+    // Queue holds 0 shares (returned).
+    await hre.cofhe.mocks.expectPlaintext(
+      await token.encryptedBalanceOf(await queue.getAddress()),
+      0n
+    );
+    // Investor's mhUSDC balance unchanged from pre-redeem (cash-short).
+    await hre.cofhe.mocks.expectPlaintext(
+      await mhUSDC.confidentialBalanceOf(investor.address),
+      100n * ONE_PUSDC
+    );
+    // Treasury still holds the post-drain 40 mhUSDC.
+    await hre.cofhe.mocks.expectPlaintext(
+      await mhUSDC.confidentialBalanceOf(await treasury.getAddress()),
+      40n * ONE_PUSDC
+    );
+
+    // Settlement flipped settled + claimed atomically.
+    const r = await queue.getRequest(1n);
+    expect(r.settled).to.equal(true);
+    expect(r.claimed).to.equal(true);
   });
 });
 

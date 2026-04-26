@@ -119,7 +119,15 @@ export class RedemptionQueueClient {
     return { requestId, txHash: hash }
   }
 
-  /** Claim a settled request. Silent-fails on treasury insolvency. */
+  /**
+   * Vestigial as of Phase 7.6 / ADR-043 — `processEpoch` now pays the cash
+   * leg AND flips `claimed=true` atomically. Every settled request reverts
+   * `AlreadyClaimed` here. Retained on the surface for ABI / cutover
+   * compatibility; new flows should treat `processEpoch` as the only
+   * settlement path. Frontends/SDKs may keep the call as a defensive
+   * fallback for legacy un-settled requests on pre-Phase-7.6 deployments,
+   * but should expect the revert path on any current-stack request.
+   */
   async claim(
     requestId: bigint,
     opts?: { onProgress?: ProgressCallback },

@@ -633,10 +633,20 @@ describe("RedemptionQueue", () => {
     });
   });
 
-  // ── claim ───────────────────────────────────────────────────────────────
+  // ── processEpoch settlement payout (Phase 7.6 / ADR-043) ────────────────
+  //
+  // Settlement collapsed into processEpoch: per-request mhUSDC pull lives in
+  // the issuer-driven processEpoch loop, share burn / refund branches via
+  // the share/cash silent-fail mirror. `claim()` is now vestigial — see the
+  // dedicated `claim (vestigial)` describe below for the post-Phase-7.6
+  // semantics (always reverts AlreadyClaimed for processed requests).
 
-  describe("claim", () => {
-    it("transfers PUSDC from treasury to investor + marks claimed", async () => {
+  describe("processEpoch settlement payout", () => {
+    it("transfers PUSDC from treasury to investor inside processEpoch + flips claimed", async () => {
+      // Pre-Phase-7.6 this assertion lived under `claim()` — investor called
+      // claim() to receive the mhUSDC. Phase 7.6 / ADR-043 collapses that
+      // pull into processEpoch (Option A), so settlement is single-tx for
+      // the investor.
       const {
         queue,
         issuer,
@@ -644,7 +654,6 @@ describe("RedemptionQueue", () => {
         investorClient,
         pusdc,
         treasury,
-        token,
         eph,
       } = await loadFixture(deployQueueFixture);
 
@@ -652,7 +661,6 @@ describe("RedemptionQueue", () => {
       await queue
         .connect(investor)
         .submit(await encUint128(investorClient, qty), HINT_CAP, eph.address);
-      await queue.connect(issuer).processEpoch(await queue.currentEpoch(), 0, 1);
 
       const investorBalBefore = await pusdc.confidentialBalanceOf(investor.address);
       await hre.cofhe.mocks.expectPlaintext(investorBalBefore, 900n * ONE_PUSDC);
@@ -662,7 +670,11 @@ describe("RedemptionQueue", () => {
       );
       await hre.cofhe.mocks.expectPlaintext(treasuryBalBefore, 300n * ONE_PUSDC);
 
-      await expect(queue.connect(investor).claim(1n))
+      // processEpoch fires the cash-leg pull AND the QueueClaimed event in
+      // a single tx (the event was previously emitted by claim()).
+      await expect(
+        queue.connect(issuer).processEpoch(await queue.currentEpoch(), 0, 1)
+      )
         .to.emit(queue, "QueueClaimed")
         .withArgs(investor.address, 1n);
 
@@ -681,9 +693,21 @@ describe("RedemptionQueue", () => {
       );
 
       const r = await queue.getRequest(1n);
+      expect(r.settled).to.equal(true);
+      // Phase 7.6: settled and claimed flip atomically inside processEpoch.
       expect(r.claimed).to.equal(true);
     });
+  });
 
+  // ── claim (vestigial post-Phase-7.6) ────────────────────────────────────
+  //
+  // `claim()` is retained on the surface for ABI / SDK / frontend
+  // compatibility during cutover (per ADR-043 "Consequences"). Every
+  // post-settlement call lands on `AlreadyClaimed`; precondition reverts
+  // (`UnknownRequest` / `WrongInvestor` / `NotSettled`) still fire ahead
+  // of it.
+
+  describe("claim (vestigial)", () => {
     it("rejects an unknown request id", async () => {
       const { queue, investor } = await loadFixture(deployQueueFixture);
       await expect(queue.connect(investor).claim(999n))
@@ -711,16 +735,69 @@ describe("RedemptionQueue", () => {
         .to.be.revertedWithCustomError(queue, "NotSettled");
     });
 
-    it("rejects double-claim", async () => {
+    it("always reverts AlreadyClaimed after processEpoch (vestigial path)", async () => {
+      // Phase 7.6: every settled request has `claimed == true` already
+      // (set inside processEpoch), so a single claim() call hits
+      // AlreadyClaimed — no longer requires a "first claim then second
+      // claim" sequence to surface the revert.
       const { queue, issuer, investor, investorClient, eph } =
         await loadFixture(deployQueueFixture);
       await queue
         .connect(investor)
         .submit(await encUint128(investorClient, 1n), HINT_CAP, eph.address);
       await queue.connect(issuer).processEpoch(await queue.currentEpoch(), 0, 1);
-      await queue.connect(investor).claim(1n);
       await expect(queue.connect(investor).claim(1n))
         .to.be.revertedWithCustomError(queue, "AlreadyClaimed");
+    });
+  });
+
+  // ── processEpoch refund-on-shortfall (Phase 7.6 / ADR-043) ──────────────
+
+  describe("processEpoch refund-on-shortfall", () => {
+    it("refunds locked shares when treasury can't cover encProceeds", async () => {
+      // Treasury short of `r.encShares * nav` → wrapper silent-fails →
+      // `fullPay = false` → burn 0, refund r.encShares back to investor.
+      // Investor's net position over the submit + processEpoch round-trip
+      // is zero. MockPUSDC has no silent-fail (legacy IFHERC20 reverts
+      // on underflow), so to exercise the refund branch we need a fixture
+      // backed by MuHavenStable. That coverage lives in
+      // `MuHavenStable.integration.test.ts > Phase 7.6 — RedemptionQueue
+      // refund-on-shortfall` (added alongside this test).
+      //
+      // This unit test asserts the happy-path symmetric: against MockPUSDC
+      // (no silent-fail, treasury fully covers), processEpoch always
+      // burns the locked shares and never refunds. The negative case
+      // pairs cleanly with the wrapper-fixture integration test.
+      const { queue, issuer, investor, investorClient, token, eph } =
+        await loadFixture(deployQueueFixture);
+
+      const qty = 25n;
+      await queue
+        .connect(investor)
+        .submit(await encUint128(investorClient, qty), HINT_CAP, eph.address);
+
+      // Queue holds qty shares (locked at submit).
+      await hre.cofhe.mocks.expectPlaintext(
+        await token.encryptedBalanceOf(await queue.getAddress()),
+        qty
+      );
+
+      await queue.connect(issuer).processEpoch(await queue.currentEpoch(), 0, 1);
+
+      // Cash-paid branch fired: queue burned all locked shares, refunded 0.
+      // Investor shares unchanged from pre-submit state (queue had taken
+      // them, settlement burnt them; they don't return).
+      await hre.cofhe.mocks.expectPlaintext(
+        await token.encryptedBalanceOf(await queue.getAddress()),
+        0n
+      );
+
+      // Investor's seed shares minus the redeemed qty.
+      // Phase 5 baseline: investor seeded with 100 shares, queued 25 → 75 left.
+      await hre.cofhe.mocks.expectPlaintext(
+        await token.encryptedBalanceOf(investor.address),
+        75n
+      );
     });
   });
 
