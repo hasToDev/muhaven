@@ -7,6 +7,9 @@ import { cn } from '@/lib/utils'
 import MButton from '@/components/ui/MButton.vue'
 import { Shield, Fingerprint, Loader2, AlertCircle, CheckCircle2, BadgeCheck } from 'lucide-vue-next'
 import { demoApi, type UserRole } from '@/services/api'
+import { IdentityRegistryClient } from '@muhaven/sdk'
+import { v35Addresses, isZeroAddress } from '@/contracts/addresses'
+import { buildReadContext } from '@/services/v35/context'
 
 const router = useRouter()
 const route = useRoute()
@@ -64,6 +67,25 @@ onMounted(() => {
   }
 })
 
+// True when Wave 3.5 IdentityRegistry is wired AND dev-mode is on.
+// `isVerified` returns true for every address in this state so the legacy
+// whitelist step adds no value.
+async function isV35DevModeOn(): Promise<boolean> {
+  if (isZeroAddress(v35Addresses.identityRegistry)) return false
+  try {
+    const client = new IdentityRegistryClient(
+      buildReadContext(),
+      v35Addresses.identityRegistry,
+    )
+    return await client.devMode()
+  } catch (e) {
+    // If the read fails (RPC flake / misconfig), assume dev-mode is OFF
+    // and fall through to the legacy whitelist UI — safer than auto-skip.
+    console.warn('[LoginPage] devMode check failed; falling back to whitelist UI:', e)
+    return false
+  }
+}
+
 function redirectToDashboard() {
   const redirect = route.query.redirect as string | undefined
   // Only allow relative paths to prevent open redirect
@@ -91,9 +113,22 @@ async function handleAuth() {
       isRegister.value ? username.value.trim() : undefined,
     )
 
-    // On register: pause and offer the demo-only self-serve whitelist button
-    // before redirecting. On login: proceed directly.
+    // On register: when the Wave 3.5 IdentityRegistry is wired AND
+    // dev-mode is on, every kernel address is auto-verified — the
+    // legacy `Enable demo access` whitelist step is a no-op against
+    // an obsolete adapter. Skip it entirely. The MDevModeBanner at
+    // the top of the dashboard already advertises the dev-mode state.
+    //
+    // Pause for the whitelist UI only when dev-mode is OFF (post
+    // production cutover) — that's when the legacy whitelist actually
+    // does something the user might want.
     if (isRegister.value) {
+      if (await isV35DevModeOn()) {
+        authStep.value = 'done'
+        await new Promise(r => setTimeout(r, 600))
+        redirectToDashboard()
+        return
+      }
       authStep.value = 'awaiting-whitelist'
       return
     }
