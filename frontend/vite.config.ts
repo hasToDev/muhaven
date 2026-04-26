@@ -20,6 +20,19 @@ export default defineConfig(() => ({
   base: '/',
   server: {
     port: 7778,
+    // Cross-origin isolation headers required by the cofhe SDK's TFHE
+    // worker — without them, `SharedArrayBuffer` (used by tfhe.wasm for
+    // parallel encrypt) is unavailable and the worker dies silently
+    // with a `Worker error event` whose `.message` is undefined. Symptom
+    // hit during Phase 8 Cash-mode wrap from a fresh kernel; the production
+    // GH Pages build is served behind Cloudflare with these headers set,
+    // the Vite dev server needed them too. Trade-off: third-party iframes
+    // / images without `crossorigin` get blocked from loading — we don't
+    // embed any such resources today.
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+    },
   },
   resolve: {
     alias: {

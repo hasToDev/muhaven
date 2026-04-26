@@ -10,11 +10,12 @@ import { useHomeTarget } from '@/composables/useHomeTarget'
 import { cn, formatAddress } from '@/lib/utils'
 import MDarkToggle from '@/components/ui/MDarkToggle.vue'
 import MSessionStatus from '@/components/ui/MSessionStatus.vue'
+import MDevModeBanner from '@/components/ui/MDevModeBanner.vue'
 import { toast } from 'vue-sonner'
 import {
   PieChart, ShoppingCart, TrendingUp, Activity, Store, Sparkles, Send, Undo2,
   Coins, Share2, Users, ClipboardCheck, Wallet, LogOut, LogIn, Loader2,
-  Copy, Check,
+  Copy, Check, ArrowLeftRight,
 } from 'lucide-vue-next'
 
 const route = useRoute()
@@ -30,6 +31,7 @@ const investorNav = [
   { path: '/portfolio', label: 'Portfolio', icon: PieChart },
   { path: '/marketplace', label: 'Marketplace', icon: Store },
   { path: '/trade', label: 'Trade', icon: ShoppingCart },
+  { path: '/wrap', label: 'Wrap', icon: ArrowLeftRight },
   { path: '/transfer', label: 'Transfer', icon: Send },
   { path: '/yields', label: 'Yields', icon: TrendingUp },
   { path: '/redemptions', label: 'Redemptions', icon: Undo2 },
@@ -139,6 +141,11 @@ onBeforeUnmount(() => {
       <div class="flex-1" />
 
       <div class="flex items-center gap-2">
+        <!-- ADR-023 dev-mode pill — TopNav is mobile-only (`class="md:hidden"`
+             on the App.vue mount), so this pill is the mobile counterpart
+             of the desktop Sidebar bottom pill. -->
+        <MDevModeBanner />
+
         <!-- Role toggle removed: role is chosen at login and can't be
              switched post-login. -->
         <MDarkToggle data-testid="nav-dark-toggle" />

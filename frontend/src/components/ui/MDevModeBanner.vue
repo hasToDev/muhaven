@@ -3,18 +3,22 @@ import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { IdentityRegistryClient } from '@muhaven/sdk'
 import { v35Addresses, isZeroAddress } from '@/contracts/addresses'
 import { buildReadContext } from '@/services/v35/context'
-import { AlertTriangle } from 'lucide-vue-next'
+import { ShieldAlert } from 'lucide-vue-next'
 
-// MDevModeBanner — ADR-023 safety banner.
+// MDevModeBanner — ADR-023 dev-mode indicator.
 //
-// Polls `IdentityRegistry.devMode()` once per minute. When true, renders a
-// red top-of-viewport banner so no one forgets the KYC bypass is active.
-// The banner also reads `devModeDisabled` — once the latch fires, the banner
-// hides forever (post Phase 8 production cutover).
+// Compact pill rendered at the bottom of the desktop sidebar (and as an
+// inline strip on the mobile TopNav). Polls `IdentityRegistry.devMode()`
+// once per minute. When true, surfaces a low-key reminder that KYC is
+// bypassed without dominating the viewport (the previous viewport-fixed
+// banner shifted every page's first scrollable region by ~40px and made
+// the layout feel under construction).
 //
-// Failure modes are silent: unconfigured registry → render nothing. Network
-// error → keep the last known state (default `null` = hidden). This keeps the
-// banner from flashing on/off during transient RPC flakes.
+// `devModeDisabled` latch (post Phase 8 production cutover) hides the
+// pill permanently.
+//
+// Failure modes are silent: unconfigured registry → render nothing.
+// Network error → keep last known state.
 
 const POLL_INTERVAL_MS = 60_000
 
@@ -39,7 +43,6 @@ async function refresh() {
     devMode.value = dm
     disabledForever.value = disabled
   } catch (e) {
-    // Quietly keep the last state. See note above.
     console.warn('[MDevModeBanner] poll failed:', e)
   }
 }
@@ -56,26 +59,42 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <!-- Fixed at the very top of the viewport with z-[60] so it sits above the
-       `fixed top-0 z-40` Sidebar. Sidebar/main get a tiny dev-mode visual
-       overlap on the top edge — acceptable for a temporary state. -->
+  <!-- Compact sidebar-bottom pill. Two-line stack so the warning sits in
+       its own visual block without competing with the wallet pill above. -->
   <div
     v-if="devMode === true && !disabledForever"
     role="status"
     data-testid="dev-mode-banner"
-    class="fixed top-0 left-0 right-0 z-[60] bg-gradient-to-r from-negative/95 via-negative to-negative/95 text-white
-           shadow-[0_4px_14px_rgba(0,0,0,0.35)]"
+    class="group relative flex items-center gap-2 px-3 py-1.5 rounded-md
+           bg-negative/8 dark:bg-negative/12
+           ring-1 ring-inset ring-negative/25 dark:ring-negative/30
+           transition-colors duration-200"
   >
-    <div class="max-w-7xl mx-auto flex items-center justify-center gap-3 px-4 py-2.5">
-      <AlertTriangle :size="16" :stroke-width="2" class="flex-shrink-0" />
-      <p class="font-sans text-xs md:text-sm font-semibold tracking-wide text-center">
-        DEV MODE ACTIVE — KYC bypassed. Do not use with real funds.
-      </p>
-    </div>
-    <!-- Decorative bottom glow -->
-    <div
-      aria-hidden="true"
-      class="pointer-events-none absolute inset-x-0 -bottom-px h-px bg-gradient-to-r from-transparent via-white/40 to-transparent"
+    <!-- Pulsing dot — quiet animation, draws the eye without flashing -->
+    <span class="relative flex h-1.5 w-1.5 flex-shrink-0">
+      <span
+        class="animate-ping absolute inline-flex h-full w-full rounded-full bg-negative opacity-60"
+      />
+      <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-negative" />
+    </span>
+    <ShieldAlert
+      :size="11"
+      :stroke-width="2.2"
+      class="text-negative/85 flex-shrink-0"
     />
+    <div class="flex flex-col leading-tight min-w-0">
+      <span
+        class="text-[9.5px] font-sans font-bold uppercase tracking-[0.14em]
+               text-negative/95 dark:text-negative"
+      >
+        Dev Mode
+      </span>
+      <span
+        class="text-[9px] font-sans text-negative/70 dark:text-negative/60 truncate"
+        title="KYC verification is bypassed — every address is treated as verified. Do not use with real funds."
+      >
+        KYC bypassed
+      </span>
+    </div>
   </div>
 </template>

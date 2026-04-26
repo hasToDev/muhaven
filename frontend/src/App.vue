@@ -9,7 +9,6 @@ import MMobileTabBar from '@/components/ui/MMobileTabBar.vue'
 import AgentFAB from '@/components/agent/AgentFAB.vue'
 import AgentSidePanel from '@/components/agent/AgentSidePanel.vue'
 import MToastProvider from '@/components/ui/MToastProvider.vue'
-import MDevModeBanner from '@/components/ui/MDevModeBanner.vue'
 
 const route = useRoute()
 const store = useAppStore()
@@ -49,10 +48,10 @@ onMounted(() => {
     ]"
   >
     <MMeshGradient />
-    <!-- ADR-023 dev-mode banner — fixed at the viewport top with z-[60] so
-         it sits above the sidebar (`z-40`). When active, covers the top few
-         px of the sidebar logo — acceptable for a temporary state. -->
-    <MDevModeBanner v-if="showChrome" />
+    <!-- ADR-023 dev-mode pill renders inside Sidebar.vue (bottom of the
+         desktop chrome) and TopNav.vue (mobile header). The previous
+         viewport-fixed banner shifted page layout by ~40px and made
+         the chrome feel under construction. -->
     <Sidebar v-if="showChrome" />
     <!-- Mobile top bar: only shows on <md; desktop nav lives in Sidebar -->
     <TopNav v-if="showChrome" class="md:hidden" />

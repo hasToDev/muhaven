@@ -9,11 +9,12 @@ import { useHomeTarget } from '@/composables/useHomeTarget'
 import { cn, formatAddress } from '@/lib/utils'
 import MDarkToggle from '@/components/ui/MDarkToggle.vue'
 import MSessionStatus from '@/components/ui/MSessionStatus.vue'
+import MDevModeBanner from '@/components/ui/MDevModeBanner.vue'
 import { toast } from 'vue-sonner'
 import {
   PieChart, ShoppingCart, TrendingUp, Activity, Store, Sparkles, Send, Undo2,
   Coins, Share2, Users, ClipboardCheck, Wallet, LogOut, LogIn, Loader2,
-  Copy, Check,
+  Copy, Check, ArrowLeftRight,
 } from 'lucide-vue-next'
 
 // Role is chosen at login (see LoginPage.vue). The sidebar no longer offers a
@@ -32,6 +33,7 @@ const investorNav = [
   { path: '/portfolio', label: 'Portfolio', icon: PieChart },
   { path: '/marketplace', label: 'Marketplace', icon: Store },
   { path: '/trade', label: 'Trade', icon: ShoppingCart },
+  { path: '/wrap', label: 'Wrap', icon: ArrowLeftRight },
   { path: '/transfer', label: 'Transfer', icon: Send },
   { path: '/yields', label: 'Yields', icon: TrendingUp },
   { path: '/redemptions', label: 'Redemptions', icon: Undo2 },
@@ -229,6 +231,11 @@ onBeforeUnmount(() => {
       <div v-if="authStore.walletAddress" class="flex items-center justify-center pt-1">
         <MSessionStatus data-testid="session-status" />
       </div>
+
+      <!-- ADR-023 dev-mode pill — bottom of the sidebar so it's always
+           visible without dominating the chrome. Renders nothing when
+           devMode is off or unconfigured. -->
+      <MDevModeBanner />
     </div>
   </aside>
 </template>
