@@ -55,6 +55,15 @@ export default defineConfig(() => ({
     // that loads `zkProve.worker.js`. Both must serve from their
     // unbundled source location for worker URLs to resolve.
     exclude: ['tfhe', '@cofhe/sdk'],
+
+    // Force pre-bundle the CJS leaves of `@cofhe/sdk` so they get a
+    // proper ESM-interop wrapper. Without this, the un-bundled SDK
+    // chunks `import * as nacl from 'tweetnacl'` against raw CJS that
+    // has no `default` export, surfacing as
+    //   "does not provide an export named 'default'"
+    // on first encrypt op. Add new entries here whenever a CJS dep
+    // bubbles up from a fresh @cofhe/sdk release.
+    include: ['tweetnacl'],
   },
   worker: {
     format: 'es',
