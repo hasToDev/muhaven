@@ -63,7 +63,7 @@ export default defineConfig(() => ({
     //   "does not provide an export named 'default'"
     // on first encrypt op. Add new entries here whenever a CJS dep
     // bubbles up from a fresh @cofhe/sdk release.
-    include: ['tweetnacl'],
+    include: ['tweetnacl', 'iframe-shared-storage'],
   },
   worker: {
     format: 'es',
