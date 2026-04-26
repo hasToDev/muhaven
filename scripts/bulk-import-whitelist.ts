@@ -30,17 +30,71 @@
  */
 
 import { ethers, network } from "hardhat";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 
 type V2Deployment = {
   contracts: Record<string, { proxy?: string; address?: string }>;
-  external: { kycAdapter: string };
+  external: {
+    kycAdapter: string;
+    kycAdapterDeployBlock?: number;
+  };
 };
 
 type Wave3Deployment = {
   contracts: Record<string, { proxy?: string; address?: string }>;
 };
+
+/**
+ * Find the earliest block where `address` has bytecode. Binary search via
+ * `eth_getCode(address, blockNumber)` — O(log n) RPC calls. Requires an
+ * archive-capable RPC (Onfinality + Alchemy do; some free public RPCs
+ * snapshot only the last ~128 blocks).
+ *
+ * Returns the deploy block (the first block with non-empty code).
+ */
+async function findContractDeployBlock(
+  provider: typeof ethers.provider,
+  address: string
+): Promise<number> {
+  const codeAtHead = await provider.getCode(address, "latest");
+  if (codeAtHead === "0x" || codeAtHead === "") {
+    throw new Error(
+      `No contract code at ${address} on the current chain — is the address ` +
+        `for the right network / env?`
+    );
+  }
+
+  let lo = 0;
+  let hi = await provider.getBlockNumber();
+  let calls = 0;
+
+  // Quick check: if the contract was deployed within the last ~5000 blocks,
+  // a coarse linear scan is faster than 30 binary-search RPC calls. Skip the
+  // optimisation here for simplicity — 30 calls is fine.
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    calls += 1;
+    let code: string;
+    try {
+      code = await provider.getCode(address, mid);
+    } catch (err) {
+      throw new Error(
+        `getCode failed at block ${mid}: ${(err as Error).message}. ` +
+          `Provider may not be archive-capable — set WAVE3_KYC_FROM_BLOCK ` +
+          `manually instead (look up the deploy tx on Arbiscan).`
+      );
+    }
+    if (code === "0x" || code === "") {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+
+  console.log(`   (binary-searched in ${calls} eth_getCode calls)`);
+  return lo;
+}
 
 async function main() {
   const [signer] = await ethers.getSigners();
@@ -76,17 +130,37 @@ async function main() {
     if (!kycAdapterAddr) throw new Error(`No ERC3643KYCAdapter in ${wave3Path}`);
   }
 
-  const fromBlock = Number(process.env.WAVE3_KYC_FROM_BLOCK || 0);
   const batchSize = Number(process.env.WAVE3_KYC_BATCH_SIZE || 200);
   const logChunk = Number(process.env.WAVE3_KYC_LOG_CHUNK || 50_000);
   const dryRun = (process.env.WAVE3_KYC_DRY_RUN || "").toLowerCase() === "true";
+
+  // Resolve `fromBlock`. Precedence: env override → cached value in v2
+  // deployment file → binary-search via eth_getCode. The cache eliminates
+  // the ~28-call discovery on every subsequent run.
+  let fromBlock: number;
+  let fromBlockSource: string;
+  const envFromBlock = process.env.WAVE3_KYC_FROM_BLOCK;
+  if (envFromBlock !== undefined && envFromBlock !== "") {
+    fromBlock = Number(envFromBlock);
+    fromBlockSource = "WAVE3_KYC_FROM_BLOCK env";
+  } else if (typeof platform.external.kycAdapterDeployBlock === "number") {
+    fromBlock = platform.external.kycAdapterDeployBlock;
+    fromBlockSource = "deployments JSON cache";
+  } else {
+    console.log(`Discovering KYC adapter deploy block via binary search...`);
+    fromBlock = await findContractDeployBlock(ethers.provider, kycAdapterAddr);
+    fromBlockSource = "binary search (cached for next run)";
+    // Cache the result so we don't re-search every time.
+    platform.external.kycAdapterDeployBlock = fromBlock;
+    writeFileSync(v2Path, JSON.stringify(platform, null, 2));
+  }
 
   console.log(`\n=== Wave 3 → Wave 3.5 Whitelist Bulk-Import ===`);
   console.log(`Network:           [${net}] (${envName})`);
   console.log(`Signer:            ${signer.address}`);
   console.log(`Wave 3 KYC adapter: ${kycAdapterAddr}`);
   console.log(`Wave 3.5 IdReg:    ${identityAddr}`);
-  console.log(`From block:        ${fromBlock}`);
+  console.log(`From block:        ${fromBlock}  (${fromBlockSource})`);
   console.log(`Log chunk:         ${logChunk} blocks`);
   console.log(`Add batch size:    ${batchSize}`);
   console.log(`Dry run:           ${dryRun}\n`);
