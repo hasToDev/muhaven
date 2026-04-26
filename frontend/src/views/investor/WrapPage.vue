@@ -240,6 +240,25 @@ async function handleCashWrap() {
     })
     loadBalances()
   } catch (e) {
+    // Print the full error CHAIN — TxFailedError wraps the underlying
+    // viem/sender error in `cause`, but `toast.error` only shows the
+    // top-level message. Walking `cause` here reveals the actual revert
+    // reason / RPC error / encoding issue underneath. Without this, a
+    // bare "Transaction failed for MuHavenStable.wrap (not submitted)"
+    // hides whatever viem actually saw.
+    console.error('[WrapPage] cash wrap failed — full chain:')
+    let cur: unknown = e
+    let depth = 0
+    while (cur && depth < 8) {
+      const isErr = cur instanceof Error
+      console.error(`  [${depth}] ${isErr ? cur.constructor.name : typeof cur}:`, cur)
+      if (isErr && 'cause' in cur && cur.cause) {
+        cur = cur.cause
+        depth += 1
+      } else {
+        break
+      }
+    }
     errMsg.value = e instanceof Error ? e.message : 'Wrap failed'
     toast.error('Wrap failed', { description: errMsg.value })
   } finally {
