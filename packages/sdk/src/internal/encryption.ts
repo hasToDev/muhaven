@@ -59,12 +59,19 @@ export async function encryptAddresses(
 
 /**
  * Encrypt a single uint64 into `EncryptedInput`. Used for `startDistribution`
- * total-yield amount.
+ * total-yield amount and the Wave 3.5 Phase 7.5 `MuHavenStable` wrapper
+ * (`wrap`/`unwrap`/`transfer`/`transferFrom`).
  */
 export async function encryptUint64(
   cofhe: CofheLikeClient,
   value: bigint,
 ): Promise<EncryptedInput> {
+  if (value < 0n) {
+    throw new EncryptionError(`uint64 value must be >= 0, got ${value}`)
+  }
+  if (value > (1n << 64n) - 1n) {
+    throw new EncryptionError(`uint64 value exceeds 2^64 - 1, got ${value}`)
+  }
   const item = await buildUint64Encryptable(value)
   let raw: unknown[]
   try {

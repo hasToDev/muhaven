@@ -9,9 +9,10 @@
  * clients for a given page/session.
  */
 
-import { createPublicClient, http, type PublicClient } from 'viem'
+import { createPublicClient, http, type Address, type PublicClient } from 'viem'
 import { arbitrumSepolia } from 'viem/chains'
 import type { MuHavenClientContext } from '@muhaven/sdk'
+import type { CofheLikeClient } from '@muhaven/sdk'
 import { createZeroDevSender } from '@/services/contracts/zeroDevSender'
 import { useFhe } from '@/composables/useFhe'
 
@@ -65,16 +66,62 @@ export function buildReadContext(): MuHavenClientContext {
 }
 
 /**
+ * Wrap a cofhe client so every `encryptInputs(...)` call is bound to a
+ * specific encryption account via `setAccount(senderAddress)`.
+ *
+ * Why: per Fhenix's ZK-Verifier docs (`encrypting-inputs.mdx#setAccount`),
+ * an encrypted input is "owned by" a specific account, and only that
+ * account can use it on-chain. The TaskManager's `extractSigner` recovers
+ * the verifier signature against `(ctHash, utype, securityZone, msg.sender,
+ * chainId)` — so the encryption-time account MUST equal the on-chain
+ * `msg.sender` of the contract that calls `FHE.asEuint*(input)`. Otherwise
+ * the recovered signer doesn't match `verifierSigner` and the call
+ * reverts with `InvalidSigner` (selector `0x7ba5ffb5`).
+ *
+ * Without this wrapper, the cofhe SDK defaults to the connected wallet
+ * client's account — which in our setup is the per-session ephemeral EOA
+ * (ADR-021), NOT the kernel that actually originates the on-chain call.
+ * That mismatch was a candidate root cause for Phase 8's `MuHavenStable.wrap`
+ * blocker — see `development/DEV_WAVE_3_5/PHASE8_BLOCKER_COFHE_VERIFIER.md`.
+ *
+ * Constraint: this assumes the kernel calls the encrypted-input contract
+ * directly. If a future flow inserts an intermediate contract between the
+ * kernel and the consumer of `FHE.asEuint*`, that intermediate's address is
+ * what `msg.sender` will be — pass that instead. Today every Wave 3.5
+ * write goes kernel → contract directly, so `senderAddress = kernel`.
+ */
+function withSenderAccount(
+  cofheClient: CofheLikeClient,
+  senderAddress: Address,
+): CofheLikeClient {
+  return {
+    encryptInputs(items: unknown[]) {
+      const builder = cofheClient.encryptInputs(items)
+      // setAccount returns the same builder (chainable). Defensive optional-call
+      // in case a mock client ever omits it — fall back to the unbound builder.
+      const bound = (builder as any).setAccount?.(senderAddress) ?? builder
+      return bound as ReturnType<CofheLikeClient['encryptInputs']>
+    },
+  }
+}
+
+/**
  * Full write context: ZeroDev-backed sender + cofhe client seeded with the
- * ephemeral EOA. Call from inside a component after the user has signed in.
- * Throws via `createZeroDevSender` / `getRawClient` if not.
+ * ephemeral EOA, then wrapped to bind the encryption account to the kernel.
+ * Call from inside a component after the user has signed in. Throws via
+ * `createZeroDevSender` / `getRawClient` if not.
  */
 export async function buildWriteContext(): Promise<MuHavenClientContext> {
   const { getRawClient } = useFhe()
   const cofheClient = await getRawClient()
+  const sender = createZeroDevSender()
+  const boundCofhe = withSenderAccount(
+    cofheClient as unknown as CofheLikeClient,
+    sender.address,
+  )
   return {
     publicClient: getPublicClient() as any,
-    sender: createZeroDevSender(),
-    cofheClient: cofheClient as unknown as MuHavenClientContext['cofheClient'],
+    sender,
+    cofheClient: boundCofhe as unknown as MuHavenClientContext['cofheClient'],
   }
 }

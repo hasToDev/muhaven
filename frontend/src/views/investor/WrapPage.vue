@@ -247,17 +247,23 @@ async function handleCashWrap() {
     // bare "Transaction failed for MuHavenStable.wrap (not submitted)"
     // hides whatever viem actually saw.
     console.error('[WrapPage] cash wrap failed — full chain:')
+    // tsconfig targets ES2020, so `Error.cause` isn't on the lib type. Walk
+    // it via a structural read so we don't need to widen the project's lib.
     let cur: unknown = e
     let depth = 0
     while (cur && depth < 8) {
-      const isErr = cur instanceof Error
-      console.error(`  [${depth}] ${isErr ? cur.constructor.name : typeof cur}:`, cur)
-      if (isErr && 'cause' in cur && cur.cause) {
-        cur = cur.cause
-        depth += 1
+      if (cur instanceof Error) {
+        console.error(`  [${depth}] ${cur.constructor.name}:`, cur)
+        const next = (cur as Error & { cause?: unknown }).cause
+        if (next) {
+          cur = next
+          depth += 1
+          continue
+        }
       } else {
-        break
+        console.error(`  [${depth}] ${typeof cur}:`, cur)
       }
+      break
     }
     errMsg.value = e instanceof Error ? e.message : 'Wrap failed'
     toast.error('Wrap failed', { description: errMsg.value })
