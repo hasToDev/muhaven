@@ -4,7 +4,6 @@ import "@nomicfoundation/hardhat-ethers";
 import "@openzeppelin/hardhat-upgrades";
 import "@cofhe/hardhat-plugin";
 import * as dotenv from "dotenv";
-import "./tasks";
 
 dotenv.config();
 

@@ -81,8 +81,10 @@ export function buildReadContext(): MuHavenClientContext {
  * Without this wrapper, the cofhe SDK defaults to the connected wallet
  * client's account — which in our setup is the per-session ephemeral EOA
  * (ADR-021), NOT the kernel that actually originates the on-chain call.
- * That mismatch was a candidate root cause for Phase 8's `MuHavenStable.wrap`
- * blocker — see `development/DEV_WAVE_3_5/PHASE8_BLOCKER_COFHE_VERIFIER.md`.
+ * See `development/DEV_WAVE_3_5/PHASE8_BLOCKER_COFHE_VERIFIER.md` for the
+ * full Phase 8 walk-through (the actual root cause was an unrelated SDK
+ * version mismatch, but binding the account is still required correctness
+ * for kernel-originated writes).
  *
  * Constraint: this assumes the kernel calls the encrypted-input contract
  * directly. If a future flow inserts an intermediate contract between the
@@ -96,11 +98,7 @@ function withSenderAccount(
 ): CofheLikeClient {
   return {
     encryptInputs(items: unknown[]) {
-      const builder = cofheClient.encryptInputs(items)
-      // setAccount returns the same builder (chainable). Defensive optional-call
-      // in case a mock client ever omits it — fall back to the unbound builder.
-      const bound = (builder as any).setAccount?.(senderAddress) ?? builder
-      return bound as ReturnType<CofheLikeClient['encryptInputs']>
+      return cofheClient.encryptInputs(items).setAccount(senderAddress)
     },
   }
 }

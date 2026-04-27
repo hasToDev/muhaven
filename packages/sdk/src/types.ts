@@ -7,14 +7,23 @@ import type { MuHavenSender } from './sender.js'
  * Captures only the surface the SDK calls into, so we don't import a
  * WASM-linked module at the type level (keeps tsc fast + env-agnostic).
  * Intentionally narrow — typos on method names should fail to compile.
+ *
+ * `setAccount(address)` on the builder pins which address "owns" the
+ * encrypted input (per Fhenix `setAccount` semantics — recovers as
+ * `msg.sender` in the on-chain `extractSigner` check). When the connected
+ * wallet account is not the contract caller (e.g. our ephemeral-EOA-signed
+ * permit setup with kernel-originated calls), consumers MUST call
+ * `setAccount(kernelAddress)` before `.execute()` or the on-chain verifier
+ * check reverts with `InvalidSigner`.
  */
+export interface CofheEncryptInputsBuilder {
+  setAccount(address: string): CofheEncryptInputsBuilder
+  onStep(cb: (step: string) => void): CofheEncryptInputsBuilder
+  execute(): Promise<unknown[]>
+}
+
 export interface CofheLikeClient {
-  encryptInputs(items: unknown[]): {
-    onStep(cb: (step: string) => void): {
-      execute(): Promise<unknown[]>
-    }
-    execute(): Promise<unknown[]>
-  }
+  encryptInputs(items: unknown[]): CofheEncryptInputsBuilder
 }
 
 /**

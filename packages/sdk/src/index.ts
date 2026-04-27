@@ -13,6 +13,7 @@ export type {
   MuHavenAddresses,
   MuHavenClientContext,
   CofheLikeClient,
+  CofheEncryptInputsBuilder,
   EncryptedInput,
   ProgressCallback,
   ProgressEvent,

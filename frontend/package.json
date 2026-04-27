@@ -11,7 +11,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@cofhe/sdk": "file:../development/reference/Fhenix/cofhesdk/packages/sdk/cofhe-sdk-0.4.0.tgz",
+    "@cofhe/sdk": "^0.5.1",
     "@fontsource-variable/inter": "^5.2.8",
     "@muhaven/sdk": "file:../packages/sdk",
     "@vueuse/core": "^13.0.0",
@@ -26,7 +26,7 @@
     "lucide-vue-next": "^0.500.0",
     "pinia": "^3.0.0",
     "tailwind-merge": "^3.5.0",
-    "tfhe": "0.11.1",
+    "tfhe": "1.5.3",
     "viem": "^2.47.12",
     "vue": "^3.5.13",
     "vue-chartjs": "^5.3.0",
