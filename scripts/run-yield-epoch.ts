@@ -114,30 +114,60 @@ async function main() {
     console.log("[pre] PUSDC operator on YieldSnapshot already granted");
   }
 
-  // ── 2. openEpoch ───────────────────────────────────────────────────
-  let openTx = await snapshot.openEpoch(tokenAddr);
-  console.log(`[1/4] openEpoch tx: ${openTx.hash}`);
-  const rcpt = await openTx.wait();
-  // Decode `EpochOpened(token, epochId)` from receipt logs.
-  const iface = new ethers.Interface([
-    "event EpochOpened(address indexed token, uint256 indexed epochId)",
-  ]);
-  let epochId: bigint | null = null;
-  for (const log of rcpt!.logs) {
-    try {
-      const parsed = iface.parseLog({ topics: log.topics as string[], data: log.data });
-      if (parsed?.name === "EpochOpened") {
-        epochId = parsed.args.epochId as bigint;
-        break;
-      }
-    } catch {
-      /* ignore non-matching logs */
+  // ── 2. openEpoch (or resume in-progress) ──────────────────────────
+  // If `currentEpoch[token]` points at an epoch that's not yet funded, we
+  // resume it instead of opening a new one. Lets the script be re-run
+  // safely after a transient failure (e.g. RPC blip mid-fundEpoch) without
+  // leaking an abandoned half-state epoch every retry.
+  let epochId: bigint;
+  const currentForToken: bigint = await snapshot.currentEpoch(tokenAddr);
+  let resumed = false;
+  if (currentForToken > 0n) {
+    const ep = await snapshot.getEpoch(currentForToken);
+    if (!ep.funded) {
+      epochId = currentForToken;
+      resumed = true;
+      console.log(
+        `[1/4] resuming in-progress epoch ${epochId.toString()} ` +
+        `(finalized=${ep.finalized}, holderCount=${ep.holderCount.toString()})`,
+      );
     }
   }
-  if (epochId == null) throw new Error("openEpoch did not emit EpochOpened");
-  console.log(`[1/4] epochId = ${epochId.toString()}\n`);
+  if (!resumed) {
+    const openTx = await snapshot.openEpoch(tokenAddr);
+    console.log(`[1/4] openEpoch tx: ${openTx.hash}`);
+    const rcpt = await openTx.wait();
+    // Decode `EpochOpened(token, epochId)` from receipt logs.
+    const iface = new ethers.Interface([
+      "event EpochOpened(address indexed token, uint256 indexed epochId)",
+    ]);
+    let opened: bigint | null = null;
+    for (const log of rcpt!.logs) {
+      try {
+        const parsed = iface.parseLog({ topics: log.topics as string[], data: log.data });
+        if (parsed?.name === "EpochOpened") {
+          opened = parsed.args.epochId as bigint;
+          break;
+        }
+      } catch {
+        /* ignore non-matching logs */
+      }
+    }
+    if (opened == null) throw new Error("openEpoch did not emit EpochOpened");
+    epochId = opened;
+    console.log(`[1/4] opened epochId = ${epochId.toString()}`);
+  }
+  console.log("");
 
   // ── 3. snapshotBatch (paginated over InvestorRegistry holders) ─────
+  // Skip the whole snapshot phase if the resumed epoch is already
+  // finalized — snapshotBatch reverts `SnapshotAlreadyFinalized` after
+  // finalize. Capture is idempotent per (epoch, investor) within an
+  // unfinalized epoch, so re-running mid-batch is safe.
+  const epochAtSnapshotPhase = await snapshot.getEpoch(epochId);
+  if (epochAtSnapshotPhase.finalized) {
+    console.log(`[2/4] epoch ${epochId.toString()} already finalized — skipping snapshotBatch + finalize\n`);
+  } else {
   const holderCount: bigint = await registry.holderCount(tokenAddr);
   console.log(`[2/4] holderCount(${symbol}) = ${holderCount.toString()}`);
   if (holderCount === 0n) {
@@ -147,11 +177,12 @@ async function main() {
   let captured = 0n;
   for (let offset = 0n; offset < holderCount; offset += BigInt(SNAPSHOT_BATCH_SIZE)) {
     const limit = BigInt(SNAPSHOT_BATCH_SIZE);
-    const investors: string[] = await registry.getHoldersPaginated(
-      tokenAddr,
-      offset,
-      limit,
-    );
+    // Ethers v6 returns a frozen `Result` proxy from view calls. Passing
+    // it directly back as a contract argument fails because ethers'
+    // arg-coercion path tries to mutate the proxy in place. Spread into a
+    // plain array of strings before submitting.
+    const result = await registry.getHoldersPaginated(tokenAddr, offset, limit);
+    const investors: string[] = Array.from(result, (a: unknown) => String(a));
     if (investors.length === 0) break;
     console.log(`[2/4] snapshotBatch offset=${offset.toString()} count=${investors.length}`);
     const tx = await snapshot.snapshotBatch(epochId, investors);
@@ -167,6 +198,7 @@ async function main() {
   console.log(`[3/4]   tx: ${finTx.hash}`);
   await finTx.wait();
   console.log("");
+  } // end snapshot/finalize phase
 
   // ── 5. fundEpoch (encrypts client-side via cofhe Node SDK) ─────────
   console.log(`[4/4] encrypting totalYield + calling fundEpoch`);
