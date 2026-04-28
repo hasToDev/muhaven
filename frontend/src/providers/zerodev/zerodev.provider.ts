@@ -298,12 +298,7 @@ export class ZeroDevProvider implements IWalletProvider {
     // Clear session-key state from both memory and sessionStorage.
     // On tab close sessionStorage is cleared anyway, but explicit logout
     // must not leave a valid session key behind on the device.
-    if (this._address) {
-      clearSessionRecord(this._address);
-    }
-    this.sessionKernelClient = null;
-    this.sessionExpiresAt = 0;
-    this.sessionRecord = null;
+    this.invalidateSession();
     this.installPromise = null;
 
     this.kernelClient = null;
@@ -402,7 +397,18 @@ export class ZeroDevProvider implements IWalletProvider {
     } else {
       const generated = generateSessionRecord(smartAccountAddress);
       record = generated.record;
-      saveSessionRecord(record);
+      // Intentionally NOT calling saveSessionRecord here. We defer the
+      // persist until `persistSessionAfterFirstUserOp` runs and captures
+      // the on-chain enableSig into `serializedAccount`. Saving a record
+      // with `privateKey` but no `serializedAccount` opens a half-saved
+      // state failure mode: if anything interrupts the persist (page
+      // reload, network blip, the user closing the tab right after the
+      // first op lands), the next session reloads the half-saved record
+      // and tries to install with the same privateKey on a kernel where
+      // that exact permissionHash is already enabled → kernel reverts
+      // with `AA23 duplicate permissionHash`. By only persisting the
+      // complete post-enable record, sessionStorage is always either
+      // unset or fully restorable.
     }
 
     const publicClient = buildPublicClient();
@@ -465,23 +471,88 @@ export class ZeroDevProvider implements IWalletProvider {
   }
 
   /**
-   * Cache the enableSig after the first successful session UserOp so the next
-   * page load can reuse the same session without re-signing with the passkey.
+   * Cache the enableSig after the first successful session UserOp + rebuild
+   * the in-memory kernel client into post-enable mode.
+   *
+   * Two things have to happen here, both load-bearing:
+   *
+   * 1. Capture `serializedAccount` so a future page reload (within the same
+   *    tab — sessionStorage scope) can reconstruct the session without
+   *    re-prompting for the passkey enableSig.
+   *
+   * 2. Replace `this.sessionKernelClient` with one built via
+   *    `deserializePermissionAccount`. Without this, the in-memory kernel
+   *    stays in pre-enable mode and the *next* userOp through the same
+   *    sessionKernelClient still embeds the "enable" signature shape — the
+   *    kernel rejects that with `AA23 duplicate permissionHash` because
+   *    the validator is already on-chain. The fix is to swap to a kernel
+   *    that knows it's enabled before the next send.
+   *
+   * Callers must `await` this — concurrent / quickly-fired userOps
+   * otherwise race onto the stale pre-enable kernel.
    */
   private async persistSessionAfterFirstUserOp(): Promise<void> {
     if (!this.sessionKernelClient?.account) return;
     if (!this.sessionRecord || this.sessionRecord.serializedAccount) return;
-    try {
-      const serialized = await serializePermissionAccount(
-        this.sessionKernelClient.account as any,
-        this.sessionRecord.privateKey,
-      );
-      this.sessionRecord = { ...this.sessionRecord, serializedAccount: serialized };
-      saveSessionRecord(this.sessionRecord);
-    } catch (e) {
-      // Non-fatal: reload will re-install cleanly.
-      console.warn('[ZeroDev] serializePermissionAccount failed — session will re-install on reload', e);
-    }
+
+    const serialized = await serializePermissionAccount(
+      this.sessionKernelClient.account as any,
+      this.sessionRecord.privateKey,
+    );
+    this.sessionRecord = { ...this.sessionRecord, serializedAccount: serialized };
+    saveSessionRecord(this.sessionRecord);
+
+    await this.rebuildSessionKernelFromRecord();
+  }
+
+  /**
+   * Rebuild `this.sessionKernelClient` from the record's `serializedAccount`
+   * via `deserializePermissionAccount`. The resulting kernel is in post-enable
+   * mode: subsequent userOps sign with the session ECDSA key only, no enable
+   * bytes attached.
+   *
+   * No-op if the record has no `serializedAccount` (i.e. install hasn't
+   * succeeded yet) — caller is responsible for ordering.
+   */
+  private async rebuildSessionKernelFromRecord(): Promise<void> {
+    if (!this.sessionRecord?.serializedAccount) return;
+
+    const publicClient = buildPublicClient();
+    const sessionSigner = await toECDSASigner({
+      signer: signerFromRecord(this.sessionRecord),
+    });
+
+    const account = await deserializePermissionAccount(
+      publicClient as any,
+      ENTRY_POINT,
+      KERNEL_VERSION,
+      this.sessionRecord.serializedAccount,
+      sessionSigner,
+    );
+
+    const paymaster = createZeroDevPaymasterClient({
+      chain: arbitrumSepolia,
+      transport: http(getBundlerUrl()),
+    });
+
+    this.sessionKernelClient = createKernelAccountClient({
+      account,
+      chain: arbitrumSepolia,
+      bundlerTransport: http(getBundlerUrl()),
+      paymaster,
+    });
+  }
+
+  /**
+   * Wipe both in-memory and persistent session state. Called whenever the
+   * session kernel hits an unrecoverable error so the next call starts
+   * clean (fresh privateKey → fresh permissionHash → no duplicate revert).
+   */
+  private invalidateSession(): void {
+    if (this._address) clearSessionRecord(this._address);
+    this.sessionKernelClient = null;
+    this.sessionExpiresAt = 0;
+    this.sessionRecord = null;
   }
 
   /**
@@ -502,21 +573,39 @@ export class ZeroDevProvider implements IWalletProvider {
       return this.sendViaKernel(this.kernelClient, calls);
     }
 
+    let hash: string;
     try {
       if (!this.hasSessionKey()) {
         await this.installSessionKey();
       }
-      const hash = await this.sendViaKernel(this.sessionKernelClient!, calls);
-      // Non-blocking: persist enableSig for reload survival.
-      void this.persistSessionAfterFirstUserOp();
-      return hash;
+      hash = await this.sendViaKernel(this.sessionKernelClient!, calls);
     } catch (e) {
       console.warn('[ZeroDev] Session-key send failed; falling back to passkey kernel', e);
-      // Invalidate the session so later calls retry cleanly.
-      this.sessionKernelClient = null;
-      this.sessionExpiresAt = 0;
+      // Wipe both in-memory and sessionStorage state. The previous
+      // implementation only cleared in-memory and left a poisoned
+      // record on disk, which made subsequent in-scope sends repeat the
+      // same install → AA23 → fallback loop forever.
+      this.invalidateSession();
       return this.sendViaKernel(this.kernelClient, calls);
     }
+
+    // Persist + rebuild MUST run before the next in-scope userOp, otherwise
+    // it picks up the stale pre-enable kernel and reverts AA23 duplicate.
+    // Wrapped in its own try/catch because the userOp ALREADY succeeded —
+    // we don't want a persist failure to bounce us into the passkey
+    // fallback (which would re-send the same tx). On persist failure the
+    // session is invalidated for the next call instead.
+    try {
+      await this.persistSessionAfterFirstUserOp();
+    } catch (e) {
+      console.warn(
+        '[ZeroDev] persist + rebuild failed after successful UserOp — '
+        + 'invalidating session so the next call re-installs cleanly',
+        e,
+      );
+      this.invalidateSession();
+    }
+    return hash;
   }
 
   private async sendViaKernel(client: KernelAccountClient, calls: Call[]): Promise<string> {
