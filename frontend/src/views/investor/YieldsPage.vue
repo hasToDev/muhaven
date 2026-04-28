@@ -90,30 +90,65 @@ async function loadEpochs() {
     const readCtx = buildReadContext()
     const collected: EpochEntry[] = []
 
+    // Group tokens by their YieldSnapshot proxy. Multiple tokens may share
+    // the same proxy (staging maps both TBILL1 + GOLD1 to one proxy), and
+    // the contract assigns epoch ids globally per-proxy. Walking per-token
+    // and trusting the iteration key would mis-attribute one token's epoch
+    // as belonging to another whenever the investor was snapshotted in
+    // both. Instead: walk each proxy's full id range exactly once, fetch
+    // `getEpoch(i)` to discover the actual `epoch.token`, then resolve
+    // metadata from that.
+    const byProxy = new Map<Address, Address[]>()
     for (const [tokenAddrLower, snapshotAddr] of snapshotEntries) {
-      const tokenMeta = marketplace.getByAddress(tokenAddrLower)
-      const tokenSymbol = tokenMeta?.symbol ?? tokenAddrLower.slice(0, 8)
-      const tokenName = tokenMeta?.name ?? 'Unknown token'
+      const list = byProxy.get(snapshotAddr) ?? []
+      list.push(tokenAddrLower as Address)
+      byProxy.set(snapshotAddr, list)
+    }
 
+    for (const [snapshotAddr, tokensOnProxy] of byProxy) {
       const snapshot = new YieldSnapshotClient(readCtx, snapshotAddr)
-      const token = tokenAddrLower as Address
-      const currentEpoch = await snapshot.getCurrentEpoch(token)
 
-      // Walk from 1..currentEpoch (inclusive). Epoch 0 is unused. Users can't
-      // be part of more than `currentEpoch` epochs per token — keeps the read
-      // budget bounded. If we grow past a few dozen, switch to event-indexing.
-      for (let i = 1n; i <= currentEpoch; i++) {
+      // Upper bound for the walk: max(currentEpoch[t]) across every token
+      // we know maps to this proxy. Since the contract increments
+      // `nextEpochId` atomically inside `openEpoch` and writes
+      // `currentEpoch[token] = epochId`, this max equals the proxy's
+      // `nextEpochId` modulo any tokens we don't have addresses for (those
+      // would be unrenderable anyway — no marketplace metadata).
+      const epochCeilings = await Promise.all(
+        tokensOnProxy.map(t => snapshot.getCurrentEpoch(t)),
+      )
+      const maxEpoch = epochCeilings.reduce(
+        (m, e) => (e > m ? e : m),
+        0n,
+      )
+      if (maxEpoch === 0n) continue
+
+      // Epoch 0 is unused. If the walk grows past a few dozen per proxy,
+      // switch to event-indexing.
+      for (let i = 1n; i <= maxEpoch; i++) {
         const encSnapshotBalance = await snapshot.getSnapshotBalance(i, user)
         // Zero handle means "not snapshotted for this epoch" — skip.
+        // Cheap to check first so we avoid the `getEpoch` + `hasClaimed`
+        // roundtrip for the (overwhelmingly common) miss case.
         if (encSnapshotBalance === ZERO_BYTES32) continue
 
         const [epoch, claimed] = await Promise.all([
           snapshot.getEpoch(i),
           snapshot.hasClaimed(i, user),
         ])
+
+        // Resolve token metadata from the on-chain `epoch.token` (NOT from
+        // the iteration key — it's not bound to a single token here). Fall
+        // back to a truncated address for tokens missing from the
+        // marketplace cache so the user can still see + claim a legitimate
+        // grant rather than have it silently disappear.
+        const tokenMeta = marketplace.getByAddress(epoch.token)
+        const tokenSymbol = tokenMeta?.symbol ?? epoch.token.slice(0, 8)
+        const tokenName = tokenMeta?.name ?? 'Unknown token'
+
         collected.push({
           snapshotAddress: snapshotAddr,
-          tokenAddress: token,
+          tokenAddress: epoch.token,
           tokenSymbol,
           tokenName,
           epochId: i,
