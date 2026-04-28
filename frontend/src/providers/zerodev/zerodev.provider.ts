@@ -16,7 +16,16 @@ import {
 import { toECDSASigner } from '@zerodev/permissions/signers';
 import { toCallPolicy, CallPolicyVersion } from '@zerodev/permissions/policies';
 import { toTimestampPolicy } from '@zerodev/permissions/policies';
-import { createPublicClient, createWalletClient, http, toFunctionSelector, type Hex, type PublicClient } from 'viem';
+import {
+  createPublicClient,
+  createWalletClient,
+  http,
+  toFunctionSelector,
+  keccak256,
+  toHex,
+  type Hex,
+  type PublicClient,
+} from 'viem';
 import { signMessage as viemSignMessage } from 'viem/actions';
 import { arbitrumSepolia } from 'viem/chains';
 import { entryPoint07Address } from 'viem/account-abstraction';
@@ -42,6 +51,7 @@ import {
   signerFromRecord,
   isRecordValid,
   expirySecondsRemaining,
+  setSessionPermsVersion,
   type SessionKeyRecord,
 } from '../session-key';
 
@@ -297,6 +307,26 @@ const SESSION_SCOPE_KEYS = new Set<string>(
     return `${perm.target.toLowerCase()}:${selector}`;
   }),
 );
+
+/**
+ * Stable fingerprint of the currently-installed session policy. Embedded
+ * in the sessionStorage key (see `session-key.ts::storageKey`) so that
+ * any source-side change to `SESSION_PERMISSIONS` (target add / remove,
+ * function add / remove) auto-invalidates older cached records — forcing
+ * `installSessionKey` to mint a fresh validator install whose on-chain
+ * CallPolicy matches what the local code thinks is in scope. Without
+ * this guard, a session installed under a previous policy survives the
+ * code change but silently AA23-reverts on any newly-added permission
+ * (the on-chain validator state is bound at install time, not re-read
+ * on every userOp).
+ *
+ * 8 hex chars = 32 bits of stable fingerprint; collision probability
+ * across our < 100 permission combinations is negligible.
+ */
+const SESSION_PERMS_FINGERPRINT = keccak256(
+  toHex([...SESSION_SCOPE_KEYS].sort().join('|')),
+).slice(2, 10);
+setSessionPermsVersion(SESSION_PERMS_FINGERPRINT);
 
 function isCallInSessionScope(call: Call): boolean {
   const data = (call.data ?? '0x') as Hex;

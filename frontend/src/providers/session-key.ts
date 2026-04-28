@@ -3,7 +3,12 @@
  *
  * Stores per-smart-account session data in `sessionStorage` so it is cleared
  * on tab close (blast-radius safety) but survives page reloads within the
- * same tab. Keyed by the smart account address — each kernel gets its own slot.
+ * same tab. Keyed by the smart account address + the active permission
+ * fingerprint so that any change to `SESSION_PERMISSIONS` in source
+ * automatically invalidates older cached records (the on-chain CallPolicy
+ * is baked into the validator install — without an invalidation key, a
+ * cached session whose policy is missing a freshly-added permission
+ * would AA23-revert silently and bounce to the passkey kernel forever).
  *
  * Duration is configurable via `VITE_SESSION_KEY_DURATION_SEC` (default 3600).
  */
@@ -14,6 +19,18 @@ import type { Hex } from 'viem'
 const STORAGE_PREFIX = 'muhaven-session:'
 const DEFAULT_DURATION_SEC = 3600
 
+/**
+ * Permission fingerprint set by `zerodev.provider.ts` once at module load.
+ * Used as part of the storage key so cached records bound to a previous
+ * policy don't survive a code change. Module load order ensures this is
+ * set before any session-key UI flow runs.
+ */
+let permsVersion: string | null = null
+
+export function setSessionPermsVersion(version: string): void {
+  permsVersion = version
+}
+
 export interface SessionKeyRecord {
   privateKey: Hex
   smartAccountAddress: `0x${string}`
@@ -23,7 +40,13 @@ export interface SessionKeyRecord {
 }
 
 function storageKey(smartAccountAddress: string): string {
-  return `${STORAGE_PREFIX}${smartAccountAddress.toLowerCase()}`
+  if (!permsVersion) {
+    throw new Error(
+      'session-key: permission fingerprint not set — '
+      + 'call setSessionPermsVersion before any IO',
+    )
+  }
+  return `${STORAGE_PREFIX}${permsVersion}:${smartAccountAddress.toLowerCase()}`
 }
 
 function readDurationSec(): number {
