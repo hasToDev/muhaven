@@ -2,19 +2,31 @@
  * Issuer-side yield epoch runbook (Wave 3.5). Drives the full
  * YieldSnapshot lifecycle for a single token in one shot:
  *
+ *   0. (auto pre-flight) wrap `totalYield` legacy-PUSDC → mhUSDC for
+ *      the issuer if `YieldSnapshot.pusdc` is the MuHavenStable wrapper
+ *      (Phase 7.5 rotation, ADR-041). Skips when pusdc is still legacy.
+ *      Closes the silent-shortfall failure mode where fundEpoch's
+ *      `_silentFailBound` would silent-fail and every claim payout would
+ *      then be silent-failed to zero. See PHASE8_BLOCKER_YIELD_CLAIM_DECRYPT
+ *      §"Fix A — preflight wrap" + DEV_LOG 2026-04-28 (continuation #3).
  *   1. openEpoch(token)            — issuer
  *   2. snapshotBatch(epochId, [investors]) — paginated, issuer
  *   3. finalizeSnapshot(epochId)   — issuer
- *   4. fundEpoch(epochId, encTotalYield) — issuer pulls PUSDC via cofhe
+ *   4. fundEpoch(epochId, encTotalYield) — issuer pulls confidential
+ *      USDC (mhUSDC post-Phase-7.5; legacy PUSDC pre-Phase-7.5)
  *
  * After step 4, every investor in the snapshot can call
  * `YieldSnapshot.claimYield(epochId, ephemeralEOA)` from the dashboard
  * (in scope of SESSION_PERMISSIONS, signs silently with session key).
  *
  * Pre-flight you must own:
- *   - PUSDC balance ≥ totalYield on the issuer wallet.
- *   - PUSDC operator approval: `legacyPusdc.setOperator(yieldSnapshot, expiry)`.
- *     The script checks + grants if missing.
+ *   - **legacy PUSDC** balance ≥ totalYield on the issuer wallet
+ *     (run `scripts/wrap-pusdc-only.ts` to top up from USDC if low).
+ *   - The script auto-grants both operator approvals:
+ *       a) `legacyPusdc.setOperator(mhUSDC, expiry)` — lets the wrapper
+ *          pull legacy PUSDC during the preflight wrap.
+ *       b) `mhUSDC.setOperator(yieldSnapshot, expiry)` — lets the
+ *          snapshot pull mhUSDC during fundEpoch.
  *
  * Args via env:
  *   MUHAVEN_ENV          prod | staging
@@ -56,6 +68,18 @@ const REGISTRY_ABI = [
 ];
 
 const PUSDC_ABI = [
+  "function isOperator(address holder, address spender) view returns (bool)",
+  "function setOperator(address spender, uint48 until) external",
+];
+
+/// Minimal MuHavenStable surface needed for the preflight wrap step.
+/// `legacyPusdc()` lets us detect whether `YieldSnapshot.pusdc` rotated
+/// to the wrapper (Phase 7.5 / ADR-041); `wrap` is the wrap entrypoint;
+/// the operator getters/setters are needed for both the wrap-side pull
+/// (legacyPusdc → mhUSDC) and the fundEpoch-side pull (mhUSDC → snapshot).
+const STABLE_ABI = [
+  "function legacyPusdc() view returns (address)",
+  "function wrap((uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) encAmount, address ephemeralEOA)",
   "function isOperator(address holder, address spender) view returns (bool)",
   "function setOperator(address spender, uint48 until) external",
 ];
@@ -115,6 +139,110 @@ async function main() {
 
   const registry = new ethers.Contract(investorRegistryAddr, REGISTRY_ABI, signer);
   const pusdc = new ethers.Contract(pusdcAddr, PUSDC_ABI, signer);
+
+  // ── 0. Pre-flight wrap (only when YieldSnapshot.pusdc points at the
+  //      MuHavenStable wrapper — Phase 7.5 / ADR-041 rotation).
+  //
+  //      Why this exists: the wrapper's `_doTransfer` applies
+  //      `_silentFailBound`, so an under-funded issuer's mhUSDC float would
+  //      cause `fundEpoch`'s pull to silent-fail to zero. The snapshot then
+  //      sets `e.funded = true` + `_encRemaining[epoch] = encY64` (the
+  //      *requested* amount, not `actualPaid`), and every `claimYield` would
+  //      thereafter silent-fail to zero too — investors get a fresh
+  //      ctHash that decrypts to zero-delta, indistinguishable from a
+  //      genuine wrapper-transfer-completed-with-shortfall.
+  //
+  //      Eliminating that failure mode at the script layer: always wrap
+  //      `totalYield` legacy PUSDC → mhUSDC for the issuer immediately
+  //      before fundEpoch. Idempotent in effect — over-wrapping just
+  //      accumulates the issuer's mhUSDC float; under-wrapping reverts
+  //      loudly via the wrapper's `WrapFailed` (legacy PUSDC pull
+  //      shortfall surfaces as a top-level revert, unlike the wrapper's
+  //      transfer paths).
+  //
+  //      A contract-side equivalent ("Fix B") that loud-reverts
+  //      `EpochUnderfunded` if `actualPaid != encTotalYield` is the
+  //      proper structural fix — drafted in
+  //      `development/DEV_WAVE_3_5/PHASE8_FIX_B_DRAFT.md`. This script
+  //      step is the operational workaround that ships immediately.
+  let usedWrapper = false;
+  let wrapperAddr: string | null = null;
+  let legacyPusdcAddr: string | null = null;
+  try {
+    const probe = new ethers.Contract(
+      pusdcAddr,
+      ["function legacyPusdc() view returns (address)"],
+      signer.provider!,
+    );
+    legacyPusdcAddr = await probe.legacyPusdc();
+    usedWrapper = legacyPusdcAddr !== null
+      && legacyPusdcAddr !== ethers.ZeroAddress;
+    wrapperAddr = pusdcAddr;
+  } catch {
+    // pusdc field is the legacy IFHERC20 (no `legacyPusdc()` getter) —
+    // pre-Phase-7.5 wiring. Skip the preflight wrap.
+    usedWrapper = false;
+  }
+
+  if (usedWrapper && wrapperAddr && legacyPusdcAddr) {
+    console.log(
+      `[pre/wrap] YieldSnapshot.pusdc → MuHavenStable wrapper (Phase 7.5 wiring)`,
+    );
+    console.log(`[pre/wrap]   wrapper      : ${wrapperAddr}`);
+    console.log(`[pre/wrap]   legacy PUSDC : ${legacyPusdcAddr}`);
+
+    const stable = new ethers.Contract(wrapperAddr, STABLE_ABI, signer);
+    const legacy = new ethers.Contract(legacyPusdcAddr, PUSDC_ABI, signer);
+
+    // (a) legacy PUSDC operator → wrapper, so wrap() can pull.
+    const wrapOpOk: boolean = await legacy.isOperator(
+      signer.address,
+      wrapperAddr,
+    );
+    if (!wrapOpOk) {
+      const expiry = BigInt(Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60);
+      console.log(
+        `[pre/wrap] granting legacyPusdc operator → wrapper, until ${expiry}`,
+      );
+      const tx = await legacy.setOperator(wrapperAddr, expiry);
+      console.log(`[pre/wrap]   setOperator tx: ${tx.hash}`);
+      await tx.wait();
+    } else {
+      console.log("[pre/wrap] legacyPusdc operator on wrapper already granted");
+    }
+
+    // (b) Encrypt totalYield as uint64 (mhUSDC width) and wrap.
+    //     `totalYield` env is bounded to legitimate PUSDC amounts well
+    //     under uint64.max (~1.8e19), so the narrowing from uint128 to
+    //     uint64 is safe; over-spec inputs would also break fundEpoch's
+    //     own `FHE.asEuint64` narrow downstream — same constraint.
+    if (totalYield > 2n ** 64n - 1n) {
+      throw new Error(
+        `MUHAVEN_TOTAL_YIELD ${totalYield} exceeds uint64 max — wrap() cannot encode it`,
+      );
+    }
+    console.log(
+      `[pre/wrap] wrapping ${totalYield.toString()} legacy PUSDC → mhUSDC (issuer pre-fund)`,
+    );
+    const cofheClientForWrap = await createCofheClient(hre, signer as any);
+    const [encWrap] = await cofheClientForWrap
+      .encryptInputs([Encryptable.uint64(totalYield)])
+      .setAccount(signer.address)
+      .execute();
+    const wrapTx = await stable.wrap(
+      {
+        ctHash: encWrap.ctHash,
+        securityZone: encWrap.securityZone,
+        utype: encWrap.utype,
+        signature: encWrap.signature,
+      },
+      signer.address, // ephemeralEOA — issuer's own EOA so they can decrypt their float
+    );
+    console.log(`[pre/wrap]   wrap tx: ${wrapTx.hash}`);
+    await wrapTx.wait();
+  } else {
+    console.log("[pre/wrap] YieldSnapshot.pusdc is legacy IFHERC20 — skipping wrap step");
+  }
 
   // ── 1. Pre-flight: operator approval on whichever contract YieldSnapshot
   //      pulls from (legacy PUSDC or MuHavenStable, depending on env wiring).

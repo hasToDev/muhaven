@@ -1,7 +1,21 @@
 /**
- * Wrap USDC → PUSDC for the deployer/issuer without going on to mhUSDC.
- * Useful for funding YieldSnapshot.fundEpoch which pulls confidential
- * PUSDC directly from the issuer (no mhUSDC layer involved).
+ * Wrap USDC → legacy confidential PUSDC for the deployer/issuer. Stops
+ * at the legacy-PUSDC layer — does NOT continue to mhUSDC.
+ *
+ * Use this to top up the issuer's legacy-PUSDC balance before running
+ * `scripts/run-yield-epoch.ts` (which itself auto-wraps the requested
+ * `MUHAVEN_TOTAL_YIELD` amount of legacy PUSDC → mhUSDC during its
+ * preflight, then `fundEpoch`-pulls from the issuer's mhUSDC float).
+ *
+ * Stale-docstring history note: pre-Phase-7.5, `YieldSnapshot.pusdc`
+ * pointed directly at legacy PUSDC and `fundEpoch` pulled legacy PUSDC
+ * straight from the issuer — so this script's USDC → PUSDC step was
+ * sufficient prep on its own. After Phase 7.5 (ADR-041), the snapshot's
+ * `pusdc` rotated to the MuHavenStable wrapper and the issuer must hold
+ * **mhUSDC** for `fundEpoch` to actually pull anything; the wrap-to-mhUSDC
+ * step now lives in `run-yield-epoch.ts` (search for `[pre/wrap]`). This
+ * script is still the right entry point for keeping the underlying
+ * legacy-PUSDC float topped up from USDC.
  *
  * Usage:
  *   WRAP_AMOUNT_USDC=1 pnpm hardhat run scripts/wrap-pusdc-only.ts --network arb-sepolia
