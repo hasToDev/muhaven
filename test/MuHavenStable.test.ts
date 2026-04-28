@@ -946,6 +946,10 @@ describe("MuHavenStable — Phase 7.5-A", () => {
         "function transferFrom(address,address,bytes32,address) returns (bytes32)",
         // Phase 7.6-E / ADR-044 — split-grant 5-arg variant.
         "function transferFrom(address,address,bytes32,address,address) returns (bytes32)",
+        // Phase 8 Option B / ADR-046 — trusted-payer payout bypass.
+        "function trustedPayout(address,bytes32,address) returns (bytes32)",
+        "function setTrustedPayer(address,bool)",
+        "function isTrustedPayer(address) view returns (bool)",
         "function setOperator(address,uint48)",
         "function isOperator(address,address) view returns (bool)",
         "function confidentialBalanceOf(address) view returns (bytes32)",
@@ -960,6 +964,169 @@ describe("MuHavenStable — Phase 7.5-A", () => {
         "function paused() view returns (bool)",
       ]);
       expect(await stable.supportsInterface(interfaceId)).to.equal(true);
+    });
+  });
+
+  // ── Trusted-payer payout (Phase 8 Option B / ADR-046) ─────────────────
+
+  describe("trustedPayout", () => {
+    /**
+     * `trustedPayout` is the silent-fail-bound bypass that
+     * `YieldSnapshot.claimYield` calls instead of `transferFrom`. Auth
+     * gate via `_trustedPayer[msg.sender]`. ACL grants follow the
+     * split-grant pattern (sender kernel-only, recipient kernel + eph).
+     *
+     * The cofhe TN testnet pathology that prompted the design (indexer
+     * refusing to register handles produced by the 8-op chain
+     * `_doTransfer` runs) is exercised end-to-end in
+     * `MuHavenStable.integration.test.ts > Phase 8`. These cases lock in
+     * the wrapper-side guarantees independent of the snapshot integration.
+     */
+
+    it("reverts NotTrustedPayer for unregistered callers", async () => {
+      const { stable, alice, bob } = await loadFixture(deployStableFixture);
+      // The auth check `_trustedPayer[msg.sender]` fires FIRST in
+      // trustedPayout — before NoBalance / ZeroAddress / InvalidEphemeralEOA.
+      // alice is not registered → loud-revert immediately, regardless of
+      // her mhUSDC state. ZeroHash placeholder for the bytes32 amount.
+      await expect(
+        stable
+          .connect(alice)
+          .trustedPayout(bob.address, hre.ethers.ZeroHash, alice.address),
+      ).to.be.revertedWithCustomError(stable, "NotTrustedPayer");
+    });
+
+    it("setTrustedPayer is owner-only + emits event", async () => {
+      const { stable, alice, deployer } = await loadFixture(
+        deployStableFixture,
+      );
+      await expect(
+        stable.connect(alice).setTrustedPayer(alice.address, true),
+      ).to.be.revertedWithCustomError(stable, "OnlyOwner");
+
+      await expect(
+        stable.connect(deployer).setTrustedPayer(alice.address, true),
+      )
+        .to.emit(stable, "TrustedPayerSet")
+        .withArgs(alice.address, true);
+
+      expect(await stable.isTrustedPayer(alice.address)).to.equal(true);
+
+      await expect(
+        stable.connect(deployer).setTrustedPayer(alice.address, false),
+      )
+        .to.emit(stable, "TrustedPayerSet")
+        .withArgs(alice.address, false);
+
+      expect(await stable.isTrustedPayer(alice.address)).to.equal(false);
+    });
+
+    it("setTrustedPayer rejects zero address", async () => {
+      const { stable, deployer } = await loadFixture(deployStableFixture);
+      await expect(
+        stable.connect(deployer).setTrustedPayer(hre.ethers.ZeroAddress, true),
+      ).to.be.revertedWithCustomError(stable, "ZeroAddress");
+    });
+
+    it("happy-path payout: registered alice pays bob, ACL split-grant", async () => {
+      const { stable, pusdc, alice, bob, aliceClient, acl, deployer } =
+        await loadFixture(deployStableFixture);
+
+      // Seed alice with mhUSDC via wrap (production path).
+      await seedAndApprove(pusdc, stable, alice, 100n * ONE_PUSDC);
+      const aliceEph = createEphemeralEOA();
+      const encWrap = await encUint64(aliceClient, 100n * ONE_PUSDC);
+      await stable.connect(alice).wrap(encWrap, aliceEph.address);
+
+      // Register alice as trusted payer.
+      await stable.connect(deployer).setTrustedPayer(alice.address, true);
+
+      // Pay bob using alice's existing mhUSDC balance handle as the
+      // amount (entire balance — silent-fail-bound is bypassed in
+      // trustedPayout, so the trusted caller's amount is taken at face
+      // value; for this test we transfer the full balance which is
+      // structurally fine). bob has no prior mhUSDC.
+      const aliceBalHandle = await stable.confidentialBalanceOf(alice.address);
+      const bobEph = createEphemeralEOA();
+      await expect(
+        stable
+          .connect(alice)
+          .trustedPayout(bob.address, aliceBalHandle, bobEph.address),
+      )
+        .to.emit(stable, "Transfer")
+        .withArgs(alice.address, bob.address);
+
+      // Recipient (bob): kernel + bobEph grants.
+      const bobBal = await stable.confidentialBalanceOf(bob.address);
+      expect(await acl.isAllowed(handleToUint(bobBal), bob.address)).to.equal(true);
+      expect(await acl.isAllowed(handleToUint(bobBal), bobEph.address)).to.equal(true);
+
+      // Sender (alice): kernel grant only — bobEph must NOT be on alice's
+      // resulting handle (the audit-prep §A-9 / treasury-leak invariant
+      // mirrored to trustedPayout).
+      const aliceBalAfter = await stable.confidentialBalanceOf(alice.address);
+      expect(await acl.isAllowed(handleToUint(aliceBalAfter), alice.address)).to.equal(true);
+      expect(await acl.isAllowed(handleToUint(aliceBalAfter), bobEph.address)).to.equal(false);
+      // Alice's own pre-payment eph should also NOT be carried onto
+      // alice's post-payment handle (kernel-only; matches the design).
+      expect(await acl.isAllowed(handleToUint(aliceBalAfter), aliceEph.address)).to.equal(false);
+    });
+
+    it("rejects InvalidEphemeralEOA on zero ephemeralEOA", async () => {
+      const { stable, alice, bob, deployer } = await loadFixture(
+        deployStableFixture,
+      );
+      await stable.connect(deployer).setTrustedPayer(alice.address, true);
+      // ZeroHash placeholder for the bytes32 amount — the eph check
+      // fires before any balance/handle work.
+      await expect(
+        stable
+          .connect(alice)
+          .trustedPayout(bob.address, hre.ethers.ZeroHash, hre.ethers.ZeroAddress),
+      ).to.be.revertedWithCustomError(stable, "InvalidEphemeralEOA");
+    });
+
+    it("rejects ZeroAddress on zero recipient", async () => {
+      const { stable, alice, deployer } = await loadFixture(deployStableFixture);
+      await stable.connect(deployer).setTrustedPayer(alice.address, true);
+      // ZeroHash placeholder for the bytes32 amount — the recipient check
+      // fires before any balance/handle work.
+      await expect(
+        stable
+          .connect(alice)
+          .trustedPayout(hre.ethers.ZeroAddress, hre.ethers.ZeroHash, alice.address),
+      ).to.be.revertedWithCustomError(stable, "ZeroAddress");
+    });
+
+    it("rejects NoBalance when caller has never wrapped", async () => {
+      const { stable, alice, bob, deployer } = await loadFixture(
+        deployStableFixture,
+      );
+      await stable.connect(deployer).setTrustedPayer(alice.address, true);
+      // ZeroHash placeholder — NoBalance check fires before
+      // FHE.allowThis(encAmount) so the handle value doesn't matter.
+      await expect(
+        stable
+          .connect(alice)
+          .trustedPayout(bob.address, hre.ethers.ZeroHash, bob.address),
+      ).to.be.revertedWithCustomError(stable, "NoBalance");
+    });
+
+    it("pause blocks trustedPayout", async () => {
+      const { stable, pusdc, alice, bob, aliceClient, deployer } =
+        await loadFixture(deployStableFixture);
+      await seedAndApprove(pusdc, stable, alice, 100n * ONE_PUSDC);
+      const encWrap = await encUint64(aliceClient, 100n * ONE_PUSDC);
+      await stable.connect(alice).wrap(encWrap, alice.address);
+      await stable.connect(deployer).setTrustedPayer(alice.address, true);
+      await stable.connect(deployer).pause();
+      // Pause check fires before balance/auth, so any bytes32 placeholder
+      // works (ZeroHash here for parity with the other guard tests).
+      await expect(
+        stable
+          .connect(alice)
+          .trustedPayout(bob.address, hre.ethers.ZeroHash, bob.address),
+      ).to.be.revertedWithCustomError(stable, "PausedSurface");
     });
   });
 

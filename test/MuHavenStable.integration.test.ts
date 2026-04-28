@@ -1118,6 +1118,11 @@ describe("Phase 8 — YieldSnapshot.claimYield split-grant (PHASE8_BLOCKER fix)"
       { kind: "transparent", initializer: "initialize" }
     );
 
+    // Register snapshot as a trusted payer on the wrapper so claimYield's
+    // `IMuHavenStable.trustedPayout(...)` call is authorized (Phase 8
+    // Option B / ADR-046). Without this, claimYield reverts NotTrustedPayer.
+    await mhUSDC.setTrustedPayer(await snapshot.getAddress(), true);
+
     await tokenRegistry.registerToken(await token.getAddress(), {
       active: true,
       treasury: await treasury.getAddress(),

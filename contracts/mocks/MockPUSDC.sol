@@ -196,6 +196,31 @@ contract MockPUSDC is IFHERC20 {
         return encAmount;
     }
 
+    /// @notice Trusted-payer payout shim (Phase 8 Option B / ADR-046).
+    ///         Mock has no `_trustedPayer` registry — the shim is
+    ///         always-allow so legacy YieldSnapshot fixtures keep
+    ///         deploying without the explicit `setTrustedPayer` ceremony.
+    ///         Tests that need to exercise the auth gate or the
+    ///         silent-fail-bound bypass MUST use the real `MuHavenStable`
+    ///         wrapper fixture (`MuHavenStable.integration.test.ts`).
+    function trustedPayout(
+        address to,
+        euint64 encAmount,
+        address /* ephemeralEOA */
+    ) external returns (euint64) {
+        FHE.allowThis(encAmount);
+        _doTransfer(msg.sender, to, encAmount);
+        return encAmount;
+    }
+
+    function setTrustedPayer(address /* payer */, bool /* allowed */) external {
+        // No-op on the mock — `trustedPayout` is always-allow.
+    }
+
+    function isTrustedPayer(address /* payer */) external pure returns (bool) {
+        return true;
+    }
+
     // ── IFHERC20: Operator model ──────────────────────────────────────────
 
     function setOperator(address operator, uint48 until) external {

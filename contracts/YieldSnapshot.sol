@@ -43,18 +43,24 @@ import {ITokenRegistry} from "./interfaces/ITokenRegistry.sol";
 ///   5. Each investor `claimYield(epochId, ephemeralEOA)` — computes their
 ///      proportional share `encShare = FHE.mul(encBalance, encRatio)`,
 ///      narrows to PUSDC's `euint64` width, grants `ephemeralEOA` decrypt
-///      per ADR-021, transfers to investor via the modern split-grant
-///      `IMuHavenStable.transferFrom(self, investor, encShare64,
-///      address(0), ephemeralEOA)` per ADR-044. The split-grant variant
-///      plants the session-EOA grant on the investor's grown mhUSDC
-///      balance handle in the SAME tx as the transfer, so the investor's
-///      first `decryptForView` post-claim succeeds without the
-///      `refreshDecryptGrant` round-trip + cofhe TN propagation wait
-///      (see `PHASE8_BLOCKER_YIELD_CLAIM_DECRYPT.md`). The `from`-leg
-///      eph is suppressed (`address(0)`) so the snapshot's own mhUSDC
-///      float stays kernel-only — investors cannot decrypt the
-///      treasury-equivalent float, mirroring the audit-prep §A-9
-///      treasury-leak fix.
+///      per ADR-021, transfers to investor via the trusted-payer bypass
+///      surface `IMuHavenStable.trustedPayout(investor, encShare64,
+///      ephemeralEOA)` per Phase 8 Option B / ADR-046. Plants the
+///      session-EOA grant on the investor's grown mhUSDC handle in the
+///      SAME tx as the transfer, so the investor's first `decryptForView`
+///      post-claim succeeds without an on-chain `refreshDecryptGrant`
+///      round-trip. Snapshot's float stays kernel-only — investors cannot
+///      decrypt the treasury-equivalent float (mirrors audit-prep §A-9).
+///      `trustedPayout` skips the wrapper's `_silentFailBound` chain
+///      (lte + trivialEncrypt + select), cutting the wrapper-side FHE op
+///      count from 5 → 2 and the total claim FHE chain from 8 → 5 ops.
+///      The cofhe Threshold Network's testnet indexer empirically refuses
+///      to index handles produced by the 8-op chain that the original
+///      ADR-044 split-grant path produced — see
+///      `PHASE8_BLOCKER_YIELD_CLAIM_DECRYPT.md` and ADR-046. Snapshot
+///      proxy must be pre-registered via
+///      `IMuHavenStable.setTrustedPayer(snapshot, true)` (one-shot
+///      owner-gated tx via `scripts/grant-trusted-payer.ts`).
 ///      Idempotent: re-calls revert with `AlreadyClaimed` (interface
 ///      natspec — "double claim is an operator/tooling bug, not a malicious
 ///      side-channel", so *not* silent-fail).
@@ -505,27 +511,48 @@ contract YieldSnapshot is Initializable, ReentrancyGuardTransient, IYieldSnapsho
         FHE.allowThis(newRem);
         _encRemaining[epochId] = newRem;
 
-        // Transfer mhUSDC (this contract → investor) via the modern
-        // split-grant `IMuHavenStable.transferFrom` per Phase 7.6-E /
-        // ADR-044. Plants the session-EOA grant on the investor's
-        // grown balance handle in the SAME tx as the transfer so the
-        // first `decryptForView` post-claim succeeds without an on-
-        // chain `refreshDecryptGrant` round-trip — closes the Phase 8
-        // blocker `PHASE8_BLOCKER_YIELD_CLAIM_DECRYPT.md`.
+        // Transfer mhUSDC (this contract → investor) via the trusted-payer
+        // bypass surface per Phase 8 Option B / ADR-046. `trustedPayout`
+        // skips the wrapper's `_silentFailBound` chain (lte +
+        // trivialEncrypt + select), cutting the wrapper-side FHE op count
+        // from 5 → 2 and the total claim-tx FHE chain from 8 → 5.
         //
-        // `fromEph = address(0)` — suppress the snapshot's float-leg
-        // grant (treasury-leak avoidance, mirrors A-9 split-grant
-        // pattern in MuHavenSubscription / RedemptionQueue).
-        // `toEph   = ephemeralEOA` — investor's session decrypt access.
+        // The pre-Option-B path used `IMuHavenStable.transferFrom(
+        // address(this), msg.sender, encShare64, address(0),
+        // ephemeralEOA)` — correct ACL semantics, but the cofhe
+        // Threshold Network's testnet indexer choked on the resulting
+        // 8-op chain and refused to index the post-claim `_balances[
+        // investor]` handle. Investors saw indefinite `204` polls on
+        // `/v2/sealoutput`. Empirically verified: the issue persisted
+        // across fresh kernels, with preflight-wrapped issuer mhUSDC
+        // (Fix A), after a 1-hour TN-propagation wait. Skipping the
+        // silent-fail bound (load-bearing for direct EOA P2P transfers,
+        // structurally redundant for the snapshot leg by per-epoch
+        // conservation) was the only path that dodged the indexer
+        // pathology. See `PHASE8_BLOCKER_YIELD_CLAIM_DECRYPT.md`.
         //
-        // `_requireOperator(self, self)` short-circuits via
-        // `holder == spender` inside MuHavenStable, so no
-        // `setOperator(snapshot, …)` pre-flight is needed for this leg.
-        IMuHavenStable(pusdc).transferFrom(
-            address(this),
+        // ACL grants on the recipient (investor) handle: kernel +
+        // ephemeralEOA (split-grant pattern from ADR-044, preserved by
+        // `trustedPayout`). Sender (snapshot) handle: kernel-only —
+        // snapshot's float stays operationally private.
+        //
+        // Authorization: snapshot proxy must be pre-registered as
+        // trusted payer on the wrapper via
+        // `IMuHavenStable.setTrustedPayer(snapshot, true)` (owner-only;
+        // one-shot operator script `scripts/grant-trusted-payer.ts`).
+        // Pre-flight check; loud-reverts `NotTrustedPayer` if missing.
+        //
+        // Conservation guarantee: per-epoch `sum(encShare) <=
+        // encTotalYield` (via the floor-division ratio bound, see
+        // contract-level natspec "Conservation story") ensures the
+        // snapshot's mhUSDC float covers every legitimate claim. If
+        // `fundEpoch` itself silent-failed (pre-Fix-A failure mode),
+        // claims would still silent-fail on the wrapper's `FHE.sub`
+        // underflow — but Fix A (`run-yield-epoch.ts` preflight wrap)
+        // and Fix B (`PHASE8_FIX_B_DRAFT.md` — pending) close that gap.
+        IMuHavenStable(pusdc).trustedPayout(
             msg.sender,
             encShare64,
-            address(0),
             ephemeralEOA
         );
 

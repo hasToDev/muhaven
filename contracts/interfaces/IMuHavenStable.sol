@@ -45,6 +45,13 @@ interface IMuHavenStable {
     error UnauthorizedCaller();
     error AlreadyInitialized();
 
+    /// @notice `trustedPayout` caller is not registered as a trusted payer.
+    ///         Loud-revert (rather than silent-fail) so misconfigured
+    ///         contract integrations surface the missing `setTrustedPayer`
+    ///         pre-flight at the call site instead of silently falling
+    ///         through to a zero-payout state.
+    error NotTrustedPayer();
+
     // ── Events ───────────────────────────────────────────────────────────
 
     event StableInitialized(address indexed owner, address indexed legacyPusdc);
@@ -57,6 +64,7 @@ interface IMuHavenStable {
     event LegacyPusdcUpdated(address indexed newPusdc);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
     event DecryptGrantRefreshed(address indexed holder, address indexed ephemeralEOA);
+    event TrustedPayerSet(address indexed payer, bool allowed);
 
     // ── Wrap / unwrap (1:1 legacy PUSDC ↔ mhUSDC) ──────────────────────
 
@@ -139,6 +147,45 @@ interface IMuHavenStable {
         address fromEph,
         address toEph
     ) external returns (euint64 actualTransferred);
+
+    // ── Trusted-payer payout (Phase 8 Option B / ADR-046) ──────────────
+
+    /// @notice Trusted-payer payout that skips `_silentFailBound`.
+    ///         Cuts the wrapper-side FHE op chain from 5 ops (lte +
+    ///         trivialEncrypt + select + sub + add) to 2 ops (sub + add).
+    ///
+    ///         For contract-mediated flows where conservation is
+    ///         structurally guaranteed off-chain — currently
+    ///         `YieldSnapshot.claimYield`, where `encShare =
+    ///         floor(encBalance * encRatio)` and per-epoch conservation
+    ///         (`sum(encShare) <= encTotalYield`) prevents the snapshot's
+    ///         float from going negative across all legitimate claims.
+    ///
+    ///         Why exists: the cofhe Threshold Network's indexer on Arb
+    ///         Sepolia testnet refused to index `_balances[investor]`
+    ///         handles produced by the 8-op chain (`mul → cast → sub →
+    ///         lte → trivialEncrypt → select → sub → add`) created by
+    ///         `claimYield` + the wrapper's `_doTransfer`. Investors saw
+    ///         indefinite `204` polls on `/v2/sealoutput`. Skipping
+    ///         `_silentFailBound` reduces the chain to 5 ops and dodges
+    ///         the indexer pathology. See `PHASE8_BLOCKER_YIELD_CLAIM_DECRYPT.md`.
+    ///
+    ///         ACL grants follow the split-grant pattern (ADR-044):
+    ///         sender (caller) leg gets kernel-only; recipient (`to`) leg
+    ///         gets `to`'s kernel + `ephemeralEOA`.
+    ///
+    ///         Restricted to `_trustedPayer[msg.sender] == true`. Loud-
+    ///         reverts `NotTrustedPayer` for unauthorized callers.
+    ///         FHE.sub underflows silently on insufficient sender balance —
+    ///         the trusted caller is responsible for not over-spending.
+    function trustedPayout(
+        address to,
+        euint64 encAmount,
+        address ephemeralEOA
+    ) external returns (euint64);
+
+    function setTrustedPayer(address payer, bool allowed) external;
+    function isTrustedPayer(address payer) external view returns (bool);
 
     // ── Operator model (mirrors legacy PUSDC) ──────────────────────────
 

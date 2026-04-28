@@ -81,11 +81,22 @@ contract MuHavenStable is
     /// @inheritdoc IMuHavenStable
     bool public paused;
 
-    /// @dev Reserved storage for future upgrades (proxy-safe gap). Eight
-    ///      named slots above (3 mappings/euint, 2 strings, 2 addresses, 1
-    ///      bool) → reserve 42 to land at 50 own slots, matching the
-    ///      `MuHavenSubscription` / `TokenRegistry` convention.
-    uint256[42] private __gap;
+    /// @notice Trusted-payer registry — addresses allowed to call
+    ///         `trustedPayout` (ADR-046, Phase 8 Option B). Owner-managed
+    ///         via `setTrustedPayer`. Currently the only registered payer
+    ///         is the `YieldSnapshot` proxy, registered post-upgrade
+    ///         via `scripts/grant-trusted-payer.ts`.
+    mapping(address => bool) private _trustedPayer;
+
+    /// @dev Reserved storage for future upgrades (proxy-safe gap). Nine
+    ///      named slots above (3 mappings/euint + 2 strings + 2 addresses
+    ///      + 1 bool + 1 trusted-payer mapping) → reserve 41 to land at
+    ///      50 own slots, matching the `MuHavenSubscription` /
+    ///      `TokenRegistry` convention. The `_trustedPayer` slot was
+    ///      added in the Phase 8 Option B upgrade (ADR-046); the gap
+    ///      shrunk from 42 → 41 to compensate, preserving the total slot
+    ///      count + every prior slot's index.
+    uint256[41] private __gap;
 
     // ── Constants ────────────────────────────────────────────────────────
 
@@ -343,6 +354,81 @@ contract MuHavenStable is
         FHE.allowThis(encAmount);
 
         return _doTransfer(from, to, encAmount, fromEph, toEph);
+    }
+
+    // ── Trusted-payer payout (Phase 8 Option B / ADR-046) ──────────────
+
+    /// @inheritdoc IMuHavenStable
+    /// @dev Bypasses `_silentFailBound`. Total wrapper-side FHE op count:
+    ///        - sender: `FHE.sub(_balances[from], encAmount)` — 1 op
+    ///        - recipient: `FHE.add(_balances[to], encAmount)` — 1 op
+    ///      vs `_doTransfer`'s 5 ops (lte + trivialEncrypt + select +
+    ///      sub + add). Combined with `claimYield`'s pre-call ops
+    ///      (mul + cast + sub on `_encRemaining` = 3 ops), the total
+    ///      FHE chain in a yield-claim tx drops from 8 → 5.
+    ///
+    ///      Caller (`msg.sender`) must hold ACL on `encAmount` so the
+    ///      wrapper can `FHE.allowThis` it (matches the requirement on
+    ///      `transferFrom`'s on-chain-handle overload). Same kernel-only
+    ///      ACL grant on the sender (caller's float — operationally
+    ///      private) + kernel + ephemeralEOA grants on the recipient.
+    ///
+    ///      No silent-fail bound: `FHE.sub` on insufficient sender balance
+    ///      underflows silently in legacy FHE u64 arithmetic, producing
+    ///      a corrupt encrypted handle. The trusted caller is responsible
+    ///      for not over-spending; per-epoch conservation in
+    ///      `YieldSnapshot` guarantees this for the `claimYield` path.
+    ///      A future Fix B contract change (`PHASE8_FIX_B_DRAFT.md`)
+    ///      adds a loud-revert on `fundEpoch` shortfall to close the
+    ///      conditional ("snapshot float is exactly enough" requires
+    ///      "fundEpoch wasn't itself silent-failed").
+    function trustedPayout(
+        address to,
+        euint64 encAmount,
+        address ephemeralEOA
+    ) external whenNotPaused returns (euint64) {
+        if (!_trustedPayer[msg.sender]) revert NotTrustedPayer();
+        if (to == address(0)) revert ZeroAddress();
+        if (ephemeralEOA == address(0)) revert InvalidEphemeralEOA();
+        if (!Common.isInitialized(_balances[msg.sender])) revert NoBalance();
+
+        FHE.allowThis(encAmount);
+
+        // Sender (caller's float) — kernel-only ACL grant. No eph leak.
+        _balances[msg.sender] = FHE.sub(_balances[msg.sender], encAmount);
+        FHE.allowThis(_balances[msg.sender]);
+        FHE.allow(_balances[msg.sender], msg.sender);
+
+        // Recipient — kernel + ephemeralEOA grant (split-grant pattern).
+        if (Common.isInitialized(_balances[to])) {
+            _balances[to] = FHE.add(_balances[to], encAmount);
+        } else {
+            _balances[to] = encAmount;
+        }
+        FHE.allowThis(_balances[to]);
+        FHE.allow(_balances[to], to);
+        FHE.allow(_balances[to], ephemeralEOA);
+
+        // Caller may consume `encAmount` for downstream FHE ops. Matches
+        // `_doTransfer`'s caller-side grant on the silent-fail-bounded
+        // return — kept for symmetry even though `claimYield` doesn't
+        // currently consume the return value.
+        FHE.allow(encAmount, msg.sender);
+
+        emit Transfer(msg.sender, to);
+        return encAmount;
+    }
+
+    /// @inheritdoc IMuHavenStable
+    function setTrustedPayer(address payer, bool allowed) external onlyOwner {
+        if (payer == address(0)) revert ZeroAddress();
+        _trustedPayer[payer] = allowed;
+        emit TrustedPayerSet(payer, allowed);
+    }
+
+    /// @inheritdoc IMuHavenStable
+    function isTrustedPayer(address payer) external view returns (bool) {
+        return _trustedPayer[payer];
     }
 
     // ── Legacy IFHERC20 shim selectors (for ADR-008 callers) ────────────
