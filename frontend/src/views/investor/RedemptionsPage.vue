@@ -7,13 +7,12 @@ import { useWallet } from '@/composables/useWallet'
 import { useFhe } from '@/composables/useFhe'
 import { useMarketplaceStore } from '@/stores/marketplace'
 import { v35Addresses } from '@/contracts/addresses'
-import { buildReadContext, buildWriteContext, getPublicClient } from '@/services/v35/context'
-import { arbiscanTx } from '@/lib/external'
+import { buildReadContext, getPublicClient } from '@/services/v35/context'
 import { formatUSD } from '@/lib/utils'
 import MButton from '@/components/ui/MButton.vue'
 import MPageLoader from '@/components/ui/MPageLoader.vue'
 import {
-  Inbox, Clock, CheckCircle2, Lock, Ban, Loader2, Coins, RefreshCw, ExternalLink,
+  Inbox, Clock, CheckCircle2, Lock, Ban, Loader2, RefreshCw, ExternalLink,
   ShieldCheck, AlertTriangle,
 } from 'lucide-vue-next'
 
@@ -41,7 +40,6 @@ const items = ref<EnrichedRequest[]>([])
 const loading = ref(false)
 const loaded = ref(false)
 const errMsg = ref<string | null>(null)
-const claimingIds = ref<Set<string>>(new Set())
 
 async function loadAll() {
   if (!connected.value || !address.value) return
@@ -116,24 +114,28 @@ onMounted(() => {
 
 // ── Status derivation ───────────────────────────────────────────────────
 
-type RequestStatus = 'queued' | 'settled' | 'claimed' | 'cancelled'
+// Phase 7.6 / ADR-NEW-1: `processEpoch` flips `settled = claimed = true`
+// atomically, so a request can only be observed in `cancelled | claimed |
+// queued`. The contract's `claim()` reverts `AlreadyClaimed` for any
+// `settled` request, so the legacy "settled, awaiting investor claim"
+// state is unreachable in the live system.
+type RequestStatus = 'queued' | 'claimed' | 'cancelled'
 
 function statusOf(r: EnrichedRequest): RequestStatus {
   if (r.state.cancelled) return 'cancelled'
   if (r.state.claimed) return 'claimed'
-  if (r.state.settled) return 'settled'
   return 'queued'
 }
 
 const pendingCount = computed(() =>
-  items.value.filter(r => statusOf(r) === 'queued' || statusOf(r) === 'settled').length,
+  items.value.filter(r => statusOf(r) === 'queued').length,
 )
 
 // ── Decrypt proceeds ────────────────────────────────────────────────────
 
 async function decryptProceeds(req: EnrichedRequest) {
   if (req.decryptingProceeds) return
-  if (!req.state.settled) return
+  if (!req.state.claimed) return
   req.decryptingProceeds = true
   try {
     // The proceeds handle's ACL is granted to `request.ephemeralEOA` at
@@ -152,41 +154,17 @@ async function decryptProceeds(req: EnrichedRequest) {
   }
 }
 
-// ── Claim ───────────────────────────────────────────────────────────────
-
-async function claim(req: EnrichedRequest) {
-  const key = `${req.queueAddress}:${req.requestId}`
-  if (claimingIds.value.has(key)) return
-  if (!req.state.settled || req.state.claimed || req.state.cancelled) return
-
-  claimingIds.value.add(key)
-  try {
-    const ctx = await buildWriteContext()
-    const queue = new RedemptionQueueClient(ctx, req.queueAddress)
-    const hash = await queue.claim(req.requestId)
-    toast.success('Claim submitted', {
-      description: `tx ${hash.slice(0, 10)}…`,
-      action: {
-        label: 'View',
-        onClick: () => window.open(arbiscanTx(hash), '_blank', 'noopener'),
-      },
-    })
-    // Re-read state.
-    await loadAll()
-  } catch (e) {
-    toast.error('Claim failed', {
-      description: e instanceof Error ? e.message : String(e),
-    })
-  } finally {
-    claimingIds.value.delete(key)
-  }
-}
+// Note: pre-Phase-7.6 this view had a `claim(requestId)` button. Phase 7.6
+// made `processEpoch` settle + pay out atomically (the contract's `claim`
+// reverts `AlreadyClaimed` for every settled request), so the investor
+// never has anything to do post-issuer. Button + handler removed; the
+// list now jumps `queued → claimed` (where "claimed" === paid out) and
+// surfaces only the decrypt-payout action.
 
 function statusLabel(s: RequestStatus): string {
   switch (s) {
     case 'queued': return 'Queued'
-    case 'settled': return 'Ready to claim'
-    case 'claimed': return 'Claimed'
+    case 'claimed': return 'Settled'
     case 'cancelled': return 'Cancelled'
   }
 }
@@ -194,8 +172,7 @@ function statusLabel(s: RequestStatus): string {
 function statusTone(s: RequestStatus) {
   switch (s) {
     case 'queued': return { text: 'text-gold', ring: 'border-gold/30', bg: 'bg-gold/10' }
-    case 'settled': return { text: 'text-positive', ring: 'border-positive/30', bg: 'bg-positive/10' }
-    case 'claimed': return { text: 'text-cool', ring: 'border-haze dark:border-white/10', bg: 'bg-haze/30 dark:bg-white/5' }
+    case 'claimed': return { text: 'text-positive', ring: 'border-positive/30', bg: 'bg-positive/10' }
     case 'cancelled': return { text: 'text-negative', ring: 'border-negative/30', bg: 'bg-negative/10' }
   }
 }
@@ -210,8 +187,8 @@ function statusTone(s: RequestStatus) {
         </h1>
         <p class="font-sans text-sm text-cool mt-2 max-w-xl leading-relaxed">
           Queued redemptions awaiting settlement. Once the issuer runs
-          <span class="font-mono text-[11px]">processEpoch</span>, you can decrypt the payout and
-          claim your PUSDC.
+          <span class="font-mono text-[11px]">processEpoch</span>, the proceeds drop into your
+          mhUSDC balance automatically — decrypt the payout below to view the amount.
         </p>
       </div>
       <button
@@ -242,8 +219,10 @@ function statusTone(s: RequestStatus) {
       <Inbox :size="40" :stroke-width="1.4" class="text-cool/35" />
       <p class="font-sans text-sm text-cool">No queued redemptions</p>
       <p class="font-sans text-xs text-cool/70 max-w-md text-center">
-        When a queued redemption is submitted (directly or via escalation from an instant redeem), it
-        appears here. The claim button enables after the issuer processes the epoch.
+        When a queued redemption is submitted (directly or via escalation from an instant redeem),
+        it appears here. The issuer processes the epoch via
+        <span class="font-mono text-[11px]">processEpoch</span> and the mhUSDC payout drops into
+        your wallet — no further action needed on your side.
       </p>
     </div>
 
@@ -281,14 +260,12 @@ function statusTone(s: RequestStatus) {
               <div
                 :class="[
                   'w-11 h-11 rounded-full flex items-center justify-center flex-shrink-0',
-                  statusOf(r) === 'settled' ? 'bg-positive/15 text-positive'
-                    : statusOf(r) === 'claimed' ? 'bg-compute/15 dark:bg-signal/15 text-compute dark:text-signal'
-                      : statusOf(r) === 'cancelled' ? 'bg-negative/15 text-negative'
-                        : 'bg-gold/15 dark:bg-signal/15 text-gold dark:text-signal',
+                  statusOf(r) === 'claimed' ? 'bg-positive/15 text-positive'
+                    : statusOf(r) === 'cancelled' ? 'bg-negative/15 text-negative'
+                      : 'bg-gold/15 dark:bg-signal/15 text-gold dark:text-signal',
                 ]"
               >
-                <CheckCircle2 v-if="statusOf(r) === 'settled'" :size="18" :stroke-width="1.8" />
-                <Coins v-else-if="statusOf(r) === 'claimed'" :size="18" :stroke-width="1.8" />
+                <CheckCircle2 v-if="statusOf(r) === 'claimed'" :size="18" :stroke-width="1.8" />
                 <Ban v-else-if="statusOf(r) === 'cancelled'" :size="18" :stroke-width="1.8" />
                 <Clock v-else :size="18" :stroke-width="1.8" />
               </div>
@@ -326,7 +303,7 @@ function statusTone(s: RequestStatus) {
                   {{ formatUSD(Number(r.decryptedProceeds) / 1e6) }}
                 </p>
                 <button
-                  v-else-if="r.state.settled"
+                  v-else-if="r.state.claimed"
                   type="button"
                   @click="decryptProceeds(r)"
                   :disabled="r.decryptingProceeds"
@@ -345,25 +322,8 @@ function statusTone(s: RequestStatus) {
                 </p>
               </div>
 
-              <button
-                v-if="statusOf(r) === 'settled'"
-                type="button"
-                @click="claim(r)"
-                :disabled="claimingIds.has(`${r.queueAddress}:${r.requestId}`)"
-                data-testid="redemption-claim-cta"
-                class="btn-gold-sweep px-5 py-2 rounded-lg font-sans font-semibold text-[10px] tracking-[0.18em] uppercase
-                       flex items-center gap-2 cursor-pointer transition-all duration-300 hover:-translate-y-0.5"
-              >
-                <Loader2
-                  v-if="claimingIds.has(`${r.queueAddress}:${r.requestId}`)"
-                  :size="12"
-                  class="animate-spin"
-                />
-                <Coins v-else :size="12" :stroke-width="2" />
-                Claim
-              </button>
               <a
-                v-if="r.state.settled"
+                v-if="r.state.claimed"
                 :href="`https://sepolia.arbiscan.io/address/${r.queueAddress}`"
                 target="_blank"
                 rel="noopener"

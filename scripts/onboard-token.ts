@@ -339,7 +339,18 @@ async function main() {
   await (
     await compliance.setAuthorizedCaller(tokenAddr, subscriptionAddr!, true)
   ).wait();
-  console.log("   compliance.setAuthorizedCaller(token, subscription) ✓\n");
+  console.log("   compliance.setAuthorizedCaller(token, subscription) ✓");
+  // RedemptionQueue fires the `destroyed` state-hook from within
+  // `processEpoch._settleRequest` (Phase 7.6 atomic settlement). Without
+  // this authorization, every queue settlement reverts NotAuthorizedCaller
+  // (selector 0x7046c88d) — broke staging Stage E redemption claim flow
+  // 2026-04-28 until backfilled. Token registration must always include
+  // the queue as an authorized caller for the same reason the token + the
+  // subscription are.
+  await (
+    await compliance.setAuthorizedCaller(tokenAddr, queueAddr, true)
+  ).wait();
+  console.log("   compliance.setAuthorizedCaller(token, queue) ✓\n");
 
   // ── 7. Oracle config ───────────────────────────────────────────────────
   let registeredOracle: string;
