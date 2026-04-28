@@ -308,6 +308,29 @@ export function useFhe() {
       return await runDecrypt()
     } catch (e) {
       if (is403Error(e) && opts.withRefresh !== false && kind !== 'none') {
+        // First defence — TN propagation lag. The on-chain `FHE.allow` was
+        // already stamped on this handle at mint/transfer time per ADR-021,
+        // but the Threshold Network reads ACL state with a multi-second sync
+        // window. A click-Reveal that races the wrap tx confirmation gets
+        // 403'd even though the grant exists on-chain. Sleeping ~2s and
+        // re-trying the decrypt usually clears it without an on-chain tx.
+        // Only fall through to the refresh-grant tx if this also 403s
+        // (which means the current ephemeralEOA genuinely has no grant —
+        // typically a cross-reload mismatch with the wrap-time EOA).
+        const TN_PROPAGATION_DELAY_MS = 2000
+        await new Promise(r => setTimeout(r, TN_PROPAGATION_DELAY_MS))
+        try {
+          return await runDecrypt()
+        } catch (e2) {
+          if (!is403Error(e2)) throw e2
+          // Still 403 after the propagation window — fall through to the
+          // on-chain refresh below.
+        }
+
+        // Second defence — refresh the ACL grant on-chain to the current
+        // ephemeralEOA, then retry. Costs an on-chain tx but is silent
+        // when `refreshDecryptGrant` is in `SESSION_PERMISSIONS` (it is,
+        // for both MuHavenToken and MuHavenStable).
         try {
           const { address } = ensureEphemeralKey()
           if (kind === 'muHavenToken') {
