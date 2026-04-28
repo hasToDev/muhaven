@@ -132,6 +132,42 @@ function nonZero<T extends { target: string }>(perms: readonly T[]): T[] {
 }
 
 /**
+ * Collapse permissions that share the same `(target, selector)` to a single
+ * entry. The deployed `CallPolicy` contracts (notably V0_0_4 at
+ * `0x9a52283276A0ec8740DF50bF01B28A80D880eaf2`) reject duplicate
+ * `(target, selector)` pairs at install time with `revert("duplicate
+ * permissionHash")`. Duplicates are easy to introduce by accident in our
+ * env: when the same `YieldSnapshot` proxy serves multiple RWA tokens
+ * (e.g. staging maps both TBILL1 and GOLD1 to the same snapshot
+ * address), the `Object.values(yieldSnapshots).map(...)` expansion
+ * yields N identical entries. Without this dedupe, every session-key
+ * install reverts AA23 on the first userOp and falls back to the passkey
+ * kernel — silently regressing the prompt budget. We compute the
+ * selector from the entry's abi + functionName since we may be called
+ * before `SESSION_SCOPE_KEYS` is initialised.
+ */
+function dedupePermissions<
+  T extends { target: string; abi: readonly any[]; functionName: string },
+>(perms: readonly T[]): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const perm of perms) {
+    const abiItem = (perm.abi as readonly any[]).find(
+      (item) => item.type === 'function' && item.name === perm.functionName,
+    );
+    if (!abiItem) {
+      throw new Error(`dedupePermissions: missing ABI for ${perm.functionName}`);
+    }
+    const selector = toFunctionSelector(abiItem).toLowerCase();
+    const key = `${perm.target.toLowerCase()}:${selector}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(perm);
+  }
+  return out;
+}
+
+/**
  * The narrow allowlist the session validator is scoped to.
  *
  * Wave 3 (legacy) flows: issuer distribute + investor escrow redeem +
@@ -183,7 +219,13 @@ const subscriptionPermissions = nonZero([
   },
 ]);
 
-const SESSION_PERMISSIONS = [
+// Raw permissions list. Multiple per-token expansions can collide on
+// `(target, selector)` if two tokens share the same queue / snapshot
+// proxy — that's normal, e.g. staging's YieldSnapshot is one proxy
+// shared across all RWA tokens. `dedupePermissions` below collapses
+// such collisions so the CallPolicy contract doesn't revert at install
+// with `duplicate permissionHash`.
+const RAW_SESSION_PERMISSIONS = [
   // Wave 3 legacy
   { target: CONTRACTS.yieldDistributor, functionName: 'startDistribution', abi: yieldDistributorAbi, valueLimit: 0n },
   { target: CONTRACTS.yieldDistributor, functionName: 'setEscrowIds', abi: yieldDistributorAbi, valueLimit: 0n },
@@ -204,7 +246,9 @@ const SESSION_PERMISSIONS = [
   ...subscriptionPermissions,
   ...queuePermissions,
   ...snapshotPermissions,
-] as const;
+];
+
+const SESSION_PERMISSIONS = dedupePermissions(RAW_SESSION_PERMISSIONS);
 
 /**
  * Pre-computed `${target}:${selector}` pairs for every entry in
