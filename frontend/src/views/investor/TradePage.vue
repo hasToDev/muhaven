@@ -1127,20 +1127,38 @@ const ctaDisabled = computed(() => {
               </div>
             </div>
 
-            <!-- mhUSDC reveal — opt-in. Hidden once decrypted; the
-                 banner above takes over when the balance lands short. -->
+            <!-- mhUSDC reveal — opt-in. Two states:
+                 - Pre-decrypt: prompts the user to reveal their balance.
+                 - Post-decrypt: shows the decrypted value as positive
+                   feedback that the Reveal succeeded (the
+                   insufficient-funds warning above still takes over when
+                   the balance lands short of the typed buy amount). -->
             <div
-              v-if="mode === 'buy' && mhUsdcAvailable && mhUsdcBalance === null"
+              v-if="mode === 'buy' && mhUsdcAvailable && !insufficientMhUsdc"
               class="flex items-center justify-between gap-2 rounded-lg p-3
                      border border-haze dark:border-white/8 bg-mist/30 dark:bg-[#1c1b1b]/60"
             >
               <div class="flex items-center gap-2">
-                <Coins :size="14" :stroke-width="1.8" class="text-cool" />
-                <span class="font-sans text-[11px] text-cool leading-tight">
+                <Coins :size="14" :stroke-width="1.8" :class="mhUsdcBalance === null ? 'text-cool' : 'text-compute dark:text-signal'" />
+                <span
+                  v-if="mhUsdcBalance === null"
+                  class="font-sans text-[11px] text-cool leading-tight"
+                >
                   Pre-flight: reveal mhUSDC balance to catch silent-fail pulls.
+                </span>
+                <span
+                  v-else
+                  class="font-sans text-[11px] text-cool leading-tight tabular-nums"
+                  data-testid="buy-mhusdc-balance"
+                >
+                  mhUSDC balance:
+                  <span class="text-midnight dark:text-white font-semibold">
+                    {{ formatUSD(Number(mhUsdcBalance) / 1e6) }}
+                  </span>
                 </span>
               </div>
               <button
+                v-if="mhUsdcBalance === null"
                 type="button"
                 @click="decryptMhUsdcBalance"
                 :disabled="mhUsdcDecrypting"
@@ -1151,6 +1169,19 @@ const ctaDisabled = computed(() => {
                 <Loader2 v-if="mhUsdcDecrypting" :size="11" class="animate-spin" />
                 <Eye v-else :size="11" />
                 Reveal
+              </button>
+              <button
+                v-else
+                type="button"
+                @click="decryptMhUsdcBalance"
+                :disabled="mhUsdcDecrypting"
+                data-testid="buy-refresh-mhusdc"
+                class="inline-flex items-center gap-1 font-sans text-[10px] uppercase tracking-[0.22em] font-semibold
+                       text-cool hover:text-compute dark:hover:text-signal transition-opacity cursor-pointer disabled:opacity-50"
+              >
+                <Loader2 v-if="mhUsdcDecrypting" :size="11" class="animate-spin" />
+                <RefreshCw v-else :size="11" />
+                Refresh
               </button>
             </div>
 

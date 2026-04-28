@@ -22,11 +22,17 @@ import { arbitrumSepolia } from 'viem/chains';
 import { entryPoint07Address } from 'viem/account-abstraction';
 import { WindowHelper } from '@/helpers/WindowHelper';
 import { addresses as CONTRACTS, v35Addresses } from '@/contracts/addresses';
-import { yieldDistributorAbi, muhavenEscrowAbi, pusdcAbi } from '@/contracts/abis';
+import {
+  yieldDistributorAbi,
+  muhavenEscrowAbi,
+  pusdcAbi,
+  muHavenTokenAbi,
+} from '@/contracts/abis';
 import {
   muhavenSubscriptionAbi,
   redemptionQueueAbi,
   yieldSnapshotAbi,
+  muHavenStableAbi,
 } from '@muhaven/sdk';
 import {
   generateSessionRecord,
@@ -219,6 +225,28 @@ const subscriptionPermissions = nonZero([
   },
 ]);
 
+// Self-service ACL refresh primitives (ADR-042 + Phase 7.5 mirror). These
+// don't move funds — they only re-grant FHE decrypt access on the caller's
+// own balance handle to a passed `ephemeralEOA`. Without them in scope,
+// the first decrypt-after-page-reload (when the in-memory ephemeral EOA
+// regenerates against a stale on-chain ACL) bounces to the passkey kernel
+// for what should be a silent UX path. Strictly weaker than the purchase /
+// redeem / transfer entries already in scope.
+const refreshGrantPermissions = nonZero([
+  {
+    target: CONTRACTS.muHavenToken,
+    functionName: 'refreshDecryptGrant',
+    abi: muHavenTokenAbi,
+    valueLimit: 0n,
+  },
+  {
+    target: v35Addresses.muHavenStable,
+    functionName: 'refreshDecryptGrant',
+    abi: muHavenStableAbi,
+    valueLimit: 0n,
+  },
+]);
+
 // Raw permissions list. Multiple per-token expansions can collide on
 // `(target, selector)` if two tokens share the same queue / snapshot
 // proxy — that's normal, e.g. staging's YieldSnapshot is one proxy
@@ -246,6 +274,7 @@ const RAW_SESSION_PERMISSIONS = [
   ...subscriptionPermissions,
   ...queuePermissions,
   ...snapshotPermissions,
+  ...refreshGrantPermissions,
 ];
 
 const SESSION_PERMISSIONS = dedupePermissions(RAW_SESSION_PERMISSIONS);
