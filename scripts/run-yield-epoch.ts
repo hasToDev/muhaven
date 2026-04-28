@@ -90,31 +90,43 @@ async function main() {
   const tokenAddr: string = info.contracts.MuHavenToken.proxy;
   const snapshotAddr: string = deployment.contracts.YieldSnapshot.proxy;
   const investorRegistryAddr: string = deployment.contracts.InvestorRegistry.proxy;
-  const pusdcAddr: string = deployment.external?.legacyPusdc;
-  if (!pusdcAddr) throw new Error("external.legacyPusdc missing in deployment");
 
   const [signer] = await ethers.getSigners();
+
+  // Read the actual `pusdc` field on YieldSnapshot rather than guessing
+  // from the deployment file. Phase 7.5 rotated this from legacy PUSDC to
+  // MuHavenStable; the script must grant the operator approval on whichever
+  // contract YieldSnapshot will actually call (else the pull reverts
+  // NotOperator from inside `confidentialTransferFrom`).
+  const snapshot = new ethers.Contract(snapshotAddr, SNAPSHOT_ABI, signer);
+  const pusdcAddr: string = await new ethers.Contract(
+    snapshotAddr,
+    ["function pusdc() view returns (address)"],
+    signer.provider!,
+  ).pusdc();
+
   console.log(`Network    : ${network.name}`);
   console.log(`Env        : ${env}`);
   console.log(`Token      : ${symbol} (${tokenAddr})`);
   console.log(`Snapshot   : ${snapshotAddr}`);
+  console.log(`PusdcSrc   : ${pusdcAddr} (YieldSnapshot.pusdc — pull target)`);
   console.log(`TotalYield : ${totalYield.toString()} (PUSDC base units)`);
   console.log(`Signer     : ${signer.address}\n`);
 
-  const snapshot = new ethers.Contract(snapshotAddr, SNAPSHOT_ABI, signer);
   const registry = new ethers.Contract(investorRegistryAddr, REGISTRY_ABI, signer);
   const pusdc = new ethers.Contract(pusdcAddr, PUSDC_ABI, signer);
 
-  // ── 1. Pre-flight: PUSDC operator approval ─────────────────────────
+  // ── 1. Pre-flight: operator approval on whichever contract YieldSnapshot
+  //      pulls from (legacy PUSDC or MuHavenStable, depending on env wiring).
   const isOp: boolean = await pusdc.isOperator(signer.address, snapshotAddr);
   if (!isOp) {
     const expiry = BigInt(Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60);
-    console.log(`[pre] granting PUSDC operator → YieldSnapshot, until ${expiry}`);
+    console.log(`[pre] granting ${pusdcAddr} operator → YieldSnapshot, until ${expiry}`);
     const tx = await pusdc.setOperator(snapshotAddr, expiry);
     console.log(`[pre] setOperator tx: ${tx.hash}`);
     await tx.wait();
   } else {
-    console.log("[pre] PUSDC operator on YieldSnapshot already granted");
+    console.log("[pre] operator on YieldSnapshot already granted");
   }
 
   // ── 2. openEpoch (or resume in-progress) ──────────────────────────
