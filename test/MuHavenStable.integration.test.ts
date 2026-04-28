@@ -1004,6 +1004,282 @@ describe("Phase 7.6-E — treasury-leak fix (split-grant transferFrom)", () => {
   });
 });
 
+// ── Phase 8 blocker fix — YieldSnapshot.claimYield split-grant ───────────
+
+describe("Phase 8 — YieldSnapshot.claimYield split-grant (PHASE8_BLOCKER fix)", () => {
+  /**
+   * Closes `PHASE8_BLOCKER_YIELD_CLAIM_DECRYPT.md`. Pre-fix,
+   * `YieldSnapshot.claimYield` paid out via `MuHavenStable`'s legacy
+   * 2-arg `confidentialTransfer(address,uint256)` shim which hard-coded
+   * both eph args to `address(0)`. The post-claim mhUSDC balance handle
+   * had only a kernel ACL grant, so the investor's first `decryptForView`
+   * 403'd and the frontend `refreshDecryptGrant` fallback couldn't fully
+   * recover (cofhe SDK internal retry × TN ACL propagation lag → "indefinite
+   * spinner"). Phase 8 switches the payout to the modern split-grant
+   * `IMuHavenStable.transferFrom(self, investor, encShare64, address(0),
+   * ephemeralEOA)` per ADR-044, planting the session-EOA grant on the
+   * investor's grown mhUSDC handle in the same tx as the transfer.
+   *
+   * These cases lock in: (a) the investor's eph IS granted on their post-
+   * claim mhUSDC (the "first decrypt succeeds" guarantee), and (b) the
+   * snapshot's own mhUSDC float stays kernel-only — investors cannot
+   * decrypt the float (mirrors A-9 treasury-leak invariant).
+   */
+
+  async function deploySnapshotWrapperFixture() {
+    await hre.run("task:cofhe-mocks:deploy");
+
+    const [deployer, issuer, investor, alice] = await hre.ethers.getSigners();
+
+    const kyc = await deployKYCAdapter();
+    await kyc.addToWhitelist(investor.address);
+    await kyc.addToWhitelist(alice.address);
+
+    const registry = await deployRegistry();
+    const token = await deployToken(
+      await kyc.getAddress(),
+      await registry.getAddress(),
+      issuer.address
+    );
+    await registry.setAuthorizedCaller(await token.getAddress(), true);
+
+    const pusdc = await deployMockPUSDC();
+
+    const Stable = await hre.ethers.getContractFactory("MuHavenStable");
+    const mhUSDC = await upgrades.deployProxy(
+      Stable,
+      [
+        "MuHaven Confidential USD",
+        "mhUSDC",
+        deployer.address,
+        await pusdc.getAddress(),
+      ],
+      { kind: "transparent", initializer: "initialize" }
+    );
+
+    const OracleFactory = await hre.ethers.getContractFactory(
+      "IssuerControlledOracle"
+    );
+    const oracle = await upgrades.deployProxy(
+      OracleFactory,
+      [deployer.address, ZERO_ADDRESS],
+      { kind: "transparent", initializer: "initialize" }
+    );
+
+    const TR = await hre.ethers.getContractFactory("TokenRegistry");
+    const tokenRegistry = await upgrades.deployProxy(
+      TR,
+      [deployer.address],
+      { kind: "transparent", initializer: "initialize" }
+    );
+
+    // Subscription wired to mhUSDC so investors purchase via the wrapper.
+    const SubFactory = await hre.ethers.getContractFactory(
+      "MuHavenSubscription"
+    );
+    const subscription = await upgrades.deployProxy(
+      SubFactory,
+      [
+        deployer.address,
+        await tokenRegistry.getAddress(),
+        await kyc.getAddress(),
+        await mhUSDC.getAddress(),
+      ],
+      { kind: "transparent", initializer: "initialize" }
+    );
+
+    // Treasury wired to mhUSDC.
+    const TreasuryFactory = await hre.ethers.getContractFactory(
+      "MuHavenTreasury"
+    );
+    const treasury = await upgrades.deployProxy(
+      TreasuryFactory,
+      [
+        await token.getAddress(),
+        await subscription.getAddress(),
+        alice.address,
+        issuer.address,
+        await mhUSDC.getAddress(),
+        0n,
+        deployer.address,
+      ],
+      { kind: "transparent", initializer: "initialize" }
+    );
+
+    // Snapshot wired to mhUSDC — the contract under test for this suite.
+    const YSFactory = await hre.ethers.getContractFactory("YieldSnapshot");
+    const snapshot = await upgrades.deployProxy(
+      YSFactory,
+      [
+        deployer.address,
+        await tokenRegistry.getAddress(),
+        await mhUSDC.getAddress(),
+      ],
+      { kind: "transparent", initializer: "initialize" }
+    );
+
+    await tokenRegistry.registerToken(await token.getAddress(), {
+      active: true,
+      treasury: await treasury.getAddress(),
+      queue: alice.address,
+      oracle: await oracle.getAddress(),
+      issuer: issuer.address,
+      minInvestment: 0n,
+      instantRedeemCap: INSTANT_CAP,
+      epochDuration: EPOCH_DURATION,
+      paused: false,
+    });
+
+    await token.setSubscription(await subscription.getAddress());
+    await token.setYieldSnapshot(await snapshot.getAddress());
+
+    await oracle.setNavWriter(await token.getAddress(), issuer.address);
+    await oracle.setMaxDeviationBps(await token.getAddress(), 25n);
+    await oracle.connect(issuer).setNAV(await token.getAddress(), DEFAULT_NAV);
+
+    // Investor pre-wraps PUSDC → mhUSDC + buys 100 shares so they hold a
+    // snapshottable balance.
+    await pusdc.mint(investor.address, 200n * ONE_PUSDC);
+    await pusdc
+      .connect(investor)
+      .setOperator(await mhUSDC.getAddress(), FOREVER);
+
+    const investorClient = await hre.cofhe.createClientWithBatteries(investor);
+    const issuerClient = await hre.cofhe.createClientWithBatteries(issuer);
+
+    const eph = createEphemeralEOA();
+    const investorWrapEph = createEphemeralEOA();
+
+    const encWrap = await encUint64(investorClient, 200n * ONE_PUSDC);
+    await mhUSDC.connect(investor).wrap(encWrap, investorWrapEph.address);
+
+    await mhUSDC
+      .connect(investor)
+      .setOperator(await subscription.getAddress(), FOREVER);
+
+    const encShares = await encUint128(investorClient, 100n);
+    await subscription
+      .connect(investor)
+      .purchase(
+        await token.getAddress(),
+        encShares,
+        HINT_CAP,
+        investorWrapEph.address
+      );
+
+    // Issuer pre-wraps + grants the snapshot operator rights so fundEpoch
+    // can pull the yield pool.
+    await pusdc.mint(issuer.address, 200n * ONE_PUSDC);
+    await pusdc
+      .connect(issuer)
+      .setOperator(await mhUSDC.getAddress(), FOREVER);
+    const issuerWrapEph = createEphemeralEOA();
+    const encIssuerWrap = await encUint64(issuerClient, 200n * ONE_PUSDC);
+    await mhUSDC.connect(issuer).wrap(encIssuerWrap, issuerWrapEph.address);
+    await mhUSDC
+      .connect(issuer)
+      .setOperator(await snapshot.getAddress(), FOREVER);
+
+    return {
+      deployer,
+      issuer,
+      investor,
+      alice,
+      token,
+      tokenRegistry,
+      treasury,
+      pusdc,
+      mhUSDC,
+      oracle,
+      subscription,
+      snapshot,
+      investorClient,
+      issuerClient,
+      eph,
+    };
+  }
+
+  it("Case 1 — investor's eph IS granted on post-claim mhUSDC handle (decrypt-first-try guarantee)", async () => {
+    const { snapshot, issuer, investor, token, mhUSDC, issuerClient, eph } =
+      await loadFixture(deploySnapshotWrapperFixture);
+
+    // Run a one-investor epoch end-to-end.
+    await snapshot.connect(issuer).openEpoch(await token.getAddress());
+    await snapshot.connect(issuer).snapshotBatch(1n, [investor.address]);
+    await snapshot.connect(issuer).finalizeSnapshot(1n);
+    const encYield = await encUint128(issuerClient, 50n * ONE_PUSDC);
+    await snapshot.connect(issuer).fundEpoch(1n, encYield);
+
+    await snapshot.connect(investor).claimYield(1n, eph.address);
+
+    // The investor's grown mhUSDC handle must have the eph ACL grant
+    // baked in — pre-fix this would have been kernel-only (the legacy
+    // shim path), forcing a refresh round-trip.
+    const investorMh = await mhUSDC.confidentialBalanceOf(investor.address);
+    const acl = await hre.cofhe.mocks.getMockACL();
+    expect(await acl.isAllowed(BigInt(investorMh), eph.address)).to.equal(
+      true
+    );
+    // Investor's own kernel grant still fires.
+    expect(
+      await acl.isAllowed(BigInt(investorMh), investor.address)
+    ).to.equal(true);
+  });
+
+  it("Case 2 — snapshot's float stays kernel-only (treasury-leak invariant, A-9 mirror)", async () => {
+    const { snapshot, issuer, investor, token, mhUSDC, issuerClient, eph } =
+      await loadFixture(deploySnapshotWrapperFixture);
+
+    await snapshot.connect(issuer).openEpoch(await token.getAddress());
+    await snapshot.connect(issuer).snapshotBatch(1n, [investor.address]);
+    await snapshot.connect(issuer).finalizeSnapshot(1n);
+    const encYield = await encUint128(issuerClient, 50n * ONE_PUSDC);
+    await snapshot.connect(issuer).fundEpoch(1n, encYield);
+
+    await snapshot.connect(investor).claimYield(1n, eph.address);
+
+    // Snapshot's mhUSDC float (the leftover after paying the investor)
+    // must NOT be decryptable by the investor's eph — mirrors the A-9
+    // treasury-leak invariant for Subscription / RedemptionQueue.
+    const snapshotMh = await mhUSDC.confidentialBalanceOf(
+      await snapshot.getAddress()
+    );
+    const acl = await hre.cofhe.mocks.getMockACL();
+    expect(await acl.isAllowed(BigInt(snapshotMh), eph.address)).to.equal(
+      false
+    );
+    // Snapshot's own kernel grant still fires (it needs to spend its float).
+    expect(
+      await acl.isAllowed(BigInt(snapshotMh), await snapshot.getAddress())
+    ).to.equal(true);
+  });
+
+  it("Case 3 — encShare128 grant on investor's eph survives (legacy ADR-021 guarantee)", async () => {
+    const { snapshot, issuer, investor, token, issuerClient, eph } =
+      await loadFixture(deploySnapshotWrapperFixture);
+
+    await snapshot.connect(issuer).openEpoch(await token.getAddress());
+    await snapshot.connect(issuer).snapshotBatch(1n, [investor.address]);
+    await snapshot.connect(issuer).finalizeSnapshot(1n);
+    const encYield = await encUint128(issuerClient, 50n * ONE_PUSDC);
+    await snapshot.connect(issuer).fundEpoch(1n, encYield);
+
+    // The encShare128 ACL grant (per ADR-021) must still be present —
+    // Phase 8 only changed the mhUSDC payout leg, not the share-handle
+    // grant emitted alongside `YieldClaimed`. Locked in here so a future
+    // refactor doesn't accidentally drop ADR-021's guarantee.
+    const tx = await snapshot
+      .connect(investor)
+      .claimYield(1n, eph.address);
+    await tx.wait();
+
+    // Sanity — second claim still reverts AlreadyClaimed.
+    await expect(
+      snapshot.connect(investor).claimYield(1n, eph.address)
+    ).to.be.revertedWithCustomError(snapshot, "AlreadyClaimed");
+  });
+});
+
 // ── migrateToWrapper helper coverage ─────────────────────────────────────
 
 describe("Phase 7.5-B — MuHavenTreasury.migrateToWrapper", () => {

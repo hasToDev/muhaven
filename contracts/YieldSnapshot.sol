@@ -12,6 +12,7 @@ import {
 } from "@fhenixprotocol/cofhe-contracts/FHE.sol";
 import {IYieldSnapshot} from "./interfaces/IYieldSnapshot.sol";
 import {IMuHavenToken} from "./interfaces/IMuHavenToken.sol";
+import {IMuHavenStable} from "./interfaces/IMuHavenStable.sol";
 import {ITokenRegistry} from "./interfaces/ITokenRegistry.sol";
 
 /// @title YieldSnapshot
@@ -42,7 +43,18 @@ import {ITokenRegistry} from "./interfaces/ITokenRegistry.sol";
 ///   5. Each investor `claimYield(epochId, ephemeralEOA)` — computes their
 ///      proportional share `encShare = FHE.mul(encBalance, encRatio)`,
 ///      narrows to PUSDC's `euint64` width, grants `ephemeralEOA` decrypt
-///      per ADR-021, transfers via `confidentialTransfer(address,uint256)`.
+///      per ADR-021, transfers to investor via the modern split-grant
+///      `IMuHavenStable.transferFrom(self, investor, encShare64,
+///      address(0), ephemeralEOA)` per ADR-044. The split-grant variant
+///      plants the session-EOA grant on the investor's grown mhUSDC
+///      balance handle in the SAME tx as the transfer, so the investor's
+///      first `decryptForView` post-claim succeeds without the
+///      `refreshDecryptGrant` round-trip + cofhe TN propagation wait
+///      (see `PHASE8_BLOCKER_YIELD_CLAIM_DECRYPT.md`). The `from`-leg
+///      eph is suppressed (`address(0)`) so the snapshot's own mhUSDC
+///      float stays kernel-only — investors cannot decrypt the
+///      treasury-equivalent float, mirroring the audit-prep §A-9
+///      treasury-leak fix.
 ///      Idempotent: re-calls revert with `AlreadyClaimed` (interface
 ///      natspec — "double claim is an operator/tooling bug, not a malicious
 ///      side-channel", so *not* silent-fail).
@@ -493,15 +505,29 @@ contract YieldSnapshot is Initializable, ReentrancyGuardTransient, IYieldSnapsho
         FHE.allowThis(newRem);
         _encRemaining[epochId] = newRem;
 
-        // Transfer PUSDC (this contract → investor).
-        (bool ok, ) = pusdc.call(
-            abi.encodeWithSelector(
-                _TRANSFER_UINT256,
-                msg.sender,    // investor
-                uint256(euint64.unwrap(encShare64))
-            )
+        // Transfer mhUSDC (this contract → investor) via the modern
+        // split-grant `IMuHavenStable.transferFrom` per Phase 7.6-E /
+        // ADR-044. Plants the session-EOA grant on the investor's
+        // grown balance handle in the SAME tx as the transfer so the
+        // first `decryptForView` post-claim succeeds without an on-
+        // chain `refreshDecryptGrant` round-trip — closes the Phase 8
+        // blocker `PHASE8_BLOCKER_YIELD_CLAIM_DECRYPT.md`.
+        //
+        // `fromEph = address(0)` — suppress the snapshot's float-leg
+        // grant (treasury-leak avoidance, mirrors A-9 split-grant
+        // pattern in MuHavenSubscription / RedemptionQueue).
+        // `toEph   = ephemeralEOA` — investor's session decrypt access.
+        //
+        // `_requireOperator(self, self)` short-circuits via
+        // `holder == spender` inside MuHavenStable, so no
+        // `setOperator(snapshot, …)` pre-flight is needed for this leg.
+        IMuHavenStable(pusdc).transferFrom(
+            address(this),
+            msg.sender,
+            encShare64,
+            address(0),
+            ephemeralEOA
         );
-        if (!ok) revert PaymentTransferFailed();
 
         emit YieldClaimed(e.token, msg.sender, epochId);
     }

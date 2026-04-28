@@ -259,6 +259,13 @@ contract MockPUSDC is IFHERC20 {
     }
 
     function _requireOperator(address holder, address spender) internal view {
+        // Mirrors `MuHavenStable._requireOperator` — holder is implicitly always
+        // operator over their own balance, so contract-mediated paths like
+        // `YieldSnapshot.claimYield` (snapshot calling `transferFrom(self,
+        // investor, …)` against the wrapper) work without a self-operator
+        // setup. Without this short-circuit, the snapshot-side call would
+        // revert `NotOperator` even though it's reaching into its own balance.
+        if (holder == spender) return;
         if (_operators[holder][spender] <= block.timestamp) revert NotOperator();
     }
 }
