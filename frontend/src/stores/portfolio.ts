@@ -1,11 +1,13 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { OracleClient } from '@muhaven/sdk'
 import { portfolioApi, tokensApi, type PortfolioPositionDto, type TokenResponseDto } from '@/services/api'
 import * as TokenService from '@/services/contracts/TokenService'
 import * as Erc20Service from '@/services/contracts/Erc20Service'
 import * as LegacyPusdcService from '@/services/contracts/LegacyPusdcService'
 import * as MuHavenStableService from '@/services/contracts/MuHavenStableService'
-import { addresses } from '@/contracts/addresses'
+import { addresses, v35Addresses, isZeroAddress } from '@/contracts/addresses'
+import { buildReadContext } from '@/services/v35/context'
 
 export interface PortfolioHolding {
   tokenAddress: `0x${string}`
@@ -47,20 +49,27 @@ export const usePortfolioStore = defineStore('portfolio', () => {
     let total = 0
     for (const h of holdings.value) {
       if (h.decryptedBalance !== null) {
-        // Wave 3.5 shares are raw-integer per share unit per
-        // `MuHavenSubscription.purchase` natspec: NAV is "PUSDC base units
-        // per share unit", and Subscription mints `actualShares` directly
-        // into `_balances[investor]` without 18-decimal scaling. Backend
-        // `latest_nav.nav` is USD per whole share (e.g., `1.0` for TBILL1,
-        // `0.01` for GOLD1), so USD value = raw_share_count * usd_nav.
-        // The legacy Wave 3 fhERC-20 used 18-decimal scaling; that surface
-        // is retired in Wave 3.5 portfolio reads (per-token contracts only).
+        // Wave 3.5: shares are raw-integer per `MuHavenSubscription.purchase`
+        // natspec, and `nav` here is USD-per-whole-share derived from the
+        // on-chain `IssuerControlledOracle` (PUSDC base units / 1e6) — see
+        // `load()` for the read. USD value = raw_share_count * usd_nav.
+        // (Backend `latest_nav.nav` from nav-cron writes par=1.0 for every
+        // token by default and is NOT a faithful mirror of on-chain NAV
+        // for testnet stages — using it gives 100*1=$100 for a token whose
+        // real on-chain NAV is $0.01/share. We pull from the oracle to
+        // sidestep that mismatch.)
         total += Number(h.decryptedBalance) * (h.nav ?? 1)
       }
     }
     // Add USDC (6 decimals, NAV = $1)
     if (usdcBalance.value !== null) {
       total += Number(usdcBalance.value) / 1e6
+    }
+    // Add decrypted mhUSDC (6 decimals, NAV = $1). The Cash Buffer card has
+    // its own opt-in Decrypt button; when revealed, it must contribute to
+    // the dashboard's total alongside the holdings + USDC.
+    if (pusdcConfidentialBalance.value !== null) {
+      total += Number(pusdcConfidentialBalance.value) / 1e6
     }
     return total
   })
@@ -88,20 +97,44 @@ export const usePortfolioStore = defineStore('portfolio', () => {
         tokenMap.set(t.address.toLowerCase(), t)
       }
 
-      holdings.value = portfolioRes.positions.map((pos) => {
-        const token = tokenMap.get(pos.token_address.toLowerCase())
-        return {
-          tokenAddress: pos.token_address as `0x${string}`,
-          symbol: pos.token_symbol,
-          name: token?.name ?? pos.token_symbol,
-          apy: token?.apy ? parseFloat(token.apy) : null,
-          assetClass: token?.asset_class ?? 'other',
-          encryptedBalance: null,
-          decryptedBalance: null,
-          decrypting: false,
-          nav: token?.latest_nav ? parseFloat(token.latest_nav.nav) : null,
-        }
-      })
+      // Read on-chain NAV per holding from `IssuerControlledOracle` —
+      // truth source for purchase/redeem cost calculations. Convert from
+      // "PUSDC base units per share unit" to "USD per whole share" so the
+      // display math is `raw_share_count * usd_nav`. Falls back to the
+      // backend's `latest_nav.nav` when the oracle is unconfigured for the
+      // build (Wave 3 / pre-cutover envs) or the per-token read fails.
+      const oracleConfigured = !isZeroAddress(v35Addresses.oracle)
+      const readCtx = oracleConfigured ? buildReadContext() : null
+      const oracleClient = readCtx ? new OracleClient(readCtx, v35Addresses.oracle) : null
+
+      const holdingsWithMeta = await Promise.all(
+        portfolioRes.positions.map(async (pos) => {
+          const tokenAddr = pos.token_address as `0x${string}`
+          const token = tokenMap.get(tokenAddr.toLowerCase())
+          const backendNav = token?.latest_nav ? parseFloat(token.latest_nav.nav) : null
+          let onChainNav: number | null = null
+          if (oracleClient) {
+            try {
+              const { nav } = await oracleClient.getNAV(tokenAddr)
+              if (nav > 0n) onChainNav = Number(nav) / 1e6
+            } catch (e) {
+              console.warn(`[portfolio] on-chain NAV read failed for ${pos.token_symbol}`, e)
+            }
+          }
+          return {
+            tokenAddress: tokenAddr,
+            symbol: pos.token_symbol,
+            name: token?.name ?? pos.token_symbol,
+            apy: token?.apy ? parseFloat(token.apy) : null,
+            assetClass: token?.asset_class ?? 'other',
+            encryptedBalance: null as `0x${string}` | null,
+            decryptedBalance: null as bigint | null,
+            decrypting: false,
+            nav: onChainNav ?? backendNav,
+          }
+        }),
+      )
+      holdings.value = holdingsWithMeta
 
       // Load USDC balance (non-encrypted, standard ERC-20) + the plaintext
       // portion of legacy PUSDC in parallel. The confidential portion stays

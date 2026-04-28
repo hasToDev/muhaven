@@ -36,12 +36,24 @@ const showLoader = computed(() =>
 
 async function decryptAll() {
   if (!address.value) return
+  const acct = address.value as `0x${string}`
   const pending = portfolio.holdings
     .map((h, i) => h.decryptedBalance === null ? i : -1)
     .filter(i => i >= 0)
-  await Promise.all(
-    pending.map(i => portfolio.decryptHolding(i, address.value as `0x${string}`)),
-  )
+
+  // Kick off the confidential-PUSDC decrypt alongside the per-holding
+  // decrypts so "Reveal All" reveals the whole portfolio in one click.
+  // Guarded against re-running when already revealed or in-flight; the
+  // store's own `pusdcDecrypting` flag is the source of truth, this
+  // outer check just avoids a redundant network round-trip + the brief
+  // mid-flight `pusdcConfidentialBalance = null` flicker that
+  // `decryptPusdc` does at start.
+  const pusdcPending =
+    portfolio.pusdcConfidentialBalance === null && !portfolio.pusdcDecrypting
+  await Promise.all([
+    ...pending.map(i => portfolio.decryptHolding(i, acct)),
+    ...(pusdcPending ? [portfolio.decryptPusdc(acct)] : []),
+  ])
 }
 
 async function decryptOne(index: number) {
