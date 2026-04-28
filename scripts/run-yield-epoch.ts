@@ -44,7 +44,10 @@ const SNAPSHOT_ABI = [
   "function finalizeSnapshot(uint256 epochId)",
   "function fundEpoch(uint256 epochId, (uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) encTotalYield)",
   "function currentEpoch(address token) view returns (uint256)",
-  "function getEpoch(uint256 epochId) view returns (tuple(address token, bool finalized, bool funded, uint256 holderCount, uint256 snapshotStartTs, uint256 snapshotEndTs, bytes32 encTotalSupply, bytes32 encTotalYield, bytes32 encRatio, bytes32 encRemaining))",
+  // Field order MUST match `IYieldSnapshot.Epoch` exactly. ethers decodes
+  // tuples positionally regardless of named labels — a shuffled ABI silently
+  // returns wrong values (e.g. `snapshotStartTs` mis-read as `finalized`).
+  "function getEpoch(uint256 epochId) view returns (tuple(address token, uint256 snapshotStartTs, uint256 snapshotEndTs, bool finalized, bool funded, bytes32 encTotalYield, bytes32 encTotalSupply, bytes32 encRatio, uint256 claimExpiry, uint256 holderCount))",
 ];
 
 const REGISTRY_ABI = [
