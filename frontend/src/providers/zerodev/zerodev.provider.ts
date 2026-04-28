@@ -23,6 +23,7 @@ import {
   toFunctionSelector,
   keccak256,
   toHex,
+  type Address,
   type Hex,
   type PublicClient,
 } from 'viem';
@@ -242,13 +243,31 @@ const subscriptionPermissions = nonZero([
 // regenerates against a stale on-chain ACL) bounces to the passkey kernel
 // for what should be a silent UX path. Strictly weaker than the purchase /
 // redeem / transfer entries already in scope.
+//
+// Wave 3.5 onboards each RWA as its own MuHavenToken proxy (TBILL1, GOLD1,
+// …), so we expand `refreshDecryptGrant` per per-token contract. The
+// per-token map is derived from `treasuries` (or queues / yieldSnapshots —
+// same key set: the JSON map keys are the per-token MuHavenToken
+// addresses). Without this expansion, a portfolio decrypt on TBILL1 / GOLD1
+// can't refresh its grant via the session key — falls back to the passkey
+// kernel, and two parallel `Promise.all` decrypts race two concurrent
+// WebAuthn ceremonies that abort each other.
+const perTokenRwaAddresses = Object.keys(v35Addresses.treasuries) as Address[];
 const refreshGrantPermissions = nonZero([
+  // Wave 3 single-token surface (back-compat with `MPrivacyProofPanel`).
   {
     target: CONTRACTS.muHavenToken,
     functionName: 'refreshDecryptGrant',
     abi: muHavenTokenAbi,
     valueLimit: 0n,
   },
+  // Per-RWA Wave 3.5 token contracts (TBILL1, GOLD1, …).
+  ...perTokenRwaAddresses.map((addr) => ({
+    target: addr,
+    functionName: 'refreshDecryptGrant' as const,
+    abi: muHavenTokenAbi,
+    valueLimit: 0n,
+  })),
   {
     target: v35Addresses.muHavenStable,
     functionName: 'refreshDecryptGrant',
@@ -352,6 +371,16 @@ export class ZeroDevProvider implements IWalletProvider {
   // race into two separate installSessionKey runs — doing so would fire
   // the enableSig passkey prompt twice and build orphaned kernels.
   private installPromise: Promise<void> | null = null;
+  // In-flight first-session-userOp guard. The kernel SDK fires the
+  // enableSig WebAuthn ceremony lazily inside `prepareUserOperation` of
+  // the first post-install userOp, NOT during `installSessionKey` itself.
+  // Concurrent first-time sends therefore both trigger WebAuthn and abort
+  // each other (only one auth ceremony can be outstanding per origin).
+  // This promise resolves once the first sender has both landed its
+  // userOp AND persisted the enableSig into `serializedAccount` — at
+  // which point follower userOps use the rebuilt post-enable kernel and
+  // can run in parallel without WebAuthn.
+  private firstSessionOpPromise: Promise<void> | null = null;
 
   async connect(): Promise<string> {
     return this.login();
@@ -676,6 +705,33 @@ export class ZeroDevProvider implements IWalletProvider {
       return this.sendViaKernel(this.kernelClient, calls);
     }
 
+    // Serialize behind any in-flight first-session userOp. Once that
+    // resolves the session has been baked (`serializedAccount` set + kernel
+    // rebuilt in post-enable mode) and we can send in parallel. Without
+    // this gate, two parallel callers both fire the enableSig WebAuthn
+    // ceremony from inside `prepareUserOperation` and one aborts the other
+    // (`AbortError: Cancelling existing WebAuthn API call for new one`).
+    if (this.firstSessionOpPromise) {
+      // Catch silently — if the first sender failed, we still want to
+      // try our own send (it'll start a fresh first-sender path).
+      await this.firstSessionOpPromise.catch(() => {});
+    }
+
+    // After waiting, recompute `isFirstSend` against the post-await state.
+    // If a previous concurrent caller succeeded, `serializedAccount` is now
+    // set and we use the post-enable kernel (no WebAuthn). If they failed,
+    // session was invalidated and we become the new first sender.
+    const isFirstSend = !this.sessionRecord?.serializedAccount;
+
+    let resolveFirst: () => void = () => {};
+    let rejectFirst: (e: unknown) => void = () => {};
+    if (isFirstSend) {
+      this.firstSessionOpPromise = new Promise<void>((res, rej) => {
+        resolveFirst = res;
+        rejectFirst = rej;
+      });
+    }
+
     let hash: string;
     try {
       if (!this.hasSessionKey()) {
@@ -689,6 +745,10 @@ export class ZeroDevProvider implements IWalletProvider {
       // record on disk, which made subsequent in-scope sends repeat the
       // same install → AA23 → fallback loop forever.
       this.invalidateSession();
+      if (isFirstSend) {
+        rejectFirst(e);
+        if (this.firstSessionOpPromise) this.firstSessionOpPromise = null;
+      }
       return this.sendViaKernel(this.kernelClient, calls);
     }
 
@@ -697,7 +757,8 @@ export class ZeroDevProvider implements IWalletProvider {
     // Wrapped in its own try/catch because the userOp ALREADY succeeded —
     // we don't want a persist failure to bounce us into the passkey
     // fallback (which would re-send the same tx). On persist failure the
-    // session is invalidated for the next call instead.
+    // session is invalidated for the next call instead. Idempotent —
+    // followers (isFirstSend=false) call into a no-op early return.
     try {
       await this.persistSessionAfterFirstUserOp();
     } catch (e) {
@@ -707,6 +768,14 @@ export class ZeroDevProvider implements IWalletProvider {
         e,
       );
       this.invalidateSession();
+    }
+    if (isFirstSend) {
+      // Resolve the gate so any queued followers can proceed. Done in a
+      // finally-style block (after persist) so followers always see the
+      // post-enable kernel; clearing earlier would let a follower race
+      // into an unrebuilt sessionKernelClient.
+      resolveFirst();
+      if (this.firstSessionOpPromise) this.firstSessionOpPromise = null;
     }
     return hash;
   }

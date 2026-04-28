@@ -47,8 +47,15 @@ export const usePortfolioStore = defineStore('portfolio', () => {
     let total = 0
     for (const h of holdings.value) {
       if (h.decryptedBalance !== null) {
-        // Assume 18 decimals for fhERC-20, fallback NAV $1 if not yet fetched
-        total += Number(h.decryptedBalance) / 1e18 * (h.nav ?? 1)
+        // Wave 3.5 shares are raw-integer per share unit per
+        // `MuHavenSubscription.purchase` natspec: NAV is "PUSDC base units
+        // per share unit", and Subscription mints `actualShares` directly
+        // into `_balances[investor]` without 18-decimal scaling. Backend
+        // `latest_nav.nav` is USD per whole share (e.g., `1.0` for TBILL1,
+        // `0.01` for GOLD1), so USD value = raw_share_count * usd_nav.
+        // The legacy Wave 3 fhERC-20 used 18-decimal scaling; that surface
+        // is retired in Wave 3.5 portfolio reads (per-token contracts only).
+        total += Number(h.decryptedBalance) * (h.nav ?? 1)
       }
     }
     // Add USDC (6 decimals, NAV = $1)
@@ -132,14 +139,27 @@ export const usePortfolioStore = defineStore('portfolio', () => {
     holding.decryptedBalance = null
 
     try {
-      // Get encrypted balance handle from on-chain
-      const ctHash = await TokenService.encryptedBalanceOf(accountAddress)
+      // Read the encrypted balance handle from THIS holding's token
+      // contract. Wave 3.5 onboards each RWA as its own fhERC-20 (TBILL1,
+      // GOLD1, …); the legacy `addresses.muHavenToken` is the Wave 3
+      // single token and holds zero of TBILL1 / GOLD1 by construction.
+      // Defaulting to that address — which the older code did — surfaced
+      // every Wave 3.5 holding as "decrypted balance == 0".
+      const ctHash = await TokenService.encryptedBalanceOf(
+        accountAddress,
+        holding.tokenAddress,
+      )
 
-      // Decrypt client-side via CoFHE SDK (permit-based, no tx needed)
+      // Decrypt client-side via CoFHE SDK (permit-based, no tx needed).
+      // Pass `holding.tokenAddress` so the 403 refresh fallback dispatches
+      // `refreshDecryptGrant` against the correct per-token contract.
       const { useFhe } = await import('@/composables/useFhe')
       const fhe = useFhe()
       await fhe.initialize()
-      holding.decryptedBalance = await fhe.decryptUint128ForView(ctHash)
+      holding.decryptedBalance = await fhe.decryptUint128ForView(
+        ctHash,
+        holding.tokenAddress,
+      )
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Decrypt failed'
     } finally {

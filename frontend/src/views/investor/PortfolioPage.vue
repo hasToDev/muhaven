@@ -60,7 +60,10 @@ function formatTokenAmount(value: number): string {
 
 function holdingUsdValue(h: typeof portfolio.holdings[number]): string {
   if (h.decryptedBalance === null) return ''
-  const tokens = Number(h.decryptedBalance) / 1e18
+  // Wave 3.5: shares are raw integer units (1 share == 1n on-chain).
+  // Backend `latest_nav.nav` is USD per whole share. See portfolio store
+  // `totalDecryptedValue` for the symmetric calculation + rationale.
+  const tokens = Number(h.decryptedBalance)
   if (h.nav) return formatUSD(tokens * h.nav)
   return `${formatTokenAmount(tokens)} ${h.symbol}`
 }
@@ -76,7 +79,8 @@ const allocationBreakdown = computed(() =>
     if (h.decryptedBalance === null || portfolio.totalDecryptedValue <= 0) {
       return { name: h.name, pct: 0, color: holdingColorClass(i) }
     }
-    const value = Number(h.decryptedBalance) / 1e18 * (h.nav ?? 1)
+    // Wave 3.5 raw-integer share convention; see holdingUsdValue.
+    const value = Number(h.decryptedBalance) * (h.nav ?? 1)
     return {
       name: h.name,
       pct: (value / portfolio.totalDecryptedValue) * 100,
@@ -444,7 +448,7 @@ const allocationBreakdown = computed(() =>
                     {{ holdingUsdValue(h) }}
                   </span>
                   <span class="font-sans text-[11px] text-cool tabular-nums mt-0.5">
-                    {{ formatTokenAmount(Number(h.decryptedBalance) / 1e18) }} {{ h.symbol }}
+                    {{ formatTokenAmount(Number(h.decryptedBalance)) }} {{ h.symbol }}
                   </span>
                 </div>
               </template>

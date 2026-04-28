@@ -16,7 +16,8 @@ const holdingValues = computed(() =>
     .filter(h => h.decryptedBalance !== null)
     .map(h => ({
       name: h.name,
-      value: Number(h.decryptedBalance!) / 1e18 * (h.nav ?? 1),
+      // Wave 3.5 raw-integer share convention — see store + page comments.
+      value: Number(h.decryptedBalance!) * (h.nav ?? 1),
     })),
 )
 

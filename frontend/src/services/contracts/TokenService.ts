@@ -27,8 +27,20 @@ export async function decimals(): Promise<number> {
   return contractRead(addr, muHavenTokenAbi, 'decimals', [], CONTRACT) as Promise<number>
 }
 
-export async function encryptedBalanceOf(account: `0x${string}`): Promise<`0x${string}`> {
-  return contractRead(addr, muHavenTokenAbi, 'encryptedBalanceOf', [account], CONTRACT) as Promise<`0x${string}`>
+/**
+ * Encrypted balance handle for `account` on a given fhERC-20 token.
+ *
+ * `tokenAddress` is optional + defaults to the Wave 3 `muHavenToken` proxy
+ * (kept for back-compat with `MPrivacyProofPanel`). Wave 3.5 callers MUST
+ * pass an explicit address since each RWA gets its own per-token contract
+ * (TBILL1, GOLD1, …) — using the default reads the wrong storage and
+ * surfaces as "decrypted balance == 0" for every Wave 3.5 holding.
+ */
+export async function encryptedBalanceOf(
+  account: `0x${string}`,
+  tokenAddress: `0x${string}` = addr,
+): Promise<`0x${string}`> {
+  return contractRead(tokenAddress, muHavenTokenAbi, 'encryptedBalanceOf', [account], CONTRACT) as Promise<`0x${string}`>
 }
 
 export async function encryptedTotalSupply(): Promise<`0x${string}`> {
@@ -116,8 +128,9 @@ export async function requestBalanceDecrypt(): Promise<TxHash> {
  */
 export async function refreshDecryptGrant(
   ephemeralEOA: `0x${string}`,
+  tokenAddress: `0x${string}` = addr,
 ): Promise<TxHash> {
-  return contractWrite(addr, muHavenTokenAbi, 'refreshDecryptGrant', [ephemeralEOA], CONTRACT)
+  return contractWrite(tokenAddress, muHavenTokenAbi, 'refreshDecryptGrant', [ephemeralEOA], CONTRACT)
 }
 
 // ── Convenience: full decrypt flow ─────────────────────────────────

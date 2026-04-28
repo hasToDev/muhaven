@@ -230,10 +230,17 @@ export function useFhe() {
 
   // ── Decryption helpers ────────────────────────────────────────────────
 
-  async function decryptUint128ForView(ctHash: bigint | string): Promise<bigint> {
+  async function decryptUint128ForView(
+    ctHash: bigint | string,
+    tokenAddress?: `0x${string}`,
+  ): Promise<bigint> {
     // Default: withRefresh = true. Used for MuHavenToken balance handles
     // which Phase 7 `refreshDecryptGrant` can re-bind to the session EOA.
-    return decryptForView(ctHash, 128)
+    // `tokenAddress` is required when decrypting Wave 3.5 per-RWA tokens
+    // (TBILL1 / GOLD1) — the refresh fallback dispatches the
+    // `refreshDecryptGrant` tx to that contract. Omit on Wave 3 single-
+    // token decrypts (defaults to `addresses.muHavenToken`).
+    return decryptForView(ctHash, 128, { tokenAddress })
   }
 
   async function decryptUint64ForView(ctHash: bigint | string): Promise<bigint> {
@@ -337,7 +344,15 @@ export function useFhe() {
             const { refreshDecryptGrant } = await import(
               '@/services/contracts/TokenService'
             )
-            await refreshDecryptGrant(address as `0x${string}`)
+            // Pass the per-RWA-token address when the caller knows it.
+            // Wave 3.5 holdings live on per-token contracts (TBILL1,
+            // GOLD1, …); refreshing the grant on the wrong contract is
+            // a no-op against the actual handle. Falls back to the
+            // Wave 3 default inside `refreshDecryptGrant` when omitted.
+            await refreshDecryptGrant(
+              address as `0x${string}`,
+              opts.tokenAddress,
+            )
           } else if (kind === 'muHavenStable') {
             const { refreshDecryptGrant, isAvailable } = await import(
               '@/services/contracts/MuHavenStableService'
