@@ -289,6 +289,36 @@ watch(mode, (m) => {
   }
 })
 
+// ── Operator approval (mhUSDC → Subscription) ──────────────────────────
+//
+// Subscription.purchase pulls mhUSDC from the kernel via
+// `MuHavenStable.transferFrom(investor, treasury, amount, ...)`. The
+// stable wrapper rejects with `NotOperator()` (selector 0x7c214f04)
+// unless the investor has previously granted operator status to the
+// Subscription address. Mirrors WrapPage's `LegacyPusdcService.setOperator`
+// pattern: long expiry, granted once per (kernel, subscription) pair.
+//
+// `null` = unknown (not yet read), `false` = read + missing (will grant
+// before purchase), `true` = read + granted.
+const subOperatorSet = ref<boolean | null>(null)
+const OPERATOR_EXPIRY_SECONDS = 365 * 24 * 60 * 60
+
+async function refreshSubOperatorStatus(): Promise<void> {
+  if (!address.value || isZeroAddress(v35Addresses.subscription)) {
+    subOperatorSet.value = null
+    return
+  }
+  try {
+    subOperatorSet.value = await MuHavenStableService.isOperator(
+      address.value as `0x${string}`,
+      v35Addresses.subscription,
+    )
+  } catch (e) {
+    console.warn('[TradePage] mhUSDC operator status read failed', e)
+    subOperatorSet.value = null
+  }
+}
+
 // ── Wallet aside ────────────────────────────────────────────────────────
 
 const copied = ref(false)
@@ -318,12 +348,18 @@ async function copyAddress() {
   setTimeout(() => { copied.value = false }, 2000)
 }
 
-watch(connected, (val) => { if (val) loadBalances() })
+watch(connected, (val) => {
+  if (val) {
+    loadBalances()
+    refreshSubOperatorStatus()
+  }
+})
 
 onMounted(async () => {
   if (connected.value) {
     loadBalances()
     refreshKyc()
+    refreshSubOperatorStatus()
   }
   if (!marketplace.loaded) await marketplace.load()
 
@@ -377,6 +413,21 @@ async function handlePurchase() {
 
   try {
     currentStep.value = 1
+
+    // Pre-flight: ensure Subscription is an operator on the investor's
+    // mhUSDC. Without this, the wrapper's `transferFrom(investor, treasury)`
+    // call inside `Subscription.purchase` reverts `NotOperator()` (selector
+    // 0x7c214f04). Grant once per (kernel, subscription) with a long
+    // expiry — subsequent purchases skip this entirely. Mirrors the
+    // PUSDC.setOperator step in WrapPage.handleCashWrap.
+    if (subOperatorSet.value !== true) {
+      const expiry = BigInt(Math.floor(Date.now() / 1000) + OPERATOR_EXPIRY_SECONDS)
+      await MuHavenStableService.setOperator(v35Addresses.subscription, expiry)
+      subOperatorSet.value = true
+      toast.info('mhUSDC approved', {
+        description: 'Subscription contract can now pull your mhUSDC',
+      })
+    }
 
     // Shares are raw integer units per Wave 3.5 contract convention:
     // `FHE.mul(shares, nav)` produces PUSDC base units (6-decimal). See
