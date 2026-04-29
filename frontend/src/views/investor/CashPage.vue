@@ -12,14 +12,13 @@ import * as Erc20Service from '@/services/contracts/Erc20Service'
 import * as LegacyPusdcService from '@/services/contracts/LegacyPusdcService'
 import * as MuHavenStableService from '@/services/contracts/MuHavenStableService'
 import { addresses, v35Addresses, isZeroAddress } from '@/contracts/addresses'
-import { balanceApi } from '@/services/api'
 import { CIRCLE_FAUCET_URL, arbiscanTx } from '@/lib/external'
 import { formatUSD } from '@/lib/utils'
 import MButton from '@/components/ui/MButton.vue'
 import MAddressQR from '@/components/ui/MAddressQR.vue'
 import {
   CheckCircle2, Lock, Shield, EyeOff, ArrowRight, Loader2, Copy, Check,
-  RefreshCw, ExternalLink, Coins, Layers, Wallet, Sparkles,
+  RefreshCw, ExternalLink, Coins, Layers, Wallet, Sparkles, Eye,
 } from 'lucide-vue-next'
 
 // CashPage — Phase 9.A first-run cockpit + wrap wizard.
@@ -42,7 +41,7 @@ type Mode = 'cash' | 'asset'
 
 const route = useRoute()
 const { address, connected } = useWallet()
-const { initialize: initFhe, getEphemeralEOA } = useFhe()
+const { initialize: initFhe, getEphemeralEOA, decryptMhUsdcForView } = useFhe()
 
 const isXl = useMediaQuery('(min-width: 1280px)')
 
@@ -72,23 +71,19 @@ const errMsg = ref<string | null>(null)
 // Cash-mode operator state — once granted, future wraps skip the approval.
 const operatorSet = ref<boolean | null>(null)
 
-// Power-user toggle that reveals the legacy-PUSDC cleartext-shadow tile
-// underneath the main USDC + mhUSDC strip. Off by default — hides
-// implementation detail from the new-user landing experience.
-const showAdvanced = ref(false)
-
+// Steps shown only while a wrap is in flight (inline above the Convert
+// button). "Enter Amount" intentionally dropped — by the time the rail
+// is visible the user has already entered the amount. Two real steps
+// remain per mode.
 const cashSteps = [
-  { label: 'Enter Amount', description: 'How much USDC to convert' },
-  { label: 'Approve USDC', description: 'ERC-20 allowance for the PUSDC layer' },
-  { label: 'Mint mhUSDC', description: 'USDC → encrypted mhUSDC, ready to spend' },
+  { label: 'Approve USDC', description: 'Granting allowance so the wrapper can pull your USDC…' },
+  { label: 'Mint mhUSDC', description: 'Encrypting your USDC into spendable mhUSDC…' },
 ]
 const assetSteps = [
-  { label: 'Enter Amount', description: 'Define wrap amount' },
-  { label: 'Approve', description: 'Approve ERC-20 to vault' },
-  { label: 'Wrap', description: 'Wrap into fhERC-20' },
+  { label: 'Approve', description: 'Approving ERC-20 to vault…' },
+  { label: 'Wrap', description: 'Wrapping into fhERC-20…' },
 ]
 const steps = computed(() => mode.value === 'cash' ? cashSteps : assetSteps)
-const railHeight = computed(() => Math.min(100, ((currentStep.value + 1) / steps.value.length) * 100))
 
 const quickAmounts = ['100', '1000', '5000']
 const numericAmount = computed(() => parseFloat(amount.value.replace(/,/g, '')) || 0)
@@ -98,31 +93,65 @@ const numericAmount = computed(() => parseFloat(amount.value.replace(/,/g, '')) 
 const copied = ref(false)
 const balancesLoading = ref(false)
 const usdcBalance = ref<bigint | null>(null)
-const pusdcPublicBalance = ref<bigint | null>(null)
-const formattedBackendBalance = ref<string | null>(null)
+// mhUSDC encrypted balance — null until the user hits Decrypt OR a wrap
+// completes (handleCashWrap auto-decrypts on success). bigint is the
+// decrypted scaled value (6 decimals, same as USDC).
+const mhUsdcBalance = ref<bigint | null>(null)
+const mhUsdcDecrypting = ref(false)
+const mhUsdcError = ref<string | null>(null)
 
-// True first-run state: USDC has been read (not null) AND is zero AND the
-// platform-tracked mhUSDC hasn't materialised. Gates the welcome ribbon so
-// returning users topping up don't see onboarding copy on every visit.
+// True first-run state: USDC has been read AND is zero AND the user has
+// no decrypted mhUSDC. Gates the welcome ribbon so returning users
+// topping up don't see onboarding copy on every visit. If mhUSDC hasn't
+// been decrypted yet (still null), we lean toward "show the ribbon" —
+// returning users with mhUSDC will dismiss it implicitly the moment they
+// click Reveal.
 const isFirstRun = computed(() =>
   usdcBalance.value === 0n
-  && (formattedBackendBalance.value === null || formattedBackendBalance.value === '$0.00'),
+  && (mhUsdcBalance.value === null || mhUsdcBalance.value === 0n),
 )
 
 async function loadBalances() {
   if (!address.value) return
   balancesLoading.value = true
   try {
-    const [usdc, pusdc, backend] = await Promise.allSettled([
-      Erc20Service.balanceOf(addresses.usdc, address.value as `0x${string}`),
-      LegacyPusdcService.balanceOf(address.value as `0x${string}`),
-      balanceApi.get(),
-    ])
-    usdcBalance.value = usdc.status === 'fulfilled' ? usdc.value : null
-    pusdcPublicBalance.value = pusdc.status === 'fulfilled' ? pusdc.value : null
-    formattedBackendBalance.value = backend.status === 'fulfilled' ? backend.value.formatted_balance : null
+    usdcBalance.value = await Erc20Service.balanceOf(
+      addresses.usdc, address.value as `0x${string}`,
+    )
+  } catch (e) {
+    console.warn('[CashPage] USDC balance read failed', e)
+    usdcBalance.value = null
   } finally {
     balancesLoading.value = false
+  }
+}
+
+/**
+ * Reveal the encrypted mhUSDC balance via FHE decrypt-for-view. Mirrors
+ * TradePage's pattern (reveal mhUSDC pre-flight to catch silent-fail
+ * pulls). We only fire on user click OR after a successful wrap — never
+ * on mount, since each call signs with the session EOA.
+ */
+async function decryptMhUsdcBalance() {
+  if (!address.value || mhUsdcDecrypting.value) return
+  if (!MuHavenStableService.isAvailable()) {
+    mhUsdcBalance.value = null
+    return
+  }
+  mhUsdcDecrypting.value = true
+  mhUsdcError.value = null
+  try {
+    await initFhe()
+    const ctHash = await MuHavenStableService.confidentialBalanceOf(
+      address.value as `0x${string}`,
+    )
+    mhUsdcBalance.value = await decryptMhUsdcForView(ctHash)
+  } catch (e) {
+    console.warn('[CashPage] mhUSDC decrypt failed', e)
+    mhUsdcError.value = e instanceof Error ? e.message : 'Decrypt failed'
+    mhUsdcBalance.value = null
+  } finally {
+    mhUsdcDecrypting.value = false
   }
 }
 
@@ -223,38 +252,38 @@ async function handleCashWrap() {
 
     const kernel = address.value as `0x${string}`
 
-    // ── Step 2 (display) → Approve USDC for the PUSDC contract ───────
+    // ── Step 0 (display) → Approve USDC for the wrapper ───────────────
     // Approve only when allowance < amount. Approve `amountUnits` exactly
     // (not max) so the surface area stays tight; investors who repeat
     // wraps will pay a fresh approve each time but it's a 1-tx ERC-20
     // call — minor cost vs. perpetual unlimited approval risk.
-    currentStep.value = 1
+    currentStep.value = 0
     const allowance = await Erc20Service.allowance(
       addresses.usdc, kernel, addresses.pusdc,
     )
     if (allowance < amountUnits) {
       await Erc20Service.approve(addresses.usdc, addresses.pusdc, amountUnits)
       toast.info('USDC approved', {
-        description: 'PUSDC contract can now pull your USDC',
+        description: 'Wrapper can now pull your USDC',
       })
     }
 
-    // ── Step 3 (display) → USDC → PUSDC → mhUSDC ─────────────────────
-    currentStep.value = 2
+    // ── Step 1 (display) → USDC → mhUSDC (collapses two on-chain hops) ─
+    currentStep.value = 1
 
-    // (a) USDC → PUSDC. Mints PUSDC to the kernel.
+    // (a) USDC → PUSDC under the hood. Mints PUSDC to the kernel as the
+    //     intermediate collateral the wrapper will then encrypt.
     await LegacyPusdcService.wrap(kernel, amountUnits)
 
-    // (b) PUSDC operator approval on MuHavenStable, if missing. Wraps
-    //     2 and onward skip this step — operator is granted with a
-    //     long expiry.
+    // (b) Wrapper operator approval, if missing. Wraps 2 and onward
+    //     skip this — operator is granted with a long expiry.
     if (operatorSet.value !== true) {
       const expiry = BigInt(Math.floor(Date.now() / 1000) + OPERATOR_EXPIRY_SECONDS)
       await LegacyPusdcService.setOperator(v35Addresses.muHavenStable, expiry)
       operatorSet.value = true
     }
 
-    // (c) PUSDC → mhUSDC via the SDK (encrypts client-side, grants ACL
+    // (c) Mint mhUSDC via the SDK (encrypts client-side, grants ACL
     //     on the new mhUSDC handle to the active session EOA).
     await initFhe()
     const ctx = await buildWriteContext()
@@ -263,12 +292,14 @@ async function handleCashWrap() {
 
     const hash = await stable.wrap(amountUnits, eph)
     txHash.value = hash
-    currentStep.value = 3
     showSuccess.value = true
     toast.success('Wrap confirmed', {
       description: 'USDC converted 1:1 into mhUSDC — ready for atomic buys.',
     })
+    // Refresh USDC + auto-decrypt the new mhUSDC balance so the user
+    // sees their fresh confidential cash without an extra click.
     loadBalances()
+    decryptMhUsdcBalance()
   } catch (e) {
     // Print the full error CHAIN — TxFailedError wraps the underlying
     // viem/sender error in `cause`, but `toast.error` only shows the
@@ -311,15 +342,14 @@ async function handleAssetWrap() {
   try {
     const amountWei = BigInt(Math.floor(numericAmount.value * 1e18))
 
-    currentStep.value = 1
+    currentStep.value = 0
     const underlying = await VaultService.underlyingToken()
     await Erc20Service.approve(underlying, addresses.muHavenVault, amountWei)
 
-    currentStep.value = 2
+    currentStep.value = 1
     const hash = await VaultService.wrap(amountWei)
 
     txHash.value = hash
-    currentStep.value = 3
     showSuccess.value = true
     toast.success('Wrap confirmed', {
       description: 'ERC-20 wrapped into fhERC-20 — balance now encrypted on-chain',
@@ -500,7 +530,9 @@ const successCopy = computed(() =>
                 {{ txHash.slice(0, 10) }}…{{ txHash.slice(-8) }}
               </a>
             </p>
-            <MButton variant="outline" @click="resetForm">Make another wrap</MButton>
+            <MButton variant="outline" @click="resetForm">
+              {{ mode === 'cash' ? 'Convert again' : 'Make another wrap' }}
+            </MButton>
           </div>
 
           <div v-else-if="errMsg" data-testid="wrap-error-card" class="flex flex-col items-center gap-5 py-8">
@@ -564,9 +596,72 @@ const successCopy = computed(() =>
                 class="font-sans text-[10px] text-cool/80 leading-relaxed"
                 data-testid="wrap-cash-hint"
               >
-                1:1 backed: every wrapped PUSDC stays held by the wrapper as collateral. Unwrap any time.
+                1:1 backed: every USDC you wrap is held as collateral. Unwrap to USDC any time.
               </p>
             </div>
+
+            <!-- Inline progress rail — visible only while a wrap is in
+                 flight. Two pill steps (Approve → Mint) with active /
+                 done state. Replaces the right-aside "Current Step"
+                 section that lived statically on the page even when
+                 nothing was happening. -->
+            <transition
+              enter-active-class="transition-all duration-300 ease-out"
+              leave-active-class="transition-all duration-200 ease-in"
+              enter-from-class="opacity-0 -translate-y-1"
+              leave-to-class="opacity-0 -translate-y-1"
+            >
+              <div
+                v-if="isProcessing"
+                data-testid="wrap-inline-rail"
+                class="rounded-lg p-4 border border-gold/25 dark:border-signal/20
+                       bg-gold/6 dark:bg-signal/5 flex flex-col gap-3"
+              >
+                <div class="flex items-center gap-3">
+                  <div
+                    v-for="(s, i) in steps"
+                    :key="s.label"
+                    class="flex-1 flex items-center gap-2 min-w-0"
+                  >
+                    <div
+                      :class="[
+                        'w-5 h-5 rounded-full flex-shrink-0 flex items-center justify-center transition-all',
+                        i < currentStep
+                          ? 'bg-gold dark:bg-signal'
+                          : i === currentStep
+                            ? 'bg-gold dark:bg-signal ring-4 ring-gold/15 dark:ring-signal/20'
+                            : 'bg-mist/60 dark:bg-[#1c1b1b] border border-haze dark:border-white/15',
+                      ]"
+                    >
+                      <Check v-if="i < currentStep" :size="11" :stroke-width="2.5" class="text-white dark:text-midnight" />
+                      <Loader2 v-else-if="i === currentStep" :size="11" class="animate-spin text-white dark:text-midnight" />
+                    </div>
+                    <span
+                      :class="[
+                        'font-sans text-[10px] uppercase tracking-[0.18em] font-semibold truncate',
+                        i <= currentStep ? 'text-compute dark:text-signal' : 'text-cool',
+                      ]"
+                    >
+                      {{ s.label }}
+                    </span>
+                    <div
+                      v-if="i < steps.length - 1"
+                      :class="[
+                        'flex-shrink-0 h-px w-3 transition-colors',
+                        i < currentStep ? 'bg-gold dark:bg-signal' : 'bg-haze dark:bg-white/10',
+                      ]"
+                      aria-hidden="true"
+                    />
+                  </div>
+                </div>
+                <p
+                  v-if="steps[currentStep]"
+                  class="font-sans text-[11px] text-cool leading-tight pl-7"
+                >
+                  {{ steps[currentStep].description }}
+                </p>
+              </div>
+            </transition>
 
             <button
               type="button"
@@ -690,8 +785,13 @@ const successCopy = computed(() =>
             </a>
           </div>
 
-          <!-- mhUSDC: encrypted spendable cash (the platform-tracked figure) -->
-          <div class="rounded-lg p-4 border border-haze dark:border-white/8 bg-mist/40 dark:bg-[#1c1b1b]/60 flex flex-col gap-1">
+          <!-- mhUSDC: encrypted spendable cash. Two states:
+               • Pre-decrypt (mhUsdcBalance === null): show "Encrypted"
+                 pill + Reveal button. The on-chain balance handle is
+                 sealed; only the user can decrypt. We never auto-fetch
+                 this on mount — each decrypt costs a session signature.
+               • Post-decrypt (bigint): show formatted USD + Refresh. -->
+          <div class="rounded-lg p-4 border border-haze dark:border-white/8 bg-mist/40 dark:bg-[#1c1b1b]/60 flex flex-col gap-2">
             <div class="flex items-center justify-between">
               <span class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool">mhUSDC</span>
               <span
@@ -703,21 +803,72 @@ const successCopy = computed(() =>
                 Encrypted
               </span>
             </div>
-            <span
-              class="font-accent italic text-2xl text-midnight dark:text-white tabular-nums"
-              data-testid="cash-mhusdc-balance"
+
+            <!-- Decrypted state: big number + refresh -->
+            <template v-if="mhUsdcBalance !== null">
+              <span
+                class="font-accent italic text-2xl text-midnight dark:text-white tabular-nums"
+                data-testid="cash-mhusdc-balance"
+              >
+                {{ formatUSD(Number(mhUsdcBalance) / 1e6) }}
+              </span>
+              <span class="font-sans text-[10px] text-cool/80 leading-tight">
+                Confidential cash · spend on Trade
+              </span>
+              <button
+                type="button"
+                @click="decryptMhUsdcBalance"
+                :disabled="mhUsdcDecrypting"
+                data-testid="cash-mhusdc-refresh"
+                class="self-start mt-1 inline-flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.22em] font-medium text-cool hover:text-compute dark:hover:text-signal transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-wait"
+              >
+                <Loader2 v-if="mhUsdcDecrypting" :size="11" class="animate-spin" />
+                <RefreshCw v-else :size="11" />
+                Refresh
+              </button>
+            </template>
+
+            <!-- Pre-decrypt state: blurred placeholder + Reveal CTA -->
+            <template v-else>
+              <span
+                class="font-accent italic text-2xl text-cool/40 dark:text-body-dark/30 tabular-nums select-none blur-[2.5px] tracking-[0.05em]"
+                aria-hidden="true"
+                data-testid="cash-mhusdc-locked"
+              >
+                $••••.••
+              </span>
+              <span class="font-sans text-[10px] text-cool/80 leading-tight">
+                Confidential cash · only you can decrypt
+              </span>
+              <button
+                type="button"
+                @click="decryptMhUsdcBalance"
+                :disabled="mhUsdcDecrypting || !address"
+                data-testid="cash-mhusdc-decrypt-cta"
+                class="self-start mt-1 inline-flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.22em] font-semibold
+                       text-compute dark:text-signal
+                       border border-compute/30 dark:border-signal/30
+                       hover:text-white dark:hover:text-[#412d00]
+                       hover:bg-compute dark:hover:bg-signal
+                       px-3 py-1.5 rounded transition-all duration-200 cursor-pointer
+                       disabled:opacity-60 disabled:cursor-wait"
+              >
+                <Loader2 v-if="mhUsdcDecrypting" :size="11" class="animate-spin" />
+                <Eye v-else :size="11" :stroke-width="2" />
+                Reveal
+              </button>
+            </template>
+
+            <p
+              v-if="mhUsdcError"
+              class="font-sans text-[10px] text-negative leading-tight mt-1"
             >
-              {{ formattedBackendBalance ?? '$0.00' }}
-            </span>
-            <span class="font-sans text-[10px] text-cool/80 leading-tight mt-0.5">
-              Confidential cash · spend on Trade
-            </span>
+              {{ mhUsdcError }}
+            </p>
           </div>
 
-          <!-- Refresh + advanced details (legacy PUSDC tile is hidden by
-               default to keep the new-user view simple; click "Details"
-               to reveal for power users). -->
-          <div class="flex items-center justify-between pt-1">
+          <!-- USDC refresh — small footer-style action under the tiles. -->
+          <div class="flex items-center justify-end pt-1">
             <button
               type="button"
               @click="loadBalances"
@@ -726,82 +877,22 @@ const successCopy = computed(() =>
               class="inline-flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.22em] font-medium text-cool hover:text-compute dark:hover:text-signal transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <RefreshCw :size="12" :class="balancesLoading && 'animate-spin'" />
-              Refresh
+              Refresh USDC
             </button>
-            <button
-              type="button"
-              @click="showAdvanced = !showAdvanced"
-              data-testid="cash-balances-advanced-toggle"
-              class="inline-flex items-center gap-1 font-sans text-[10px] uppercase tracking-[0.22em] font-medium text-cool/80 hover:text-compute dark:hover:text-signal transition-colors cursor-pointer"
-            >
-              {{ showAdvanced ? 'Hide details' : 'Details' }}
-            </button>
-          </div>
-
-          <!-- Legacy PUSDC (cleartext shadow) — advanced detail, hidden by
-               default. Surfaces the ERC-7984 dust slice for power users
-               debugging the wrap path. -->
-          <div
-            v-if="showAdvanced"
-            class="rounded-lg p-4 border border-haze dark:border-white/8 bg-mist/30 dark:bg-[#1c1b1b]/40 flex flex-col gap-1"
-            title="ERC-7984 cleartext shadow only. Bulk PUSDC holding is encrypted in confidentialBalanceOf."
-          >
-            <span class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool">Legacy PUSDC (cleartext shadow)</span>
-            <span
-              class="font-accent italic text-lg text-midnight dark:text-white tabular-nums"
-              data-testid="wrap-pusdc-public-balance"
-            >
-              {{ pusdcPublicBalance !== null ? formatUSD(Number(pusdcPublicBalance) / 1e6, 4) : '—' }}
-            </span>
-            <span class="font-sans text-[9px] text-cool/70 leading-tight">
-              Tiny dust slice. Bulk holding encrypted in
-              <code class="font-mono">confidentialBalanceOf</code>.
-            </span>
           </div>
         </div>
 
-        <div class="pt-8 border-t border-haze dark:border-white/8">
-          <h3 class="font-sans text-[11px] uppercase tracking-[0.22em] text-cool font-semibold mb-6">Current Step</h3>
-          <div class="relative flex flex-col gap-8">
-            <div aria-hidden="true" class="absolute top-2.5 bottom-2.5 left-[10px] -translate-x-1/2 w-px bg-haze dark:bg-white/10" />
-            <div
-              aria-hidden="true"
-              class="absolute top-2.5 left-[10px] -translate-x-1/2 w-px bg-gold dark:bg-signal shadow-[0_0_10px_rgba(255,186,32,0.5)] dark:shadow-[0_0_10px_rgba(255,220,161,0.5)] transition-all duration-500"
-              :style="{ height: `${railHeight}%` }"
-            />
-            <div
-              v-for="(s, i) in steps"
-              :key="s.label"
-              :class="['flex items-center gap-5 relative transition-opacity', i > currentStep && 'opacity-50']"
-            >
-              <div
-                :class="[
-                  'w-5 h-5 rounded-full flex-shrink-0 z-10 flex items-center justify-center transition-all',
-                  i < currentStep ? 'bg-gold dark:bg-signal'
-                    : i === currentStep ? 'bg-gold dark:bg-signal ring-4 ring-gold/10 dark:ring-signal/15 shadow-[0_0_15px_rgba(255,186,32,0.4)] dark:shadow-[0_0_15px_rgba(255,220,161,0.4)]'
-                      : 'bg-mist/60 dark:bg-[#1c1b1b] border border-haze dark:border-white/15',
-                ]"
-              >
-                <div v-if="i <= currentStep" class="w-2 h-2 rounded-full bg-white dark:bg-midnight" />
-              </div>
-              <div class="flex flex-col">
-                <span :class="[
-                  'font-sans text-xs uppercase tracking-[0.22em] font-bold',
-                  i <= currentStep ? 'text-compute dark:text-signal' : 'text-midnight dark:text-white',
-                ]">{{ s.label }}</span>
-                <span class="font-accent italic text-[11px] text-cool mt-0.5">{{ s.description }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
+        <!-- Security Notice — privacy framing, always visible. The
+             progress rail used to live above this section but moved
+             inline above the Convert button so it's only on screen
+             while a wrap is actually running. -->
         <div class="pt-8 border-t border-haze dark:border-white/8">
           <h3 class="font-sans text-[11px] uppercase tracking-[0.22em] text-cool font-semibold mb-4">Security Notice</h3>
           <div class="rounded-lg p-4 border border-gold/25 bg-gold/5 flex items-start gap-3">
             <EyeOff :size="16" :stroke-width="1.8" class="text-gold mt-0.5 flex-shrink-0" />
             <p class="font-sans text-[11px] text-cool leading-relaxed">
               {{ mode === 'cash'
-                ? 'PUSDC pull amount is encrypted via Fhenix FHE. mhUSDC balance grants decrypt rights to this session only.'
+                ? 'Wrap amount is encrypted via Fhenix FHE. mhUSDC balance grants decrypt rights to this session only.'
                 : 'ERC-20 approval and wrap amounts are visible on-chain. Balance becomes encrypted after wrapping.' }}
             </p>
           </div>
