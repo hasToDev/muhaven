@@ -27,7 +27,7 @@ import { muHavenTokenAbi } from '@/contracts/abis'
 import {
   CheckCircle2, Lock, ShieldCheck, EyeOff, TrendingUp, ChevronDown, ArrowRight,
   Loader2, Copy, Check, RefreshCw, AlertTriangle, ShoppingCart, Undo2,
-  Eye, Inbox, Zap, Coins,
+  Eye, Inbox, Zap,
 } from 'lucide-vue-next'
 
 // TradePage — Wave 3.5 atomic buy + instant-redeem against
@@ -616,8 +616,23 @@ const ctaDisabled = computed(() => {
   if (!amount.value.trim() || numericAmount.value <= 0) return true
   if (isVerified.value === false && devModeActive.value !== true) return true
   if (mode.value === 'sell' && exceedsHolding.value) return true
+  // Buy mode: block the silent-fail click path. When the user has
+  // revealed mhUSDC and it can't cover the typed cost, the contract
+  // would zero-out the pull and leave the user paying gas for nothing.
+  // The right-aside glance bar already shows the "short $Z" warning +
+  // a loud Top-up-cash CTA; disabling the button removes the foot-gun.
+  if (mode.value === 'buy' && insufficientMhUsdc.value) return true
   return false
 })
+
+// Single prominence rule for the right-aside cash link. Both buy-block
+// states resolve to the same destination, so we collapse them under
+// one boolean and let the link carry the visual emphasis only when a
+// buy is actually blocked on cash.
+const cashLinkLoud = computed(() =>
+  mode.value === 'buy'
+  && (usdcBalance.value === 0n || insufficientMhUsdc.value),
+)
 </script>
 
 <template>
@@ -1169,122 +1184,14 @@ const ctaDisabled = computed(() => {
               FHE-encrypted client-side
             </p>
 
-            <!-- mhUSDC pre-flight: surface the silent-fail risk + an
-                 inline wrap CTA. Only shown in buy mode when the wrapper
-                 is configured AND the user has decrypted their mhUSDC
-                 balance and it falls short of the estimated cost. -->
-            <div
-              v-if="mode === 'buy' && insufficientMhUsdc"
-              data-testid="buy-insufficient-mhusdc"
-              class="rounded-lg p-4 border border-gold/35 dark:border-signal/30
-                     bg-gold/8 dark:bg-signal/8 flex flex-col gap-3"
-            >
-              <div class="flex items-start gap-3">
-                <Coins :size="16" :stroke-width="1.8" class="text-gold dark:text-signal mt-0.5 flex-shrink-0" />
-                <div class="flex-1 space-y-1">
-                  <p class="font-sans text-sm font-semibold text-midnight dark:text-white">
-                    Not enough mhUSDC for this buy
-                  </p>
-                  <p class="font-sans text-[11px] text-cool leading-relaxed">
-                    Your decrypted mhUSDC balance is below the estimated cost.
-                    The Subscription pull would silent-fail to zero — top up your
-                    cash on the Cash page first to keep the buy intact.
-                  </p>
-                </div>
-              </div>
-              <div class="flex flex-wrap items-center gap-3 pl-7">
-                <span class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool tabular-nums">
-                  have <span class="text-midnight dark:text-white">{{ mhUsdcBalance !== null ? formatUSD(Number(mhUsdcBalance) / 1e6) : '—' }}</span>
-                  · need <span class="text-midnight dark:text-white">{{ estimatedCostPusdc !== null ? formatUSD(Number(estimatedCostPusdc) / 1e6) : '—' }}</span>
-                </span>
-                <button
-                  type="button"
-                  @click="goCash"
-                  data-testid="buy-wrap-mhusdc-cta"
-                  class="ml-auto inline-flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.22em] font-semibold
-                         text-compute dark:text-signal hover:opacity-80 transition-opacity cursor-pointer"
-                >
-                  Top up cash
-                  <ArrowRight :size="11" :stroke-width="2" />
-                </button>
-              </div>
-            </div>
-
-            <!-- mhUSDC reveal — opt-in. Two states:
-                 - Pre-decrypt: prompts the user to reveal their balance.
-                 - Post-decrypt: shows the decrypted value as positive
-                   feedback that the Reveal succeeded (the
-                   insufficient-funds warning above still takes over when
-                   the balance lands short of the typed buy amount). -->
-            <div
-              v-if="mode === 'buy' && mhUsdcAvailable && !insufficientMhUsdc"
-              class="flex items-center justify-between gap-2 rounded-lg p-3
-                     border border-haze dark:border-white/8 bg-mist/30 dark:bg-[#1c1b1b]/60"
-            >
-              <div class="flex items-center gap-2">
-                <Coins :size="14" :stroke-width="1.8" :class="mhUsdcBalance === null ? 'text-cool' : 'text-compute dark:text-signal'" />
-                <span
-                  v-if="mhUsdcBalance === null"
-                  class="font-sans text-[11px] text-cool leading-tight"
-                >
-                  Pre-flight: reveal mhUSDC balance to catch silent-fail pulls.
-                </span>
-                <span
-                  v-else
-                  class="font-sans text-[11px] text-cool leading-tight tabular-nums"
-                  data-testid="buy-mhusdc-balance"
-                >
-                  mhUSDC balance:
-                  <span class="text-midnight dark:text-white font-semibold">
-                    {{ formatUSD(Number(mhUsdcBalance) / 1e6) }}
-                  </span>
-                </span>
-              </div>
-              <button
-                v-if="mhUsdcBalance === null"
-                type="button"
-                @click="decryptMhUsdcBalance"
-                :disabled="mhUsdcDecrypting"
-                data-testid="buy-reveal-mhusdc"
-                class="inline-flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.22em] font-semibold
-                       text-compute dark:text-signal hover:opacity-80 transition-opacity cursor-pointer disabled:opacity-50"
-              >
-                <Loader2 v-if="mhUsdcDecrypting" :size="11" class="animate-spin" />
-                <Eye v-else :size="11" />
-                Reveal
-              </button>
-              <button
-                v-else
-                type="button"
-                @click="decryptMhUsdcBalance"
-                :disabled="mhUsdcDecrypting"
-                data-testid="buy-refresh-mhusdc"
-                class="inline-flex items-center gap-1 font-sans text-[10px] uppercase tracking-[0.22em] font-semibold
-                       text-cool hover:text-compute dark:hover:text-signal transition-opacity cursor-pointer disabled:opacity-50"
-              >
-                <Loader2 v-if="mhUsdcDecrypting" :size="11" class="animate-spin" />
-                <RefreshCw v-else :size="11" />
-                Refresh
-              </button>
-            </div>
-
-            <!-- Cash-page hop in buy mode — quiet secondary link for users
-                 who want to top up before placing a larger buy. The inline
-                 insufficient-mhUSDC warning above already covers the
-                 reactive "you can't afford this" case; this link covers
-                 the proactive "let me top up first" case. -->
-            <button
-              v-if="mode === 'buy'"
-              type="button"
-              @click="goCash"
-              data-testid="buy-cash-link"
-              class="font-sans text-[11px] uppercase tracking-[0.22em] font-medium
-                     text-cool hover:text-compute dark:hover:text-signal transition-colors
-                     inline-flex items-center justify-center gap-1.5 self-center cursor-pointer"
-            >
-              Top up cash
-              <ArrowRight :size="11" :stroke-width="2" />
-            </button>
+            <!-- Form area below CTA is now FHE microcopy only. The
+                 in-form pre-flight Reveal section, the insufficient-
+                 mhUSDC warning block, and the quiet cash link all moved
+                 into the right-aside glance bar (mhUSDC row owns the
+                 reveal/decrypted/warning lifecycle; the cash link
+                 escalates prominence on insufficientMhUsdc). The CTA
+                 itself disables on insufficientMhUsdc to prevent the
+                 silent-fail click path. -->
           </div>
         </div>
       </section>
@@ -1349,25 +1256,114 @@ const ctaDisabled = computed(() => {
               </span>
             </div>
 
-            <!-- mhUSDC row — encrypted by default; the in-form pre-flight
-                 Reveal handles the actual decrypt (it's the right place
-                 to do it: silent-fail catching is a trade-time concern). -->
-            <div class="px-4 py-3 flex items-center justify-between gap-2">
-              <span class="font-sans text-[9px] uppercase tracking-[0.22em] text-cool/80">mhUSDC</span>
-              <span
-                class="font-sans text-[9px] uppercase tracking-[0.18em] font-medium
-                       text-compute/80 dark:text-signal/80
-                       border border-compute/20 dark:border-signal/20
-                       px-2 py-0.5 rounded"
-                data-testid="trade-glance-mhusdc"
+            <!-- mhUSDC row — four states (locked / decrypting / decrypted /
+                 warning). Reveal action lives here, not in the form, so
+                 the row owns the full balance lifecycle for the trade
+                 page. The warning state is the only pre-CTA signal that
+                 survived the form-area cleanup; it earns the extra
+                 height when `insufficientMhUsdc` flips true. -->
+            <div
+              data-testid="trade-glance-mhusdc"
+              :class="[
+                'px-4 flex flex-col gap-1 transition-colors duration-200',
+                insufficientMhUsdc
+                  ? 'py-3 bg-gold/8 dark:bg-signal/6'
+                  : 'py-3',
+              ]"
+              :data-warning="insufficientMhUsdc ? 'true' : undefined"
+            >
+              <div class="flex items-center justify-between gap-2">
+                <span class="font-sans text-[9px] uppercase tracking-[0.22em] text-cool/80">mhUSDC</span>
+
+                <!-- Decrypted: value + small refresh icon -->
+                <template v-if="mhUsdcBalance !== null">
+                  <span class="inline-flex items-center gap-2">
+                    <AlertTriangle
+                      v-if="insufficientMhUsdc"
+                      :size="12"
+                      :stroke-width="2"
+                      class="text-gold dark:text-signal flex-shrink-0"
+                    />
+                    <span
+                      class="font-accent italic text-base text-midnight dark:text-white tabular-nums"
+                      data-testid="trade-glance-mhusdc-balance"
+                    >
+                      {{ formatUSD(Number(mhUsdcBalance) / 1e6) }}
+                    </span>
+                    <button
+                      type="button"
+                      @click="decryptMhUsdcBalance"
+                      :disabled="mhUsdcDecrypting"
+                      data-testid="trade-glance-mhusdc-refresh"
+                      :title="mhUsdcDecrypting ? 'Refreshing…' : 'Refresh mhUSDC'"
+                      :aria-label="mhUsdcDecrypting ? 'Refreshing mhUSDC balance' : 'Refresh mhUSDC balance'"
+                      class="text-cool/60 hover:text-compute dark:hover:text-signal transition-colors flex-shrink-0 cursor-pointer disabled:cursor-wait disabled:opacity-50"
+                    >
+                      <Loader2 v-if="mhUsdcDecrypting" :size="12" class="animate-spin" />
+                      <RefreshCw v-else :size="12" />
+                    </button>
+                  </span>
+                </template>
+
+                <!-- Locked: blurred placeholder + Reveal button. Border
+                     alpha bumps when the user has typed an amount so the
+                     "you might want to check this" nudge is visible
+                     without forcing a session signature. -->
+                <template v-else>
+                  <span class="inline-flex items-center gap-2">
+                    <span
+                      class="font-accent italic text-sm text-cool/40 dark:text-body-dark/30 tabular-nums select-none blur-[1.5px] tracking-[0.05em]"
+                      aria-hidden="true"
+                    >
+                      $••••.••
+                    </span>
+                    <button
+                      type="button"
+                      @click="decryptMhUsdcBalance"
+                      :disabled="mhUsdcDecrypting || !address"
+                      data-testid="trade-glance-mhusdc-reveal"
+                      :aria-label="'Reveal mhUSDC balance'"
+                      :class="[
+                        'inline-flex items-center gap-1 px-2 py-1 rounded font-sans text-[10px] uppercase tracking-[0.18em] font-semibold cursor-pointer disabled:opacity-60 disabled:cursor-wait transition-all duration-200',
+                        'text-compute dark:text-signal hover:text-white dark:hover:text-[#412d00]',
+                        'hover:bg-compute dark:hover:bg-signal',
+                        amount.trim() && numericAmount > 0
+                          ? 'border border-compute/60 dark:border-signal/55'
+                          : 'border border-compute/30 dark:border-signal/30',
+                      ]"
+                    >
+                      <Loader2 v-if="mhUsdcDecrypting" :size="11" class="animate-spin" />
+                      <Eye v-else :size="11" :stroke-width="2" />
+                      <span class="hidden sm:inline">Reveal</span>
+                    </button>
+                  </span>
+                </template>
+              </div>
+
+              <!-- Warning sub-line: appears only when the decrypted balance
+                   can't cover the typed amount. "Need $Y · short $Z" frames
+                   the gap so the user knows exactly how much to top up. -->
+              <p
+                v-if="insufficientMhUsdc && estimatedCostPusdc !== null && mhUsdcBalance !== null"
+                data-testid="trade-glance-mhusdc-warning"
+                class="font-sans text-[10px] text-cool/80 leading-tight tabular-nums"
               >
-                Encrypted
-              </span>
+                Need
+                <span class="text-midnight dark:text-white">{{ formatUSD(Number(estimatedCostPusdc) / 1e6) }}</span>
+                · short
+                <span class="text-gold dark:text-signal font-semibold">{{ formatUSD(Number(estimatedCostPusdc - mhUsdcBalance) / 1e6) }}</span>
+              </p>
             </div>
           </div>
 
-          <!-- Top-up cash link — quiet by default, emphasised when USDC
-               is zero in buy mode (the most common "I can't trade" state). -->
+          <!-- Top-up cash link — single prominence rule: loud
+               (`btn-gold-sweep`) whenever a buy is currently blocked on
+               cash, quiet hover-text otherwise. Two block conditions in
+               buy mode collapse to the same destination (`/cash` covers
+               both the deposit-USDC and wrap-to-mhUSDC flows):
+                 • usdcBalance === 0n   — no fuel to wrap
+                 • insufficientMhUsdc   — wrapped fuel below this buy's cost
+          -->
           <button
             type="button"
             @click="goCash"
@@ -1376,12 +1372,12 @@ const ctaDisabled = computed(() => {
               'mt-3 w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg',
               'font-sans text-[10px] uppercase tracking-[0.22em] font-semibold',
               'transition-all duration-200 cursor-pointer',
-              mode === 'buy' && usdcBalance === 0n
+              cashLinkLoud
                 ? 'btn-gold-sweep text-midnight'
                 : 'text-cool hover:text-compute dark:hover:text-signal',
             ]"
           >
-            {{ mode === 'buy' && usdcBalance === 0n ? 'Top up cash' : 'Manage cash' }}
+            {{ cashLinkLoud ? 'Top up cash' : 'Manage cash' }}
             <ArrowRight :size="11" :stroke-width="2" />
           </button>
         </div>
