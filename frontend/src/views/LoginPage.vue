@@ -90,7 +90,10 @@ function redirectToDashboard() {
   const redirect = route.query.redirect as string | undefined
   // Only allow relative paths to prevent open redirect
   const safeRedirect = redirect?.startsWith('/') ? redirect : undefined
-  const target = safeRedirect || (auth.role.value === 'issuer' ? '/tokens' : '/portfolio')
+  // Phase 9.A: investors land on /cash (the new first nav item) — it's
+  // the post-register cockpit (wallet + funding + USDC→mhUSDC). Issuers
+  // unchanged: still /tokens.
+  const target = safeRedirect || (auth.role.value === 'issuer' ? '/tokens' : '/cash')
   router.replace(target)
 }
 

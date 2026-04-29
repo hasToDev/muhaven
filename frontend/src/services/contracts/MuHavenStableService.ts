@@ -4,7 +4,7 @@
  * grants (`MHUSD_WRAPPER_PLAN.md` + ADR-041).
  *
  * Frontend hot-path PUSDC reads + writes go through here. Legacy PUSDC
- * surfaces only on the WrapPage entry (`LegacyPusdcService`).
+ * surfaces only on the CashPage advanced view (`LegacyPusdcService`).
  *
  * This service stays close to the metal — direct ABI calls via
  * `contractRead` / `contractWrite`, no SDK indirection — to keep parity

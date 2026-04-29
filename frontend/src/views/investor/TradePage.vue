@@ -295,7 +295,7 @@ watch(mode, (m) => {
 // `MuHavenStable.transferFrom(investor, treasury, amount, ...)`. The
 // stable wrapper rejects with `NotOperator()` (selector 0x7c214f04)
 // unless the investor has previously granted operator status to the
-// Subscription address. Mirrors WrapPage's `LegacyPusdcService.setOperator`
+// Subscription address. Mirrors CashPage's `LegacyPusdcService.setOperator`
 // pattern: long expiry, granted once per (kernel, subscription) pair.
 //
 // `null` = unknown (not yet read), `false` = read + missing (will grant
@@ -388,8 +388,8 @@ function setMode(next: Mode) {
   })
 }
 
-function goWrap() {
-  router.push('/wrap')
+function goCash() {
+  router.push('/cash')
 }
 
 // ── Submit handler ──────────────────────────────────────────────────────
@@ -419,7 +419,7 @@ async function handlePurchase() {
     // call inside `Subscription.purchase` reverts `NotOperator()` (selector
     // 0x7c214f04). Grant once per (kernel, subscription) with a long
     // expiry — subsequent purchases skip this entirely. Mirrors the
-    // PUSDC.setOperator step in WrapPage.handleCashWrap.
+    // PUSDC.setOperator step in CashPage.handleCashWrap.
     if (subOperatorSet.value !== true) {
       const expiry = BigInt(Math.floor(Date.now() / 1000) + OPERATOR_EXPIRY_SECONDS)
       await MuHavenStableService.setOperator(v35Addresses.subscription, expiry)
@@ -1104,8 +1104,8 @@ const ctaDisabled = computed(() => {
                   </p>
                   <p class="font-sans text-[11px] text-cool leading-relaxed">
                     Your decrypted mhUSDC balance is below the estimated cost.
-                    The Subscription pull would silent-fail to zero — wrap more
-                    PUSDC first to keep the buy intact.
+                    The Subscription pull would silent-fail to zero — top up your
+                    cash on the Cash page first to keep the buy intact.
                   </p>
                 </div>
               </div>
@@ -1116,12 +1116,12 @@ const ctaDisabled = computed(() => {
                 </span>
                 <button
                   type="button"
-                  @click="goWrap"
+                  @click="goCash"
                   data-testid="buy-wrap-mhusdc-cta"
                   class="ml-auto inline-flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.22em] font-semibold
                          text-compute dark:text-signal hover:opacity-80 transition-opacity cursor-pointer"
                 >
-                  Wrap PUSDC
+                  Top up cash
                   <ArrowRight :size="11" :stroke-width="2" />
                 </button>
               </div>
@@ -1185,17 +1185,21 @@ const ctaDisabled = computed(() => {
               </button>
             </div>
 
-            <!-- Wrap link only makes sense in Buy mode -->
+            <!-- Cash-page hop in buy mode — quiet secondary link for users
+                 who want to top up before placing a larger buy. The inline
+                 insufficient-mhUSDC warning above already covers the
+                 reactive "you can't afford this" case; this link covers
+                 the proactive "let me top up first" case. -->
             <button
               v-if="mode === 'buy'"
               type="button"
-              @click="goWrap"
-              data-testid="buy-wrap-link"
+              @click="goCash"
+              data-testid="buy-cash-link"
               class="font-sans text-[11px] uppercase tracking-[0.22em] font-medium
                      text-cool hover:text-compute dark:hover:text-signal transition-colors
                      inline-flex items-center justify-center gap-1.5 self-center cursor-pointer"
             >
-              {{ mhUsdcAvailable ? 'Or wrap an external ERC-20 token' : 'Or wrap an external ERC-20 token' }}
+              Top up cash
               <ArrowRight :size="11" :stroke-width="2" />
             </button>
           </div>

@@ -14,7 +14,7 @@ const route = useRoute()
 const store = useAppStore()
 
 const investorPaths = [
-  '/portfolio', '/marketplace', '/trade', '/buy', '/deposit', '/wrap', '/transfer',
+  '/portfolio', '/marketplace', '/trade', '/buy', '/deposit', '/cash', '/wrap', '/transfer',
   '/yields', '/redemptions', '/activity',
 ]
 const issuerPaths = ['/tokens', '/distribute', '/investors', '/compliance']

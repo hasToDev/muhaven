@@ -14,7 +14,7 @@ import { toast } from 'vue-sonner'
 import {
   PieChart, ShoppingCart, TrendingUp, Activity, Store, Sparkles, Send, Undo2,
   Coins, Share2, Users, ClipboardCheck, Wallet, LogOut, LogIn, Loader2,
-  Copy, Check, ArrowLeftRight,
+  Copy, Check, Banknote,
 } from 'lucide-vue-next'
 
 // Role is chosen at login (see LoginPage.vue). The sidebar no longer offers a
@@ -29,11 +29,14 @@ const walletStore = useWalletStore()
 const auth = useAuth()
 const homeTarget = useHomeTarget()
 
+// Phase 9.A: Cash promoted to first nav item — it's the post-register
+// landing AND the universal first-action page (USDC → mhUSDC). Portfolio
+// drops to #2; remaining order unchanged.
 const investorNav = [
+  { path: '/cash', label: 'Cash', icon: Banknote },
   { path: '/portfolio', label: 'Portfolio', icon: PieChart },
   { path: '/marketplace', label: 'Marketplace', icon: Store },
   { path: '/trade', label: 'Trade', icon: ShoppingCart },
-  { path: '/wrap', label: 'Wrap', icon: ArrowLeftRight },
   { path: '/transfer', label: 'Transfer', icon: Send },
   { path: '/yields', label: 'Yields', icon: TrendingUp },
   { path: '/redemptions', label: 'Redemptions', icon: Undo2 },

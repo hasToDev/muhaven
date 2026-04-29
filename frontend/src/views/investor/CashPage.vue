@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useMediaQuery } from '@vueuse/core'
+import { useRoute } from 'vue-router'
 import { toast } from 'vue-sonner'
 import { StableClient } from '@muhaven/sdk'
 import { useWallet } from '@/composables/useWallet'
@@ -15,27 +16,31 @@ import { balanceApi } from '@/services/api'
 import { CIRCLE_FAUCET_URL, arbiscanTx } from '@/lib/external'
 import { formatUSD } from '@/lib/utils'
 import MButton from '@/components/ui/MButton.vue'
+import MAddressQR from '@/components/ui/MAddressQR.vue'
 import {
   CheckCircle2, Lock, Shield, EyeOff, ArrowRight, Loader2, Copy, Check,
-  RefreshCw, ExternalLink, Coins, Layers,
+  RefreshCw, ExternalLink, Coins, Layers, Wallet, Sparkles,
 } from 'lucide-vue-next'
 
-// WrapPage — Phase 7.5 two-mode wizard.
+// CashPage — Phase 9.A first-run cockpit + wrap wizard.
 //
-//   • "Cash" mode (default, when MuHavenStable is configured):
-//       legacy PUSDC → mhUSDC via `MuHavenStable.wrap`. Investors land
-//       here from the TradePage "wrap PUSDC first" CTA when their mhUSDC
-//       balance is short of their intended buy.
+//   • "Cash" mode (default; the universal first action for investors):
+//       USDC → mhUSDC via legacy-PUSDC + `MuHavenStable.wrap`. This is
+//       the post-register landing page; the right-aside doubles as the
+//       investor's wallet cockpit (address + QR + balances + faucet).
 //
-//   • "Asset" mode (existing Wave 3 RWA wrap):
+//   • "Asset" mode (issuer-side, hidden):
 //       underlying ERC-20 RWA → fhERC-20 RWA via `MuHavenVault.wrap`.
-//       Unchanged path for issuers/admins onboarding tokenised assets.
+//       Reachable only via `?mode=asset` query param so the toggle stays
+//       out of the investor's mental model. Same mechanics as before.
 //
-// The mode toggle defaults to Cash when the wrapper is wired; otherwise
-// Asset is the only supported mode and the toggle is hidden.
+// Renamed from WrapPage in Phase 9.A — "Wrap" was jargon for the universal
+// first action; "Cash" matches the user's "where's my money" mental model
+// and pairs naturally with "Portfolio" as the second nav item.
 
 type Mode = 'cash' | 'asset'
 
+const route = useRoute()
 const { address, connected } = useWallet()
 const { initialize: initFhe, getEphemeralEOA } = useFhe()
 
@@ -43,7 +48,19 @@ const isXl = useMediaQuery('(min-width: 1280px)')
 
 const wrapperAvailable = computed(() => MuHavenStableService.isAvailable())
 
-const mode = ref<Mode>(wrapperAvailable.value ? 'cash' : 'asset')
+// Asset mode is opt-in via `?mode=asset` so the investor view stays single-
+// purpose. When the query param is absent we force cash mode AND hide the
+// toggle. Issuer/dev flows that need vault wrap reach it explicitly.
+const assetModeRequested = computed(() => route.query.mode === 'asset')
+const showModeToggle = computed(() =>
+  wrapperAvailable.value && assetModeRequested.value,
+)
+
+const mode = ref<Mode>(
+  assetModeRequested.value ? 'asset'
+    : wrapperAvailable.value ? 'cash'
+      : 'asset',
+)
 
 const amount = ref('')
 const currentStep = ref(0)
@@ -54,6 +71,11 @@ const errMsg = ref<string | null>(null)
 
 // Cash-mode operator state — once granted, future wraps skip the approval.
 const operatorSet = ref<boolean | null>(null)
+
+// Power-user toggle that reveals the legacy-PUSDC cleartext-shadow tile
+// underneath the main USDC + mhUSDC strip. Off by default — hides
+// implementation detail from the new-user landing experience.
+const showAdvanced = ref(false)
 
 const cashSteps = [
   { label: 'Enter Amount', description: 'How much USDC to convert' },
@@ -78,6 +100,14 @@ const balancesLoading = ref(false)
 const usdcBalance = ref<bigint | null>(null)
 const pusdcPublicBalance = ref<bigint | null>(null)
 const formattedBackendBalance = ref<string | null>(null)
+
+// True first-run state: USDC has been read (not null) AND is zero AND the
+// platform-tracked mhUSDC hasn't materialised. Gates the welcome ribbon so
+// returning users topping up don't see onboarding copy on every visit.
+const isFirstRun = computed(() =>
+  usdcBalance.value === 0n
+  && (formattedBackendBalance.value === null || formattedBackendBalance.value === '$0.00'),
+)
 
 async function loadBalances() {
   if (!address.value) return
@@ -107,7 +137,7 @@ async function refreshOperatorStatus() {
       v35Addresses.muHavenStable,
     )
   } catch (e) {
-    console.warn('[WrapPage] operator status read failed', e)
+    console.warn('[CashPage] operator status read failed', e)
     operatorSet.value = null
   }
 }
@@ -246,7 +276,7 @@ async function handleCashWrap() {
     // reason / RPC error / encoding issue underneath. Without this, a
     // bare "Transaction failed for MuHavenStable.wrap (not submitted)"
     // hides whatever viem actually saw.
-    console.error('[WrapPage] cash wrap failed — full chain:')
+    console.error('[CashPage] cash wrap failed — full chain:')
     // tsconfig targets ES2020, so `Error.cause` isn't on the lib type. Walk
     // it via a structural read so we don't need to widen the project's lib.
     let cur: unknown = e
@@ -340,6 +370,40 @@ const successCopy = computed(() =>
 <template>
   <div>
     <div class="xl:mr-80">
+      <!-- ── Welcome ribbon — first-run only ──────────────────────────
+           Shown when USDC=0 and platform mhUSDC empty: a gentle two-step
+           pointer (fund right-aside → convert below). Hidden once the
+           user has any balance, so returning top-ups stay quiet. -->
+      <section
+        v-if="mode === 'cash' && isFirstRun && !showSuccess && !errMsg"
+        v-motion
+        :initial="{ opacity: 0, y: 12 }"
+        :visible-once="{ opacity: 1, y: 0, transition: { duration: 460 } }"
+        data-testid="cash-welcome-ribbon"
+        class="max-w-2xl mx-auto mb-6 rounded-2xl overflow-hidden
+               border border-gold/25 dark:border-signal/20
+               bg-gradient-to-br from-gold/8 via-mist/40 to-transparent
+               dark:from-signal/8 dark:via-[#1c1b1b]/60 dark:to-transparent
+               p-5 md:p-6"
+      >
+        <div class="flex items-start gap-3">
+          <div class="w-8 h-8 rounded-lg bg-gold/15 dark:bg-signal/15 flex items-center justify-center shrink-0">
+            <Sparkles :size="16" :stroke-width="1.8" class="text-gold dark:text-signal" />
+          </div>
+          <div class="flex flex-col gap-1.5">
+            <h1 class="font-accent italic text-xl md:text-2xl text-midnight dark:text-white tracking-tight leading-tight">
+              Welcome to MuHaven
+            </h1>
+            <p class="font-sans text-[13px] text-cool leading-relaxed">
+              <span class="font-medium text-midnight dark:text-white">1.</span> Copy your wallet address (right) and tap
+              <span class="font-medium text-midnight dark:text-white">Get test USDC</span> to receive testnet USDC.
+              <br class="hidden md:block">
+              <span class="font-medium text-midnight dark:text-white">2.</span> Convert USDC to <span class="font-mono text-[12px]">mhUSDC</span> below — encrypted cash you'll spend on the Trade page.
+            </p>
+          </div>
+        </div>
+      </section>
+
       <section
         v-motion
         :initial="{ opacity: 0, y: 20 }"
@@ -356,9 +420,11 @@ const successCopy = computed(() =>
              :class="mode === 'cash' ? 'bg-compute/8 dark:bg-signal/8' : 'bg-gold/8 dark:bg-signal/8'" />
 
         <div class="p-8 md:p-10 relative">
-          <!-- Mode toggle — only when both flows are available -->
+          <!-- Mode toggle — investor view defaults to cash with the toggle
+               hidden. Pass `?mode=asset` to surface the asset (vault wrap)
+               flow alongside cash for issuer/dev use. -->
           <div
-            v-if="!showSuccess && !errMsg && wrapperAvailable"
+            v-if="!showSuccess && !errMsg && showModeToggle"
             data-testid="wrap-mode-toggle"
             class="relative inline-flex items-center gap-1 mb-8
                    rounded-full border border-haze dark:border-white/10
@@ -530,76 +596,167 @@ const successCopy = computed(() =>
                xl:fixed xl:right-0 xl:top-0 xl:bottom-0 xl:w-80 xl:z-30
                xl:overflow-y-auto xl:px-7 xl:pt-10 xl:pb-10"
       >
+        <!-- ── Wallet card — address + QR + chain pill ──────────────── -->
         <div>
-          <h2 class="font-sans text-[11px] uppercase tracking-[0.22em] text-cool font-semibold mb-6">Fund Your Account</h2>
-          <div class="flex flex-col gap-5">
-            <div class="flex flex-col gap-2">
-              <span class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool">Your Kernel Address</span>
-              <div class="rounded-lg p-4 border border-haze dark:border-white/8 bg-mist/40 dark:bg-[#1c1b1b]/60 flex items-center justify-between gap-3">
-                <span class="font-mono text-xs text-compute dark:text-signal truncate">{{ address ?? '—' }}</span>
-                <button
-                  type="button"
-                  @click="copyAddress"
-                  :disabled="!address"
-                  aria-label="Copy kernel address"
-                  class="text-cool hover:text-compute dark:hover:text-signal transition-colors flex-shrink-0 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <Check v-if="copied" :size="14" />
-                  <Copy v-else :size="14" />
-                </button>
-              </div>
-            </div>
+          <div class="flex items-center justify-between mb-5">
+            <h2 class="font-sans text-[11px] uppercase tracking-[0.22em] text-cool font-semibold inline-flex items-center gap-2">
+              <Wallet :size="13" :stroke-width="2" class="text-compute dark:text-signal" />
+              Your wallet
+            </h2>
+            <span
+              class="font-sans text-[9px] uppercase tracking-[0.18em] font-medium
+                     text-compute/80 dark:text-signal/80
+                     bg-compute/8 dark:bg-signal/10
+                     border border-compute/20 dark:border-signal/20
+                     px-2 py-0.5 rounded"
+            >
+              Arb Sepolia
+            </span>
+          </div>
 
-            <div class="flex flex-col gap-3">
-              <div class="rounded-lg p-4 border border-haze dark:border-white/8 bg-mist/40 dark:bg-[#1c1b1b]/60 flex flex-col gap-1">
-                <span class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool">USDC Balance</span>
-                <span class="font-accent italic text-xl text-midnight dark:text-white tabular-nums">
-                  {{ usdcBalance !== null ? formatUSD(Number(usdcBalance) / 1e6) : '—' }}
-                </span>
-              </div>
-              <div
-                class="rounded-lg p-4 border border-haze dark:border-white/8 bg-mist/40 dark:bg-[#1c1b1b]/60 flex flex-col gap-1"
-                title="ERC-7984 cleartext shadow only. Your full PUSDC holding lives in `confidentialBalanceOf` — encrypted, not shown here. The Convert flow operates on the encrypted balance via `confidentialTransferFrom`."
-              >
-                <span class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool">Legacy PUSDC (cleartext shadow)</span>
-                <span class="font-accent italic text-xl text-midnight dark:text-white tabular-nums" data-testid="wrap-pusdc-public-balance">
-                  {{ pusdcPublicBalance !== null ? formatUSD(Number(pusdcPublicBalance) / 1e6, 4) : '—' }}
-                </span>
-                <span class="font-sans text-[9px] text-cool/70 leading-tight">
-                  Tiny dust slice. Bulk holding is encrypted in
-                  <code class="font-mono">confidentialBalanceOf</code>.
-                </span>
-              </div>
-              <div class="rounded-lg p-4 border border-haze dark:border-white/8 bg-mist/40 dark:bg-[#1c1b1b]/60 flex flex-col gap-1">
-                <span class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool">Platform Balance</span>
-                <span class="font-accent italic text-xl text-midnight dark:text-white tabular-nums">
-                  {{ formattedBackendBalance ?? '$0.00' }}
-                </span>
-              </div>
-            </div>
+          <div
+            class="rounded-xl p-5 border border-haze dark:border-white/8
+                   bg-white dark:bg-[#1c1b1b]/80
+                   shadow-[0_2px_14px_-6px_rgba(63,46,12,0.1)]
+                   dark:shadow-[0_2px_14px_-6px_rgba(0,0,0,0.6)]
+                   flex flex-col items-center gap-4"
+          >
+            <MAddressQR
+              :address="address ?? null"
+              :size="148"
+              caption="Scan with MetaMask, WalletConnect, Trust Wallet…"
+            />
 
-            <div class="flex items-center justify-between">
+            <div class="w-full flex flex-col gap-2">
+              <span class="font-sans text-[9px] uppercase tracking-[0.22em] text-cool/80 text-center">
+                Smart account address
+              </span>
               <button
                 type="button"
-                @click="loadBalances"
-                :disabled="balancesLoading || !address"
-                class="inline-flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.22em] font-medium text-cool hover:text-compute dark:hover:text-signal transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                @click="copyAddress"
+                :disabled="!address"
+                data-testid="cash-wallet-copy-address"
+                :aria-label="copied ? 'Address copied' : 'Copy smart account address'"
+                class="group w-full inline-flex items-center justify-between gap-2
+                       rounded-lg px-3 py-2.5
+                       bg-mist/60 dark:bg-white/[0.04]
+                       border border-haze dark:border-white/8
+                       hover:border-gold/50 dark:hover:border-signal/30
+                       transition-colors duration-200 cursor-pointer
+                       disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <RefreshCw :size="12" :class="balancesLoading && 'animate-spin'" />
-                Refresh
+                <span class="font-mono text-[11px] text-compute dark:text-signal truncate">
+                  {{ address ?? '—' }}
+                </span>
+                <span
+                  class="flex-shrink-0 inline-flex items-center gap-1 font-sans text-[10px] uppercase tracking-[0.18em] font-semibold
+                         text-cool group-hover:text-compute dark:group-hover:text-signal transition-colors"
+                >
+                  <Check v-if="copied" :size="12" class="text-positive" />
+                  <Copy v-else :size="12" />
+                  {{ copied ? 'Copied' : 'Copy' }}
+                </span>
               </button>
-              <a
-                v-if="usdcBalance !== null && usdcBalance === 0n"
-                :href="CIRCLE_FAUCET_URL"
-                target="_blank"
-                rel="noopener"
-                data-testid="fund-account-faucet-link"
-                class="inline-flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.22em] font-medium text-gold hover:text-gold/80 transition-colors"
-              >
-                Circle faucet
-                <ExternalLink :size="11" />
-              </a>
             </div>
+          </div>
+        </div>
+
+        <!-- ── Balances strip ──────────────────────────────────────── -->
+        <div class="flex flex-col gap-3">
+          <h3 class="font-sans text-[11px] uppercase tracking-[0.22em] text-cool font-semibold">Balances</h3>
+
+          <!-- USDC: plaintext ERC-20 -->
+          <div class="rounded-lg p-4 border border-haze dark:border-white/8 bg-mist/40 dark:bg-[#1c1b1b]/60 flex flex-col gap-1">
+            <div class="flex items-center justify-between">
+              <span class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool">USDC</span>
+              <span class="font-sans text-[9px] text-cool/70 uppercase tracking-[0.18em]">Public testnet</span>
+            </div>
+            <span
+              class="font-accent italic text-2xl text-midnight dark:text-white tabular-nums"
+              data-testid="cash-usdc-balance"
+            >
+              {{ usdcBalance !== null ? formatUSD(Number(usdcBalance) / 1e6) : '—' }}
+            </span>
+            <a
+              v-if="usdcBalance !== null && usdcBalance === 0n"
+              :href="CIRCLE_FAUCET_URL"
+              target="_blank"
+              rel="noopener"
+              data-testid="fund-account-faucet-link"
+              class="mt-1 inline-flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.22em] font-semibold text-gold hover:text-gold/80 transition-colors self-start"
+            >
+              Get test USDC
+              <ExternalLink :size="11" />
+            </a>
+          </div>
+
+          <!-- mhUSDC: encrypted spendable cash (the platform-tracked figure) -->
+          <div class="rounded-lg p-4 border border-haze dark:border-white/8 bg-mist/40 dark:bg-[#1c1b1b]/60 flex flex-col gap-1">
+            <div class="flex items-center justify-between">
+              <span class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool">mhUSDC</span>
+              <span
+                class="font-sans text-[9px] uppercase tracking-[0.18em] font-medium
+                       text-compute/80 dark:text-signal/80
+                       border border-compute/20 dark:border-signal/20
+                       px-1.5 py-0.5 rounded"
+              >
+                Encrypted
+              </span>
+            </div>
+            <span
+              class="font-accent italic text-2xl text-midnight dark:text-white tabular-nums"
+              data-testid="cash-mhusdc-balance"
+            >
+              {{ formattedBackendBalance ?? '$0.00' }}
+            </span>
+            <span class="font-sans text-[10px] text-cool/80 leading-tight mt-0.5">
+              Confidential cash · spend on Trade
+            </span>
+          </div>
+
+          <!-- Refresh + advanced details (legacy PUSDC tile is hidden by
+               default to keep the new-user view simple; click "Details"
+               to reveal for power users). -->
+          <div class="flex items-center justify-between pt-1">
+            <button
+              type="button"
+              @click="loadBalances"
+              :disabled="balancesLoading || !address"
+              data-testid="cash-balances-refresh"
+              class="inline-flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.22em] font-medium text-cool hover:text-compute dark:hover:text-signal transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <RefreshCw :size="12" :class="balancesLoading && 'animate-spin'" />
+              Refresh
+            </button>
+            <button
+              type="button"
+              @click="showAdvanced = !showAdvanced"
+              data-testid="cash-balances-advanced-toggle"
+              class="inline-flex items-center gap-1 font-sans text-[10px] uppercase tracking-[0.22em] font-medium text-cool/80 hover:text-compute dark:hover:text-signal transition-colors cursor-pointer"
+            >
+              {{ showAdvanced ? 'Hide details' : 'Details' }}
+            </button>
+          </div>
+
+          <!-- Legacy PUSDC (cleartext shadow) — advanced detail, hidden by
+               default. Surfaces the ERC-7984 dust slice for power users
+               debugging the wrap path. -->
+          <div
+            v-if="showAdvanced"
+            class="rounded-lg p-4 border border-haze dark:border-white/8 bg-mist/30 dark:bg-[#1c1b1b]/40 flex flex-col gap-1"
+            title="ERC-7984 cleartext shadow only. Bulk PUSDC holding is encrypted in confidentialBalanceOf."
+          >
+            <span class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool">Legacy PUSDC (cleartext shadow)</span>
+            <span
+              class="font-accent italic text-lg text-midnight dark:text-white tabular-nums"
+              data-testid="wrap-pusdc-public-balance"
+            >
+              {{ pusdcPublicBalance !== null ? formatUSD(Number(pusdcPublicBalance) / 1e6, 4) : '—' }}
+            </span>
+            <span class="font-sans text-[9px] text-cool/70 leading-tight">
+              Tiny dust slice. Bulk holding encrypted in
+              <code class="font-mono">confidentialBalanceOf</code>.
+            </span>
           </div>
         </div>
 

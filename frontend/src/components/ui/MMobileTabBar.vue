@@ -4,19 +4,23 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { cn } from '@/lib/utils'
 import {
-  PieChart, ShoppingCart, TrendingUp, Undo2,
+  PieChart, ShoppingCart, Undo2,
   Coins, Share2, Users, ClipboardCheck,
-  Sparkles,
+  Sparkles, Banknote,
 } from 'lucide-vue-next'
 
 const route = useRoute()
 const router = useRouter()
 const store = useAppStore()
 
+// Phase 9.A: Cash takes mobile slot #1 — matches Sidebar/TopNav. The bottom
+// bar is capped at four role-tabs + Agent, so promoting Cash bumps Yields
+// off the bar (still reachable via TopNav). Action-oriented tabs win the
+// scarce mobile real estate over informational ones.
 const investorTabs = [
+  { path: '/cash', icon: Banknote, label: 'Cash' },
   { path: '/portfolio', icon: PieChart, label: 'Portfolio' },
   { path: '/trade', icon: ShoppingCart, label: 'Trade' },
-  { path: '/yields', icon: TrendingUp, label: 'Yields' },
   { path: '/redemptions', icon: Undo2, label: 'Redeem' },
 ]
 

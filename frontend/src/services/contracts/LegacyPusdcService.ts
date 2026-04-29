@@ -6,8 +6,8 @@
  * Phase 7.5 (`MHUSD_WRAPPER_PLAN.md` + ADR-041) replaced Wave 3.5's hot
  * path with `MuHavenStableService` — this file is intentionally kept on
  * the slow path and exposes only:
- *   - `balanceOf(addr)` — cleartext shadow balance, used for the WrapPage
- *     "your legacy PUSDC" readout
+ *   - `balanceOf(addr)` — cleartext shadow balance, used for the CashPage
+ *     "your legacy PUSDC" readout (advanced view)
  *   - `confidentialBalanceOf(addr)` — ctHash for legacy decrypt fallback
  *   - `isOperator(holder, spender)` — used to check whether the wrapper
  *     already has operator approval before initiating a wrap
@@ -76,7 +76,7 @@ export async function setOperator(spender: Address, until: bigint): Promise<TxHa
  * must have ERC-20 approved the PUSDC contract for at least `amount`
  * first (use `Erc20Service.approve(addresses.usdc, addresses.pusdc, ...)`).
  *
- * Used by the WrapPage Cash flow (USDC → PUSDC → mhUSDC) so investors
+ * Used by the CashPage Cash flow (USDC → PUSDC → mhUSDC) so investors
  * who only hold USDC don't have to manually deal with the PUSDC layer.
  */
 export async function wrap(to: Address, amount: bigint): Promise<TxHash> {

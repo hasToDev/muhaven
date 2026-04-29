@@ -121,14 +121,31 @@ const allocationBreakdown = computed(() =>
       </MButton>
     </div>
 
-    <!-- Empty state -->
+    <!-- Empty state — Phase 9.A: primary CTA points to /cash (the new
+         first nav item / cockpit). The previous "Trade shares" CTA was a
+         dead-end for zero-mhUSDC users (Subscription.purchase reverts).
+         Cash → fund → convert → trade is the right sequence; surface the
+         first step as the primary affordance and offer Trade as a quieter
+         fallback for users who already wrapped elsewhere. -->
     <div v-else-if="portfolio.loaded && portfolio.holdings.length === 0" class="flex flex-col items-center justify-center py-20 gap-4">
       <Shield :size="48" class="text-cool/40" />
       <p class="text-base text-cool">No holdings yet</p>
-      <p class="text-sm text-cool/70">Deposit funds and invest in RWA tokens to build your portfolio.</p>
-      <RouterLink to="/trade">
-        <MButton>Trade shares</MButton>
-      </RouterLink>
+      <p class="text-sm text-cool/70 max-w-sm text-center">
+        Fund your wallet and convert USDC to <span class="font-mono text-[12px]">mhUSDC</span> first — then you'll be ready to buy RWA shares on the Trade page.
+      </p>
+      <div class="flex flex-wrap items-center justify-center gap-3 pt-2">
+        <RouterLink to="/cash">
+          <MButton data-testid="portfolio-empty-cash-cta">Set up cash</MButton>
+        </RouterLink>
+        <RouterLink
+          to="/trade"
+          data-testid="portfolio-empty-trade-link"
+          class="font-sans text-[11px] uppercase tracking-[0.22em] font-medium text-cool hover:text-compute dark:hover:text-signal transition-colors inline-flex items-center gap-1.5"
+        >
+          Already funded? Trade
+          <span aria-hidden="true">→</span>
+        </RouterLink>
+      </div>
     </div>
 
     <!-- Content -->

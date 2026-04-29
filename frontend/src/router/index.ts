@@ -49,9 +49,16 @@ const router = createRouter({
       redirect: (to) => ({ path: '/trade', query: to.query }),
     },
     {
+      path: '/cash',
+      component: () => import('@/views/investor/CashPage.vue'),
+      meta: { title: 'Cash' },
+    },
+    // Phase 9.A: /wrap renamed to /cash. Keep the old path as a redirect
+    // for any internal link / bookmark / doc that still says /wrap so we
+    // don't ship dead URLs. Query params (e.g. ?mode=asset) are preserved.
+    {
       path: '/wrap',
-      component: () => import('@/views/investor/WrapPage.vue'),
-      meta: { title: 'Wrap' },
+      redirect: (to) => ({ path: '/cash', query: to.query }),
     },
     {
       path: '/transfer',
