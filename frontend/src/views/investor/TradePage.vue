@@ -255,6 +255,38 @@ async function decryptMhUsdcBalance() {
   await portfolio.decryptPusdc(address.value as `0x${string}`)
 }
 
+/**
+ * Auto-refresh after a successful buy/sell. Called from both
+ * handlePurchase + handleRedeem success paths so /portfolio and any
+ * mhUSDC surface (CashPage tile, glance bar, Portfolio Cash Buffer)
+ * see the post-trade truth without a manual refresh click.
+ *
+ * - portfolio.load(addr): refresh holdings + USDC + plaintext PUSDC.
+ * - portfolio.decryptPusdc(addr): re-decrypt mhUSDC iff the user has
+ *   already revealed it. Locked balances stay locked — no surprise
+ *   session signature on a value the user never asked to see.
+ *
+ * Fire-and-forget: failures here mustn't block the success card or
+ * mask the trade success itself. We still log via console.warn.
+ */
+async function refreshAfterTrade() {
+  if (!address.value) return
+  const addr = address.value as `0x${string}`
+  const wasRevealed = portfolio.pusdcConfidentialBalance !== null
+  try {
+    await portfolio.load(addr)
+  } catch (e) {
+    console.warn('[TradePage] portfolio.load post-trade failed', e)
+  }
+  if (wasRevealed) {
+    try {
+      await portfolio.decryptPusdc(addr)
+    } catch (e) {
+      console.warn('[TradePage] mhUSDC re-decrypt post-trade failed', e)
+    }
+  }
+}
+
 const insufficientMhUsdc = computed<boolean>(() => {
   if (mode.value !== 'buy') return false
   if (portfolio.pusdcConfidentialBalance === null || estimatedCostPusdc.value === null) return false
@@ -459,6 +491,12 @@ async function handlePurchase() {
         selectedTokenData.value.symbol,
       ).catch(() => {})
     }
+
+    // Auto-refresh holdings + mhUSDC (iff revealed) so /portfolio
+    // and the glance-bar show post-trade truth without a manual
+    // refresh. Awaited so the freshness lands while the success
+    // card is still on screen — not blocking, just queued.
+    await refreshAfterTrade()
   } catch (e) {
     errMsg.value = e instanceof Error ? e.message : 'Purchase failed'
     toast.error('Purchase failed', { description: errMsg.value })
@@ -554,6 +592,13 @@ async function handleRedeem() {
         description: 'Shares burned + PUSDC paid out atomically',
       })
     }
+
+    // Auto-refresh holdings + mhUSDC (iff revealed) — same call as
+    // the buy path. For queued redemptions the shares + PUSDC haven't
+    // moved yet (RedemptionQueue holds them until epoch processing),
+    // but the call is idempotent and keeps the post-trade contract
+    // consistent across both legs.
+    await refreshAfterTrade()
   } catch (e) {
     errMsg.value = e instanceof Error ? e.message : 'Redeem failed'
     toast.error('Redeem failed', { description: errMsg.value })
