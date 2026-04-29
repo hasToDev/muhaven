@@ -16,17 +16,17 @@ import { useWallet } from '@/composables/useWallet'
 import { useFhe } from '@/composables/useFhe'
 import { v35Addresses, isZeroAddress } from '@/contracts/addresses'
 import { buildWriteContext, buildReadContext, getPublicClient } from '@/services/v35/context'
-import { portfolioApi, balanceApi, type TokenResponseDto } from '@/services/api'
+import { portfolioApi, type TokenResponseDto } from '@/services/api'
 import * as Erc20Service from '@/services/contracts/Erc20Service'
 import * as MuHavenStableService from '@/services/contracts/MuHavenStableService'
 import { addresses } from '@/contracts/addresses'
-import { CIRCLE_FAUCET_URL, arbiscanTx } from '@/lib/external'
+import { arbiscanTx } from '@/lib/external'
 import { formatUSD } from '@/lib/utils'
 import MButton from '@/components/ui/MButton.vue'
 import { muHavenTokenAbi } from '@/contracts/abis'
 import {
   CheckCircle2, Lock, ShieldCheck, EyeOff, TrendingUp, ChevronDown, ArrowRight,
-  Loader2, Copy, Check, RefreshCw, ExternalLink, AlertTriangle, ShoppingCart, Undo2,
+  Loader2, Copy, Check, RefreshCw, AlertTriangle, ShoppingCart, Undo2,
   Eye, Inbox, Zap, Coins,
 } from 'lucide-vue-next'
 
@@ -68,18 +68,20 @@ function readQueryMode(): Mode {
   return (route.query.mode as string) === 'sell' ? 'sell' : 'buy'
 }
 
+// Steps shown only while a tx is in flight (inline above the CTA).
+// "Enter Amount" intentionally dropped — by the time the rail is
+// visible the user has already entered the amount. Two real steps
+// remain per mode: Encrypt (client-side FHE) → Purchase / Redeem
+// (the on-chain Subscription call).
 const buySteps = [
-  { label: 'Enter Amount', description: 'Pick shares + max hint' },
-  { label: 'Encrypt', description: 'FHE inputs client-side' },
-  { label: 'Purchase', description: 'Subscription.purchase() atomic buy' },
+  { label: 'Encrypt', description: 'Encrypting your buy amount client-side…' },
+  { label: 'Purchase', description: 'Submitting atomic purchase to the chain…' },
 ]
 const sellSteps = [
-  { label: 'Enter Amount', description: 'Pick shares to redeem' },
-  { label: 'Encrypt', description: 'FHE inputs client-side' },
-  { label: 'Redeem', description: 'Subscription.redeem() — instant or queued' },
+  { label: 'Encrypt', description: 'Encrypting your redeem amount client-side…' },
+  { label: 'Redeem', description: 'Submitting redemption (instant or queued)…' },
 ]
 const steps = computed(() => mode.value === 'buy' ? buySteps : sellSteps)
-const railHeight = computed(() => Math.min(100, ((currentStep.value + 1) / steps.value.length) * 100))
 
 const quickAmounts = ['100', '1000', '5000']
 const numericAmount = computed(() => parseFloat(amount.value.replace(/,/g, '')) || 0)
@@ -324,18 +326,16 @@ async function refreshSubOperatorStatus(): Promise<void> {
 const copied = ref(false)
 const balancesLoading = ref(false)
 const usdcBalance = ref<bigint | null>(null)
-const formattedBackendBalance = ref<string | null>(null)
 
 async function loadBalances() {
   if (!address.value) return
   balancesLoading.value = true
   try {
-    const [usdc, backend] = await Promise.allSettled([
-      Erc20Service.balanceOf(addresses.usdc, address.value as `0x${string}`),
-      balanceApi.get(),
-    ])
-    usdcBalance.value = usdc.status === 'fulfilled' ? usdc.value : null
-    formattedBackendBalance.value = backend.status === 'fulfilled' ? backend.value.formatted_balance : null
+    usdcBalance.value = await Erc20Service.balanceOf(
+      addresses.usdc, address.value as `0x${string}`,
+    )
+  } catch {
+    usdcBalance.value = null
   } finally {
     balancesLoading.value = false
   }
@@ -412,7 +412,7 @@ async function handlePurchase() {
   errMsg.value = null
 
   try {
-    currentStep.value = 1
+    currentStep.value = 0
 
     // Pre-flight: ensure Subscription is an operator on the investor's
     // mhUSDC. Without this, the wrapper's `transferFrom(investor, treasury)`
@@ -439,8 +439,10 @@ async function handlePurchase() {
     const sub = new SubscriptionClient(ctx, v35Addresses.subscription)
     const ephemeralEOA = getEphemeralEOA()
 
-    currentStep.value = 2
-
+    // Step 1 = Purchase. The encrypt step (0) finished above when the SDK
+    // built the encrypted inputs inside sub.purchase()'s prep phase; we
+    // bump on the onProgress 'purchase' stage so the rail reflects the
+    // chain submission moment.
     const hash = await sub.purchase(
       selectedToken.value as `0x${string}`,
       shares,
@@ -448,13 +450,12 @@ async function handlePurchase() {
       ephemeralEOA,
       {
         onProgress: (e) => {
-          if (e.stage === 'purchase') currentStep.value = 3
+          if (e.stage === 'purchase') currentStep.value = 1
         },
       },
     )
 
     txHash.value = hash
-    currentStep.value = 3
     showSuccess.value = true
     toast.success('Purchase confirmed', {
       description: 'Atomic subscription purchase — PUSDC pulled + shares minted',
@@ -489,7 +490,7 @@ async function handleRedeem() {
   queuedRequestId.value = null
 
   try {
-    currentStep.value = 1
+    currentStep.value = 0
 
     const shares = BigInt(Math.floor(numericAmount.value))
     const maxSharesHint = BigInt(Math.ceil(numericAmount.value * HINT_HEADROOM))
@@ -498,8 +499,9 @@ async function handleRedeem() {
     const sub = new SubscriptionClient(ctx, v35Addresses.subscription)
     const ephemeralEOA = getEphemeralEOA()
 
-    currentStep.value = 2
-
+    // Step 1 = Redeem. The encrypt step (0) finished when the SDK built
+    // the encrypted inputs inside sub.redeem()'s prep phase; we bump on
+    // the onProgress 'redeemInstant' stage to mark the chain submission.
     const hash = await sub.redeem(
       selectedToken.value as `0x${string}`,
       shares,
@@ -507,13 +509,12 @@ async function handleRedeem() {
       ephemeralEOA,
       {
         onProgress: (e) => {
-          if (e.stage === 'redeemInstant') currentStep.value = 3
+          if (e.stage === 'redeemInstant') currentStep.value = 1
         },
       },
     )
 
     txHash.value = hash
-    currentStep.value = 3
 
     // Parse the receipt to determine instant vs escalated. The contract
     // emits `Redeemed(escalated)` always, plus `EscalatedToQueue(...,
@@ -1076,6 +1077,69 @@ const ctaDisabled = computed(() => {
               </p>
             </div>
 
+            <!-- Inline progress rail — visible only while a tx is in
+                 flight. Two pill steps (Encrypt → Purchase / Redeem)
+                 with active / done states. Mirrors the /cash pattern
+                 (commit 0923d74); replaces the static "Current Step"
+                 section that lived in the right-aside. -->
+            <transition
+              enter-active-class="transition-all duration-300 ease-out"
+              leave-active-class="transition-all duration-200 ease-in"
+              enter-from-class="opacity-0 -translate-y-1"
+              leave-to-class="opacity-0 -translate-y-1"
+            >
+              <div
+                v-if="isProcessing"
+                data-testid="trade-inline-rail"
+                class="rounded-lg p-4 border border-gold/25 dark:border-signal/20
+                       bg-gold/6 dark:bg-signal/5 flex flex-col gap-3"
+              >
+                <div class="flex items-center gap-3">
+                  <div
+                    v-for="(s, i) in steps"
+                    :key="s.label"
+                    class="flex-1 flex items-center gap-2 min-w-0"
+                  >
+                    <div
+                      :class="[
+                        'w-5 h-5 rounded-full flex-shrink-0 flex items-center justify-center transition-all',
+                        i < currentStep
+                          ? 'bg-gold dark:bg-signal'
+                          : i === currentStep
+                            ? 'bg-gold dark:bg-signal ring-4 ring-gold/15 dark:ring-signal/20'
+                            : 'bg-mist/60 dark:bg-[#1c1b1b] border border-haze dark:border-white/15',
+                      ]"
+                    >
+                      <Check v-if="i < currentStep" :size="11" :stroke-width="2.5" class="text-white dark:text-midnight" />
+                      <Loader2 v-else-if="i === currentStep" :size="11" class="animate-spin text-white dark:text-midnight" />
+                    </div>
+                    <span
+                      :class="[
+                        'font-sans text-[10px] uppercase tracking-[0.18em] font-semibold truncate',
+                        i <= currentStep ? 'text-compute dark:text-signal' : 'text-cool',
+                      ]"
+                    >
+                      {{ s.label }}
+                    </span>
+                    <div
+                      v-if="i < steps.length - 1"
+                      :class="[
+                        'flex-shrink-0 h-px w-3 transition-colors',
+                        i < currentStep ? 'bg-gold dark:bg-signal' : 'bg-haze dark:bg-white/10',
+                      ]"
+                      aria-hidden="true"
+                    />
+                  </div>
+                </div>
+                <p
+                  v-if="steps[currentStep]"
+                  class="font-sans text-[11px] text-cool leading-tight pl-7"
+                >
+                  {{ steps[currentStep].description }}
+                </p>
+              </div>
+            </transition>
+
             <!-- CTA -->
             <button
               type="button"
@@ -1236,115 +1300,95 @@ const ctaDisabled = computed(() => {
                xl:fixed xl:right-0 xl:top-0 xl:bottom-0 xl:w-80 xl:z-30
                xl:overflow-y-auto xl:px-7 xl:pt-10 xl:pb-10"
       >
+        <!-- ── Glance bar ──────────────────────────────────────────────
+             Compact "do I have funds?" answer at a glance. /cash is the
+             canonical balances home (commits 8f513c9 + 0923d74); the
+             trade page no longer duplicates the wallet card / tile
+             stack / step rail / refresh button. The in-form mhUSDC
+             pre-flight Reveal section below the CTA still owns the
+             "is the buy about to silent-fail?" check.
+             -->
         <div>
-          <h2 class="font-sans text-[11px] uppercase tracking-[0.22em] text-cool font-semibold mb-6">
-            {{ mode === 'buy' ? 'Fund Your Account' : 'Account Snapshot' }}
+          <h2 class="font-sans text-[11px] uppercase tracking-[0.22em] text-cool font-semibold mb-4">
+            Account
           </h2>
-          <div class="flex flex-col gap-5">
-            <div class="flex flex-col gap-2">
-              <span class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool">Your Kernel Address</span>
-              <div class="rounded-lg p-4 border border-haze dark:border-white/8 bg-mist/40 dark:bg-[#1c1b1b]/60 flex items-center justify-between gap-3">
-                <span class="font-mono text-xs text-compute dark:text-signal truncate">{{ address ?? '—' }}</span>
-                <button
-                  type="button"
-                  @click="copyAddress"
-                  :disabled="!address"
-                  aria-label="Copy kernel address"
-                  class="text-cool hover:text-compute dark:hover:text-signal transition-colors flex-shrink-0 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <Check v-if="copied" :size="14" />
-                  <Copy v-else :size="14" />
-                </button>
-              </div>
-            </div>
-
-            <div class="flex flex-col gap-3">
-              <div class="rounded-lg p-4 border border-haze dark:border-white/8 bg-mist/40 dark:bg-[#1c1b1b]/60 flex flex-col gap-1">
-                <span class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool">USDC Balance</span>
-                <span class="font-accent italic text-xl text-midnight dark:text-white tabular-nums">
-                  {{ usdcBalance !== null ? formatUSD(Number(usdcBalance) / 1e6) : '—' }}
+          <div
+            class="rounded-xl border border-haze dark:border-white/8
+                   bg-white dark:bg-[#1c1b1b]/80
+                   flex flex-col divide-y divide-haze/70 dark:divide-white/5"
+          >
+            <!-- Address row -->
+            <div class="px-4 py-3 flex items-center justify-between gap-2">
+              <div class="flex flex-col min-w-0">
+                <span class="font-sans text-[9px] uppercase tracking-[0.22em] text-cool/80">Wallet</span>
+                <span class="font-mono text-[11px] text-compute dark:text-signal truncate">
+                  {{ address ? `${address.slice(0, 6)}…${address.slice(-4)}` : '—' }}
                 </span>
               </div>
-              <div class="rounded-lg p-4 border border-haze dark:border-white/8 bg-mist/40 dark:bg-[#1c1b1b]/60 flex flex-col gap-1">
-                <span class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool">Platform Balance</span>
-                <span class="font-accent italic text-xl text-midnight dark:text-white tabular-nums">
-                  {{ formattedBackendBalance ?? '$0.00' }}
-                </span>
-              </div>
-            </div>
-
-            <div class="flex items-center justify-between">
               <button
                 type="button"
-                @click="loadBalances"
-                :disabled="balancesLoading || !address"
-                class="inline-flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.22em] font-medium
-                       text-cool hover:text-compute dark:hover:text-signal transition-colors
-                       cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                @click="copyAddress"
+                :disabled="!address"
+                data-testid="trade-glance-copy-address"
+                :aria-label="copied ? 'Address copied' : 'Copy smart account address'"
+                class="text-cool hover:text-compute dark:hover:text-signal transition-colors flex-shrink-0 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <RefreshCw :size="12" :class="balancesLoading && 'animate-spin'" />
-                Refresh
+                <Check v-if="copied" :size="14" />
+                <Copy v-else :size="14" />
               </button>
-              <a
-                v-if="mode === 'buy' && usdcBalance !== null && usdcBalance === 0n"
-                :href="CIRCLE_FAUCET_URL"
-                target="_blank"
-                rel="noopener"
-                data-testid="fund-account-faucet-link"
-                class="inline-flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.22em] font-medium text-gold hover:text-gold/80 transition-colors"
+            </div>
+
+            <!-- USDC row -->
+            <div class="px-4 py-3 flex items-center justify-between gap-2">
+              <span class="font-sans text-[9px] uppercase tracking-[0.22em] text-cool/80">USDC</span>
+              <span
+                class="font-accent italic text-base text-midnight dark:text-white tabular-nums"
+                data-testid="trade-glance-usdc"
               >
-                Circle faucet
-                <ExternalLink :size="11" />
-              </a>
+                {{ usdcBalance !== null ? formatUSD(Number(usdcBalance) / 1e6) : '—' }}
+              </span>
+            </div>
+
+            <!-- mhUSDC row — encrypted by default; the in-form pre-flight
+                 Reveal handles the actual decrypt (it's the right place
+                 to do it: silent-fail catching is a trade-time concern). -->
+            <div class="px-4 py-3 flex items-center justify-between gap-2">
+              <span class="font-sans text-[9px] uppercase tracking-[0.22em] text-cool/80">mhUSDC</span>
+              <span
+                class="font-sans text-[9px] uppercase tracking-[0.18em] font-medium
+                       text-compute/80 dark:text-signal/80
+                       border border-compute/20 dark:border-signal/20
+                       px-2 py-0.5 rounded"
+                data-testid="trade-glance-mhusdc"
+              >
+                Encrypted
+              </span>
             </div>
           </div>
+
+          <!-- Top-up cash link — quiet by default, emphasised when USDC
+               is zero in buy mode (the most common "I can't trade" state). -->
+          <button
+            type="button"
+            @click="goCash"
+            data-testid="trade-glance-cash-link"
+            :class="[
+              'mt-3 w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg',
+              'font-sans text-[10px] uppercase tracking-[0.22em] font-semibold',
+              'transition-all duration-200 cursor-pointer',
+              mode === 'buy' && usdcBalance === 0n
+                ? 'btn-gold-sweep text-midnight'
+                : 'text-cool hover:text-compute dark:hover:text-signal',
+            ]"
+          >
+            {{ mode === 'buy' && usdcBalance === 0n ? 'Top up cash' : 'Manage cash' }}
+            <ArrowRight :size="11" :stroke-width="2" />
+          </button>
         </div>
 
-        <!-- Progress rail -->
-        <div class="pt-8 border-t border-haze dark:border-white/8">
-          <h3 class="font-sans text-[11px] uppercase tracking-[0.22em] text-cool font-semibold mb-6">
-            Current Step
-          </h3>
-          <div class="relative flex flex-col gap-8">
-            <div
-              aria-hidden="true"
-              class="absolute top-2.5 bottom-2.5 left-[10px] -translate-x-1/2 w-px bg-haze dark:bg-white/10"
-            />
-            <div
-              aria-hidden="true"
-              class="absolute top-2.5 left-[10px] -translate-x-1/2 w-px bg-gold dark:bg-signal shadow-[0_0_10px_rgba(255,186,32,0.5)] dark:shadow-[0_0_10px_rgba(255,220,161,0.5)] transition-all duration-500"
-              :style="{ height: `${railHeight}%` }"
-            />
-            <div
-              v-for="(s, i) in steps"
-              :key="s.label"
-              :class="['flex items-center gap-5 relative transition-opacity', i > currentStep && 'opacity-50']"
-            >
-              <div
-                :class="[
-                  'w-5 h-5 rounded-full flex-shrink-0 z-10 flex items-center justify-center transition-all',
-                  i < currentStep
-                    ? 'bg-gold dark:bg-signal'
-                    : i === currentStep
-                      ? 'bg-gold dark:bg-signal ring-4 ring-gold/10 dark:ring-signal/15 shadow-[0_0_15px_rgba(255,186,32,0.4)] dark:shadow-[0_0_15px_rgba(255,220,161,0.4)]'
-                      : 'bg-mist/60 dark:bg-[#1c1b1b] border border-haze dark:border-white/15',
-                ]"
-              >
-                <div v-if="i <= currentStep" class="w-2 h-2 rounded-full bg-white dark:bg-midnight" />
-              </div>
-              <div class="flex flex-col">
-                <span
-                  :class="[
-                    'font-sans text-xs uppercase tracking-[0.22em] font-bold',
-                    i <= currentStep ? 'text-compute dark:text-signal' : 'text-midnight dark:text-white',
-                  ]"
-                >{{ s.label }}</span>
-                <span class="font-accent italic text-[11px] text-cool mt-0.5">{{ s.description }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
+        <!-- Security Notice — privacy framing, always visible. The right-
+             aside step rail moved inline above the CTA so it's only on
+             screen while a tx is actually running. -->
         <div class="pt-8 border-t border-haze dark:border-white/8">
           <h3 class="font-sans text-[11px] uppercase tracking-[0.22em] text-cool font-semibold mb-4">
             Security Notice
