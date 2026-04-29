@@ -185,7 +185,18 @@ async function decryptHoldingBalance() {
       functionName: 'encryptedBalanceOf',
       args: [address.value as Address],
     })) as `0x${string}`
-    holdingBalance.value = await decryptUint128ForView(handle)
+    // Pass the per-RWA-token address so the 403-refresh fallback in
+    // `decryptForView` dispatches `refreshDecryptGrant` against the
+    // CORRECT contract (TBILL1 / GOLD1 / …). Without this, the fallback
+    // defaults to the legacy Wave 3 `MuHavenToken` (which the holding
+    // doesn't live on); the refresh tx is a no-op against the actual
+    // handle, and the retried decrypt 403s a second time. Symptom:
+    // first-time Reveal on /trade Sell with no prior /portfolio visit
+    // throws the 403 + a `MuHavenToken.refreshDecryptGrant()` revert.
+    holdingBalance.value = await decryptUint128ForView(
+      handle,
+      selectedToken.value as `0x${string}`,
+    )
   } catch (e) {
     toast.error('Reveal balance failed', {
       description: e instanceof Error ? e.message : String(e),
