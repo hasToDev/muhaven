@@ -80,12 +80,18 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     const tokens = getStatusSnapshot();
     const nextStale = nearestStaleSec();
 
-    const errored = tokens.some((t) => t.lastOutcome === 'error');
-    const allFresh = tokens.length > 0 && tokens.every((t) => t.onChainIsFresh === true);
+    // Skip tokens with strategy='skip' from the aggregate health calc —
+    // we explicitly opted out of managing them, so their freshness is
+    // not our concern. Same for `error` (we don't reach the chain on
+    // skipped tokens, so 'error' is unreachable, but be defensive).
+    const managed = tokens.filter((t) => t.strategy !== 'skip');
+    const errored = managed.some((t) => t.lastOutcome === 'error');
+    const allFresh = managed.length > 0 && managed.every((t) => t.onChainIsFresh === true);
 
     let status: 'ok' | 'degraded';
     if (!ready || !dbHealthy || errored) status = 'degraded';
     else if (tokens.length === 0) status = 'degraded'; // no cycle has run yet
+    else if (managed.length === 0) status = 'ok'; // every token explicitly skipped — operator's choice
     else if (!allFresh) status = 'degraded';
     else status = 'ok';
 

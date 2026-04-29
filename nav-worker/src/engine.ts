@@ -13,6 +13,7 @@ import { eq, desc, sql } from 'drizzle-orm';
 import { getDb } from './db.js';
 import { tokenNavHistory } from './schema.js';
 import { fetchLatestFredObservation } from './sources/fred.js';
+import { fetchLatestStooqQuote } from './sources/stooq.js';
 import { fetchBuidlNav, fetchUsdyPrice } from './sources/onchain.js';
 import { getFallbackRate } from './sources/fallback.js';
 
@@ -31,6 +32,13 @@ interface TokenSourceConfig {
   tokenAddress: string;
   symbol: string;
   primaryFredSeries?: string;
+  /**
+   * stooq.com symbol (e.g. `XAUUSD`, `XAGUSD`). When set, the engine
+   * pulls the latest daily close as a price-like NAV. Used for assets
+   * that lack a maintained FRED series (the FRED `GOLDPMGBD228NLBM`
+   * gold-fix series was archived in 2017).
+   */
+  primaryStooqSymbol?: string;
   primaryOnChain?: () => Promise<{ value: number; timestamp: Date; aum?: number } | null>;
 }
 
@@ -62,9 +70,11 @@ const TOKEN_SOURCES: TokenSourceConfig[] = [
   {
     tokenAddress: process.env.NAV_GOLD1_ADDRESS || STAGING_GOLD1,
     symbol: 'GOLD1',
-    // London PM gold fix in USD per troy ounce. Stored as a price-like
-    // NAV (raw $/oz, not par) — see priceLikeSeries in fredToNav.
-    primaryFredSeries: 'GOLDPMGBD228NLBM',
+    // XAU/USD daily fixing in USD per troy ounce, fetched from
+    // stooq.com (no API key, no rate limit). Stored as a price-like
+    // NAV. The FRED `GOLDPMGBD228NLBM` series this used to consume
+    // was archived in 2017 when LBMA pulled their feed.
+    primaryStooqSymbol: 'XAUUSD',
   },
 ].filter(t => /^0x[0-9a-fA-F]{40}$/.test(t.tokenAddress) && !/^0x0+$/.test(t.tokenAddress));
 
@@ -191,6 +201,24 @@ async function fetchTokenNav(config: TokenSourceConfig): Promise<NavSnapshot | n
         source: `fred:${config.primaryFredSeries}`,
         sourceType: 'api',
         sourceTimestamp: new Date(obs.date),
+      };
+    }
+  }
+
+  if (config.primaryStooqSymbol) {
+    const obs = await fetchLatestStooqQuote(config.primaryStooqSymbol);
+    if (obs) {
+      // Stooq quotes are raw prices — used as price-like NAV. APY/yield
+      // do not apply (commodities have no coupon); leave null.
+      return {
+        tokenAddress: config.tokenAddress,
+        nav: obs.close,
+        apy: null,
+        totalAum: null,
+        yieldRate: null,
+        source: `stooq:${config.primaryStooqSymbol}`,
+        sourceType: 'api',
+        sourceTimestamp: obs.date,
       };
     }
   }
