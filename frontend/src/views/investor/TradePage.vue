@@ -595,13 +595,19 @@ function fillMax() {
   amount.value = holdingBalance.value.toString()
 }
 
-// CTA copy + states swap by mode.
+// CTA copy + states swap by mode. Dynamic ticker grounds the action in
+// the asset the user just picked and matches every trading UI they've
+// seen elsewhere ("Buy TBILL1" reads cleaner than "Encrypt & Purchase").
+// Privacy framing moves to the FHE microcopy line below the CTA + the
+// inline step rail's "Encrypt" step (added in the aside redesign).
 const ctaLabel = computed(() => {
+  const sym = selectedTokenData.value?.symbol ?? 'shares'
   if (isProcessing.value) {
-    return mode.value === 'buy' ? 'Encrypting & purchasing…' : 'Encrypting & redeeming…'
+    if (mode.value === 'buy') return `Purchasing ${sym}…`
+    return willEscalate.value ? 'Queueing redemption…' : `Selling ${sym}…`
   }
-  if (mode.value === 'buy') return 'Encrypt & Purchase'
-  return willEscalate.value ? 'Encrypt & Redeem (queued)' : 'Encrypt & Redeem'
+  if (mode.value === 'buy') return `Buy ${sym}`
+  return willEscalate.value ? `Sell ${sym} (queued)` : `Sell ${sym}`
 })
 
 const ctaDisabled = computed(() => {
@@ -1085,6 +1091,19 @@ const ctaDisabled = computed(() => {
               <span class="uppercase tracking-[0.18em]">{{ ctaLabel }}</span>
               <ArrowRight v-if="!isProcessing" :size="16" :stroke-width="2" />
             </button>
+
+            <!-- Privacy microcopy — replaces the lost on-screen FHE
+                 signal that "Encrypt &" prefix used to carry. Always
+                 visible under the CTA so the privacy story is on
+                 screen even when the button is just "Buy TBILL1". -->
+            <p
+              data-testid="trade-fhe-microcopy"
+              class="flex items-center justify-center gap-1.5 -mt-1
+                     font-sans text-[10px] uppercase tracking-[0.22em] text-cool/80"
+            >
+              <Lock :size="11" :stroke-width="1.8" class="text-compute/80 dark:text-signal/80" />
+              FHE-encrypted client-side
+            </p>
 
             <!-- mhUSDC pre-flight: surface the silent-fail risk + an
                  inline wrap CTA. Only shown in buy mode when the wrapper
