@@ -12,6 +12,7 @@ import {
   muhavenSubscriptionAbi,
 } from '@muhaven/sdk'
 import { useMarketplaceStore } from '@/stores/marketplace'
+import { usePortfolioStore } from '@/stores/portfolio'
 import { useWallet } from '@/composables/useWallet'
 import { useFhe } from '@/composables/useFhe'
 import { v35Addresses, isZeroAddress } from '@/contracts/addresses'
@@ -44,9 +45,10 @@ type Mode = 'buy' | 'sell'
 const route = useRoute()
 const router = useRouter()
 const marketplace = useMarketplaceStore()
+const portfolio = usePortfolioStore()
 const { address, connected } = useWallet()
 const fhe = useFhe()
-const { encryptUint128, getEphemeralEOA, decryptUint128ForView, decryptMhUsdcForView, initialize: initFhe } = fhe
+const { encryptUint128, getEphemeralEOA, decryptUint128ForView, initialize: initFhe } = fhe
 
 const isXl = useMediaQuery('(min-width: 1280px)')
 
@@ -240,33 +242,23 @@ const exceedsHolding = computed<boolean>(() => {
 // for nothing. We surface a pre-flight warning + inline "Wrap PUSDC
 // first" CTA so the failure mode lands as UI instead of an empty tx.
 
-const mhUsdcAvailable = computed(() => MuHavenStableService.isAvailable())
-const mhUsdcBalance = ref<bigint | null>(null)
-const mhUsdcDecrypting = ref(false)
+// Phase 9.A: mhUSDC decrypted balance is shared cross-page state via the
+// portfolio store (`pusdcConfidentialBalance` + `decryptPusdc()`). Same
+// FHE flow under the hood (initFhe → MuHavenStable.confidentialBalanceOf
+// → decryptMhUsdcForView with legacy-PUSDC fallback) — reading from the
+// store means the glance-bar value, the CashPage tile, and the Portfolio
+// Cash Buffer card all stay in sync after a wrap or trade.
 
+/** Reveal mhUSDC via the portfolio store. Thin wrapper for template binding. */
 async function decryptMhUsdcBalance() {
-  if (!address.value || mhUsdcDecrypting.value) return
-  if (!mhUsdcAvailable.value) {
-    mhUsdcBalance.value = null
-    return
-  }
-  mhUsdcDecrypting.value = true
-  try {
-    await initFhe()
-    const ctHash = await MuHavenStableService.confidentialBalanceOf(address.value as Address)
-    mhUsdcBalance.value = await decryptMhUsdcForView(ctHash)
-  } catch (e) {
-    console.warn('[TradePage] mhUSDC decrypt failed', e)
-    mhUsdcBalance.value = null
-  } finally {
-    mhUsdcDecrypting.value = false
-  }
+  if (!address.value) return
+  await portfolio.decryptPusdc(address.value as `0x${string}`)
 }
 
 const insufficientMhUsdc = computed<boolean>(() => {
   if (mode.value !== 'buy') return false
-  if (mhUsdcBalance.value === null || estimatedCostPusdc.value === null) return false
-  return estimatedCostPusdc.value > mhUsdcBalance.value
+  if (portfolio.pusdcConfidentialBalance === null || estimatedCostPusdc.value === null) return false
+  return estimatedCostPusdc.value > portfolio.pusdcConfidentialBalance
 })
 
 watch(selectedToken, () => {
@@ -1276,7 +1268,7 @@ const cashLinkLoud = computed(() =>
                 <span class="font-sans text-[9px] uppercase tracking-[0.22em] text-cool/80">mhUSDC</span>
 
                 <!-- Decrypted: value + small refresh icon -->
-                <template v-if="mhUsdcBalance !== null">
+                <template v-if="portfolio.pusdcConfidentialBalance !== null">
                   <span class="inline-flex items-center gap-2">
                     <AlertTriangle
                       v-if="insufficientMhUsdc"
@@ -1288,18 +1280,18 @@ const cashLinkLoud = computed(() =>
                       class="font-accent italic text-base text-midnight dark:text-white tabular-nums"
                       data-testid="trade-glance-mhusdc-balance"
                     >
-                      {{ formatUSD(Number(mhUsdcBalance) / 1e6) }}
+                      {{ formatUSD(Number(portfolio.pusdcConfidentialBalance) / 1e6) }}
                     </span>
                     <button
                       type="button"
                       @click="decryptMhUsdcBalance"
-                      :disabled="mhUsdcDecrypting"
+                      :disabled="portfolio.pusdcDecrypting"
                       data-testid="trade-glance-mhusdc-refresh"
-                      :title="mhUsdcDecrypting ? 'Refreshing…' : 'Refresh mhUSDC'"
-                      :aria-label="mhUsdcDecrypting ? 'Refreshing mhUSDC balance' : 'Refresh mhUSDC balance'"
+                      :title="portfolio.pusdcDecrypting ? 'Refreshing…' : 'Refresh mhUSDC'"
+                      :aria-label="portfolio.pusdcDecrypting ? 'Refreshing mhUSDC balance' : 'Refresh mhUSDC balance'"
                       class="text-cool/60 hover:text-compute dark:hover:text-signal transition-colors flex-shrink-0 cursor-pointer disabled:cursor-wait disabled:opacity-50"
                     >
-                      <Loader2 v-if="mhUsdcDecrypting" :size="12" class="animate-spin" />
+                      <Loader2 v-if="portfolio.pusdcDecrypting" :size="12" class="animate-spin" />
                       <RefreshCw v-else :size="12" />
                     </button>
                   </span>
@@ -1320,7 +1312,7 @@ const cashLinkLoud = computed(() =>
                     <button
                       type="button"
                       @click="decryptMhUsdcBalance"
-                      :disabled="mhUsdcDecrypting || !address"
+                      :disabled="portfolio.pusdcDecrypting || !address"
                       data-testid="trade-glance-mhusdc-reveal"
                       :aria-label="'Reveal mhUSDC balance'"
                       :class="[
@@ -1332,7 +1324,7 @@ const cashLinkLoud = computed(() =>
                           : 'border border-compute/30 dark:border-signal/30',
                       ]"
                     >
-                      <Loader2 v-if="mhUsdcDecrypting" :size="11" class="animate-spin" />
+                      <Loader2 v-if="portfolio.pusdcDecrypting" :size="11" class="animate-spin" />
                       <Eye v-else :size="11" :stroke-width="2" />
                       <span class="hidden sm:inline">Reveal</span>
                     </button>
@@ -1344,14 +1336,14 @@ const cashLinkLoud = computed(() =>
                    can't cover the typed amount. "Need $Y · short $Z" frames
                    the gap so the user knows exactly how much to top up. -->
               <p
-                v-if="insufficientMhUsdc && estimatedCostPusdc !== null && mhUsdcBalance !== null"
+                v-if="insufficientMhUsdc && estimatedCostPusdc !== null && portfolio.pusdcConfidentialBalance !== null"
                 data-testid="trade-glance-mhusdc-warning"
                 class="font-sans text-[10px] text-cool/80 leading-tight tabular-nums"
               >
                 Need
                 <span class="text-midnight dark:text-white">{{ formatUSD(Number(estimatedCostPusdc) / 1e6) }}</span>
                 · short
-                <span class="text-gold dark:text-signal font-semibold">{{ formatUSD(Number(estimatedCostPusdc - mhUsdcBalance) / 1e6) }}</span>
+                <span class="text-gold dark:text-signal font-semibold">{{ formatUSD(Number(estimatedCostPusdc - portfolio.pusdcConfidentialBalance) / 1e6) }}</span>
               </p>
             </div>
           </div>

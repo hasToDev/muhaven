@@ -6,6 +6,7 @@ import { toast } from 'vue-sonner'
 import { StableClient } from '@muhaven/sdk'
 import { useWallet } from '@/composables/useWallet'
 import { useFhe } from '@/composables/useFhe'
+import { usePortfolioStore } from '@/stores/portfolio'
 import { buildWriteContext } from '@/services/v35/context'
 import * as VaultService from '@/services/contracts/VaultService'
 import * as Erc20Service from '@/services/contracts/Erc20Service'
@@ -41,7 +42,15 @@ type Mode = 'cash' | 'asset'
 
 const route = useRoute()
 const { address, connected } = useWallet()
-const { initialize: initFhe, getEphemeralEOA, decryptMhUsdcForView } = useFhe()
+const { initialize: initFhe, getEphemeralEOA } = useFhe()
+
+// Phase 9.A: mhUSDC decrypted balance is shared cross-page state — the
+// portfolio store already holds the same value (`pusdcConfidentialBalance`
+// + `decryptPusdc()` action) for the Cash Buffer card on /portfolio.
+// Using one source means a wrap or trade auto-syncs every surface that
+// renders the value (CashPage tile, TradePage glance bar, Portfolio
+// dashboard) without each page maintaining its own ref.
+const portfolio = usePortfolioStore()
 
 const isXl = useMediaQuery('(min-width: 1280px)')
 
@@ -93,22 +102,15 @@ const numericAmount = computed(() => parseFloat(amount.value.replace(/,/g, '')) 
 const copied = ref(false)
 const balancesLoading = ref(false)
 const usdcBalance = ref<bigint | null>(null)
-// mhUSDC encrypted balance — null until the user hits Decrypt OR a wrap
-// completes (handleCashWrap auto-decrypts on success). bigint is the
-// decrypted scaled value (6 decimals, same as USDC).
-const mhUsdcBalance = ref<bigint | null>(null)
-const mhUsdcDecrypting = ref(false)
-const mhUsdcError = ref<string | null>(null)
 
 // True first-run state: USDC has been read AND is zero AND the user has
 // no decrypted mhUSDC. Gates the welcome ribbon so returning users
-// topping up don't see onboarding copy on every visit. If mhUSDC hasn't
-// been decrypted yet (still null), we lean toward "show the ribbon" —
-// returning users with mhUSDC will dismiss it implicitly the moment they
-// click Reveal.
+// topping up don't see onboarding copy on every visit. mhUSDC value
+// lives in the portfolio store now (`pusdcConfidentialBalance`); same
+// gate logic as before, just reads the shared source.
 const isFirstRun = computed(() =>
   usdcBalance.value === 0n
-  && (mhUsdcBalance.value === null || mhUsdcBalance.value === 0n),
+  && (portfolio.pusdcConfidentialBalance === null || portfolio.pusdcConfidentialBalance === 0n),
 )
 
 async function loadBalances() {
@@ -133,39 +135,24 @@ async function loadBalances() {
  * for a value the user hasn't asked to see.
  */
 async function refreshAll() {
+  if (!address.value) return
   await loadBalances()
-  if (mhUsdcBalance.value !== null) {
-    await decryptMhUsdcBalance()
+  if (portfolio.pusdcConfidentialBalance !== null) {
+    await portfolio.decryptPusdc(address.value as `0x${string}`)
   }
 }
 
 /**
- * Reveal the encrypted mhUSDC balance via FHE decrypt-for-view. Mirrors
- * TradePage's pattern (reveal mhUSDC pre-flight to catch silent-fail
- * pulls). We only fire on user click OR after a successful wrap — never
- * on mount, since each call signs with the session EOA.
+ * Reveal mhUSDC via the portfolio store's `decryptPusdc` action. Same
+ * FHE flow under the hood (initFhe → MuHavenStable.confidentialBalanceOf
+ * → decryptMhUsdcForView with legacy-PUSDC fallback) — using the store
+ * means CashPage tile, TradePage glance bar, and Portfolio Cash Buffer
+ * all read the same value, and a wrap or trade refresh updates every
+ * surface at once.
  */
 async function decryptMhUsdcBalance() {
-  if (!address.value || mhUsdcDecrypting.value) return
-  if (!MuHavenStableService.isAvailable()) {
-    mhUsdcBalance.value = null
-    return
-  }
-  mhUsdcDecrypting.value = true
-  mhUsdcError.value = null
-  try {
-    await initFhe()
-    const ctHash = await MuHavenStableService.confidentialBalanceOf(
-      address.value as `0x${string}`,
-    )
-    mhUsdcBalance.value = await decryptMhUsdcForView(ctHash)
-  } catch (e) {
-    console.warn('[CashPage] mhUSDC decrypt failed', e)
-    mhUsdcError.value = e instanceof Error ? e.message : 'Decrypt failed'
-    mhUsdcBalance.value = null
-  } finally {
-    mhUsdcDecrypting.value = false
-  }
+  if (!address.value) return
+  await portfolio.decryptPusdc(address.value as `0x${string}`)
 }
 
 async function refreshOperatorStatus() {
@@ -799,7 +786,7 @@ const successCopy = computed(() =>
           </div>
 
           <!-- mhUSDC: encrypted spendable cash. Two states:
-               • Pre-decrypt (mhUsdcBalance === null): show "Encrypted"
+               • Pre-decrypt (portfolio.pusdcConfidentialBalance === null): show "Encrypted"
                  pill + Reveal button. The on-chain balance handle is
                  sealed; only the user can decrypt. We never auto-fetch
                  this on mount — each decrypt costs a session signature.
@@ -820,12 +807,12 @@ const successCopy = computed(() =>
             <!-- Decrypted state: big number. Refresh action lives in the
                  single unified button below — keeps the tile clean and
                  prevents two competing "Refresh" surfaces in the aside. -->
-            <template v-if="mhUsdcBalance !== null">
+            <template v-if="portfolio.pusdcConfidentialBalance !== null">
               <span
                 class="font-accent italic text-2xl text-midnight dark:text-white tabular-nums"
                 data-testid="cash-mhusdc-balance"
               >
-                {{ formatUSD(Number(mhUsdcBalance) / 1e6) }}
+                {{ formatUSD(Number(portfolio.pusdcConfidentialBalance) / 1e6) }}
               </span>
               <span class="font-sans text-[10px] text-cool/80 leading-tight">
                 Confidential cash · spend on Trade
@@ -847,7 +834,7 @@ const successCopy = computed(() =>
               <button
                 type="button"
                 @click="decryptMhUsdcBalance"
-                :disabled="mhUsdcDecrypting || !address"
+                :disabled="portfolio.pusdcDecrypting || !address"
                 data-testid="cash-mhusdc-decrypt-cta"
                 class="self-start mt-1 inline-flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.22em] font-semibold
                        text-compute dark:text-signal
@@ -857,17 +844,17 @@ const successCopy = computed(() =>
                        px-3 py-1.5 rounded transition-all duration-200 cursor-pointer
                        disabled:opacity-60 disabled:cursor-wait"
               >
-                <Loader2 v-if="mhUsdcDecrypting" :size="11" class="animate-spin" />
+                <Loader2 v-if="portfolio.pusdcDecrypting" :size="11" class="animate-spin" />
                 <Eye v-else :size="11" :stroke-width="2" />
                 Reveal
               </button>
             </template>
 
             <p
-              v-if="mhUsdcError"
+              v-if="portfolio.pusdcError"
               class="font-sans text-[10px] text-negative leading-tight mt-1"
             >
-              {{ mhUsdcError }}
+              {{ portfolio.pusdcError }}
             </p>
           </div>
 
@@ -879,11 +866,11 @@ const successCopy = computed(() =>
             <button
               type="button"
               @click="refreshAll"
-              :disabled="balancesLoading || mhUsdcDecrypting || !address"
+              :disabled="balancesLoading || portfolio.pusdcDecrypting || !address"
               data-testid="cash-balances-refresh"
               class="inline-flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.22em] font-medium text-cool hover:text-compute dark:hover:text-signal transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <RefreshCw :size="12" :class="(balancesLoading || mhUsdcDecrypting) && 'animate-spin'" />
+              <RefreshCw :size="12" :class="(balancesLoading || portfolio.pusdcDecrypting) && 'animate-spin'" />
               Refresh
             </button>
           </div>
