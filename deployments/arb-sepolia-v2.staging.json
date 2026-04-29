@@ -1,7 +1,7 @@
 {
   "network": "arb-sepolia",
   "env": "staging",
-  "timestamp": "2026-04-28T13:32:19.822Z",
+  "timestamp": "2026-04-29T00:34:15.200Z",
   "deployer": "0xe11E83398C33A37CaC02C01c43F14A7f95876986",
   "external": {
     "legacyPusdc": "0x6b6e6479b8b3237933c3ab9d8be969862d4ed89f",
@@ -13,7 +13,7 @@
   "contracts": {
     "MuHavenStable": {
       "proxy": "0xf7f6Db67E06923f458F8a465160f53b2486F77Fd",
-      "implementation": "0xa90e94e0ef03A3a88d7040CaC62b644f152De066"
+      "implementation": "0x896457F7fEB8cF82e81e910480aBe555dcfadd24"
     },
     "ClaimTopicsRegistry": {
       "proxy": "0x8E13fF83E308D4Af52216b83d107e30B314e1fAe",
@@ -45,7 +45,7 @@
     },
     "YieldSnapshot": {
       "proxy": "0x6d5C0E40f53c702CDc4923acccbdD6F45cBD3E29",
-      "implementation": "0xe2aaE998ce3f7Aa44262aBC276D8B04eD81C9373"
+      "implementation": "0xcDedcd509DaFE3FF20D8A3Bed97df69e567d0846"
     },
     "IssuerControlledOracle": {
       "proxy": "0xdD945eAbc3f708d31bA00DD0b384B04F35c53D2A",
