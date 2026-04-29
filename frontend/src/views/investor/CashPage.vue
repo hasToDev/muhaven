@@ -127,6 +127,19 @@ async function loadBalances() {
 }
 
 /**
+ * Unified refresh: re-read USDC AND re-decrypt mhUSDC, but only if the
+ * user has already revealed mhUSDC. If the balance is still locked we
+ * leave it locked — refreshing shouldn't trigger a session signature
+ * for a value the user hasn't asked to see.
+ */
+async function refreshAll() {
+  await loadBalances()
+  if (mhUsdcBalance.value !== null) {
+    await decryptMhUsdcBalance()
+  }
+}
+
+/**
  * Reveal the encrypted mhUSDC balance via FHE decrypt-for-view. Mirrors
  * TradePage's pattern (reveal mhUSDC pre-flight to catch silent-fail
  * pulls). We only fire on user click OR after a successful wrap — never
@@ -719,7 +732,7 @@ const successCopy = computed(() =>
             <MAddressQR
               :address="address ?? null"
               :size="148"
-              caption="Scan with MetaMask, WalletConnect, Trust Wallet…"
+              caption="Scan with any wallet to send USDC here"
             />
 
             <div class="w-full flex flex-col gap-2">
@@ -804,7 +817,9 @@ const successCopy = computed(() =>
               </span>
             </div>
 
-            <!-- Decrypted state: big number + refresh -->
+            <!-- Decrypted state: big number. Refresh action lives in the
+                 single unified button below — keeps the tile clean and
+                 prevents two competing "Refresh" surfaces in the aside. -->
             <template v-if="mhUsdcBalance !== null">
               <span
                 class="font-accent italic text-2xl text-midnight dark:text-white tabular-nums"
@@ -815,17 +830,6 @@ const successCopy = computed(() =>
               <span class="font-sans text-[10px] text-cool/80 leading-tight">
                 Confidential cash · spend on Trade
               </span>
-              <button
-                type="button"
-                @click="decryptMhUsdcBalance"
-                :disabled="mhUsdcDecrypting"
-                data-testid="cash-mhusdc-refresh"
-                class="self-start mt-1 inline-flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.22em] font-medium text-cool hover:text-compute dark:hover:text-signal transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-wait"
-              >
-                <Loader2 v-if="mhUsdcDecrypting" :size="11" class="animate-spin" />
-                <RefreshCw v-else :size="11" />
-                Refresh
-              </button>
             </template>
 
             <!-- Pre-decrypt state: blurred placeholder + Reveal CTA -->
@@ -867,17 +871,20 @@ const successCopy = computed(() =>
             </p>
           </div>
 
-          <!-- USDC refresh — small footer-style action under the tiles. -->
+          <!-- Unified Refresh — re-fetches USDC + re-decrypts mhUSDC iff
+               already revealed. We never trigger a fresh decrypt for a
+               locked balance: that costs a session signature for a
+               value the user hasn't asked to see. -->
           <div class="flex items-center justify-end pt-1">
             <button
               type="button"
-              @click="loadBalances"
-              :disabled="balancesLoading || !address"
+              @click="refreshAll"
+              :disabled="balancesLoading || mhUsdcDecrypting || !address"
               data-testid="cash-balances-refresh"
               class="inline-flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.22em] font-medium text-cool hover:text-compute dark:hover:text-signal transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <RefreshCw :size="12" :class="balancesLoading && 'animate-spin'" />
-              Refresh USDC
+              <RefreshCw :size="12" :class="(balancesLoading || mhUsdcDecrypting) && 'animate-spin'" />
+              Refresh
             </button>
           </div>
         </div>
