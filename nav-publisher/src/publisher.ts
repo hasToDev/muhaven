@@ -9,7 +9,7 @@
  * seed-stage TVL. Real per-asset price publishing is a future Chainlink
  * NAVLink integration that REPLACES this service, not extends it.
  */
-import { desc, eq } from 'drizzle-orm';
+import { desc, sql } from 'drizzle-orm';
 import { type Address } from 'viem';
 import { getConfig, labelToken, type PublishStrategy } from './config.js';
 import { getDb } from './db.js';
@@ -102,11 +102,15 @@ interface DbLatest {
 }
 
 async function fetchDbLatest(token: Address): Promise<DbLatest | null> {
+  // Case-insensitive match: nav-worker writes addresses in EIP-55
+  // checksum case (mixed) while config normalises to lower-case. Postgres
+  // `=` on text is byte-exact, so we'd otherwise miss every row.
   const db = getDb();
+  const lower = token.toLowerCase();
   const rows = await db
     .select({ fetchedAt: tokenNavHistory.fetchedAt })
     .from(tokenNavHistory)
-    .where(eq(tokenNavHistory.tokenAddress, token))
+    .where(sql`LOWER(${tokenNavHistory.tokenAddress}) = ${lower}`)
     .orderBy(desc(tokenNavHistory.fetchedAt))
     .limit(1);
   if (rows.length === 0) return null;
