@@ -59,5 +59,20 @@ services:
       ARB_RPC_URL: ${ARB_RPC_URL:-}
     restart: unless-stopped
 
+  nav-publisher:
+    build: ./nav-publisher
+    ports:
+      - "3003:3003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nav-worker:
+        condition: service_started
+    env_file: ./nav-publisher/.env
+    environment:
+      PORT: 3003
+      DATABASE_URL: postgresql://muhaven:${DB_PASSWORD:-muhaven}@postgres:5432/muhaven
+    restart: unless-stopped
+
 volumes:
   pgdata:
