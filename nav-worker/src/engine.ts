@@ -9,7 +9,7 @@
  * Dedup: skip write if latest DB entry has same NAV (0.01% tolerance) and APY (0.01pp threshold).
  */
 import { randomUUID } from 'node:crypto';
-import { eq, desc } from 'drizzle-orm';
+import { eq, desc, sql } from 'drizzle-orm';
 import { getDb } from './db.js';
 import { tokenNavHistory } from './schema.js';
 import { fetchLatestFredObservation } from './sources/fred.js';
@@ -122,6 +122,29 @@ async function writeSnapshot(snapshot: NavSnapshot): Promise<void> {
   });
 }
 
+/**
+ * Bump `fetched_at` on the latest row for a token without writing a
+ * new snapshot. Called when dedup decides the value is unchanged but
+ * we still want downstream consumers (notably nav-publisher's
+ * liveness gate) to know the upstream feed is alive. Case-insensitive
+ * on `token_address` to match historical writes that used checksum case.
+ */
+async function bumpLatestFetchedAt(tokenAddress: string): Promise<void> {
+  const db = getDb();
+  const lower = tokenAddress.toLowerCase();
+  const now = new Date();
+  await db.execute(sql`
+    UPDATE token_nav_history
+    SET fetched_at = ${now}
+    WHERE id = (
+      SELECT id FROM token_nav_history
+      WHERE LOWER(token_address) = ${lower}
+      ORDER BY fetched_at DESC
+      LIMIT 1
+    )
+  `);
+}
+
 // Map on-chain functions to readable source names
 const ON_CHAIN_SOURCE_NAMES = new Map<Function, string>([
   [fetchBuidlNav, 'onchain:buidl'],
@@ -230,9 +253,12 @@ export async function runFetchCycle(): Promise<FetchCycleResult> {
 
       result.fetched++;
 
-      // Dedup check
+      // Dedup check. We still bump `fetched_at` on the existing latest
+      // row so downstream consumers (nav-publisher liveness gate) can
+      // distinguish "feed silent" from "feed returning stable values".
       if (await shouldDedup(snapshot.tokenAddress, snapshot.nav, snapshot.apy)) {
-        console.log(`[dedup] ${config.symbol}: NAV=${snapshot.nav}, APY=${snapshot.apy ?? 'n/a'} unchanged, skipping write`);
+        await bumpLatestFetchedAt(snapshot.tokenAddress);
+        console.log(`[dedup] ${config.symbol}: NAV=${snapshot.nav}, APY=${snapshot.apy ?? 'n/a'} unchanged, bumped fetched_at`);
         result.skipped++;
         continue;
       }
