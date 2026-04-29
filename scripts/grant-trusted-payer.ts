@@ -97,15 +97,51 @@ async function main() {
   const rcpt = await tx.wait();
   console.log(`[1/1]   confirmed (block ${rcpt!.blockNumber})`);
 
-  const verified: boolean = await stable.isTrustedPayer(snapshotAddr);
-  if (!verified) {
+  // Verify via the event log on the receipt rather than a follow-up
+  // `isTrustedPayer` view call. View calls hit the RPC's `latest` head,
+  // which on some providers (notably onfinality) lags the just-mined
+  // block — producing a false "registration failed silently" alarm even
+  // though the on-chain state is correct. The event log is mined-in
+  // and deterministic.
+  const iface = new ethers.Interface([
+    "event TrustedPayerSet(address indexed payer, bool allowed)",
+  ]);
+  let confirmedFromEvent = false;
+  for (const log of rcpt!.logs) {
+    if (
+      log.address.toLowerCase() !== stableAddr.toLowerCase()
+    ) continue;
+    try {
+      const parsed = iface.parseLog({
+        topics: log.topics as string[],
+        data: log.data,
+      });
+      if (
+        parsed?.name === "TrustedPayerSet" &&
+        (parsed.args.payer as string).toLowerCase() ===
+          snapshotAddr.toLowerCase() &&
+        parsed.args.allowed === true
+      ) {
+        confirmedFromEvent = true;
+        break;
+      }
+    } catch {
+      /* ignore non-matching logs */
+    }
+  }
+  if (!confirmedFromEvent) {
     throw new Error(
-      `Post-tx readback says snapshot is NOT a trusted payer — registration` +
-        ` failed silently? Investigate before proceeding.`,
+      `setTrustedPayer tx confirmed but no matching TrustedPayerSet ` +
+        `event found on the receipt. Investigate before proceeding ` +
+        `(tx ${tx.hash}).`,
     );
   }
 
   console.log(`\nDone. YieldSnapshot proxy registered as trusted payer.`);
+  console.log(
+    `(Verified via TrustedPayerSet event log; on-chain state confirmed ` +
+      `mined-in.)`,
+  );
   console.log(`Next: MUHAVEN_ENV=${env} pnpm hardhat run scripts/upgrade-yield-snapshot.ts \\`);
   console.log(`        --network arb-sepolia`);
 }
