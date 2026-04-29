@@ -112,3 +112,85 @@ function safeNum(s: string | undefined): number {
   const n = parseFloat(s);
   return Number.isFinite(n) ? n : 0;
 }
+
+/**
+ * Fetch daily OHLC history for a stooq symbol over the last `days`
+ * trading days. Uses stooq's history-download endpoint:
+ *
+ *   https://stooq.com/q/d/l/?s={symbol}&d1=YYYYMMDD&d2=YYYYMMDD&i=d
+ *
+ * Returns observations sorted ascending by date. Empty array on
+ * network error or empty response (caller decides fallback).
+ *
+ * Note: stooq returns trading-day rows only (skips weekends/holidays
+ * for FX/commodities, ~22 rows per calendar month for XAUUSD).
+ */
+export async function fetchStooqHistory(
+  symbol: string,
+  days: number,
+): Promise<StooqObservation[]> {
+  const end = new Date();
+  const start = new Date();
+  start.setDate(start.getDate() - days);
+
+  const url = new URL('https://stooq.com/q/d/l/');
+  url.searchParams.set('s', symbol);
+  url.searchParams.set('d1', formatYmd(start));
+  url.searchParams.set('d2', formatYmd(end));
+  url.searchParams.set('i', 'd');
+
+  try {
+    const res = await fetch(url.toString(), {
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) {
+      console.error(`stooq history error for ${symbol}: ${res.status}`);
+      return [];
+    }
+    const text = await res.text();
+    return parseStooqHistoryCsv(symbol, text);
+  } catch (err) {
+    console.error(`stooq history fetch failed for ${symbol}:`, err);
+    return [];
+  }
+}
+
+/**
+ * Parse the history CSV. Format differs from the latest-quote endpoint
+ * — no Symbol or Time columns, just `Date,Open,High,Low,Close,Volume`.
+ */
+export function parseStooqHistoryCsv(
+  symbol: string,
+  csv: string,
+): StooqObservation[] {
+  const lines = csv.trim().split(/\r?\n/);
+  if (lines.length < 2) return [];
+
+  const out: StooqObservation[] = [];
+  // Skip header (line 0)
+  for (let i = 1; i < lines.length; i++) {
+    const cells = lines[i].split(',').map((c) => c.trim());
+    if (cells.length < 6) continue;
+    const [date, open, high, low, close, volume] = cells;
+    if (date === 'N/D' || close === 'N/D') continue;
+    const closeNum = parseFloat(close);
+    if (!Number.isFinite(closeNum) || closeNum <= 0) continue;
+    out.push({
+      symbol,
+      date: new Date(date),
+      open: safeNum(open),
+      high: safeNum(high),
+      low: safeNum(low),
+      close: closeNum,
+      volume: safeNum(volume),
+    });
+  }
+  return out.sort((a, b) => a.date.getTime() - b.date.getTime());
+}
+
+function formatYmd(d: Date): string {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}${m}${day}`;
+}
