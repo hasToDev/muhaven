@@ -251,6 +251,8 @@ Users authenticate with a **passkey** (WebAuthn) attached to a **ZeroDev smart a
 
 ### Agent security model (Wave 4, scaffolded)
 
+> ⚠️ The high-level model below ("agent reuses user's ZeroDev kernel + session keys; never holds a private key") is still correct, but the Wave 4 plan has been expanded post-research (2026-04-27) to four surfaces (HavenBot / `@muhaven/mcp` / OpenClaw skill / hosted checkout `pay.muhaven.app`) with a tiered-autonomy engine (Advisory / Confirm-per-action / Policy-bound) and hybrid encrypted-value-plaintext-rule policy storage. Canonical Wave 4 design is `development/WAVE_PLAN.md` §"Wave 4" + `development/DEV_WAVE_4/PLAN.md`; supporting research at `development/research-docs/WAVE_4_AGENTIC_RESEARCH_RESULT.md`.
+
 The AI agent chat UI is live on the frontend, but the execution loop — the portion that would call SDK methods on behalf of the user — is not wired up in the hackathon build. When it ships (Wave 4), the agent wallet will share the ZeroDev kernel + session-key scaffolding described above:
 
 ```
