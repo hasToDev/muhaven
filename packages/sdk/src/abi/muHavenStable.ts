@@ -123,6 +123,20 @@ export const muHavenStableAbi = [
     inputs: [{ name: 'ephemeralEOA', type: 'address' }],
     outputs: [],
   },
+  // Phase 9.A · Option Z follow-up — historical audit-handle re-grant
+  // for cross-session decrypts on /activity. Gate inside the contract is
+  // `FHE.isAllowed(handle, msg.sender)` — only the rightful kernel can
+  // re-grant.
+  {
+    name: 'refreshAuditGrant',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'handle', type: 'bytes32' }, // euint64
+      { name: 'ephemeralEOA', type: 'address' },
+    ],
+    outputs: [],
+  },
   // ── Admin views ──────────────────────────────────────────────────────
   {
     name: 'owner',
@@ -146,12 +160,17 @@ export const muHavenStableAbi = [
     outputs: [{ type: 'bool' }],
   },
   // ── Events ───────────────────────────────────────────────────────────
+  // Phase 9.A · Option Z — Wrap / Unwrap events broadened to carry the
+  // encrypted `amount` handle (`euint64` → `bytes32`). Pre-upgrade rows
+  // emitted under the old 2-arg signature are intentionally invisible to
+  // the new topic filter — by design, no back-index.
   {
     name: 'Wrap',
     type: 'event',
     inputs: [
       { name: 'account', type: 'address', indexed: true },
       { name: 'ephemeralEOA', type: 'address', indexed: true },
+      { name: 'amount', type: 'bytes32', indexed: false },
     ],
     anonymous: false,
   },
@@ -161,6 +180,7 @@ export const muHavenStableAbi = [
     inputs: [
       { name: 'account', type: 'address', indexed: true },
       { name: 'ephemeralEOA', type: 'address', indexed: true },
+      { name: 'amount', type: 'bytes32', indexed: false },
     ],
     anonymous: false,
   },
@@ -189,6 +209,18 @@ export const muHavenStableAbi = [
     inputs: [
       { name: 'holder', type: 'address', indexed: true },
       { name: 'ephemeralEOA', type: 'address', indexed: true },
+    ],
+    anonymous: false,
+  },
+  // Phase 9.A · Option Z follow-up — emitted when a caller re-grants ACL
+  // on a historical audit handle to a fresh ephemeralEOA.
+  {
+    name: 'AuditGrantRefreshed',
+    type: 'event',
+    inputs: [
+      { name: 'owner', type: 'address', indexed: true },
+      { name: 'ephemeralEOA', type: 'address', indexed: true },
+      { name: 'handle', type: 'bytes32', indexed: false }, // euint64
     ],
     anonymous: false,
   },
