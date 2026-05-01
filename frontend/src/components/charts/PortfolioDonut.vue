@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { Doughnut } from 'vue-chartjs'
 import { Chart as ChartJS, ArcElement, Tooltip } from 'chart.js'
 import { useAppStore } from '@/stores/app'
@@ -14,6 +14,12 @@ const props = defineProps<{
 }>()
 
 const store = useAppStore()
+
+// Chart.js draws tooltips ONTO the canvas, so a HTML overlay sitting on
+// top of the canvas would obscure them — z-index doesn't help, the
+// tooltip is rendered in canvas pixels. Toggle the centre-label off
+// while a slice is hovered. Vue's <transition> keeps the swap subtle.
+const isHovering = ref(false)
 
 // Locked slices have value=0; rendering them as zero-area arcs breaks
 // Chart.js tooltip math. Filter to revealed, non-zero slices for the arc;
@@ -51,6 +57,14 @@ const chartOptions = computed(() => ({
   responsive: true,
   maintainAspectRatio: false,
   cutout: '76%',
+  // Fires on every mouse move over the chart. `elements` is the active-
+  // arc list (length > 0 ⇒ pointer is over a slice and the tooltip is
+  // showing). We use it to drive the centre-label visibility — the only
+  // reliable way since Chart.js's internal hover state isn't exposed
+  // declaratively from the Vue wrapper.
+  onHover: (_event: unknown, elements: unknown[]) => {
+    isHovering.value = elements.length > 0
+  },
   plugins: {
     tooltip: {
       backgroundColor: tooltipColors.value.bg,
@@ -80,14 +94,24 @@ const chartOptions = computed(() => ({
   >
     <template v-if="renderable.length > 0">
       <Doughnut :data="chartData" :options="chartOptions" />
-      <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-        <span class="font-sans text-[10px] uppercase tracking-[0.2em] text-cool">
-          Total
-        </span>
-        <span class="font-accent italic text-lg text-midnight dark:text-white tabular-nums">
-          {{ formatUSD(total) }}
-        </span>
-      </div>
+      <transition
+        enter-active-class="transition-opacity duration-150 ease-out"
+        leave-active-class="transition-opacity duration-100 ease-in"
+        enter-from-class="opacity-0"
+        leave-to-class="opacity-0"
+      >
+        <div
+          v-show="!isHovering"
+          class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none"
+        >
+          <span class="font-sans text-[10px] uppercase tracking-[0.2em] text-cool">
+            Total
+          </span>
+          <span class="font-accent italic text-lg text-midnight dark:text-white tabular-nums">
+            {{ formatUSD(total) }}
+          </span>
+        </div>
+      </transition>
     </template>
     <div v-else class="h-full flex items-center justify-center" data-testid="portfolio-allocation-empty">
       <span class="font-sans text-xs text-cool">No allocation yet</span>
