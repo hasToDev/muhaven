@@ -134,7 +134,18 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
 
     // ── Events ───────────────────────────────────────────────────────────
 
-    event Transfer(address indexed from, address indexed to);
+    /// @notice Phase 9.A · Option Z follow-up — broadened to carry the
+    ///         encrypted `amount` handle so P2P transfers can be audited
+    ///         end-to-end on /activity. Mints emit `from = address(0)`,
+    ///         burns emit `to = address(0)`, and protocol-mediated moves
+    ///         (queue / subscription / treasury) keep the handle so the
+    ///         contract's audit grant re-issue surface is uniform across
+    ///         all paths. The off-chain indexer filters to true P2P
+    ///         (`from != 0 && to != 0` AND neither side is a known
+    ///         protocol contract) before persisting an activity row.
+    ///         Decrypt requires a permit grant against `from` or `to`
+    ///         (both granted at the call site by `_stampTransferAuditAcl`).
+    event Transfer(address indexed from, address indexed to, euint128 amount);
     event Approval(address indexed owner, address indexed spender);
     event KYCGateUpdated(address indexed newGate);
     event IssuerUpdated(address indexed newIssuer);
@@ -151,6 +162,10 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
     event IdentityRegistryUpdated(address indexed newRegistry);
     event ModularComplianceUpdated(address indexed newCompliance);
     event DecryptGrantRefreshed(address indexed holder, address indexed ephemeralEOA);
+    /// @notice Phase 9.A · Option Z follow-up — emitted when a caller
+    ///         re-grants ACL on a historical Transfer audit handle to a
+    ///         fresh ephemeralEOA. Mirrors `MuHavenStable.AuditGrantRefreshed`.
+    event AuditGrantRefreshed(address indexed owner, address indexed ephemeralEOA, euint128 handle);
 
     // ── Errors ───────────────────────────────────────────────────────────
 
@@ -165,6 +180,11 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
     error AlreadyPublic();
     error InvalidEphemeralEOA();
     error ComplianceBlocked();
+    /// @notice Phase 9.A · Option Z follow-up — `refreshAuditGrant` caller
+    ///         lacks ACL on the supplied audit handle. Loud-revert so a
+    ///         misconfigured frontend doesn't silently emit grant events
+    ///         for handles the caller never owned.
+    error NotAuditHandleOwner();
 
     // ── Modifiers ────────────────────────────────────────────────────────
 
@@ -370,7 +390,14 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         }
 
         registry.addHolder(address(this), to);
-        emit Transfer(address(0), to);
+        // Phase 9.A · Option Z follow-up — stamp ACL on the amount handle so
+        // it's decryptable via permit on the recipient's audit row. Mints
+        // grant `to` (kernel) + `ephemeralEOA` (when provided); off-chain
+        // the indexer skips mints (filtered as `from == 0`) so the grant is
+        // unused by /activity but kept consistent for any future audit
+        // tooling that reads Transfer logs directly.
+        _stampTransferAuditAcl(amount, address(0), to);
+        emit Transfer(address(0), to, amount);
     }
 
     // ── Transfer — Wave 3 legacy overload (no ephemeralEOA) ─────────────
@@ -519,7 +546,13 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         // P2P-received tokens participate in yield snapshots + MaxHolders
         // upper-bound checks. Idempotent at registry level.
         registry.addHolder(address(this), to);
-        emit Transfer(from, to);
+        // Phase 9.A · Option Z follow-up — stamp ACL on the silent-fail-
+        // bounded `transferAmount` so BOTH parties can decrypt their
+        // audit row on /activity. Sender's eph (when provided) is granted
+        // immediately; recipient relies on `refreshAuditGrant` for cross-
+        // session decrypts (their kernel-only grant passes the gate).
+        _stampTransferAuditAcl(transferAmount, from, to);
+        emit Transfer(from, to, transferAmount);
     }
 
     // ── Approve ──────────────────────────────────────────────────────────
@@ -602,7 +635,12 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
             FHE.allowPublic(_encryptedTotalSupply);
         }
 
-        emit Transfer(from, address(0));
+        // Phase 9.A · Option Z follow-up — burn audit handle stamping. Off-
+        // chain the indexer skips burns (filtered as `to == 0`) so this
+        // grant doesn't surface on /activity, but it keeps the per-emit
+        // grant convention uniform.
+        _stampTransferAuditAcl(burnAmount, from, address(0));
+        emit Transfer(from, address(0), burnAmount);
     }
 
     // ── Wave 3.5 paid-settlement path — RedemptionQueue only (ADR-035) ───
@@ -652,7 +690,13 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         // at processEpoch. Same pattern as burnFromSubscription.
         FHE.allow(actualPulled, msg.sender);
 
-        emit Transfer(from, msg.sender);
+        // Phase 9.A · Option Z follow-up — investor + queue can both decrypt
+        // the audit handle via permit. Off-chain the indexer skips this
+        // event (queue is in the protocol-filter set) so the grants are
+        // not surfaced on /activity but stay consistent with every other
+        // emit path.
+        _stampTransferAuditAcl(actualPulled, from, msg.sender);
+        emit Transfer(from, msg.sender, actualPulled);
     }
 
     /// @inheritdoc IMuHavenToken
@@ -699,7 +743,14 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         // other refund paths.
         registry.addHolder(address(this), to);
 
-        emit Transfer(msg.sender, to);
+        // Phase 9.A · Option Z follow-up — queue + investor decrypt grant
+        // on the audit handle. Off-chain the indexer skips this event
+        // (queue is in the protocol-filter set) so the grants stay
+        // off /activity but consistent with the other emit paths. Pass
+        // `ephemeralEOA` on the `to` (investor) leg since this is the
+        // cancel/refund path.
+        _stampTransferAuditAcl(amount, msg.sender, to);
+        emit Transfer(msg.sender, to, amount);
     }
 
     /// @inheritdoc IMuHavenToken
@@ -793,6 +844,54 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
     ///      is already decryptable by the caller via the on-chain async path
     ///      (`requestBalanceDecrypt`) — this just makes the off-chain permit
     ///      path work too.
+    /// @notice Phase 9.A · Option Z follow-up — re-grant FHE ACL on a
+    ///         HISTORICAL audit handle (the encrypted amount carried in a
+    ///         `Transfer` event) to a fresh `ephemeralEOA`. Required because
+    ///         each new ZeroDev session mints a fresh ephemeral EOA — the
+    ///         transfer-time grant binds to the session-of-origin only, so
+    ///         cross-session decrypt of the /activity audit row 403s without
+    ///         an explicit rebind.
+    /// @dev    Mirrors `MuHavenStable.refreshAuditGrant`. The contract-side
+    ///         ACL on `handle` was stamped via `_stampTransferAuditAcl` at
+    ///         emit time and is durable, so this contract can call
+    ///         `FHE.allow(handle, eph)` even though the originating tx
+    ///         finished long ago. The auth gate is `FHE.isAllowed(handle,
+    ///         msg.sender)`: only callers whose ACL survives on-chain (the
+    ///         original sender or recipient that the emit granted to via
+    ///         `FHE.allow(amount, from/to)`) can re-grant. Strangers
+    ///         passing in someone else's audit handle bounce here.
+    function refreshAuditGrant(euint128 handle, address ephemeralEOA) external {
+        if (ephemeralEOA == address(0)) revert InvalidEphemeralEOA();
+        if (!FHE.isAllowed(handle, msg.sender)) revert NotAuditHandleOwner();
+        FHE.allow(handle, ephemeralEOA);
+        emit AuditGrantRefreshed(msg.sender, ephemeralEOA, handle);
+    }
+
+    /// @dev Phase 9.A · Option Z follow-up — stamp the ACL grants needed for
+    ///      audit-decrypt of a Transfer's encrypted `amount` handle. Grants
+    ///      `allowThis` so the contract can re-grant later via
+    ///      `refreshAuditGrant`, plus kernel-only grants on `from` / `to`.
+    ///      Address args are skipped when zero (mints / burns).
+    ///
+    ///      Note: deliberately does NOT grant any ephemeralEOA on the
+    ///      amount handle. On the silent-fail / first-recipient path,
+    ///      `_balances[to]` aliases the same `transferAmount` handle (the
+    ///      Solidity assignment `_balances[to] = transferAmount` produces a
+    ///      shared handle), so granting `fromEph` here would expose the
+    ///      recipient's fresh balance to the sender's session — privacy
+    ///      leak. Both parties use `refreshAuditGrant(handle, eph)` on
+    ///      first audit-decrypt instead; same UX shape as Wrap/Unwrap
+    ///      cross-session decrypts on /activity.
+    function _stampTransferAuditAcl(
+        euint128 amount,
+        address from,
+        address to
+    ) internal {
+        FHE.allowThis(amount);
+        if (from != address(0)) FHE.allow(amount, from);
+        if (to != address(0)) FHE.allow(amount, to);
+    }
+
     function refreshDecryptGrant(address ephemeralEOA) external {
         if (ephemeralEOA == address(0)) revert InvalidEphemeralEOA();
         if (Common.isInitialized(_balances[msg.sender])) {

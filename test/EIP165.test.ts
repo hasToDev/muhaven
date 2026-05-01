@@ -77,6 +77,9 @@ describe("EIP-165 supportsInterface", function () {
         // Wave 3.5 Phase 7 — self-service ACL refresh (ADR-042 /
         // PERMIT_DECRYPT_LIFECYCLE §8 Q4).
         "function refreshDecryptGrant(address)",
+        // Wave 3.5 Phase 9.A · Option Z follow-up — historical Transfer
+        // audit-handle re-grant for cross-session decrypts on /activity.
+        "function refreshAuditGrant(bytes32,address)",
         "function encryptedBalanceOf(address) view returns (bytes32)",
         "function encryptedTotalSupply() view returns (bytes32)",
         "function setTotalSupplyPublic()",

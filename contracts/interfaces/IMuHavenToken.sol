@@ -102,6 +102,14 @@ interface IMuHavenToken {
 
     function refreshDecryptGrant(address ephemeralEOA) external;
 
+    /// @notice Phase 9.A · Option Z follow-up — re-grant FHE ACL on a
+    ///         HISTORICAL audit handle (the encrypted amount carried in a
+    ///         `Transfer` event) to a fresh `ephemeralEOA`. Mirrors
+    ///         `MuHavenStable.refreshAuditGrant`. Auth gate inside the
+    ///         contract: `FHE.isAllowed(handle, msg.sender)` — only the
+    ///         transfer-time sender or recipient can re-grant.
+    function refreshAuditGrant(euint128 handle, address ephemeralEOA) external;
+
     // ── Views / admin used by platform contracts ────────────────────────
     function encryptedBalanceOf(address account) external view returns (euint128);
     function encryptedTotalSupply() external view returns (euint128);

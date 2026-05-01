@@ -24,6 +24,17 @@ import hre, { upgrades } from "hardhat";
 import { Encryptable } from "@cofhe/sdk";
 import { expect } from "chai";
 
+/**
+ * `withArgs` placeholder for the `euint128 amount` slot in the broadened
+ * Phase 9.A `Transfer(from, to, amount)` event signature. Returns a matcher
+ * that accepts any 32-byte hex handle without binding the exact handle bytes
+ * (which are content-addressed and not knowable until the call lands).
+ */
+function anyHandle() {
+  return (v: unknown) =>
+    typeof v === "string" && v.startsWith("0x") && v.length === 66;
+}
+
 import {
   deployMuHavenFixture,
   deployKYCAdapter,
@@ -157,7 +168,7 @@ describe("MuHavenToken Wave 3.5 delta", () => {
         )
       )
         .to.emit(token, "Transfer")
-        .withArgs(ZERO_ADDRESS, investor.address);
+        .withArgs(ZERO_ADDRESS, investor.address, anyHandle());
 
       const balHash = await token.encryptedBalanceOf(investor.address);
       await hre.cofhe.mocks.expectPlaintext(balHash, ONE_TOKEN);
@@ -303,7 +314,7 @@ describe("MuHavenToken Wave 3.5 delta", () => {
         )
       )
         .to.emit(token, "Transfer")
-        .withArgs(investor.address, ZERO_ADDRESS);
+        .withArgs(investor.address, ZERO_ADDRESS, anyHandle());
 
       const balHash = await token.encryptedBalanceOf(investor.address);
       await hre.cofhe.mocks.expectPlaintext(balHash, ONE_TOKEN);

@@ -221,3 +221,256 @@ describe("MuHavenToken.refreshDecryptGrant (Phase 7 — PERMIT_DECRYPT_LIFECYCLE
     ).to.equal(false);
   });
 });
+
+// ── Phase 9.A · Option Z follow-up — refreshAuditGrant ─────────────────
+//
+// Mirrors `MuHavenStable.refreshAuditGrant` for Transfer audit handles. The
+// broadened `Transfer(from, to, amount)` event carries the encrypted amount
+// (`euint128 → bytes32`); both `from` and `to` had `FHE.allow(amount, ...)`
+// stamped at emit time so either party can later re-grant ACL on the
+// historical handle to a fresh ephemeral EOA. Strangers passing in someone
+// else's audit handle bounce on the `FHE.isAllowed(handle, msg.sender)` gate.
+
+function extractTransferAmount(token: any, receipt: any): string {
+  const iface = token.interface;
+  for (const log of receipt.logs) {
+    try {
+      const parsed = iface.parseLog({ topics: log.topics, data: log.data });
+      if (parsed && parsed.name === "Transfer") {
+        return parsed.args[2] as string;
+      }
+    } catch {
+      // Not from this contract — skip.
+    }
+  }
+  throw new Error("No Transfer event in receipt");
+}
+
+describe("MuHavenToken.refreshAuditGrant (Phase 9.A · Option Z follow-up)", () => {
+  it("rightful sender can re-grant a historical Transfer amount handle to a fresh session EOA", async () => {
+    const { token, issuer, holder, recipient, issuerClient, holderClient, acl } =
+      await loadFixture(deployRefreshFixture);
+
+    // Seed holder with a balance.
+    const [encMint] = await issuerClient
+      .encryptInputs([Encryptable.uint128(50n)])
+      .execute();
+    await token.connect(issuer).mint(holder.address, encMint);
+
+    // P2P transfer with the canonical 3-arg overload — sender's eph gets a
+    // grant on the amount handle at emit time.
+    const wrapEph = createEphemeralEOA();
+    const [encXfer] = await holderClient
+      .encryptInputs([Encryptable.uint128(10n)])
+      .execute();
+    const tx = await token
+      .connect(holder)
+      .getFunction("transfer(address,(uint256,uint8,uint8,bytes),address)")(
+        recipient.address,
+        encXfer,
+        wrapEph.address,
+      );
+    const receipt = await tx.wait();
+    const amountHandle = extractTransferAmount(token, receipt);
+
+    // Pre-state: a hypothetical fresh-session EOA has no ACL on the
+    // transfer-time amount handle.
+    const freshEph = createEphemeralEOA();
+    expect(
+      await acl.isAllowed(handleToUint(amountHandle), freshEph.address),
+    ).to.equal(false);
+
+    // Re-grant from the rightful sender (holder = sender's kernel).
+    await expect(
+      token.connect(holder).refreshAuditGrant(amountHandle, freshEph.address),
+    )
+      .to.emit(token, "AuditGrantRefreshed")
+      .withArgs(holder.address, freshEph.address, amountHandle);
+
+    expect(
+      await acl.isAllowed(handleToUint(amountHandle), freshEph.address),
+    ).to.equal(true);
+    // Sender's kernel grant from the original transfer survives (additive).
+    expect(
+      await acl.isAllowed(handleToUint(amountHandle), holder.address),
+    ).to.equal(true);
+    // The wrap-time ephemeral was deliberately NOT stamped on the audit
+    // handle — `_stampTransferAuditAcl` grants kernels only because the
+    // amount handle aliases `_balances[recipient]` on first-recipient
+    // transfers, and granting `fromEph` would expose the recipient's
+    // fresh balance to the sender's session. Both parties bind their
+    // session via `refreshAuditGrant` on first-decrypt instead.
+    expect(
+      await acl.isAllowed(handleToUint(amountHandle), wrapEph.address),
+    ).to.equal(false);
+  });
+
+  it("transfer-time event handle is NOT granted to the sender's ephemeralEOA (privacy boundary)", async () => {
+    // Regression-guard for the aliasing concern documented in
+    // `_stampTransferAuditAcl`: when the recipient is a fresh holder, the
+    // amount handle and `_balances[to]` are the same FHE handle by direct
+    // assignment. A grant on the amount handle would leak the recipient's
+    // new balance to the sender. We assert the sender's eph never lands
+    // on the audit handle from the emit alone.
+    const { token, issuer, holder, recipient, issuerClient, holderClient, acl } =
+      await loadFixture(deployRefreshFixture);
+
+    const [encMint] = await issuerClient
+      .encryptInputs([Encryptable.uint128(50n)])
+      .execute();
+    await token.connect(issuer).mint(holder.address, encMint);
+
+    const senderEph = createEphemeralEOA();
+    const [encXfer] = await holderClient
+      .encryptInputs([Encryptable.uint128(10n)])
+      .execute();
+    const tx = await token
+      .connect(holder)
+      .getFunction("transfer(address,(uint256,uint8,uint8,bytes),address)")(
+        recipient.address,
+        encXfer,
+        senderEph.address,
+      );
+    const receipt = await tx.wait();
+    const amountHandle = extractTransferAmount(token, receipt);
+
+    expect(
+      await acl.isAllowed(handleToUint(amountHandle), senderEph.address),
+    ).to.equal(false);
+  });
+
+  it("rightful recipient can re-grant the same handle to their own fresh session EOA (cross-session decrypt)", async () => {
+    const { token, issuer, holder, recipient, issuerClient, holderClient, acl } =
+      await loadFixture(deployRefreshFixture);
+
+    const [encMint] = await issuerClient
+      .encryptInputs([Encryptable.uint128(50n)])
+      .execute();
+    await token.connect(issuer).mint(holder.address, encMint);
+
+    const senderEph = createEphemeralEOA();
+    const [encXfer] = await holderClient
+      .encryptInputs([Encryptable.uint128(10n)])
+      .execute();
+    const tx = await token
+      .connect(holder)
+      .getFunction("transfer(address,(uint256,uint8,uint8,bytes),address)")(
+        recipient.address,
+        encXfer,
+        senderEph.address,
+      );
+    const receipt = await tx.wait();
+    const amountHandle = extractTransferAmount(token, receipt);
+
+    // Recipient's brand-new session EOA — no transfer-time grant.
+    const recipFreshEph = createEphemeralEOA();
+    expect(
+      await acl.isAllowed(handleToUint(amountHandle), recipFreshEph.address),
+    ).to.equal(false);
+
+    // Recipient calls refreshAuditGrant — gate is `FHE.isAllowed(handle,
+    // recipient)`, which passes because the emit stamped
+    // `FHE.allow(amount, to)` at transfer time.
+    await token
+      .connect(recipient)
+      .refreshAuditGrant(amountHandle, recipFreshEph.address);
+
+    expect(
+      await acl.isAllowed(handleToUint(amountHandle), recipFreshEph.address),
+    ).to.equal(true);
+  });
+
+  it("stranger trying to re-grant someone else's Transfer audit handle reverts with NotAuditHandleOwner", async () => {
+    const { token, issuer, holder, recipient, stranger, issuerClient, holderClient } =
+      await loadFixture(deployRefreshFixture);
+
+    const [encMint] = await issuerClient
+      .encryptInputs([Encryptable.uint128(50n)])
+      .execute();
+    await token.connect(issuer).mint(holder.address, encMint);
+
+    const senderEph = createEphemeralEOA();
+    const [encXfer] = await holderClient
+      .encryptInputs([Encryptable.uint128(10n)])
+      .execute();
+    const tx = await token
+      .connect(holder)
+      .getFunction("transfer(address,(uint256,uint8,uint8,bytes),address)")(
+        recipient.address,
+        encXfer,
+        senderEph.address,
+      );
+    const receipt = await tx.wait();
+    const amountHandle = extractTransferAmount(token, receipt);
+
+    // Stranger never participated in this transfer — no ACL on the handle.
+    const strangerEph = createEphemeralEOA();
+    await expect(
+      token
+        .connect(stranger)
+        .refreshAuditGrant(amountHandle, strangerEph.address),
+    ).to.be.revertedWithCustomError(token, "NotAuditHandleOwner");
+  });
+
+  it("rejects zero ephemeralEOA with InvalidEphemeralEOA", async () => {
+    const { token, issuer, holder, recipient, issuerClient, holderClient } =
+      await loadFixture(deployRefreshFixture);
+
+    const [encMint] = await issuerClient
+      .encryptInputs([Encryptable.uint128(50n)])
+      .execute();
+    await token.connect(issuer).mint(holder.address, encMint);
+
+    const senderEph = createEphemeralEOA();
+    const [encXfer] = await holderClient
+      .encryptInputs([Encryptable.uint128(10n)])
+      .execute();
+    const tx = await token
+      .connect(holder)
+      .getFunction("transfer(address,(uint256,uint8,uint8,bytes),address)")(
+        recipient.address,
+        encXfer,
+        senderEph.address,
+      );
+    const receipt = await tx.wait();
+    const amountHandle = extractTransferAmount(token, receipt);
+
+    await expect(
+      token
+        .connect(holder)
+        .refreshAuditGrant(amountHandle, hre.ethers.ZeroAddress),
+    ).to.be.revertedWithCustomError(token, "InvalidEphemeralEOA");
+  });
+
+  it("amount handle decrypts to the silent-fail-bounded actual transfer amount", async () => {
+    const { token, issuer, holder, recipient, issuerClient, holderClient } =
+      await loadFixture(deployRefreshFixture);
+
+    // Holder has 50 tokens. Tries to send 200 — silent-fail bounds to 0.
+    const [encMint] = await issuerClient
+      .encryptInputs([Encryptable.uint128(50n)])
+      .execute();
+    await token.connect(issuer).mint(holder.address, encMint);
+
+    const senderEph = createEphemeralEOA();
+    const [encXferOver] = await holderClient
+      .encryptInputs([Encryptable.uint128(200n)])
+      .execute();
+    const tx = await token
+      .connect(holder)
+      .getFunction("transfer(address,(uint256,uint8,uint8,bytes),address)")(
+        recipient.address,
+        encXferOver,
+        senderEph.address,
+      );
+    const receipt = await tx.wait();
+    const amountHandle = extractTransferAmount(token, receipt);
+
+    // Transfer overshot balance — emitted handle is silent-fail-bounded to 0.
+    await hre.cofhe.mocks.expectPlaintext(amountHandle, 0n);
+
+    // Holder's balance is unchanged because the transfer was nullified.
+    const holderBal = await token.encryptedBalanceOf(holder.address);
+    await hre.cofhe.mocks.expectPlaintext(holderBal, 50n);
+  });
+});
