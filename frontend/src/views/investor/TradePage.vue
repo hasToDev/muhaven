@@ -497,10 +497,22 @@ async function handlePurchase() {
     })
 
     if (selectedTokenData.value) {
-      portfolioApi.addPosition(
-        selectedTokenData.value.address,
-        selectedTokenData.value.symbol,
-      ).catch(() => {})
+      // MUST be awaited before `refreshAfterTrade()` below — the backend
+      // persists the new position via this POST, and `refreshAfterTrade`
+      // immediately re-reads `GET /portfolio`. Fire-and-forget loses the
+      // race on a fast network, so /portfolio shows the pre-trade list
+      // until the user manually refreshes (which re-mounts Pinia and
+      // re-fetches by which time the POST has long since landed). Errors
+      // are still swallowed — a failed addPosition mustn't mask the
+      // on-chain success card.
+      try {
+        await portfolioApi.addPosition(
+          selectedTokenData.value.address,
+          selectedTokenData.value.symbol,
+        )
+      } catch (e) {
+        console.warn('[TradePage] addPosition post-trade failed', e)
+      }
     }
 
     // Auto-refresh holdings + mhUSDC (iff revealed) so /portfolio
