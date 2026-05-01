@@ -770,6 +770,19 @@ export const erc20Abi = [
     inputs: [],
     outputs: [{ type: 'string' }],
   },
+  // Standard ERC-20 Transfer event — used by `viem.watchContractEvent` on
+  // /cash to auto-detect inbound USDC and refresh the right-aside balance
+  // without a manual click.
+  {
+    name: 'Transfer',
+    type: 'event',
+    inputs: [
+      { name: 'from', type: 'address', indexed: true },
+      { name: 'to', type: 'address', indexed: true },
+      { name: 'value', type: 'uint256', indexed: false },
+    ],
+    anonymous: false,
+  },
 ] as const
 
 // ── ConfidentialUSDC (PUSDC) ─────────────────────────────────────────

@@ -6,6 +6,7 @@ import { IdentityRegistryClient } from '@muhaven/sdk'
 import { useWallet } from '@/composables/useWallet'
 import { useFhe } from '@/composables/useFhe'
 import { useMarketplaceStore } from '@/stores/marketplace'
+import { usePortfolioStore } from '@/stores/portfolio'
 import * as TokenService from '@/services/contracts/TokenService'
 import { v35Addresses, isZeroAddress } from '@/contracts/addresses'
 import { buildReadContext } from '@/services/v35/context'
@@ -24,6 +25,7 @@ import {
 const { address } = useWallet()
 const { encryptUint128, getEphemeralEOA } = useFhe()
 const marketplace = useMarketplaceStore()
+const portfolio = usePortfolioStore()
 
 const recipient = ref('')
 const amount = ref('')
@@ -178,6 +180,15 @@ async function handleTransfer() {
     toast.success('Transfer submitted', {
       description: 'Encrypted share transfer — amount stays in ciphertext',
     })
+
+    // Refresh sender's holdings so /portfolio shows the post-transfer state
+    // without a manual reload. Mirrors `refreshAfterTrade` on /trade. We
+    // capture which token was transferred + whether it was decrypted
+    // pre-transfer; after `portfolio.load()` rebuilds the holdings array
+    // (and resets every `decryptedBalance` to null), we re-decrypt only
+    // the affected token if the user had previously revealed it. Failures
+    // here mustn't mask the on-chain success card — caught + warned.
+    await refreshAfterTransfer(selectedToken.value as `0x${string}`)
   } catch (e) {
     errMsg.value = e instanceof Error ? e.message : 'Transfer failed'
     toast.error('Transfer failed', { description: errMsg.value })
@@ -193,6 +204,50 @@ function resetForm() {
   showSuccess.value = false
   errMsg.value = null
   simState.value = { kind: 'idle' }
+}
+
+/**
+ * Sender-side post-transfer refresh. The on-chain `_balances[from]` handle
+ * rotates after every transfer (`FHE.sub` produces a fresh ciphertext), so
+ * any cached `decryptedBalance` on the sender's holding is stale until we
+ * re-fetch + re-decrypt. Mirrors `refreshAfterTrade` on TradePage.
+ *
+ * Steps:
+ *  1. Snapshot whether the affected holding was decrypted pre-transfer.
+ *  2. `portfolio.load()` to rebuild the holdings array (this resets every
+ *     `decryptedBalance` to null by design).
+ *  3. If the holding was previously decrypted, re-decrypt it via the
+ *     store action so /portfolio shows the post-transfer balance without
+ *     a second click. We DO NOT auto-decrypt holdings that were locked
+ *     before the transfer — no surprise session signature for a value
+ *     the user never asked to see.
+ *  4. Failures swallowed + logged; the on-chain success card mustn't be
+ *     masked by a refresh hiccup.
+ */
+async function refreshAfterTransfer(tokenAddress: `0x${string}`) {
+  if (!address.value) return
+  const addr = address.value as `0x${string}`
+  const lower = tokenAddress.toLowerCase()
+  const wasRevealed = portfolio.holdings.some(
+    h => h.tokenAddress.toLowerCase() === lower && h.decryptedBalance !== null,
+  )
+  try {
+    await portfolio.load(addr)
+  } catch (e) {
+    console.warn('[TransferPage] portfolio.load post-transfer failed', e)
+  }
+  if (wasRevealed) {
+    const idx = portfolio.holdings.findIndex(
+      h => h.tokenAddress.toLowerCase() === lower,
+    )
+    if (idx >= 0) {
+      try {
+        await portfolio.decryptHolding(idx, addr)
+      } catch (e) {
+        console.warn('[TransferPage] holding re-decrypt post-transfer failed', e)
+      }
+    }
+  }
 }
 
 const canSubmit = computed(() =>

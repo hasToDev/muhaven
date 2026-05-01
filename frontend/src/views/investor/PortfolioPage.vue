@@ -18,11 +18,20 @@ const { address } = useWallet()
 type HeroTab = 'value' | 'allocation'
 const activeTab = ref<HeroTab>('value')
 
-// Only fetch when we don't already have data. Re-mounting on navigation
-// (e.g. /yields → /portfolio) should NOT flash a loader if the store is warm.
+// Always refetch on mount. The previous `if (portfolio.loaded) return`
+// guard was a cross-account staleness footgun: a recipient who sees
+// a transfer-in row on /activity (which always refetches per 7cdbdfb)
+// would navigate to /portfolio expecting the new TBILL1 to appear,
+// but the cache-skip held them on the pre-transfer holdings list.
+// Same shape for the sender post-transfer-out — `decryptedBalance`
+// in the cache is stale once the on-chain handle rotates.
+//
+// First-fetch loader still gates on `!portfolio.loaded` (`showLoader`
+// below), so revisits don't flash a logo while the data is in
+// flight. Decrypt state is reset by `load()` and re-cleared via
+// `refreshAfterTrade` / `refreshAfterTransfer` on the action pages.
 onMounted(async () => {
   if (!address.value) return
-  if (portfolio.loaded) return
   await portfolio.load(address.value as `0x${string}`)
 })
 

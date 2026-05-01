@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, reactive } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, reactive } from 'vue'
 import { useActivityStore } from '@/stores/activity'
 import { useMarketplaceStore } from '@/stores/marketplace'
 import { formatUSD, formatAddress } from '@/lib/utils'
@@ -252,15 +252,44 @@ function statusAccent(status: string): { text: string; ring: string; bg: string 
   }
 }
 
+// Reactive `now` tick for relative-time labels — incremented every 30s so
+// rows that started at "Just now" age into "30s ago" / "2m ago" / etc.
+// without a manual page reload. Reading `nowTick` inside `formatTime`
+// makes the computed dependent on it; cleared on unmount.
+const nowTick = ref(Date.now())
+let nowTickInterval: ReturnType<typeof setInterval> | null = null
+onMounted(() => {
+  nowTickInterval = setInterval(() => {
+    nowTick.value = Date.now()
+  }, 30_000)
+})
+onBeforeUnmount(() => {
+  if (nowTickInterval) {
+    clearInterval(nowTickInterval)
+    nowTickInterval = null
+  }
+})
+
 function formatTime(timestamp: string): string {
+  // Touch `nowTick` so this fn re-runs on tick; the value itself isn't
+  // used (we re-read `Date.now()` for sub-tick accuracy).
+  void nowTick.value
   const d = new Date(timestamp)
-  const now = new Date()
-  const diffMs = now.getTime() - d.getTime()
-  const diffH = Math.floor(diffMs / (1000 * 60 * 60))
+  const diffMs = Date.now() - d.getTime()
+  const diffSec = Math.max(0, Math.floor(diffMs / 1000))
+  const diffMin = Math.floor(diffSec / 60)
+  const diffH = Math.floor(diffMin / 60)
   const diffD = Math.floor(diffH / 24)
 
-  if (diffH < 1) return 'Just now'
-  if (diffH < 24) return `${diffH}h ago`
+  // Finer granularity in the first hour: previously every event <1h old
+  // read "Just now" forever, which felt like the row was frozen even
+  // though the indexer + DB had moved on. Now "Just now" is reserved for
+  // the first 30 seconds; after that the row counts up in
+  // seconds → minutes → hours.
+  if (diffSec < 30) return 'Just now'
+  if (diffMin < 1) return `${diffSec}s ago`
+  if (diffH < 1) return `${diffMin}m ago`
+  if (diffD < 1) return `${diffH}h ago`
   if (diffD < 7) return `${diffD}d ago`
   return d.toLocaleDateString()
 }

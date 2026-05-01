@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useMediaQuery } from '@vueuse/core'
 import { useRoute } from 'vue-router'
 import { toast } from 'vue-sonner'
@@ -7,12 +7,14 @@ import { StableClient } from '@muhaven/sdk'
 import { useWallet } from '@/composables/useWallet'
 import { useFhe } from '@/composables/useFhe'
 import { usePortfolioStore } from '@/stores/portfolio'
-import { buildWriteContext } from '@/services/v35/context'
+import { buildWriteContext, getPublicClient } from '@/services/v35/context'
 import * as VaultService from '@/services/contracts/VaultService'
 import * as Erc20Service from '@/services/contracts/Erc20Service'
 import * as LegacyPusdcService from '@/services/contracts/LegacyPusdcService'
 import * as MuHavenStableService from '@/services/contracts/MuHavenStableService'
 import { addresses, v35Addresses, isZeroAddress } from '@/contracts/addresses'
+import { erc20Abi } from '@/contracts/abis'
+import { muHavenStableAbi } from '@muhaven/sdk'
 import { CIRCLE_FAUCET_URL, arbiscanTx } from '@/lib/external'
 import { formatUSD } from '@/lib/utils'
 import MButton from '@/components/ui/MButton.vue'
@@ -201,6 +203,160 @@ async function copyAddress() {
   copied.value = true
   setTimeout(() => { copied.value = false }, 2000)
 }
+
+// ── Inbound-balance auto-refresh + bloom choreography ──────────────────
+//
+// Three-agent co-spec (UX Researcher + UX Architect + UI Designer):
+//   - Architect: viem.watchContractEvent filtered to `to: kernelAddress`
+//     (Transfer for USDC; for mhUSDC, MuHavenStable.Transfer fires on
+//     mint/transfer with kernel-only args — no amount in the log, just
+//     a refresh trigger). pollingInterval ≈ Arb Sepolia block time;
+//     cleanup on unmount + on address change.
+//   - Designer: soft amber bloom on the affected tile (600ms, ~12% gold
+//     border alpha) + transient `+$X.XX` subtitle for USDC deltas ≥$1
+//     (slides up under the value, persists 3.5s, fades 600ms). Faucet
+//     "Get test USDC" link cross-fades out as the bloom begins on the
+//     0→positive transition. Multiple drips inside a 1500ms window
+//     coalesce into one bloom + one summed delta, so a multi-tx faucet
+//     drip animates once at the final total.
+//   - Researcher: silent-but-noticed (no toast spam — privacy-first;
+//     amber bloom is detected pre-attentively in peripheral vision per
+//     Bartram et al.'s motion-perception studies). For mhUSDC the
+//     bloom fires regardless of reveal-state but the subtitle requires
+//     a revealed pre-state (we know the new value only when the user
+//     has opted into decrypt).
+//
+// Implementation: watcher subscribes when `address.value` and
+// `connected.value` resolve; cleanup ref tracked so we can unwatch on
+// account-switch + unmount. The watcher's onLogs handler debounces
+// inside the 1500ms window and re-loads/re-decrypts.
+// Bloom state. `*BloomActive` toggles the gold-ring overlay (mount-fade
+// driven by Vue's <Transition>); `usdcDeltaCents` powers the transient
+// `+$X.XX received` subtitle. Both clear after their hold timer fires.
+const usdcBloomActive = ref(false)
+const mhusdcBloomActive = ref(false)
+const usdcDeltaCents = ref<number>(0)
+let pendingUsdcDeltaCents = 0
+let usdcBloomTimer: ReturnType<typeof setTimeout> | null = null
+let usdcBloomClearTimer: ReturnType<typeof setTimeout> | null = null
+let usdcDeltaClearTimer: ReturnType<typeof setTimeout> | null = null
+let mhusdcBloomTimer: ReturnType<typeof setTimeout> | null = null
+let mhusdcBloomClearTimer: ReturnType<typeof setTimeout> | null = null
+const watcherCleanups: Array<() => void> = []
+
+const BLOOM_DEBOUNCE_MS = 1500
+const BLOOM_HOLD_MS = 900            // gold ring visible duration (≈ 600ms enter + 300ms hold before fade)
+const SUBTITLE_PERSIST_MS = 3500
+
+function triggerUsdcBloom(deltaUnits: bigint) {
+  // 6-decimal USDC base units → cents (1e-2). Sub-dollar dust still
+  // pulses the ring but suppresses the subtitle (avoids "+$0.00" noise).
+  const cents = Number(deltaUnits / 10_000n)
+  pendingUsdcDeltaCents += cents
+  if (usdcBloomTimer) clearTimeout(usdcBloomTimer)
+  usdcBloomTimer = setTimeout(() => {
+    usdcBloomActive.value = true
+    usdcDeltaCents.value = pendingUsdcDeltaCents
+    pendingUsdcDeltaCents = 0
+    if (usdcBloomClearTimer) clearTimeout(usdcBloomClearTimer)
+    usdcBloomClearTimer = setTimeout(() => {
+      usdcBloomActive.value = false
+    }, BLOOM_HOLD_MS)
+    if (usdcDeltaClearTimer) clearTimeout(usdcDeltaClearTimer)
+    usdcDeltaClearTimer = setTimeout(() => {
+      usdcDeltaCents.value = 0
+    }, SUBTITLE_PERSIST_MS)
+    void loadBalances()
+  }, BLOOM_DEBOUNCE_MS)
+}
+
+function triggerMhusdcBloom() {
+  if (mhusdcBloomTimer) clearTimeout(mhusdcBloomTimer)
+  mhusdcBloomTimer = setTimeout(() => {
+    mhusdcBloomActive.value = true
+    if (mhusdcBloomClearTimer) clearTimeout(mhusdcBloomClearTimer)
+    mhusdcBloomClearTimer = setTimeout(() => {
+      mhusdcBloomActive.value = false
+    }, BLOOM_HOLD_MS)
+    // Re-decrypt only if the user has already opted in to reveal —
+    // surprise session signatures on inbound transfers would be a
+    // privacy footgun. Locked users see the bloom only; clicking
+    // Reveal afterwards picks up the new on-chain handle.
+    if (portfolio.pusdcConfidentialBalance !== null && address.value) {
+      void portfolio.decryptPusdc(address.value as `0x${string}`)
+    }
+  }, BLOOM_DEBOUNCE_MS)
+}
+
+function teardownWatchers() {
+  for (const cleanup of watcherCleanups) {
+    try { cleanup() } catch { /* best-effort */ }
+  }
+  watcherCleanups.length = 0
+  if (usdcBloomTimer) { clearTimeout(usdcBloomTimer); usdcBloomTimer = null }
+  if (usdcBloomClearTimer) { clearTimeout(usdcBloomClearTimer); usdcBloomClearTimer = null }
+  if (usdcDeltaClearTimer) { clearTimeout(usdcDeltaClearTimer); usdcDeltaClearTimer = null }
+  if (mhusdcBloomTimer) { clearTimeout(mhusdcBloomTimer); mhusdcBloomTimer = null }
+  if (mhusdcBloomClearTimer) { clearTimeout(mhusdcBloomClearTimer); mhusdcBloomClearTimer = null }
+  pendingUsdcDeltaCents = 0
+  usdcBloomActive.value = false
+  mhusdcBloomActive.value = false
+  usdcDeltaCents.value = 0
+}
+
+function setupInboundWatchers(kernelAddress: `0x${string}`) {
+  // Always tear down before re-arming so an account-switch doesn't
+  // leak the previous kernel's subscription. `watchContractEvent`
+  // returns an unwatch fn that closes the underlying eth_newFilter.
+  teardownWatchers()
+  const publicClient = getPublicClient()
+
+  // USDC inbound — fires on every Transfer where to == kernel.
+  const unwatchUsdc = publicClient.watchContractEvent({
+    address: addresses.usdc,
+    abi: erc20Abi,
+    eventName: 'Transfer',
+    args: { to: kernelAddress },
+    pollingInterval: 12_000,
+    onLogs: (logs) => {
+      let total = 0n
+      for (const l of logs) {
+        const value = (l.args as { value?: bigint } | undefined)?.value
+        if (typeof value === 'bigint') total += value
+      }
+      if (total > 0n) triggerUsdcBloom(total)
+    },
+  })
+  watcherCleanups.push(unwatchUsdc)
+
+  // mhUSDC inbound — MuHavenStable.Transfer is `(from, to)` only (no
+  // amount; FHE-encrypted balances on the contract). The watcher is a
+  // refresh trigger; the actual new balance comes from re-decrypting
+  // the post-transfer handle if the user has revealed mhUSDC.
+  if (!isZeroAddress(v35Addresses.muHavenStable)) {
+    const unwatchMhusdc = publicClient.watchContractEvent({
+      address: v35Addresses.muHavenStable,
+      abi: muHavenStableAbi,
+      eventName: 'Transfer',
+      args: { to: kernelAddress },
+      pollingInterval: 12_000,
+      onLogs: () => triggerMhusdcBloom(),
+    })
+    watcherCleanups.push(unwatchMhusdc)
+  }
+}
+
+// Re-arm the watchers whenever the connected address changes (login /
+// logout / account-switch). Tear down on unmount.
+watch(
+  () => address.value,
+  (addr) => {
+    if (addr) setupInboundWatchers(addr as `0x${string}`)
+    else teardownWatchers()
+  },
+  { immediate: true },
+)
+onBeforeUnmount(teardownWatchers)
 
 watch(connected, (val) => {
   if (val) {
@@ -809,8 +965,40 @@ const successCopy = computed(() =>
         <div class="flex flex-col gap-3">
           <h3 class="font-sans text-[11px] uppercase tracking-[0.22em] text-cool font-semibold">Balances</h3>
 
-          <!-- USDC: plaintext ERC-20 -->
-          <div class="rounded-lg p-4 border border-haze dark:border-white/8 bg-mist/40 dark:bg-[#1c1b1b]/60 flex flex-col gap-1">
+          <!-- USDC: plaintext ERC-20.
+               Phase 9.A · Option Z follow-up — auto-refresh + bloom on
+               inbound transfers. The whole tile gains a `data-bloom`
+               toggle keyed on `usdcBloomKey`; the gold-glow ring + the
+               transient `+$X.XX` subtitle are the visible affordances
+               (silent for everyone but the user, no toast spam). The
+               "Get test USDC" link cross-fades out as the bloom
+               begins on the 0→positive transition so the slot reads
+               as one coherent event. -->
+          <div
+            data-testid="cash-usdc-tile"
+            class="relative rounded-lg p-4 border border-haze dark:border-white/8 bg-mist/40 dark:bg-[#1c1b1b]/60 flex flex-col gap-1 overflow-hidden"
+          >
+            <!-- Inbound bloom overlay: a 600ms gold-glow ring fades in
+                 over the tile border on each debounced inbound. Pure
+                 visual cue — pointer-events-none so it doesn't intercept
+                 the faucet link clicks. v-motion / Transition handles
+                 the mount fade; the script clears it after BLOOM_HOLD_MS. -->
+            <transition
+              enter-active-class="transition-opacity duration-300 ease-out"
+              leave-active-class="transition-opacity duration-500 ease-in"
+              enter-from-class="opacity-0"
+              leave-to-class="opacity-0"
+            >
+              <div
+                v-if="usdcBloomActive"
+                aria-hidden="true"
+                data-testid="cash-usdc-bloom"
+                class="absolute inset-0 rounded-lg pointer-events-none
+                       ring-2 ring-gold/40 dark:ring-signal/40
+                       shadow-[0_0_24px_-4px_rgba(255,186,32,0.45)]
+                       dark:shadow-[0_0_24px_-4px_rgba(255,220,161,0.35)]"
+              />
+            </transition>
             <div class="flex items-center justify-between">
               <span class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool">USDC</span>
               <span class="font-sans text-[9px] text-cool/70 uppercase tracking-[0.18em]">Public testnet</span>
@@ -821,17 +1009,42 @@ const successCopy = computed(() =>
             >
               {{ usdcBalance !== null ? formatUSD(Number(usdcBalance) / 1e6) : '—' }}
             </span>
-            <a
-              v-if="usdcBalance !== null && usdcBalance === 0n"
-              :href="CIRCLE_FAUCET_URL"
-              target="_blank"
-              rel="noopener"
-              data-testid="fund-account-faucet-link"
-              class="mt-1 inline-flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.22em] font-semibold text-gold hover:text-gold/80 transition-colors self-start"
+            <!-- Transient inbound-delta subtitle. Renders only when the
+                 most recent debounced inbound was ≥$1 (sub-dollar dust
+                 still pulses the ring but doesn't earn a label).
+                 Auto-clears after SUBTITLE_PERSIST_MS. -->
+            <transition
+              enter-active-class="transition-all duration-300 ease-out"
+              leave-active-class="transition-all duration-600 ease-in"
+              enter-from-class="opacity-0 translate-y-1"
+              leave-to-class="opacity-0"
             >
-              Get test USDC
-              <ExternalLink :size="11" />
-            </a>
+              <span
+                v-if="usdcDeltaCents >= 100"
+                data-testid="cash-usdc-inbound-delta"
+                class="font-sans text-[11px] tabular-nums text-positive font-semibold"
+              >
+                +{{ formatUSD(usdcDeltaCents / 100) }} received
+              </span>
+            </transition>
+            <transition
+              enter-active-class="transition-opacity duration-300"
+              leave-active-class="transition-opacity duration-300"
+              enter-from-class="opacity-0"
+              leave-to-class="opacity-0"
+            >
+              <a
+                v-if="usdcBalance !== null && usdcBalance === 0n"
+                :href="CIRCLE_FAUCET_URL"
+                target="_blank"
+                rel="noopener"
+                data-testid="fund-account-faucet-link"
+                class="mt-1 inline-flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.22em] font-semibold text-gold hover:text-gold/80 transition-colors self-start"
+              >
+                Get test USDC
+                <ExternalLink :size="11" />
+              </a>
+            </transition>
           </div>
 
           <!-- mhUSDC: encrypted spendable cash. Two states:
@@ -839,8 +1052,41 @@ const successCopy = computed(() =>
                  pill + Reveal button. The on-chain balance handle is
                  sealed; only the user can decrypt. We never auto-fetch
                  this on mount — each decrypt costs a session signature.
-               • Post-decrypt (bigint): show formatted USD + Refresh. -->
-          <div class="rounded-lg p-4 border border-haze dark:border-white/8 bg-mist/40 dark:bg-[#1c1b1b]/60 flex flex-col gap-2">
+               • Post-decrypt (bigint): show formatted USD + Refresh.
+               Auto-refresh on inbound MuHavenStable.Transfer fires the
+               same bloom ring; for revealed users it also re-decrypts
+               the balance, for locked users it just signals "something
+               arrived — click Reveal to see the new total". No
+               subtitle here: the amount handle isn't readable from the
+               event payload (FHE-encrypted), so we can't show a
+               +$X.XX delta without forcing a decrypt. -->
+          <div
+            data-testid="cash-mhusdc-tile"
+            class="relative rounded-lg p-4 border border-haze dark:border-white/8 bg-mist/40 dark:bg-[#1c1b1b]/60 flex flex-col gap-2 overflow-hidden"
+          >
+            <!-- Inbound bloom for mhUSDC. Same 600ms gold ring as USDC.
+                 Fires on MuHavenStable.Transfer with `to == kernel`,
+                 i.e. inbound mints (from a wrap on this account or
+                 from a P2P transfer-in). For revealed users, the
+                 portfolio store auto-re-decrypts so the value updates
+                 in lockstep; for locked users the bloom is the only
+                 signal until they click Reveal. -->
+            <transition
+              enter-active-class="transition-opacity duration-300 ease-out"
+              leave-active-class="transition-opacity duration-500 ease-in"
+              enter-from-class="opacity-0"
+              leave-to-class="opacity-0"
+            >
+              <div
+                v-if="mhusdcBloomActive"
+                aria-hidden="true"
+                data-testid="cash-mhusdc-bloom"
+                class="absolute inset-0 rounded-lg pointer-events-none
+                       ring-2 ring-gold/40 dark:ring-signal/40
+                       shadow-[0_0_24px_-4px_rgba(255,186,32,0.45)]
+                       dark:shadow-[0_0_24px_-4px_rgba(255,220,161,0.35)]"
+              />
+            </transition>
             <div class="flex items-center justify-between">
               <span class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool">mhUSDC</span>
               <span
