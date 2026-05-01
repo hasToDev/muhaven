@@ -20,7 +20,13 @@ export type ActivityItemType =
   | 'yield'
   | 'wrap'
   | 'unwrap'
-  | 'fee';
+  | 'fee'
+  // Phase 9.A · Option Z follow-up — P2P share transfers. The indexer
+  // emits two `tax_events` rows per qualifying event (sender + recipient,
+  // distinguished by `metadata.direction`); the use-case maps each row
+  // to its perspective.
+  | 'transfer-out'
+  | 'transfer-in';
 
 export interface ActivityItemDto {
   id: string;
@@ -102,6 +108,11 @@ function mapType(t: TaxEventType, metadata: Record<string, unknown> | null): Act
       return 'wrap';
     case 'Unwrap':
       return 'unwrap';
+    case 'Transfer':
+      // Indexer writes `direction`: 'outbound' (sender's row) or
+      // 'inbound' (recipient's row). Both rows share `(tx_hash,
+      // log_index)` and are distinguished by `holder_address` (PK).
+      return metadata?.direction === 'inbound' ? 'transfer-in' : 'transfer-out';
     case 'FeeEvent':
       return 'fee';
   }

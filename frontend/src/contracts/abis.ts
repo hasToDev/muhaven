@@ -128,6 +128,20 @@ export const muHavenTokenAbi = [
     inputs: [{ name: 'ephemeralEOA', type: 'address' }],
     outputs: [],
   },
+  // Phase 9.A · Option Z follow-up — historical Transfer audit-handle
+  // re-grant for cross-session decrypts on /activity. Gate inside the
+  // contract is `FHE.isAllowed(handle, msg.sender)` — only the
+  // transfer-time sender or recipient can re-grant.
+  {
+    name: 'refreshAuditGrant',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'handle', type: 'bytes32' }, // euint128
+      { name: 'ephemeralEOA', type: 'address' },
+    ],
+    outputs: [],
+  },
   {
     name: 'getBalanceDecryptResult',
     type: 'function',
@@ -172,6 +186,28 @@ export const muHavenTokenAbi = [
     stateMutability: 'view',
     inputs: [{ name: '', type: 'address' }],
     outputs: [{ type: 'bool' }],
+  },
+  // ── Events (Phase 9.A · Option Z follow-up — broadened Transfer + new
+  // AuditGrantRefreshed event for cross-session audit decrypts) ───────
+  {
+    name: 'Transfer',
+    type: 'event',
+    inputs: [
+      { name: 'from', type: 'address', indexed: true },
+      { name: 'to', type: 'address', indexed: true },
+      { name: 'amount', type: 'bytes32', indexed: false }, // euint128
+    ],
+    anonymous: false,
+  },
+  {
+    name: 'AuditGrantRefreshed',
+    type: 'event',
+    inputs: [
+      { name: 'owner', type: 'address', indexed: true },
+      { name: 'ephemeralEOA', type: 'address', indexed: true },
+      { name: 'handle', type: 'bytes32', indexed: false }, // euint128
+    ],
+    anonymous: false,
   },
 ] as const
 

@@ -240,11 +240,30 @@ export type ActivityItemType =
   | 'wrap'
   | 'unwrap'
   | 'fee'
+  // Phase 9.A · Option Z follow-up — P2P share transfers. Two rows per
+  // qualifying event (sender + recipient), keyed in tax_events by
+  // holder_address with `metadata.direction` distinguishing the
+  // perspective.
+  | 'transfer-out'
+  | 'transfer-in'
 
 export interface ActivityItemMetadata {
-  /** 'wrap' | 'unwrap' | 'instant' | 'queued' | 'escalated_to_queue' */
+  /** 'wrap' | 'unwrap' | 'transfer' | 'instant' | 'queued' | 'escalated_to_queue' */
   kind?: string
-  /** bytes32 hex (cofhe euint64 handle) — only on wrap/unwrap rows */
+  /**
+   * Phase 9.A · Option Z follow-up — Transfer rows: 'outbound' (sender's
+   * row) or 'inbound' (recipient's row).
+   */
+  direction?: 'outbound' | 'inbound'
+  /**
+   * Phase 9.A · Option Z follow-up — Transfer rows: the OTHER party's
+   * address (recipient on outbound, sender on inbound).
+   */
+  counterparty?: string
+  /**
+   * bytes32 hex — encrypted amount handle. Wrap/Unwrap rows: cofhe
+   * euint64. Transfer rows: cofhe euint128 (per-RWA share amount).
+   */
   encrypted_amount_handle?: string | null
   /** Ephemeral EOA recorded at the wrap/unwrap call site (informational). */
   ephemeral_eoa?: string | null

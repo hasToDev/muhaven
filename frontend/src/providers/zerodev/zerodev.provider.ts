@@ -268,17 +268,24 @@ const refreshGrantPermissions = nonZero([
     abi: muHavenTokenAbi,
     valueLimit: 0n,
   })),
+  // Phase 9.A · Option Z follow-up — Transfer audit-handle re-grant for
+  // /activity cross-session decrypts on per-RWA tokens. Each RWA needs
+  // its own entry because `refreshAuditGrant` is gated by the token
+  // contract's own ACL state.
+  ...perTokenRwaAddresses.map((addr) => ({
+    target: addr,
+    functionName: 'refreshAuditGrant' as const,
+    abi: muHavenTokenAbi,
+    valueLimit: 0n,
+  })),
   {
     target: v35Addresses.muHavenStable,
     functionName: 'refreshDecryptGrant',
     abi: muHavenStableAbi,
     valueLimit: 0n,
   },
-  // Phase 9.A · Option Z follow-up — historical audit-handle re-grant for
-  // fresh-session decrypts on /activity. Without this entry the cross-
-  // session reveal on a Wrap/Unwrap row would bounce to the passkey
-  // kernel (and the parallel-decrypt race protection from
-  // `refreshDecryptGrant` would lapse for audit handles).
+  // Phase 9.A · Option Z follow-up — mhUSDC historical audit-handle
+  // re-grant for cross-session Wrap/Unwrap decrypts on /activity.
   {
     target: v35Addresses.muHavenStable,
     functionName: 'refreshAuditGrant',

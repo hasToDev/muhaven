@@ -42,6 +42,7 @@ import {
   redemptionQueueTaxAbi,
   yieldSnapshotTaxAbi,
   muHavenStableWrapAbi,
+  muHavenTokenTransferAbi,
   redemptionQueueTokenViewAbi,
   oracleNavViewAbi,
 } from './tax-event-abis.js';
@@ -64,6 +65,27 @@ export interface TaxEventIndexerConfig {
    * Leave undefined to disable the cash-conversion leg of the feed.
    */
   muHavenStableAddress?: Address;
+  /**
+   * Phase 9.A · Option Z follow-up — per-RWA MuHavenToken proxy
+   * addresses. When non-empty, the indexer subscribes to broadened
+   * `Transfer(from, to, amount)` logs from each address, filters out
+   * mints / burns / protocol-mediated moves, and inserts two
+   * `tax_events` rows per surviving P2P transfer (one keyed by sender,
+   * one by recipient). Leave empty to disable the transfer leg of the
+   * feed.
+   */
+  muHavenTokenAddresses?: Address[];
+  /**
+   * Phase 9.A · Option Z follow-up — protocol contracts whose Transfer
+   * participation should NOT surface as a /activity row. Mint / burn
+   * filters (`from == 0` / `to == 0`) catch Subscription's mint+burn
+   * legs because those use `address(0)`. The remaining protocol-
+   * mediated moves (queue's `pullFromInvestor` / `returnToInvestor`,
+   * treasury internal reconciliation, etc.) need explicit
+   * sender-or-recipient address filtering. The set typically combines
+   * the configured subscription + redemption queue + treasury proxies.
+   */
+  protocolFilterAddresses?: Address[];
   oracleAddress?: Address;
   intervalMs: number;
 }
@@ -74,6 +96,9 @@ export class TaxEventIndexer {
   private readonly redemptionQueueAddresses: Address[];
   private readonly yieldSnapshotAddresses: Address[];
   private readonly muHavenStableAddress?: Address;
+  private readonly muHavenTokenAddresses: Address[];
+  /** Lower-cased filter set for fast `has()` lookup during Transfer triage. */
+  private readonly protocolFilterAddresses: Set<string>;
   private readonly oracleAddress?: Address;
   private readonly logger: Logger;
   private lastProcessedBlock: bigint | null = null;
@@ -95,6 +120,10 @@ export class TaxEventIndexer {
     this.redemptionQueueAddresses = config.redemptionQueueAddresses;
     this.yieldSnapshotAddresses = config.yieldSnapshotAddresses;
     this.muHavenStableAddress = config.muHavenStableAddress;
+    this.muHavenTokenAddresses = config.muHavenTokenAddresses ?? [];
+    this.protocolFilterAddresses = new Set(
+      (config.protocolFilterAddresses ?? []).map((a) => a.toLowerCase()),
+    );
     this.oracleAddress = config.oracleAddress;
     this.logger = getLogger('TaxEventIndexer');
   }
@@ -110,6 +139,8 @@ export class TaxEventIndexer {
         queues: this.redemptionQueueAddresses.length,
         snapshots: this.yieldSnapshotAddresses.length,
         muHavenStable: this.muHavenStableAddress ?? null,
+        muHavenTokens: this.muHavenTokenAddresses.length,
+        protocolFilter: this.protocolFilterAddresses.size,
         oracle: this.oracleAddress ?? null,
         intervalMs,
       },
@@ -231,7 +262,21 @@ export class TaxEventIndexer {
       tasks.push(Promise.resolve([] as Log[]));
     }
 
-    const [subLogs, queueLogs, snapLogs, stableLogs] = await Promise.all(tasks);
+    if (this.muHavenTokenAddresses.length > 0) {
+      tasks.push(
+        this.client.getLogs({
+          address: this.muHavenTokenAddresses,
+          events: muHavenTokenTransferAbi,
+          fromBlock,
+          toBlock,
+        }) as Promise<Log[]>,
+      );
+    } else {
+      tasks.push(Promise.resolve([] as Log[]));
+    }
+
+    const [subLogs, queueLogs, snapLogs, stableLogs, transferLogs] =
+      await Promise.all(tasks);
 
     const out: TaxEvent[] = [];
     const blockTimestampCache = new Map<bigint, Date>();
@@ -300,6 +345,10 @@ export class TaxEventIndexer {
     for (const log of stableLogs) {
       const built = await this.fromStableLog(log, fetchBlockTs);
       if (built) out.push(built);
+    }
+    for (const log of transferLogs) {
+      const built = await this.fromTransferLog(log, fetchBlockTs);
+      if (built !== null) out.push(...built);
     }
 
     return out;
@@ -419,6 +468,94 @@ export class TaxEventIndexer {
       referenceId: epochId,
       metadata: null,
     });
+  }
+
+  /**
+   * Phase 9.A · Option Z follow-up — `MuHavenToken.Transfer(from, to,
+   * amount)` mapper. Returns up to TWO `TaxEvent` rows per qualifying
+   * event (one keyed by sender, one by recipient) so each side's
+   * /activity feed surfaces the move from their own perspective. The
+   * extended `tax_events` PK `(tx_hash, log_index, holder_address)` lets
+   * both rows coexist.
+   *
+   * Filters (returns `null` to skip):
+   *   - mints (`from == 0x0`) — already covered by Subscription.Purchased
+   *   - burns (`to == 0x0`) — already covered by Subscription.Redeemed +
+   *     RedemptionQueue.QueueClaimed
+   *   - protocol-mediated moves where `from` or `to` is in
+   *     `protocolFilterAddresses` (queue / subscription / treasury / etc.)
+   *
+   * Whatever survives is a true P2P transfer. Both rows store the amount
+   * handle in `metadata.encrypted_amount_handle` so the frontend's
+   * decrypt-on-click flow uses the same shape as Wrap/Unwrap.
+   */
+  private async fromTransferLog(
+    log: Log,
+    fetchBlockTs: (b: bigint) => Promise<Date>,
+  ): Promise<TaxEvent[] | null> {
+    if (!log.transactionHash || log.blockNumber === null || log.logIndex === null) return null;
+    const eventName = (log as Log & { eventName?: string }).eventName;
+    const args = (log as Log & { args?: Record<string, unknown> }).args;
+    if (eventName !== 'Transfer' || !args) return null;
+
+    const from = (args.from as Address | undefined) ?? null;
+    const to = (args.to as Address | undefined) ?? null;
+    const amountHandle = args.amount as `0x${string}` | undefined;
+    if (!from || !to) return null;
+
+    // Mint / burn — covered by upstream Subscription / Queue indexers.
+    const ZERO = '0x0000000000000000000000000000000000000000';
+    if (from.toLowerCase() === ZERO || to.toLowerCase() === ZERO) return null;
+
+    // Protocol-mediated move (queue / subscription / treasury / ...).
+    if (
+      this.protocolFilterAddresses.has(from.toLowerCase()) ||
+      this.protocolFilterAddresses.has(to.toLowerCase())
+    ) {
+      return null;
+    }
+
+    const tokenAddress = log.address as Address;
+    const ts = await fetchBlockTs(log.blockNumber);
+
+    // Build two rows — the use-case maps `metadata.direction` to the
+    // 'transfer-out' / 'transfer-in' ActivityItemType.
+    const baseProps = {
+      txHash: log.transactionHash,
+      logIndex: log.logIndex,
+      eventType: 'Transfer' as TaxEventType,
+      tokenAddress,
+      blockNumber: log.blockNumber.toString(),
+      blockTimestamp: ts,
+      // Transfers don't snapshot NAV — the audit handle is the amount in
+      // share-units; investor reconstructs USD from current NAV at view
+      // time. (Same convention as Wrap/Unwrap which also store no NAV.)
+      navAtTime: null,
+      referenceId: null,
+    };
+
+    const senderRow = new TaxEvent({
+      ...baseProps,
+      holderAddress: from,
+      metadata: {
+        kind: 'transfer',
+        direction: 'outbound',
+        counterparty: to,
+        encrypted_amount_handle: amountHandle ?? null,
+      },
+    });
+    const recipientRow = new TaxEvent({
+      ...baseProps,
+      holderAddress: to,
+      metadata: {
+        kind: 'transfer',
+        direction: 'inbound',
+        counterparty: from,
+        encrypted_amount_handle: amountHandle ?? null,
+      },
+    });
+
+    return [senderRow, recipientRow];
   }
 
   /**

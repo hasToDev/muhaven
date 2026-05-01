@@ -308,6 +308,15 @@ export const taxEventTypeEnum = pgEnum('tax_event_type', [
   // permit. `tokenAddress` is null for these rows (cash isn't an RWA).
   'Wrap',
   'Unwrap',
+  // Phase 9.A · Option Z follow-up — P2P share transfers surfaced via
+  // `MuHavenToken.Transfer(from, to, amount)` (broadened in this round).
+  // The indexer inserts TWO rows per qualifying event — one keyed by
+  // sender, one by recipient — distinguished by `metadata.direction`
+  // ('outbound' | 'inbound') and `metadata.counterparty`. PK is extended
+  // to include `holder_address` to allow the two rows to share
+  // `(tx_hash, log_index)`. Mints/burns/protocol-mediated moves are
+  // filtered out at the indexer level.
+  'Transfer',
 ]);
 
 export const taxEvents = pgTable(
@@ -334,7 +343,12 @@ export const taxEvents = pgTable(
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },
   (t) => [
-    primaryKey({ columns: [t.txHash, t.logIndex] }),
+    // PK includes holder_address so a single Transfer event produces two
+    // rows (sender-keyed + recipient-keyed) without colliding. Existing
+    // rows have a unique (tx_hash, log_index, holder_address) tuple by
+    // construction (every prior eventType emits exactly one row), so the
+    // PK widening is a no-data-rewrite ALTER TABLE for declarative push.
+    primaryKey({ columns: [t.txHash, t.logIndex, t.holderAddress] }),
     index('tax_events_holder_address_idx').on(t.holderAddress),
     index('tax_events_token_address_idx').on(t.tokenAddress),
     index('tax_events_block_timestamp_idx').on(t.blockTimestamp),

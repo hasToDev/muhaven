@@ -12,7 +12,11 @@ export type TaxEventType =
   // Phase 9.A · Option Z — cash conversions (USDC↔mhUSDC) carrying the
   // encrypted amount handle in metadata for permit-decrypt audit.
   | 'Wrap'
-  | 'Unwrap';
+  | 'Unwrap'
+  // Phase 9.A · Option Z follow-up — P2P share transfers via
+  // `MuHavenToken.Transfer(from, to, amount)`. Two rows per qualifying
+  // event (sender + recipient), distinguished by `metadata.direction`.
+  | 'Transfer';
 
 export interface TaxEventProps {
   txHash: string;

@@ -11,6 +11,7 @@ import type { ActivityItemDto, ActivityItemType } from '@/services/api'
 import {
   TrendingUp, ArrowDown, ArrowRightLeft, Coins, BarChart3, Lock,
   Inbox, ChevronDown, Loader2, Eye, ShieldCheck, RefreshCw, Wallet,
+  Send, Download,
 } from 'lucide-vue-next'
 
 const activity = useActivityStore()
@@ -18,9 +19,10 @@ const marketplace = useMarketplaceStore()
 const fhe = useFhe()
 
 // Phase 9.A · Option Z — `cash` collapses wrap+unwrap (per the open
-// decision in PHASE_9A_OPTION_Z_PLAN.md). The other pills slice tax_events
-// directly.
-type FilterType = 'all' | 'buy' | 'sell' | 'yield' | 'cash'
+// decision in PHASE_9A_OPTION_Z_PLAN.md). Phase 9.A · Option Z follow-up
+// adds a `transfer` filter that collapses `transfer-in` + `transfer-out`
+// — same UX shape as `cash` (two events render under one filter).
+type FilterType = 'all' | 'buy' | 'sell' | 'yield' | 'cash' | 'transfer'
 const activeFilter = ref<FilterType>('all')
 const expandedId = ref<string | null>(null)
 
@@ -41,9 +43,24 @@ function isCashType(t: ActivityItemType): boolean {
   return t === 'wrap' || t === 'unwrap'
 }
 
+function isTransferType(t: ActivityItemType): boolean {
+  return t === 'transfer-in' || t === 'transfer-out'
+}
+
+/**
+ * Decryptable types — rows that carry an encrypted amount handle in
+ * `metadata.encrypted_amount_handle` (the cash + transfer rows). The
+ * handle width differs (cash = euint64; transfer = euint128) so the
+ * decrypt path branches by type.
+ */
+function isDecryptableType(t: ActivityItemType): boolean {
+  return isCashType(t) || isTransferType(t)
+}
+
 function matchesFilter(item: ActivityItemDto, f: FilterType): boolean {
   if (f === 'all') return true
   if (f === 'cash') return isCashType(item.type)
+  if (f === 'transfer') return isTransferType(item.type)
   if (f === 'sell') return item.type === 'sell' || item.type === 'sell-queued'
   return item.type === f
 }
@@ -58,6 +75,7 @@ const filterCounts = computed(() => ({
   sell: activity.items.filter(i => matchesFilter(i, 'sell')).length,
   yield: activity.items.filter(i => matchesFilter(i, 'yield')).length,
   cash: activity.items.filter(i => matchesFilter(i, 'cash')).length,
+  transfer: activity.items.filter(i => matchesFilter(i, 'transfer')).length,
 }))
 
 const yieldsThisWeek = computed(() => {
@@ -74,12 +92,20 @@ const cashEventsThisWeek = computed(() => {
   ).length
 })
 
+const transferEventsThisWeek = computed(() => {
+  const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000
+  return activity.items.filter(
+    i => isTransferType(i.type) && new Date(i.timestamp).getTime() >= sevenDaysAgo,
+  ).length
+})
+
 const filterMeta: Record<FilterType, { label: string }> = {
   all: { label: 'All' },
   buy: { label: 'Buy' },
   sell: { label: 'Sell' },
   yield: { label: 'Yield' },
   cash: { label: 'Cash' },
+  transfer: { label: 'Transfer' },
 }
 
 const activityMeta: Record<ActivityItemType, {
@@ -131,6 +157,26 @@ const activityMeta: Record<ActivityItemType, {
     iconBorder: 'border-haze dark:border-white/10',
     amountClass: 'text-midnight dark:text-white',
   },
+  // Phase 9.A · Option Z follow-up — outbound transfer (sender's
+  // perspective). Cool palette + send glyph: visually neutral, the
+  // direction is conveyed by the icon + row title.
+  'transfer-out': {
+    icon: Send,
+    iconClass: 'text-cool',
+    iconBg: 'bg-haze/40 dark:bg-white/5',
+    iconBorder: 'border-haze dark:border-white/10',
+    amountClass: 'text-midnight dark:text-white',
+  },
+  // Phase 9.A · Option Z follow-up — inbound transfer (recipient's
+  // perspective). Positive accent so received shares feel like a
+  // credit, mirroring the buy / yield rows.
+  'transfer-in': {
+    icon: Download,
+    iconClass: 'text-positive',
+    iconBg: 'bg-positive/10',
+    iconBorder: 'border-positive/30',
+    amountClass: 'text-positive',
+  },
   fee: {
     icon: Wallet,
     iconClass: 'text-cool',
@@ -143,6 +189,18 @@ const activityMeta: Record<ActivityItemType, {
 function tokenSymbol(addr: string | null): string {
   if (!addr) return ''
   return marketplace.getByAddress(addr)?.symbol ?? formatAddress(addr)
+}
+
+/**
+ * Phase 9.A · Option Z follow-up — counterparty address truncated for
+ * display (e.g. `0xddf5…0116`). Lives in `metadata.counterparty` on
+ * Transfer rows. Reuses the shared `formatAddress` helper so the
+ * truncation matches every other surface (wallet badge, /trade glance
+ * bar, etc.).
+ */
+function counterpartyFromMetadata(item: ActivityItemDto): string {
+  const cp = item.metadata?.counterparty
+  return typeof cp === 'string' && cp.startsWith('0x') ? formatAddress(cp) : ''
 }
 
 function rowTitle(item: ActivityItemDto): string {
@@ -160,6 +218,16 @@ function rowTitle(item: ActivityItemDto): string {
       return 'Wrapped USDC → mhUSDC'
     case 'unwrap':
       return 'Unwrapped mhUSDC → USDC'
+    case 'transfer-out': {
+      const cp = counterpartyFromMetadata(item)
+      const symFrag = sym ? ` ${sym}` : ' shares'
+      return cp ? `Sent${symFrag} to ${cp}` : `Sent${symFrag}`
+    }
+    case 'transfer-in': {
+      const cp = counterpartyFromMetadata(item)
+      const symFrag = sym ? ` ${sym}` : ' shares'
+      return cp ? `Received${symFrag} from ${cp}` : `Received${symFrag}`
+    }
     case 'fee':
       return 'Fee event'
   }
@@ -197,7 +265,7 @@ function formatTime(timestamp: string): string {
   return d.toLocaleDateString()
 }
 
-async function decryptCashAmount(item: ActivityItemDto) {
+async function decryptAmount(item: ActivityItemDto) {
   const handle = item.metadata?.encrypted_amount_handle
   if (!handle) return
   if (revealedAmounts[item.id] !== undefined) return
@@ -205,14 +273,29 @@ async function decryptCashAmount(item: ActivityItemDto) {
   decryptingById[item.id] = true
   delete decryptErrorById[item.id]
   try {
-    // Wrap/unwrap amount handles are euint64 with mhUSDC base units (1e6).
-    // Use `decryptAuditHandleForView` (NOT `decryptMhUsdcForView`) so the
-    // 403 fallback dispatches `MuHavenStable.refreshAuditGrant(handle,
-    // eph)` — the historical handle's grant must be re-stamped on the
-    // SPECIFIC handle, not the live balance handle (which is what
-    // `refreshDecryptGrant` does). Fresh-tab logins always need this
-    // because ZeroDev mints a new ephemeral EOA per session.
-    const value = await fhe.decryptAuditHandleForView(handle)
+    // Two flavours of audit handle, both stored in
+    // `metadata.encrypted_amount_handle`:
+    //   - cash rows (wrap / unwrap) carry an `euint64` mhUSDC base-units
+    //     value; `decryptAuditHandleForView` falls back to
+    //     `MuHavenStable.refreshAuditGrant`.
+    //   - transfer rows (transfer-in / -out) carry an `euint128` share
+    //     amount on a per-RWA token; `decryptTokenAuditHandleForView`
+    //     falls back to that token's `refreshAuditGrant`. The token
+    //     address is required and lives on `item.token_address`.
+    let value: bigint
+    if (isCashType(item.type)) {
+      value = await fhe.decryptAuditHandleForView(handle)
+    } else if (isTransferType(item.type)) {
+      if (!item.token_address) {
+        throw new Error('Transfer row missing token_address — cannot decrypt')
+      }
+      value = await fhe.decryptTokenAuditHandleForView(
+        handle,
+        item.token_address as `0x${string}`,
+      )
+    } else {
+      throw new Error(`No decrypt path for type=${item.type}`)
+    }
     revealedAmounts[item.id] = value
   } catch (e) {
     decryptErrorById[item.id] = e instanceof Error ? e.message : 'Decrypt failed'
@@ -221,12 +304,31 @@ async function decryptCashAmount(item: ActivityItemDto) {
   }
 }
 
-async function refreshCashAmount(item: ActivityItemDto) {
-  // Force a re-decrypt: clear the cache entry so `decryptCashAmount` runs
+async function refreshAmount(item: ActivityItemDto) {
+  // Force a re-decrypt: clear the cache entry so `decryptAmount` runs
   // its full path (catches the case where the handle was rotated by a
   // contract upgrade between visits — rare, but defensive).
   delete revealedAmounts[item.id]
-  await decryptCashAmount(item)
+  await decryptAmount(item)
+}
+
+/**
+ * Format a revealed audit amount for display. Cash rows (wrap/unwrap) are
+ * mhUSDC base units (6 decimals → USD); transfer rows are raw share
+ * counts per Wave 3.5 convention (1 share == 1n on-chain). For transfer
+ * rows we also tack the symbol on so the row reads "12 TBILL1" instead
+ * of just "12".
+ */
+function formatRevealedAmount(item: ActivityItemDto): string {
+  const v = revealedAmounts[item.id]
+  if (v === undefined) return ''
+  if (isCashType(item.type)) {
+    return formatUSD(Number(v) / 1e6)
+  }
+  // Transfer — raw share count.
+  const sym = tokenSymbol(item.token_address)
+  const numStr = Number(v).toLocaleString('en-US')
+  return sym ? `${numStr} ${sym}` : numStr
 }
 
 onMounted(async () => {
@@ -272,7 +374,7 @@ const showLoader = computed(() =>
           <!-- Filter pills -->
           <div class="flex items-center gap-2.5 overflow-x-auto pb-1 no-scrollbar">
             <button
-              v-for="f in (['all', 'buy', 'sell', 'yield', 'cash'] as FilterType[])"
+              v-for="f in (['all', 'buy', 'sell', 'yield', 'cash', 'transfer'] as FilterType[])"
               :key="f"
               type="button"
               @click="activeFilter = f"
@@ -340,12 +442,15 @@ const showLoader = computed(() =>
                           {{ rowTitle(item) }}
                         </span>
 
-                        <!-- Cash rows: per-row Decrypt affordance -->
-                        <template v-if="isCashType(item.type)">
+                        <!-- Cash + transfer rows: per-row Decrypt affordance.
+                             Cash handles are mhUSDC euint64 base units;
+                             transfer handles are euint128 raw share counts —
+                             `decryptAmount` branches by type internally. -->
+                        <template v-if="isDecryptableType(item.type)">
                           <button
                             v-if="revealedAmounts[item.id] === undefined"
                             type="button"
-                            @click="decryptCashAmount(item)"
+                            @click="decryptAmount(item)"
                             :disabled="!!decryptingById[item.id]"
                             :data-testid="`activity-${item.type}-decrypt-cta`"
                             class="inline-flex items-center gap-1.5 px-2 py-1 rounded-md
@@ -364,7 +469,11 @@ const showLoader = computed(() =>
                               class="animate-spin"
                             />
                             <Eye v-else :size="11" :stroke-width="1.8" />
-                            <span>$••••.••</span>
+                            <!-- Cash rows show a USD bullet placeholder;
+                                 transfer rows show a share-count bullet so
+                                 the locked state hints at the unit. -->
+                            <span v-if="isCashType(item.type)">$••••.••</span>
+                            <span v-else>•••• {{ tokenSymbol(item.token_address) }}</span>
                           </button>
                           <span
                             v-else
@@ -372,7 +481,7 @@ const showLoader = computed(() =>
                             :class="activityMeta[item.type].amountClass"
                             :data-testid="`activity-${item.type}-amount`"
                           >
-                            {{ formatUSD(Number(revealedAmounts[item.id]) / 1e6) }}
+                            {{ formatRevealedAmount(item) }}
                             <ShieldCheck
                               :size="13"
                               :stroke-width="1.8"
@@ -380,7 +489,7 @@ const showLoader = computed(() =>
                             />
                             <button
                               type="button"
-                              @click="refreshCashAmount(item)"
+                              @click="refreshAmount(item)"
                               :disabled="!!decryptingById[item.id]"
                               :data-testid="`activity-${item.type}-refresh-cta`"
                               class="inline-flex items-center justify-center w-5 h-5 rounded
@@ -581,6 +690,29 @@ const showLoader = computed(() =>
             </div>
             <p class="font-sans text-[10px] uppercase tracking-[0.22em] font-bold text-cool italic">
               {{ cashEventsThisWeek }} this week · auditable on click
+            </p>
+          </div>
+
+          <!-- Transfer events (Phase 9.A · Option Z follow-up) -->
+          <div
+            class="relative overflow-hidden rounded-2xl p-6
+                   border border-haze dark:border-white/5
+                   bg-white dark:bg-[#171717]
+                   flex flex-col gap-4"
+          >
+            <div class="flex items-center justify-between">
+              <span class="font-sans text-[10px] uppercase tracking-[0.24em] text-cool font-semibold">
+                P2P transfers
+              </span>
+              <div class="w-11 h-11 rounded-xl bg-haze/40 dark:bg-white/5 border border-haze dark:border-white/10 flex items-center justify-center">
+                <Send :size="18" :stroke-width="1.8" class="text-cool" />
+              </div>
+            </div>
+            <div class="font-accent italic text-5xl md:text-6xl tracking-tighter text-midnight dark:text-white tabular-nums leading-none">
+              {{ filterCounts.transfer }}
+            </div>
+            <p class="font-sans text-[10px] uppercase tracking-[0.22em] font-bold text-cool italic">
+              {{ transferEventsThisWeek }} this week · amount on click
             </p>
           </div>
         </div>

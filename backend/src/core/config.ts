@@ -96,6 +96,21 @@ const EnvSchema = z.object({
   // watches all addresses in these JSON arrays. Empty = disable that path.
   REDEMPTION_QUEUE_ADDRESSES_JSON: z.string().optional(),
   YIELD_SNAPSHOT_ADDRESSES_JSON: z.string().optional(),
+  // Phase 9.A · Option Z follow-up — per-RWA MuHavenToken proxies. The
+  // indexer subscribes to broadened `Transfer(from, to, amount)` logs,
+  // filters out mints / burns / protocol-mediated moves, and stores two
+  // `tax_events` rows per surviving P2P transfer (sender + recipient).
+  // Empty = disable the transfer leg of the feed.
+  MUHAVEN_TOKEN_ADDRESSES_JSON: z.string().optional(),
+  // Phase 9.A · Option Z follow-up — addresses whose Transfer
+  // participation is filtered out before activity-row insertion. Mints
+  // and burns are caught by `from == 0` / `to == 0`; this set adds the
+  // protocol's own treasuries (and any other contract that participates
+  // in protocol-internal Transfer events that the user shouldn't see as
+  // a P2P move). Subscription + queue addresses configured above are
+  // automatically included; this var is for the additional contracts
+  // (typically MuHavenTreasury proxies, one per RWA).
+  TREASURY_ADDRESSES_JSON: z.string().optional(),
 
   // ── Wave 3.5 Phase 8 — TokenRegistry (read by seed-tokens-v35 script) ──
   // Source of truth for "which tokens are registered". The seed script

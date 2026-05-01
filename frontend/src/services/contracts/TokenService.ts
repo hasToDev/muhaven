@@ -140,6 +140,35 @@ export async function refreshDecryptGrant(
   return contractWrite(tokenAddress, muHavenTokenAbi, 'refreshDecryptGrant', [ephemeralEOA], CONTRACT)
 }
 
+/**
+ * Phase 9.A · Option Z follow-up — re-grant FHE ACL on a HISTORICAL
+ * Transfer audit handle (the encrypted amount carried in a `Transfer`
+ * event) to a fresh `ephemeralEOA`. Required for cross-session decrypts
+ * on /activity (each new ZeroDev session mints a fresh ephemeral EOA;
+ * the transfer-time grant binds to the session of origin only).
+ *
+ * Auth gate sits inside the contract — `FHE.isAllowed(handle, msg.sender)`
+ * — so only the original sender or recipient of the transfer can re-grant.
+ * Strangers passing in someone else's audit handle revert with
+ * `NotAuditHandleOwner`.
+ *
+ * `tokenAddress` is required for Wave 3.5 per-RWA tokens (TBILL1, GOLD1,
+ * …); defaults to the legacy Wave 3 proxy for back-compat.
+ */
+export async function refreshAuditGrant(
+  handle: `0x${string}`,
+  ephemeralEOA: `0x${string}`,
+  tokenAddress: `0x${string}` = addr,
+): Promise<TxHash> {
+  return contractWrite(
+    tokenAddress,
+    muHavenTokenAbi,
+    'refreshAuditGrant',
+    [handle, ephemeralEOA],
+    CONTRACT,
+  )
+}
+
 // ── Convenience: full decrypt flow ─────────────────────────────────
 
 /**

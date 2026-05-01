@@ -328,6 +328,30 @@ export function useFhe() {
   }
 
   /**
+   * Phase 9.A · Option Z follow-up — decrypt a HISTORICAL Transfer audit
+   * handle on a per-RWA `MuHavenToken`. Same shape as
+   * `decryptAuditHandleForView` but uint128 (share amounts) and
+   * dispatches its 403 refresh fallback against `MuHavenToken.
+   * refreshAuditGrant(handle, eph)` on the SPECIFIC token contract.
+   *
+   * Always pass the per-RWA token address — Wave 3.5 onboards each RWA
+   * as its own MuHavenToken proxy (TBILL1, GOLD1, …) and the audit
+   * handle ACL lives on that contract. Defaulting to the legacy Wave 3
+   * single-token proxy would refresh the wrong contract; the retry
+   * decrypt would still 403.
+   */
+  async function decryptTokenAuditHandleForView(
+    ctHash: bigint | string,
+    tokenAddress: `0x${string}`,
+  ): Promise<bigint> {
+    return decryptForView(ctHash, 128, {
+      withRefresh: true,
+      kind: 'muHavenTokenAudit',
+      tokenAddress,
+    })
+  }
+
+  /**
    * Decrypt an encrypted handle for UI display. Returns `0n` immediately for
    * a zero handle — the TN 403s on unregistered ctHashes and a zero value is
    * the expected "no confidential state yet" reading.
@@ -353,7 +377,7 @@ export function useFhe() {
     opts: {
       withRefresh?: boolean
       tokenAddress?: `0x${string}`
-      kind?: 'muHavenToken' | 'muHavenStable' | 'mhUsdcAudit'
+      kind?: 'muHavenToken' | 'muHavenStable' | 'mhUsdcAudit' | 'muHavenTokenAudit'
     } = {},
   ): Promise<bigint> {
     const hashAsBigInt = typeof ctHash === 'bigint' ? ctHash : BigInt(ctHash)
@@ -369,7 +393,12 @@ export function useFhe() {
     // Default `kind` — uint128 = MuHavenToken (Phase 7), uint64 = legacy
     // PUSDC (no refresh). Callers wanting the mhUSDC path pass
     // `kind: 'muHavenStable'` (or use `decryptMhUsdcForView`).
-    const kind: 'muHavenToken' | 'muHavenStable' | 'mhUsdcAudit' | 'none' =
+    const kind:
+      | 'muHavenToken'
+      | 'muHavenStable'
+      | 'mhUsdcAudit'
+      | 'muHavenTokenAudit'
+      | 'none' =
       opts.kind ?? (bits === 128 ? 'muHavenToken' : 'none')
 
     try {
@@ -450,6 +479,30 @@ export function useFhe() {
             const handleHex =
               `0x${hashAsBigInt.toString(16).padStart(64, '0')}` as `0x${string}`
             await refreshAuditGrant(handleHex, address as `0x${string}`)
+          } else if (kind === 'muHavenTokenAudit') {
+            // Phase 9.A · Option Z follow-up — Transfer audit-row decrypt
+            // on a per-RWA MuHavenToken. Same shape as the mhUsdcAudit
+            // path above but dispatches against the per-token contract
+            // (TBILL1 / GOLD1 / …). The token address is required —
+            // defaulting to the Wave 3 legacy proxy targets a contract
+            // the audit handle was never granted on, so the retry
+            // decrypt would 403 again.
+            if (!opts.tokenAddress) {
+              throw new Error(
+                'muHavenTokenAudit decrypt requires the per-RWA token address — '
+                + 'pass it via `decryptTokenAuditHandleForView(handle, tokenAddress)`.',
+              )
+            }
+            const { refreshAuditGrant } = await import(
+              '@/services/contracts/TokenService'
+            )
+            const handleHex =
+              `0x${hashAsBigInt.toString(16).padStart(64, '0')}` as `0x${string}`
+            await refreshAuditGrant(
+              handleHex,
+              address as `0x${string}`,
+              opts.tokenAddress,
+            )
           }
           return await runDecrypt()
         } catch (refreshErr) {
@@ -499,6 +552,7 @@ export function useFhe() {
     decryptUint64ForView,
     decryptMhUsdcForView,
     decryptAuditHandleForView,
+    decryptTokenAuditHandleForView,
     getRawClient,
     destroy,
   }

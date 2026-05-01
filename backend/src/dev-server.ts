@@ -277,17 +277,35 @@ async function main() {
     } else {
       const queueAddrs = parseAddressList(env.REDEMPTION_QUEUE_ADDRESSES_JSON);
       const snapshotAddrs = parseAddressList(env.YIELD_SNAPSHOT_ADDRESSES_JSON);
+      const tokenAddrs = parseAddressList(env.MUHAVEN_TOKEN_ADDRESSES_JSON);
+      const treasuryAddrs = parseAddressList(env.TREASURY_ADDRESSES_JSON);
       const hasStable = !!env.STABLE_ADDRESS;
       if (
         !env.SUBSCRIPTION_ADDRESS &&
         queueAddrs.length === 0 &&
         snapshotAddrs.length === 0 &&
-        !hasStable
+        !hasStable &&
+        tokenAddrs.length === 0
       ) {
         console.warn(
-          '[tax-events] enabled but no SUBSCRIPTION_ADDRESS / REDEMPTION_QUEUE_ADDRESSES_JSON / YIELD_SNAPSHOT_ADDRESSES_JSON / STABLE_ADDRESS configured — skipping',
+          '[tax-events] enabled but no SUBSCRIPTION_ADDRESS / REDEMPTION_QUEUE_ADDRESSES_JSON / YIELD_SNAPSHOT_ADDRESSES_JSON / STABLE_ADDRESS / MUHAVEN_TOKEN_ADDRESSES_JSON configured — skipping',
         );
       } else {
+        // Phase 9.A · Option Z follow-up — protocol-filter set: mint /
+        // burn (from/to == 0x0) is caught at insert time, but Transfer
+        // events where one leg is a queue / subscription / treasury
+        // contract are also indexed-irrelevant and filtered here. Each
+        // existing env var feeds the same Set so a future onboarding
+        // round just needs to pass the new contract address through one
+        // of the JSON-list vars.
+        const protocolFilter: Address[] = [];
+        if (env.SUBSCRIPTION_ADDRESS) {
+          protocolFilter.push(env.SUBSCRIPTION_ADDRESS as Address);
+        }
+        protocolFilter.push(...queueAddrs);
+        protocolFilter.push(...snapshotAddrs);
+        protocolFilter.push(...treasuryAddrs);
+
         const indexer = new TaxEventIndexer(container.taxEventRepo, {
           rpcUrl: env.RPC_URL,
           subscriptionAddress: env.SUBSCRIPTION_ADDRESS as Address | undefined,
@@ -298,6 +316,12 @@ async function main() {
           // impl are still supported via the topic filter (no matching
           // events → no rows).
           muHavenStableAddress: env.STABLE_ADDRESS as Address | undefined,
+          // Phase 9.A · Option Z follow-up — adds MuHavenToken Transfer to
+          // the feed. Pre-upgrade tokens (Transfer's old 2-arg signature)
+          // are invisible because their topic0 differs from the broadened
+          // 3-arg signature; no back-index of historical transfers.
+          muHavenTokenAddresses: tokenAddrs,
+          protocolFilterAddresses: protocolFilter,
           oracleAddress: env.ORACLE_ADDRESS as Address | undefined,
           intervalMs: env.TAX_EVENT_POLLER_INTERVAL_MS,
         });

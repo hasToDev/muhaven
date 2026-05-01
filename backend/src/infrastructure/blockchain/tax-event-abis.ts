@@ -107,6 +107,34 @@ export const muHavenStableWrapAbi = [
   },
 ] as const;
 
+/**
+ * Phase 9.A · Option Z follow-up — `MuHavenToken.Transfer(from, to, amount)`
+ * event ABI for the broadened Wave 3.5 fhERC-20 transfer event. `euint128
+ * amount` compiles to `bytes32`. The indexer fetches Transfer logs from
+ * each per-RWA MuHavenToken proxy and filters at insert time:
+ *   - mints (`from == 0`) — already covered by Subscription.Purchased
+ *   - burns (`to == 0`) — already covered by Subscription.Redeemed +
+ *     RedemptionQueue.QueueClaimed
+ *   - protocol-mediated moves (sender or recipient in the platform's
+ *     filter set: subscription / queues / treasuries) — already
+ *     covered upstream
+ * Whatever survives is a true P2P transfer; the indexer inserts TWO
+ * `tax_events` rows per kept event (one keyed by sender, one by
+ * recipient) so `findByHolder` returns the right perspective for
+ * either party's /activity feed.
+ */
+export const muHavenTokenTransferAbi = [
+  {
+    type: 'event',
+    name: 'Transfer',
+    inputs: [
+      { name: 'from', type: 'address', indexed: true },
+      { name: 'to', type: 'address', indexed: true },
+      { name: 'amount', type: 'bytes32', indexed: false },
+    ],
+  },
+] as const;
+
 export const oracleNavViewAbi = [
   {
     type: 'function',
