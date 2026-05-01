@@ -274,6 +274,17 @@ const refreshGrantPermissions = nonZero([
     abi: muHavenStableAbi,
     valueLimit: 0n,
   },
+  // Phase 9.A · Option Z follow-up — historical audit-handle re-grant for
+  // fresh-session decrypts on /activity. Without this entry the cross-
+  // session reveal on a Wrap/Unwrap row would bounce to the passkey
+  // kernel (and the parallel-decrypt race protection from
+  // `refreshDecryptGrant` would lapse for audit handles).
+  {
+    target: v35Addresses.muHavenStable,
+    functionName: 'refreshAuditGrant',
+    abi: muHavenStableAbi,
+    valueLimit: 0n,
+  },
 ]);
 
 // Raw permissions list. Multiple per-token expansions can collide on

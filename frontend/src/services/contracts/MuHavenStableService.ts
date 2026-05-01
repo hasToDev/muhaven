@@ -124,3 +124,28 @@ export async function refreshDecryptGrant(ephemeralEOA: Address): Promise<TxHash
     CONTRACT,
   )
 }
+
+/**
+ * Phase 9.A · Option Z follow-up — re-grant FHE ACL on a HISTORICAL audit
+ * handle (Wrap / Unwrap event amount) to a fresh `ephemeralEOA`. Required
+ * when a user re-logs in on a new tab/device: ZeroDev mints a fresh eph
+ * per session, but the wrap-time grant binds to the session-of-origin,
+ * so the new eph 403s on `decryptForView`.
+ *
+ * Auth gate sits inside the contract — `FHE.isAllowed(handle, msg.sender)`
+ * — so only the rightful owner (the kernel that originally wrapped) can
+ * re-grant. Strangers passing in someone else's audit handle revert with
+ * `NotAuditHandleOwner`.
+ */
+export async function refreshAuditGrant(
+  handle: `0x${string}`,
+  ephemeralEOA: Address,
+): Promise<TxHash> {
+  return contractWrite(
+    requireWrapperAddress(),
+    muHavenStableAbi,
+    'refreshAuditGrant',
+    [handle, ephemeralEOA],
+    CONTRACT,
+  )
+}

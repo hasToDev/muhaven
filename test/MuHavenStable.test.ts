@@ -452,6 +452,94 @@ describe("MuHavenStable — Phase 7.5-A", () => {
       ).to.equal(true);
       await hre.cofhe.mocks.expectPlaintext(amountHandle, 25n * ONE_PUSDC);
     });
+
+    // ── Cross-session audit-handle re-grant ──────────────────────────
+    //
+    // The wrap path stamps `FHE.allow(amount, msg.sender)` on the kernel and
+    // `FHE.allow(amount, ephemeralEOA)` on the active session. ZeroDev mints a
+    // fresh ephemeral EOA per login, so the wrap-time eph grant binds to one
+    // session only. These cases lock in `refreshAuditGrant` — the cross-
+    // session re-grant primitive that lets the rightful owner (kernel) extend
+    // ACL on a historical audit handle to a fresh session EOA without trusting
+    // a separate registry.
+
+    it("refreshAuditGrant lets the rightful owner re-grant a wrap handle to a fresh session EOA", async () => {
+      const { stable, pusdc, alice, aliceClient, acl } =
+        await loadFixture(deployStableFixture);
+      await seedAndApprove(pusdc, stable, alice, 100n * ONE_PUSDC);
+
+      const wrapEph = createEphemeralEOA();
+      const tx = await stable
+        .connect(alice)
+        .wrap(await encUint64(aliceClient, 17n * ONE_PUSDC), wrapEph.address);
+      const receipt = await tx.wait();
+      const amountHandle = extractWrapOrUnwrapAmount(stable, receipt, "Wrap");
+
+      // Pre-state: kernel + wrapEph have ACL; a hypothetical fresh-session
+      // EOA does not.
+      const freshEph = createEphemeralEOA();
+      expect(
+        await acl.isAllowed(handleToUint(amountHandle), freshEph.address),
+      ).to.equal(false);
+
+      // Re-grant from the rightful owner (alice = kernel in production).
+      await expect(
+        stable.connect(alice).refreshAuditGrant(amountHandle, freshEph.address),
+      )
+        .to.emit(stable, "AuditGrantRefreshed")
+        .withArgs(alice.address, freshEph.address, anyHandle());
+
+      // Fresh session can now decrypt via permit.
+      expect(
+        await acl.isAllowed(handleToUint(amountHandle), freshEph.address),
+      ).to.equal(true);
+      // Original kernel + wrap-time eph grants remain (additive, not replace).
+      expect(
+        await acl.isAllowed(handleToUint(amountHandle), alice.address),
+      ).to.equal(true);
+      expect(
+        await acl.isAllowed(handleToUint(amountHandle), wrapEph.address),
+      ).to.equal(true);
+    });
+
+    it("refreshAuditGrant rejects a stranger trying to re-grant someone else's wrap handle", async () => {
+      const { stable, pusdc, alice, bob, aliceClient } =
+        await loadFixture(deployStableFixture);
+      await seedAndApprove(pusdc, stable, alice, 100n * ONE_PUSDC);
+
+      const aliceEph = createEphemeralEOA();
+      const tx = await stable
+        .connect(alice)
+        .wrap(await encUint64(aliceClient, 5n * ONE_PUSDC), aliceEph.address);
+      const receipt = await tx.wait();
+      const amountHandle = extractWrapOrUnwrapAmount(stable, receipt, "Wrap");
+
+      // Bob has no ACL on alice's wrap handle (the wrap stamped allow for
+      // alice + aliceEph + the contract — bob is not in that set).
+      const bobEph = createEphemeralEOA();
+      await expect(
+        stable.connect(bob).refreshAuditGrant(amountHandle, bobEph.address),
+      ).to.be.revertedWithCustomError(stable, "NotAuditHandleOwner");
+    });
+
+    it("refreshAuditGrant rejects zero ephemeralEOA", async () => {
+      const { stable, pusdc, alice, aliceClient } =
+        await loadFixture(deployStableFixture);
+      await seedAndApprove(pusdc, stable, alice, 100n * ONE_PUSDC);
+
+      const aliceEph = createEphemeralEOA();
+      const tx = await stable
+        .connect(alice)
+        .wrap(await encUint64(aliceClient, 5n * ONE_PUSDC), aliceEph.address);
+      const receipt = await tx.wait();
+      const amountHandle = extractWrapOrUnwrapAmount(stable, receipt, "Wrap");
+
+      await expect(
+        stable
+          .connect(alice)
+          .refreshAuditGrant(amountHandle, hre.ethers.ZeroAddress),
+      ).to.be.revertedWithCustomError(stable, "InvalidEphemeralEOA");
+    });
   });
 
   // ── Confidential transfer (modern + legacy) ───────────────────────────
@@ -1137,6 +1225,8 @@ describe("MuHavenStable — Phase 7.5-A", () => {
         "function confidentialBalanceOf(address) view returns (bytes32)",
         "function confidentialTotalSupply() view returns (bytes32)",
         "function refreshDecryptGrant(address)",
+        // Phase 9.A · Option Z follow-up — historical audit-handle re-grant.
+        "function refreshAuditGrant(bytes32,address)",
         "function pause()",
         "function unpause()",
         "function setLegacyPusdc(address)",

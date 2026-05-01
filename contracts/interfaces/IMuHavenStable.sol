@@ -52,6 +52,12 @@ interface IMuHavenStable {
     ///         through to a zero-payout state.
     error NotTrustedPayer();
 
+    /// @notice Phase 9.A · Option Z follow-up — `refreshAuditGrant` caller
+    ///         lacks ACL on the supplied audit handle. Loud-revert so a
+    ///         misconfigured frontend doesn't silently emit grant events for
+    ///         handles the caller never owned.
+    error NotAuditHandleOwner();
+
     // ── Events ───────────────────────────────────────────────────────────
 
     event StableInitialized(address indexed owner, address indexed legacyPusdc);
@@ -73,6 +79,12 @@ interface IMuHavenStable {
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
     event DecryptGrantRefreshed(address indexed holder, address indexed ephemeralEOA);
     event TrustedPayerSet(address indexed payer, bool allowed);
+    /// @notice Phase 9.A · Option Z follow-up — emitted when a caller
+    ///         re-grants ACL on a historical audit handle (Wrap/Unwrap event
+    ///         amount) to a fresh ephemeralEOA. Lets the indexer surface "this
+    ///         handle is freshly decryptable in the current session" without
+    ///         having to chase TaskManager state.
+    event AuditGrantRefreshed(address indexed owner, address indexed ephemeralEOA, euint64 handle);
 
     // ── Wrap / unwrap (1:1 legacy PUSDC ↔ mhUSDC) ──────────────────────
 
@@ -213,6 +225,25 @@ interface IMuHavenStable {
     ///         and returning users on fresh sessions can self-rebind decrypt
     ///         without an extra write op.
     function refreshDecryptGrant(address ephemeralEOA) external;
+
+    /// @notice Re-grant FHE ACL on a HISTORICAL audit handle (the encrypted
+    ///         amount carried in a `Wrap` / `Unwrap` event) to a fresh
+    ///         `ephemeralEOA`. Required because each new ZeroDev session
+    ///         mints a fresh ephemeral EOA — the wrap-time grant binds to
+    ///         the session-of-origin only, so cross-session decrypt of the
+    ///         /activity audit row 403s without an explicit rebind.
+    ///
+    ///         Authorisation: `FHE.isAllowed(handle, msg.sender)` must be
+    ///         true. The wrap path stamped `FHE.allow(amount, msg.sender)`
+    ///         for the kernel address, so the rightful owner naturally
+    ///         passes this gate while strangers do not. No registry; the
+    ///         on-chain ACL state IS the registry.
+    ///
+    ///         Distinct from `refreshDecryptGrant(eph)` which only refreshes
+    ///         the live mhUSDC balance handle. This one operates on any
+    ///         caller-owned handle (audit-row first; future yield-share or
+    ///         redeem-proceeds rows could reuse the same surface).
+    function refreshAuditGrant(euint64 handle, address ephemeralEOA) external;
 
     // ── Admin ──────────────────────────────────────────────────────────
 

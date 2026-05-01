@@ -206,13 +206,13 @@ async function decryptCashAmount(item: ActivityItemDto) {
   delete decryptErrorById[item.id]
   try {
     // Wrap/unwrap amount handles are euint64 with mhUSDC base units (1e6).
-    // Fall through to the same refresh-on-403 path the cash strip uses on
-    // /portfolio + /trade — `MuHavenStable.refreshDecryptGrant` re-grants
-    // the active session on the user's CURRENT mhUSDC balance handle, but
-    // the wrap-time `FHE.allow(amount, msg.sender)` already covers the
-    // kernel for historical handles. The TN propagation retry inside
-    // `decryptMhUsdcForView` handles fresh-tx races.
-    const value = await fhe.decryptMhUsdcForView(handle)
+    // Use `decryptAuditHandleForView` (NOT `decryptMhUsdcForView`) so the
+    // 403 fallback dispatches `MuHavenStable.refreshAuditGrant(handle,
+    // eph)` — the historical handle's grant must be re-stamped on the
+    // SPECIFIC handle, not the live balance handle (which is what
+    // `refreshDecryptGrant` does). Fresh-tab logins always need this
+    // because ZeroDev mints a new ephemeral EOA per session.
+    const value = await fhe.decryptAuditHandleForView(handle)
     revealedAmounts[item.id] = value
   } catch (e) {
     decryptErrorById[item.id] = e instanceof Error ? e.message : 'Decrypt failed'

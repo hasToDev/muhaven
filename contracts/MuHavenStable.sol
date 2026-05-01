@@ -581,6 +581,22 @@ contract MuHavenStable is
         emit DecryptGrantRefreshed(msg.sender, ephemeralEOA);
     }
 
+    /// @inheritdoc IMuHavenStable
+    /// @dev The contract-side ACL on `handle` was stamped via
+    ///      `FHE.allowThis(amount)` at wrap/unwrap time and is durable —
+    ///      so this contract can call `FHE.allow(handle, eph)` even though
+    ///      the originating tx finished long ago. The auth gate is
+    ///      `FHE.isAllowed(handle, msg.sender)`: only callers whose ACL
+    ///      survives on-chain (i.e. the original kernel that the wrap
+    ///      granted to via `FHE.allow(amount, msg.sender)`) can re-grant.
+    ///      Strangers passing in someone else's audit handle bounce here.
+    function refreshAuditGrant(euint64 handle, address ephemeralEOA) external {
+        if (ephemeralEOA == address(0)) revert InvalidEphemeralEOA();
+        if (!FHE.isAllowed(handle, msg.sender)) revert NotAuditHandleOwner();
+        FHE.allow(handle, ephemeralEOA);
+        emit AuditGrantRefreshed(msg.sender, ephemeralEOA, handle);
+    }
+
     // ── Admin ────────────────────────────────────────────────────────────
 
     /// @inheritdoc IMuHavenStable

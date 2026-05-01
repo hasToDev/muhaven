@@ -267,6 +267,25 @@ export function useFhe() {
   }
 
   /**
+   * Phase 9.A · Option Z follow-up — decrypt a HISTORICAL audit handle
+   * (the encrypted amount carried in a `MuHavenStable.Wrap` / `Unwrap`
+   * event). Differs from `decryptMhUsdcForView` in the 403 fallback:
+   * `refreshDecryptGrant` only re-grants the LIVE balance handle, but
+   * audit handles are frozen-in-time — the grant must be re-stamped on
+   * the specific historical handle, which is what
+   * `MuHavenStable.refreshAuditGrant(handle, eph)` does.
+   *
+   * The contract gates `refreshAuditGrant` on
+   * `FHE.isAllowed(handle, msg.sender)`, so only the rightful kernel
+   * (which had `FHE.allow(amount, msg.sender)` stamped at wrap time)
+   * passes. Strangers decoding someone else's audit row from /activity
+   * still 403.
+   */
+  async function decryptAuditHandleForView(ctHash: bigint | string): Promise<bigint> {
+    return decryptForView(ctHash, 64, { withRefresh: true, kind: 'mhUsdcAudit' })
+  }
+
+  /**
    * Decrypt an encrypted handle for UI display. Returns `0n` immediately for
    * a zero handle — the TN 403s on unregistered ctHashes and a zero value is
    * the expected "no confidential state yet" reading.
@@ -292,7 +311,7 @@ export function useFhe() {
     opts: {
       withRefresh?: boolean
       tokenAddress?: `0x${string}`
-      kind?: 'muHavenToken' | 'muHavenStable'
+      kind?: 'muHavenToken' | 'muHavenStable' | 'mhUsdcAudit'
     } = {},
   ): Promise<bigint> {
     const hashAsBigInt = typeof ctHash === 'bigint' ? ctHash : BigInt(ctHash)
@@ -308,7 +327,7 @@ export function useFhe() {
     // Default `kind` — uint128 = MuHavenToken (Phase 7), uint64 = legacy
     // PUSDC (no refresh). Callers wanting the mhUSDC path pass
     // `kind: 'muHavenStable'` (or use `decryptMhUsdcForView`).
-    const kind: 'muHavenToken' | 'muHavenStable' | 'none' =
+    const kind: 'muHavenToken' | 'muHavenStable' | 'mhUsdcAudit' | 'none' =
       opts.kind ?? (bits === 128 ? 'muHavenToken' : 'none')
 
     try {
@@ -364,6 +383,31 @@ export function useFhe() {
               )
             }
             await refreshDecryptGrant(address as `0x${string}`)
+          } else if (kind === 'mhUsdcAudit') {
+            // Audit-row decrypt — the handle is a HISTORICAL Wrap/Unwrap
+            // amount (frozen in the past). `refreshDecryptGrant` only
+            // re-grants the live balance, so it'd be a no-op here. Use
+            // `refreshAuditGrant(handle, eph)` instead — the contract's
+            // `FHE.isAllowed(handle, msg.sender)` gate keeps strangers
+            // out, so we don't need a separate auth check at the call site.
+            const { refreshAuditGrant, isAvailable } = await import(
+              '@/services/contracts/MuHavenStableService'
+            )
+            if (!isAvailable()) {
+              throw new Error(
+                'MuHavenStable wrapper not configured for this build — '
+                + 'cannot self-refresh ACL on the audit handle.',
+              )
+            }
+            // The cofhe SDK accepts both bigint and 0x-hex for ctHash,
+            // but the contract's `refreshAuditGrant` expects a bytes32
+            // hex string. Normalise either input shape.
+            const handleHex = (
+              typeof ctHash === 'string'
+                ? ctHash
+                : `0x${ctHash.toString(16).padStart(64, '0')}`
+            ) as `0x${string}`
+            await refreshAuditGrant(handleHex, address as `0x${string}`)
           }
           return await runDecrypt()
         } catch (refreshErr) {
@@ -412,6 +456,7 @@ export function useFhe() {
     decryptUint128ForView,
     decryptUint64ForView,
     decryptMhUsdcForView,
+    decryptAuditHandleForView,
     getRawClient,
     destroy,
   }
