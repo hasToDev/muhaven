@@ -197,6 +197,16 @@ export const usePortfolioStore = defineStore('portfolio', () => {
   /**
    * Load portfolio positions from backend + token metadata.
    * Does NOT decrypt balances — user opts in per-holding or all-at-once.
+   *
+   * Auto-discovers holdings the backend doesn't know about: the sender's
+   * /trade Buy success path calls `portfolioApi.addPosition()` so the
+   * backend tracks every Buy. P2P transfers (and any other path that
+   * gets shares to a wallet without going through TradePage) bypass that
+   * registration — the recipient lands on /portfolio with a backend that
+   * has no record of the new token. We close the gap by walking the
+   * marketplace's token list, calling `encryptedBalanceOf` for any token
+   * NOT already in the backend's position list, and adopting any token
+   * with a non-zero balance handle.
    */
   async function load(walletAddress: `0x${string}`) {
     loading.value = true
@@ -213,6 +223,46 @@ export const usePortfolioStore = defineStore('portfolio', () => {
         tokenMap.set(t.address.toLowerCase(), t)
       }
 
+      // Auto-discover positions for marketplace tokens NOT in the backend's
+      // tracked list. `encryptedBalanceOf` returns the bytes32(0) sentinel
+      // when the user has never interacted with the token contract;
+      // anything else means the user has SOME (possibly zero-after-
+      // silent-fail) on-chain balance handle and the holding card should
+      // be discoverable. Persist via `addPosition` so subsequent visits
+      // resolve through the backend's normal portfolio query — no re-walk.
+      // Failures are best-effort; the merged position list still surfaces
+      // the discovered token even if the backend persist fails.
+      const ZERO_HANDLE =
+        '0x0000000000000000000000000000000000000000000000000000000000000000'
+      const knownPositions = new Set(
+        portfolioRes.positions.map((p) => p.token_address.toLowerCase()),
+      )
+      const candidates = tokensRes.tokens.filter(
+        (t) => !knownPositions.has(t.address.toLowerCase()),
+      )
+      const probed = await Promise.allSettled(
+        candidates.map(async (t) => {
+          const handle = await TokenService.encryptedBalanceOf(
+            walletAddress,
+            t.address as `0x${string}`,
+          )
+          return handle.toLowerCase() === ZERO_HANDLE ? null : t
+        }),
+      )
+      const discovered: TokenResponseDto[] = []
+      for (const r of probed) {
+        if (r.status !== 'fulfilled' || r.value === null) continue
+        discovered.push(r.value)
+      }
+      // Fire-and-forget the backend persist so /portfolio renders without
+      // waiting on the round-trip. Subsequent visits read these via
+      // `portfolioApi.get()` and skip the auto-discover walk for them.
+      for (const t of discovered) {
+        portfolioApi.addPosition(t.address, t.symbol).catch((e) => {
+          console.warn('[portfolio] auto-discover addPosition failed', e)
+        })
+      }
+
       // Read on-chain NAV per holding from `IssuerControlledOracle` —
       // truth source for purchase/redeem cost calculations. Convert from
       // "PUSDC base units per share unit" to "USD per whole share" so the
@@ -223,8 +273,16 @@ export const usePortfolioStore = defineStore('portfolio', () => {
       const readCtx = oracleConfigured ? buildReadContext() : null
       const oracleClient = readCtx ? new OracleClient(readCtx, v35Addresses.oracle) : null
 
+      const allPositions: { token_address: string; token_symbol: string }[] = [
+        ...portfolioRes.positions,
+        ...discovered.map((t) => ({
+          token_address: t.address,
+          token_symbol: t.symbol,
+        })),
+      ]
+
       const holdingsWithMeta = await Promise.all(
-        portfolioRes.positions.map(async (pos) => {
+        allPositions.map(async (pos) => {
           const tokenAddr = pos.token_address as `0x${string}`
           const token = tokenMap.get(tokenAddr.toLowerCase())
           const backendNav = token?.latest_nav ? parseFloat(token.latest_nav.nav) : null
