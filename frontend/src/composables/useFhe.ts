@@ -401,12 +401,12 @@ export function useFhe() {
             }
             // The cofhe SDK accepts both bigint and 0x-hex for ctHash,
             // but the contract's `refreshAuditGrant` expects a bytes32
-            // hex string. Normalise either input shape.
-            const handleHex = (
-              typeof ctHash === 'string'
-                ? ctHash
-                : `0x${ctHash.toString(16).padStart(64, '0')}`
-            ) as `0x${string}`
+            // hex string. Always go through the already-converted bigint
+            // (`hashAsBigInt`, line above) so a decimal-string ctHash —
+            // which would short-circuit the `typeof === 'string'` branch
+            // and slip through unpadded — still produces valid bytes32.
+            const handleHex =
+              `0x${hashAsBigInt.toString(16).padStart(64, '0')}` as `0x${string}`
             await refreshAuditGrant(handleHex, address as `0x${string}`)
           }
           return await runDecrypt()

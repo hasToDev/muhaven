@@ -11,6 +11,14 @@ export const useActivityStore = defineStore('activity', () => {
   const loaded = ref(false)
 
   async function load(limit = 20) {
+    // Concurrent-load guard. Always-refetch on mount (added in 7cdbdfb)
+    // means a fast tab-nav-back-and-forth can fire `load()` while a prior
+    // `load()` or `loadMore()` is still in flight. Without this guard,
+    // a `load` resolving mid-`loadMore` REPLACES `items` with the page-1
+    // batch, silently dropping rows the user paged in. Skipping when
+    // either is in flight is safe — the in-flight call lands fresh data.
+    if (loading.value || loadingMore.value) return
+
     loading.value = true
     error.value = null
 
@@ -27,7 +35,11 @@ export const useActivityStore = defineStore('activity', () => {
   }
 
   async function loadMore(limit = 20) {
-    if (!hasMore.value || loadingMore.value) return
+    // Symmetric guard against the always-refetch path. If a mount-fired
+    // `load()` is still in flight when the user clicks Load More, racing
+    // both is wasted work — `load()` is about to replace `items` with the
+    // page-1 batch, dropping anything `loadMore()` would append.
+    if (!hasMore.value || loadingMore.value || loading.value) return
 
     loadingMore.value = true
     error.value = null

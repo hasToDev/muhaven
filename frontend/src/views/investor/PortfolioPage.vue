@@ -37,11 +37,32 @@ const showLoader = computed(() =>
 // page (per-holding click or Reveal All click). The pending count drives the
 // "Revealing N…" countdown — it ticks down as each decrypt resolves, giving
 // a concrete progress signal inside the gold CTA.
-const pendingDecryptCount = computed(() => {
+//
+// Two paths feed the count:
+//   - decryptAll batch — uses local planned/done refs so the counter shows
+//     the SIZE of the batch, decrementing as each decrypt completes
+//     (`Revealing 3…` → `Revealing 2…` → …). With the sequential refresh
+//     loop landed in 64658ef, the store's `decrypting` flags are only ever
+//     true on a single holding, so a count derived from store state would
+//     stick at "Revealing 1…" the whole time and lose the progress signal.
+//   - single-holding click — falls back to the store-derived count
+//     (`holdings.filter(decrypting).length + (pusdcDecrypting ? 1 : 0)`),
+//     which mirrors the per-card spinner.
+const decryptAllPlanned = ref(0)
+const decryptAllDone = ref(0)
+
+const singleDecryptCount = computed(() => {
   let n = 0
   for (const h of portfolio.holdings) if (h.decrypting) n++
   if (portfolio.pusdcDecrypting) n++
   return n
+})
+
+const pendingDecryptCount = computed(() => {
+  if (decryptAllPlanned.value > 0) {
+    return Math.max(0, decryptAllPlanned.value - decryptAllDone.value)
+  }
+  return singleDecryptCount.value
 })
 const revealing = computed(() => pendingDecryptCount.value > 0)
 
@@ -51,6 +72,8 @@ async function decryptAll() {
   const pending = portfolio.holdings
     .map((h, i) => h.decryptedBalance === null ? i : -1)
     .filter(i => i >= 0)
+  const pusdcPending =
+    portfolio.pusdcConfidentialBalance === null && !portfolio.pusdcDecrypting
 
   // Reveal All previously fired N+1 decrypts via Promise.all. On a fresh
   // session, each one 403s on the TN's permit check (the wrap-time eph is
@@ -66,12 +89,21 @@ async function decryptAll() {
   //
   // Future-Wave: batch all refreshes into a single kernel `executeBatch`
   // UserOp — same UX, one round-trip, scales to many holdings.
-  for (const i of pending) {
-    await portfolio.decryptHolding(i, acct)
+  decryptAllPlanned.value = pending.length + (pusdcPending ? 1 : 0)
+  decryptAllDone.value = 0
+  try {
+    for (const i of pending) {
+      await portfolio.decryptHolding(i, acct)
+      decryptAllDone.value++
+    }
+    if (pusdcPending) {
+      await portfolio.decryptPusdc(acct)
+      decryptAllDone.value++
+    }
+  } finally {
+    decryptAllPlanned.value = 0
+    decryptAllDone.value = 0
   }
-  const pusdcPending =
-    portfolio.pusdcConfidentialBalance === null && !portfolio.pusdcDecrypting
-  if (pusdcPending) await portfolio.decryptPusdc(acct)
 }
 
 async function decryptOne(index: number) {
