@@ -7,6 +7,12 @@
  * time. Keeping this ABI list focused on events (not full contract surfaces)
  * minimises the topic-filter chunk fetch payload.
  *
+ * Phase 9.A · Option Z (2026-05-XX) extends the indexer with
+ * `MuHavenStable.Wrap` / `MuHavenStable.Unwrap` — the post-upgrade events
+ * carry an encrypted `amount` handle (`euint64` → `bytes32`) so investors
+ * can decrypt the cash-conversion amount via permit on the activity feed.
+ * The handle is stored verbatim in `tax_events.metadata.encrypted_amount_handle`.
+ *
  * `FeeEvent` is omitted — Wave 3.5 paymaster ops don't yet surface a per-
  * holder gas marker.
  */
@@ -69,6 +75,35 @@ export const redemptionQueueTokenViewAbi = [
     stateMutability: 'view',
     inputs: [],
     outputs: [{ type: 'address' }],
+  },
+] as const;
+
+/**
+ * Phase 9.A · Option Z — `MuHavenStable.Wrap` / `Unwrap` event ABIs.
+ * `euint64 amount` compiles to `bytes32` per cofhe-contracts v0.1.3
+ * (verified against `artifacts/.../MuHavenStable.json`). Pre-upgrade
+ * (legacy 2-arg) wraps remain on-chain under a different topic0 and are
+ * intentionally invisible to this indexer — only post-upgrade events
+ * match the topic filter below.
+ */
+export const muHavenStableWrapAbi = [
+  {
+    type: 'event',
+    name: 'Wrap',
+    inputs: [
+      { name: 'account', type: 'address', indexed: true },
+      { name: 'ephemeralEOA', type: 'address', indexed: true },
+      { name: 'amount', type: 'bytes32', indexed: false },
+    ],
+  },
+  {
+    type: 'event',
+    name: 'Unwrap',
+    inputs: [
+      { name: 'account', type: 'address', indexed: true },
+      { name: 'ephemeralEOA', type: 'address', indexed: true },
+      { name: 'amount', type: 'bytes32', indexed: false },
+    ],
   },
 ] as const;
 

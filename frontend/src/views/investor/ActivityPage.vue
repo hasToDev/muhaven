@@ -1,34 +1,63 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, reactive } from 'vue'
 import { useActivityStore } from '@/stores/activity'
-import { formatUSD } from '@/lib/utils'
+import { useMarketplaceStore } from '@/stores/marketplace'
+import { formatUSD, formatAddress } from '@/lib/utils'
+import { useFhe } from '@/composables/useFhe'
 import MButton from '@/components/ui/MButton.vue'
 import MPageLoader from '@/components/ui/MPageLoader.vue'
 import MPrivacyProofPanel from '@/components/ui/MPrivacyProofPanel.vue'
+import type { ActivityItemDto, ActivityItemType } from '@/services/api'
 import {
-  TrendingUp, ArrowDown, Activity, BarChart3, Lock, Inbox, ChevronDown,
-  Loader2,
+  TrendingUp, ArrowDown, ArrowRightLeft, Coins, BarChart3, Lock,
+  Inbox, ChevronDown, Loader2, Eye, ShieldCheck, RefreshCw, Wallet,
 } from 'lucide-vue-next'
 
 const activity = useActivityStore()
+const marketplace = useMarketplaceStore()
+const fhe = useFhe()
 
-type FilterType = 'all' | 'yield' | 'escrow'
+// Phase 9.A · Option Z — `cash` collapses wrap+unwrap (per the open
+// decision in PHASE_9A_OPTION_Z_PLAN.md). The other pills slice tax_events
+// directly.
+type FilterType = 'all' | 'buy' | 'sell' | 'yield' | 'cash'
 const activeFilter = ref<FilterType>('all')
 const expandedId = ref<string | null>(null)
+
+// Decrypt-on-demand cache for wrap/unwrap rows. Key: item.id. Value: bigint
+// (raw mhUSDC base units, 6 decimals). Reset on page nav by virtue of the
+// component scope.
+const revealedAmounts = reactive<Record<string, bigint>>({})
+// Per-row in-flight tracking — using a record (not a single ref) so two
+// rows decrypting in parallel don't clobber each other's spinner state.
+const decryptingById = reactive<Record<string, boolean>>({})
+const decryptErrorById = reactive<Record<string, string>>({})
 
 function toggleExpand(id: string) {
   expandedId.value = expandedId.value === id ? null : id
 }
 
-const filtered = computed(() => {
-  if (activeFilter.value === 'all') return activity.items
-  return activity.items.filter(i => i.type === activeFilter.value)
-})
+function isCashType(t: ActivityItemType): boolean {
+  return t === 'wrap' || t === 'unwrap'
+}
+
+function matchesFilter(item: ActivityItemDto, f: FilterType): boolean {
+  if (f === 'all') return true
+  if (f === 'cash') return isCashType(item.type)
+  if (f === 'sell') return item.type === 'sell' || item.type === 'sell-queued'
+  return item.type === f
+}
+
+const filtered = computed(() =>
+  activity.items.filter(i => matchesFilter(i, activeFilter.value)),
+)
 
 const filterCounts = computed(() => ({
   all: activity.items.length,
-  yield: activity.items.filter(i => i.type === 'yield').length,
-  escrow: activity.items.filter(i => i.type === 'escrow').length,
+  buy: activity.items.filter(i => matchesFilter(i, 'buy')).length,
+  sell: activity.items.filter(i => matchesFilter(i, 'sell')).length,
+  yield: activity.items.filter(i => matchesFilter(i, 'yield')).length,
+  cash: activity.items.filter(i => matchesFilter(i, 'cash')).length,
 }))
 
 const yieldsThisWeek = computed(() => {
@@ -38,45 +67,117 @@ const yieldsThisWeek = computed(() => {
   ).length
 })
 
-const activityMeta: Record<string, {
+const cashEventsThisWeek = computed(() => {
+  const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000
+  return activity.items.filter(
+    i => isCashType(i.type) && new Date(i.timestamp).getTime() >= sevenDaysAgo,
+  ).length
+})
+
+const filterMeta: Record<FilterType, { label: string }> = {
+  all: { label: 'All' },
+  buy: { label: 'Buy' },
+  sell: { label: 'Sell' },
+  yield: { label: 'Yield' },
+  cash: { label: 'Cash' },
+}
+
+const activityMeta: Record<ActivityItemType, {
   icon: typeof TrendingUp
   iconClass: string
   iconBg: string
   iconBorder: string
   amountClass: string
 }> = {
-  yield: {
+  buy: {
     icon: TrendingUp,
     iconClass: 'text-positive',
     iconBg: 'bg-positive/10',
     iconBorder: 'border-positive/30',
     amountClass: 'text-positive',
   },
-  escrow: {
+  sell: {
     icon: ArrowDown,
     iconClass: 'text-cool',
     iconBg: 'bg-haze/40 dark:bg-white/5',
     iconBorder: 'border-haze dark:border-white/10',
     amountClass: 'text-midnight dark:text-white',
   },
+  'sell-queued': {
+    icon: ArrowDown,
+    iconClass: 'text-gold dark:text-signal',
+    iconBg: 'bg-gold/10 dark:bg-signal/10',
+    iconBorder: 'border-gold/25 dark:border-signal/25',
+    amountClass: 'text-midnight dark:text-white',
+  },
+  yield: {
+    icon: Coins,
+    iconClass: 'text-positive',
+    iconBg: 'bg-positive/10',
+    iconBorder: 'border-positive/30',
+    amountClass: 'text-positive',
+  },
+  wrap: {
+    icon: ArrowRightLeft,
+    iconClass: 'text-compute dark:text-signal',
+    iconBg: 'bg-compute/10 dark:bg-signal/10',
+    iconBorder: 'border-compute/25 dark:border-signal/25',
+    amountClass: 'text-midnight dark:text-white',
+  },
+  unwrap: {
+    icon: ArrowRightLeft,
+    iconClass: 'text-cool',
+    iconBg: 'bg-haze/40 dark:bg-white/5',
+    iconBorder: 'border-haze dark:border-white/10',
+    amountClass: 'text-midnight dark:text-white',
+  },
+  fee: {
+    icon: Wallet,
+    iconClass: 'text-cool',
+    iconBg: 'bg-haze/40 dark:bg-white/5',
+    iconBorder: 'border-haze dark:border-white/10',
+    amountClass: 'text-cool',
+  },
 }
 
-onMounted(async () => {
-  if (activity.loaded) return
-  await activity.load()
-})
+function tokenSymbol(addr: string | null): string {
+  if (!addr) return ''
+  return marketplace.getByAddress(addr)?.symbol ?? formatAddress(addr)
+}
 
-const showLoader = computed(() =>
-  !activity.loaded && !activity.error && activity.loading,
-)
+function rowTitle(item: ActivityItemDto): string {
+  const sym = tokenSymbol(item.token_address)
+  switch (item.type) {
+    case 'buy':
+      return sym ? `Bought ${sym}` : 'Purchase'
+    case 'sell':
+      return sym ? `Sold ${sym}` : 'Sale'
+    case 'sell-queued':
+      return sym ? `Queued sell · ${sym}` : 'Queued redemption'
+    case 'yield':
+      return sym ? `Yield claim · ${sym}` : 'Yield claim'
+    case 'wrap':
+      return 'Wrapped USDC → mhUSDC'
+    case 'unwrap':
+      return 'Unwrapped mhUSDC → USDC'
+    case 'fee':
+      return 'Fee event'
+  }
+}
+
+function statusLabel(item: ActivityItemDto): string {
+  if (item.type === 'sell-queued') return 'queued'
+  return item.status
+}
 
 function statusAccent(status: string): { text: string; ring: string; bg: string } {
   switch (status) {
     case 'claimed':
+    case 'confirmed':
       return { text: 'text-positive', ring: 'border-positive/30', bg: 'bg-positive/10' }
     case 'pending':
       return { text: 'text-gold', ring: 'border-gold/30', bg: 'bg-gold/10' }
-    case 'claimable':
+    case 'queued':
       return { text: 'text-compute dark:text-signal', ring: 'border-compute/30 dark:border-signal/30', bg: 'bg-compute/10 dark:bg-signal/10' }
     default:
       return { text: 'text-cool', ring: 'border-haze dark:border-white/10', bg: 'bg-haze/30 dark:bg-white/5' }
@@ -95,6 +196,52 @@ function formatTime(timestamp: string): string {
   if (diffD < 7) return `${diffD}d ago`
   return d.toLocaleDateString()
 }
+
+async function decryptCashAmount(item: ActivityItemDto) {
+  const handle = item.metadata?.encrypted_amount_handle
+  if (!handle) return
+  if (revealedAmounts[item.id] !== undefined) return
+  if (decryptingById[item.id]) return
+  decryptingById[item.id] = true
+  delete decryptErrorById[item.id]
+  try {
+    // Wrap/unwrap amount handles are euint64 with mhUSDC base units (1e6).
+    // Fall through to the same refresh-on-403 path the cash strip uses on
+    // /portfolio + /trade — `MuHavenStable.refreshDecryptGrant` re-grants
+    // the active session on the user's CURRENT mhUSDC balance handle, but
+    // the wrap-time `FHE.allow(amount, msg.sender)` already covers the
+    // kernel for historical handles. The TN propagation retry inside
+    // `decryptMhUsdcForView` handles fresh-tx races.
+    const value = await fhe.decryptMhUsdcForView(handle)
+    revealedAmounts[item.id] = value
+  } catch (e) {
+    decryptErrorById[item.id] = e instanceof Error ? e.message : 'Decrypt failed'
+  } finally {
+    delete decryptingById[item.id]
+  }
+}
+
+async function refreshCashAmount(item: ActivityItemDto) {
+  // Force a re-decrypt: clear the cache entry so `decryptCashAmount` runs
+  // its full path (catches the case where the handle was rotated by a
+  // contract upgrade between visits — rare, but defensive).
+  delete revealedAmounts[item.id]
+  await decryptCashAmount(item)
+}
+
+onMounted(async () => {
+  // Marketplace tokens give us symbol resolution for buy/sell/yield rows.
+  // Don't await — we'd rather render activity instantly with truncated
+  // addresses than block the page on the tokens fetch. The labels swap to
+  // symbols reactively once the list lands.
+  if (!marketplace.loaded) void marketplace.load()
+  if (activity.loaded) return
+  await activity.load()
+})
+
+const showLoader = computed(() =>
+  !activity.loaded && !activity.error && activity.loading,
+)
 </script>
 
 <template>
@@ -103,7 +250,7 @@ function formatTime(timestamp: string): string {
     <MPageLoader
       v-if="showLoader"
       label="Loading activity"
-      caption="Indexing yield + escrow events"
+      caption="Indexing on-chain events"
     />
 
     <!-- Error -->
@@ -114,14 +261,13 @@ function formatTime(timestamp: string): string {
 
     <!-- Content -->
     <div v-else class="flex flex-col gap-6">
-      <!-- Main grid: timeline (8) + analytics (4) -->
       <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
         <!-- Timeline column -->
         <div class="lg:col-span-8 w-full flex flex-col gap-5">
           <!-- Filter pills -->
           <div class="flex items-center gap-2.5 overflow-x-auto pb-1 no-scrollbar">
             <button
-              v-for="f in (['all', 'yield', 'escrow'] as FilterType[])"
+              v-for="f in (['all', 'buy', 'sell', 'yield', 'cash'] as FilterType[])"
               :key="f"
               type="button"
               @click="activeFilter = f"
@@ -133,7 +279,7 @@ function formatTime(timestamp: string): string {
                   : 'bg-mist/50 dark:bg-[#171717] text-cool hover:text-midnight dark:hover:text-white border-transparent hover:border-haze dark:hover:border-white/10',
               ]"
             >
-              {{ f === 'all' ? 'All' : f.charAt(0).toUpperCase() + f.slice(1) }}
+              {{ filterMeta[f].label }}
               <span class="ml-1.5 opacity-70 tabular-nums">{{ filterCounts[f] }}</span>
             </button>
           </div>
@@ -152,6 +298,7 @@ function formatTime(timestamp: string): string {
             <div
               v-if="filtered.length === 0"
               class="flex flex-col items-center py-16 gap-3"
+              data-testid="activity-empty"
             >
               <Inbox :size="36" :stroke-width="1.4" class="text-cool/35" />
               <p class="font-sans text-sm text-cool">No matching activity</p>
@@ -162,6 +309,7 @@ function formatTime(timestamp: string): string {
               <div
                 v-for="item in filtered"
                 :key="item.id"
+                :data-testid="`activity-row-${item.type}`"
                 class="border-b border-haze/60 dark:border-white/5 last:border-b-0
                        hover:bg-mist/40 dark:hover:bg-white/[0.02] transition-colors"
               >
@@ -170,39 +318,92 @@ function formatTime(timestamp: string): string {
                     <div
                       :class="[
                         'w-10 h-10 rounded-xl flex items-center justify-center border flex-shrink-0',
-                        activityMeta[item.type]?.iconBg,
-                        activityMeta[item.type]?.iconBorder,
+                        activityMeta[item.type].iconBg,
+                        activityMeta[item.type].iconBorder,
                       ]"
                     >
                       <component
-                        :is="activityMeta[item.type]?.icon ?? Activity"
+                        :is="activityMeta[item.type].icon"
                         :size="15"
                         :stroke-width="1.8"
-                        :class="activityMeta[item.type]?.iconClass ?? 'text-cool'"
+                        :class="activityMeta[item.type].iconClass"
                       />
                     </div>
                     <div class="flex flex-col gap-1.5 min-w-0">
                       <div class="flex items-center gap-2.5 flex-wrap">
                         <span class="font-sans text-sm font-semibold text-midnight dark:text-white">
-                          {{ item.type === 'yield' ? 'Yield Distribution' : 'Escrow Event' }}
+                          {{ rowTitle(item) }}
                         </span>
-                        <span
-                          v-if="item.amount"
-                          :class="['font-mono text-sm font-medium tabular-nums tracking-tight', activityMeta[item.type]?.amountClass]"
-                        >
-                          {{ formatUSD(parseFloat(item.amount)) }}
-                        </span>
+
+                        <!-- Cash rows: per-row Decrypt affordance -->
+                        <template v-if="isCashType(item.type)">
+                          <button
+                            v-if="revealedAmounts[item.id] === undefined"
+                            type="button"
+                            @click="decryptCashAmount(item)"
+                            :disabled="!!decryptingById[item.id]"
+                            :data-testid="`activity-${item.type}-decrypt-cta`"
+                            class="inline-flex items-center gap-1.5 px-2 py-1 rounded-md
+                                   border border-haze dark:border-white/10
+                                   bg-mist/40 dark:bg-white/[0.02]
+                                   font-mono text-xs tabular-nums tracking-tight
+                                   text-cool hover:text-compute dark:hover:text-signal
+                                   hover:border-gold/40 dark:hover:border-signal/40
+                                   transition-colors cursor-pointer
+                                   disabled:opacity-60 disabled:cursor-wait"
+                            :title="'Decrypt with permit · ' + (item.metadata?.encrypted_amount_handle ?? 'no handle')"
+                          >
+                            <Loader2
+                              v-if="decryptingById[item.id]"
+                              :size="11"
+                              class="animate-spin"
+                            />
+                            <Eye v-else :size="11" :stroke-width="1.8" />
+                            <span>$••••.••</span>
+                          </button>
+                          <span
+                            v-else
+                            class="inline-flex items-center gap-1.5 font-mono text-sm font-medium tabular-nums tracking-tight"
+                            :class="activityMeta[item.type].amountClass"
+                            :data-testid="`activity-${item.type}-amount`"
+                          >
+                            {{ formatUSD(Number(revealedAmounts[item.id]) / 1e6) }}
+                            <ShieldCheck
+                              :size="13"
+                              :stroke-width="1.8"
+                              class="text-gold dark:text-signal"
+                            />
+                            <button
+                              type="button"
+                              @click="refreshCashAmount(item)"
+                              :disabled="!!decryptingById[item.id]"
+                              :data-testid="`activity-${item.type}-refresh-cta`"
+                              class="inline-flex items-center justify-center w-5 h-5 rounded
+                                     text-cool hover:text-compute dark:hover:text-signal
+                                     transition-colors cursor-pointer
+                                     disabled:opacity-60 disabled:cursor-wait"
+                              :title="'Re-decrypt amount'"
+                            >
+                              <Loader2
+                                v-if="decryptingById[item.id]"
+                                :size="11"
+                                class="animate-spin"
+                              />
+                              <RefreshCw v-else :size="11" :stroke-width="1.8" />
+                            </button>
+                          </span>
+                        </template>
                       </div>
                       <div class="flex items-center gap-2 flex-wrap">
                         <span
                           :class="[
                             'font-sans text-[9px] uppercase tracking-[0.22em] font-semibold px-2 py-0.5 rounded border',
-                            statusAccent(item.status).text,
-                            statusAccent(item.status).ring,
-                            statusAccent(item.status).bg,
+                            statusAccent(statusLabel(item)).text,
+                            statusAccent(statusLabel(item)).ring,
+                            statusAccent(statusLabel(item)).bg,
                           ]"
                         >
-                          {{ item.status }}
+                          {{ statusLabel(item) }}
                         </span>
                         <div
                           class="flex items-center gap-1 px-2 py-0.5 rounded border border-haze dark:border-white/10 bg-mist/50 dark:bg-[#0d0e10]"
@@ -210,6 +411,10 @@ function formatTime(timestamp: string): string {
                           <Lock :size="10" :stroke-width="1.8" class="text-cool" />
                           <span class="font-mono text-[9px] text-cool uppercase tracking-[0.18em]">FHE encrypted</span>
                         </div>
+                        <span
+                          v-if="decryptErrorById[item.id]"
+                          class="font-mono text-[10px] text-negative"
+                        >{{ decryptErrorById[item.id] }}</span>
                       </div>
                     </div>
                   </div>
@@ -219,7 +424,6 @@ function formatTime(timestamp: string): string {
                       {{ formatTime(item.timestamp) }}
                     </span>
                     <button
-                      v-if="item.tx_hash"
                       type="button"
                       @click="toggleExpand(item.id)"
                       :data-testid="`activity-row-toggle-${item.id}`"
@@ -248,7 +452,7 @@ function formatTime(timestamp: string): string {
                   leave-to-class="opacity-0"
                 >
                   <div
-                    v-if="expandedId === item.id && item.tx_hash"
+                    v-if="expandedId === item.id"
                     :id="`activity-proof-${item.id}`"
                     role="region"
                     :aria-label="`Privacy proof for ${item.type} event`"
@@ -335,10 +539,10 @@ function formatTime(timestamp: string): string {
           >
             <div class="flex items-center justify-between">
               <span class="font-sans text-[10px] uppercase tracking-[0.24em] text-positive font-semibold">
-                Yield Events
+                Yield Claims
               </span>
               <div class="w-11 h-11 rounded-xl bg-positive/10 border border-positive/30 flex items-center justify-center">
-                <TrendingUp :size="18" :stroke-width="1.8" class="text-positive" />
+                <Coins :size="18" :stroke-width="1.8" class="text-positive" />
               </div>
             </div>
             <div class="font-accent italic text-5xl md:text-6xl tracking-tighter text-midnight dark:text-white tabular-nums leading-none">
@@ -352,7 +556,7 @@ function formatTime(timestamp: string): string {
             </div>
           </div>
 
-          <!-- Escrow events -->
+          <!-- Cash events -->
           <div
             class="relative overflow-hidden rounded-2xl p-6
                    border border-haze dark:border-white/5
@@ -361,17 +565,17 @@ function formatTime(timestamp: string): string {
           >
             <div class="flex items-center justify-between">
               <span class="font-sans text-[10px] uppercase tracking-[0.24em] text-cool font-semibold">
-                Escrow Events
+                Cash conversions
               </span>
               <div class="w-11 h-11 rounded-xl bg-compute/10 dark:bg-signal/10 border border-compute/25 dark:border-signal/25 flex items-center justify-center">
-                <ArrowDown :size="18" :stroke-width="1.8" class="text-compute dark:text-signal" />
+                <ArrowRightLeft :size="18" :stroke-width="1.8" class="text-compute dark:text-signal" />
               </div>
             </div>
             <div class="font-accent italic text-5xl md:text-6xl tracking-tighter text-midnight dark:text-white tabular-nums leading-none">
-              {{ filterCounts.escrow }}
+              {{ filterCounts.cash }}
             </div>
             <p class="font-sans text-[10px] uppercase tracking-[0.22em] font-bold text-cool italic">
-              Awaiting on-chain settlement
+              {{ cashEventsThisWeek }} this week · auditable on click
             </p>
           </div>
         </div>

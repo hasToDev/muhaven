@@ -4,7 +4,15 @@
  * decrypted handle + recorded NAV.
  */
 
-export type TaxEventType = 'Acquisition' | 'Disposition' | 'IncomeAccrual' | 'FeeEvent';
+export type TaxEventType =
+  | 'Acquisition'
+  | 'Disposition'
+  | 'IncomeAccrual'
+  | 'FeeEvent'
+  // Phase 9.A · Option Z — cash conversions (USDC↔mhUSDC) carrying the
+  // encrypted amount handle in metadata for permit-decrypt audit.
+  | 'Wrap'
+  | 'Unwrap';
 
 export interface TaxEventProps {
   txHash: string;

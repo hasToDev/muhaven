@@ -302,6 +302,12 @@ export const taxEventTypeEnum = pgEnum('tax_event_type', [
   'Disposition',
   'IncomeAccrual',
   'FeeEvent',
+  // Phase 9.A · Option Z — cash conversions surfaced via MuHavenStable
+  // Wrap/Unwrap events. The encrypted amount handle lives in
+  // `tax_events.metadata.encrypted_amount_handle`; investor decrypts via
+  // permit. `tokenAddress` is null for these rows (cash isn't an RWA).
+  'Wrap',
+  'Unwrap',
 ]);
 
 export const taxEvents = pgTable(

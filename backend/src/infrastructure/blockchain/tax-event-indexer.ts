@@ -41,6 +41,7 @@ import {
   subscriptionTaxAbi,
   redemptionQueueTaxAbi,
   yieldSnapshotTaxAbi,
+  muHavenStableWrapAbi,
   redemptionQueueTokenViewAbi,
   oracleNavViewAbi,
 } from './tax-event-abis.js';
@@ -56,6 +57,13 @@ export interface TaxEventIndexerConfig {
   subscriptionAddress?: Address;
   redemptionQueueAddresses: Address[];
   yieldSnapshotAddresses: Address[];
+  /**
+   * Phase 9.A · Option Z — MuHavenStable proxy address. When set, the
+   * indexer also subscribes to `Wrap` / `Unwrap` events with their post-
+   * upgrade 3-arg signature (the amount handle is stored in metadata).
+   * Leave undefined to disable the cash-conversion leg of the feed.
+   */
+  muHavenStableAddress?: Address;
   oracleAddress?: Address;
   intervalMs: number;
 }
@@ -65,6 +73,7 @@ export class TaxEventIndexer {
   private readonly subscriptionAddress?: Address;
   private readonly redemptionQueueAddresses: Address[];
   private readonly yieldSnapshotAddresses: Address[];
+  private readonly muHavenStableAddress?: Address;
   private readonly oracleAddress?: Address;
   private readonly logger: Logger;
   private lastProcessedBlock: bigint | null = null;
@@ -85,6 +94,7 @@ export class TaxEventIndexer {
     this.subscriptionAddress = config.subscriptionAddress;
     this.redemptionQueueAddresses = config.redemptionQueueAddresses;
     this.yieldSnapshotAddresses = config.yieldSnapshotAddresses;
+    this.muHavenStableAddress = config.muHavenStableAddress;
     this.oracleAddress = config.oracleAddress;
     this.logger = getLogger('TaxEventIndexer');
   }
@@ -99,6 +109,7 @@ export class TaxEventIndexer {
         subscription: this.subscriptionAddress ?? null,
         queues: this.redemptionQueueAddresses.length,
         snapshots: this.yieldSnapshotAddresses.length,
+        muHavenStable: this.muHavenStableAddress ?? null,
         oracle: this.oracleAddress ?? null,
         intervalMs,
       },
@@ -207,7 +218,20 @@ export class TaxEventIndexer {
       tasks.push(Promise.resolve([] as Log[]));
     }
 
-    const [subLogs, queueLogs, snapLogs] = await Promise.all(tasks);
+    if (this.muHavenStableAddress) {
+      tasks.push(
+        this.client.getLogs({
+          address: this.muHavenStableAddress,
+          events: muHavenStableWrapAbi,
+          fromBlock,
+          toBlock,
+        }) as Promise<Log[]>,
+      );
+    } else {
+      tasks.push(Promise.resolve([] as Log[]));
+    }
+
+    const [subLogs, queueLogs, snapLogs, stableLogs] = await Promise.all(tasks);
 
     const out: TaxEvent[] = [];
     const blockTimestampCache = new Map<bigint, Date>();
@@ -271,6 +295,10 @@ export class TaxEventIndexer {
     }
     for (const log of snapLogs) {
       const built = await this.fromSnapshotLog(log, fetchBlockTs, fetchNav);
+      if (built) out.push(built);
+    }
+    for (const log of stableLogs) {
+      const built = await this.fromStableLog(log, fetchBlockTs);
       if (built) out.push(built);
     }
 
@@ -390,6 +418,46 @@ export class TaxEventIndexer {
       navAtTime: nav,
       referenceId: epochId,
       metadata: null,
+    });
+  }
+
+  /**
+   * Phase 9.A · Option Z — `MuHavenStable.Wrap` / `Unwrap` mapper. Cash
+   * conversions emit no NAV (the mhUSDC peg is 1:1 USDC by construction)
+   * and no token address (cash isn't an RWA — `tokenAddress=null`). The
+   * encrypted amount handle is stored verbatim in
+   * `metadata.encrypted_amount_handle` so the frontend can fetch it via
+   * the activity API and decrypt via permit.
+   */
+  private async fromStableLog(
+    log: Log,
+    fetchBlockTs: (b: bigint) => Promise<Date>,
+  ): Promise<TaxEvent | null> {
+    if (!log.transactionHash || log.blockNumber === null || log.logIndex === null) return null;
+    const eventName = (log as Log & { eventName?: string }).eventName;
+    const args = (log as Log & { args?: Record<string, unknown> }).args;
+    if (!args || (eventName !== 'Wrap' && eventName !== 'Unwrap')) return null;
+
+    const account = args.account as Address;
+    const ephemeralEOA = (args.ephemeralEOA as Address) ?? null;
+    const amountHandle = args.amount as `0x${string}` | undefined;
+    const ts = await fetchBlockTs(log.blockNumber);
+
+    return new TaxEvent({
+      txHash: log.transactionHash,
+      logIndex: log.logIndex,
+      eventType: eventName as TaxEventType,
+      holderAddress: account,
+      tokenAddress: null,
+      blockNumber: log.blockNumber.toString(),
+      blockTimestamp: ts,
+      navAtTime: null,
+      referenceId: null,
+      metadata: {
+        kind: eventName === 'Wrap' ? 'wrap' : 'unwrap',
+        encrypted_amount_handle: amountHandle ?? null,
+        ephemeral_eoa: ephemeralEOA,
+      },
     });
   }
 }

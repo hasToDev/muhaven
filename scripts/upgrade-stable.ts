@@ -1,16 +1,25 @@
 /**
  * scripts/upgrade-stable.ts
  *
- * Upgrade the MuHavenStable wrapper proxy to a new implementation.
- * Phase 8 Option B / ADR-046 — adds the `trustedPayout` bypass surface
- * that `YieldSnapshot.claimYield` calls instead of `_silentFailBound`-
- * applying `transferFrom`. Cuts the wrapper-side FHE op chain on the
- * snapshot→investor leg from 5 → 2 ops (the cofhe TN testnet indexer
- * empirically refuses to register handles produced by the longer chain).
+ * Upgrade the MuHavenStable wrapper proxy to a new implementation. The
+ * script body is intentionally upgrade-reason-agnostic — it just rotates
+ * the proxy onto a freshly compiled `MuHavenStable` impl + persists the
+ * new implementation address in `deployments/arb-sepolia-v2[.staging].json`.
  *
- * Storage: adds one mapping slot (`_trustedPayer`); shrinks `__gap` from
- * 42 → 41 to compensate. Layout backward-compatible — every prior slot
- * keeps its index.
+ * Known upgrade rounds (most recent first):
+ *
+ *   Phase 9.A · Option Z (2026-05-XX) — broadens `Wrap` / `Unwrap` events
+ *     with the encrypted amount handle + adds `FHE.allow(amount, msg.sender)
+ *     + FHE.allow(amount, ephemeralEOA)` grants in `wrap` / `wrapHandle` /
+ *     `unwrap`. No storage changes. Off-chain indexer reads the new amount
+ *     field; investor decrypts the audit handle via permit.
+ *
+ *   Phase 8 · Option B / ADR-046 (2026-04-29) — adds `trustedPayout`
+ *     bypass surface that `YieldSnapshot.claimYield` calls instead of
+ *     `_silentFailBound`-applying `transferFrom`. Cuts the wrapper-side
+ *     FHE op chain on the snapshot→investor leg from 5 → 2 ops to dodge
+ *     the cofhe TN indexer's chain-length cap. Adds one storage mapping
+ *     slot (`_trustedPayer`); shrunk `__gap` from 42 → 41.
  *
  * Usage:
  *   MUHAVEN_ENV=staging \
@@ -23,21 +32,17 @@
  * Arbiscan:
  *   npx hardhat verify --network arb-sepolia <new_impl>
  *
- * Then register the YieldSnapshot proxy as a trusted payer:
- *   MUHAVEN_ENV=staging \
- *     npx hardhat run scripts/grant-trusted-payer.ts --network arb-sepolia
- *
- * Then upgrade YieldSnapshot to switch claimYield onto the new path:
- *   MUHAVEN_ENV=staging \
- *     npx hardhat run scripts/upgrade-yield-snapshot.ts --network arb-sepolia
- *
- * The deployment record (`deployments/arb-sepolia-v2[.staging].json`) is
- * updated in place — only `contracts.MuHavenStable.implementation`
- * rotates.
+ * If the upgrade introduces a new `_trustedPayer` slot (Option B-style),
+ * register the YieldSnapshot proxy + upgrade the snapshot impl:
+ *   MUHAVEN_ENV=<env> pnpm hardhat run scripts/grant-trusted-payer.ts \
+ *     --network arb-sepolia
+ *   MUHAVEN_ENV=<env> pnpm hardhat run scripts/upgrade-yield-snapshot.ts \
+ *     --network arb-sepolia
+ * Skip those when the upgrade is event/ACL-only (Option Z).
  *
  * Production cutover note: per `feedback_phase8_no_prod_until_signaled`,
- * staging upgrade lands first + Stage E §10 re-runs clean before the
- * user explicitly authorises the prod upgrade.
+ * staging upgrade lands first + the corresponding Stage E re-walk runs
+ * clean before the user explicitly authorises the prod upgrade.
  */
 
 import { ethers, upgrades, network } from "hardhat";
@@ -103,15 +108,18 @@ async function main() {
 
   console.log(`\nNext steps:`);
   console.log(`  1. npx hardhat verify --network arb-sepolia ${newImpl}`);
+  console.log(`  2. (Option B-style storage upgrade only — skip for event/ACL-only rounds)`);
   console.log(
-    `  2. MUHAVEN_ENV=${env} pnpm hardhat run scripts/grant-trusted-payer.ts \\`,
+    `       MUHAVEN_ENV=${env} pnpm hardhat run scripts/grant-trusted-payer.ts \\`,
   );
-  console.log(`       --network arb-sepolia`);
+  console.log(`         --network arb-sepolia`);
+  console.log(`  3. (Option B-style storage upgrade only — skip for event/ACL-only rounds)`);
   console.log(
-    `  3. MUHAVEN_ENV=${env} pnpm hardhat run scripts/upgrade-yield-snapshot.ts \\`,
+    `       MUHAVEN_ENV=${env} pnpm hardhat run scripts/upgrade-yield-snapshot.ts \\`,
   );
-  console.log(`       --network arb-sepolia`);
-  console.log(`  4. Re-run STAGE_E_HANDOFF.md §10 with a fresh kernel.`);
+  console.log(`         --network arb-sepolia`);
+  console.log(`  4. Re-run the corresponding Stage / Phase smoke (e.g. Phase 9.A Option Z`);
+  console.log(`     §Phase E checklist) with a fresh kernel.`);
 }
 
 main().catch((err) => {

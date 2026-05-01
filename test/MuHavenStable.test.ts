@@ -35,6 +35,17 @@ function handleToUint(handle: any): bigint {
   return BigInt(handle);
 }
 
+/**
+ * `withArgs` placeholder for an encrypted-handle slot (`euint64` →
+ * `bytes32`). Lets us assert account/ephemeralEOA on the broadened
+ * Phase 9.A `Wrap` / `Unwrap` events without binding the content-addressed
+ * handle bytes (which we extract separately via the tx receipt).
+ */
+function anyHandle() {
+  return (v: unknown) =>
+    typeof v === "string" && v.startsWith("0x") && v.length === 66;
+}
+
 async function deployStableFixture() {
   await hre.run("task:cofhe-mocks:deploy");
 
@@ -102,9 +113,14 @@ describe("MuHavenStable — Phase 7.5-A", () => {
       const eph = createEphemeralEOA();
       const enc = await encUint64(aliceClient, 50n * ONE_PUSDC);
 
+      // Phase 9.A · Option Z — Wrap event broadened to include the encrypted
+      // `amount` handle. The handle bytes are content-addressed by the cofhe
+      // mock; the dedicated "decrypt-after-wrap" case below extracts and
+      // validates the handle. Here we only need to know `account` +
+      // `ephemeralEOA` are still right.
       await expect(stable.connect(alice).wrap(enc, eph.address))
         .to.emit(stable, "Wrap")
-        .withArgs(alice.address, eph.address);
+        .withArgs(alice.address, eph.address, anyHandle());
 
       const aliceMhBal = await stable.confidentialBalanceOf(alice.address);
       await hre.cofhe.mocks.expectPlaintext(aliceMhBal, 50n * ONE_PUSDC);
@@ -191,11 +207,13 @@ describe("MuHavenStable — Phase 7.5-A", () => {
       const wrapEnc = await encUint64(aliceClient, 60n * ONE_PUSDC);
       await stable.connect(alice).wrap(wrapEnc, eph.address);
 
-      // Unwrap 20.
+      // Unwrap 20. Phase 9.A · Option Z — Unwrap event broadened to include
+      // the silent-fail-bounded `actual` handle (matches `requested` here
+      // since `requested <= balance`).
       const unwrapEnc = await encUint64(aliceClient, 20n * ONE_PUSDC);
       await expect(stable.connect(alice).unwrap(unwrapEnc, eph.address))
         .to.emit(stable, "Unwrap")
-        .withArgs(alice.address, eph.address);
+        .withArgs(alice.address, eph.address, anyHandle());
 
       const mhBal = await stable.confidentialBalanceOf(alice.address);
       await hre.cofhe.mocks.expectPlaintext(mhBal, 40n * ONE_PUSDC);
@@ -269,6 +287,170 @@ describe("MuHavenStable — Phase 7.5-A", () => {
       await expect(
         stable.connect(alice).unwrap(enc2, eph.address)
       ).to.be.revertedWithCustomError(stable, "PausedSurface");
+    });
+  });
+
+  // ── Phase 9.A · Option Z — wrap-amount audit handle ──────────────────
+  //
+  // The `Wrap` / `Unwrap` events were broadened to carry the encrypted
+  // amount handle, with permit grants minted at the call site to the
+  // caller's kernel + active session. This block locks in the audit-trail
+  // primitive: the off-chain indexer can store the handle from the event
+  // log, and the rightful owner can later decrypt it to recover the
+  // amount they wrapped/unwrapped.
+
+  describe("Phase 9.A · Option Z audit handle", () => {
+    /// Pull the `amount` (3rd arg) handle out of the latest `Wrap` /
+    /// `Unwrap` event in `receipt`. Returns the handle as a `bytes32`
+    /// hex string, matching the on-chain `euint64` representation. The
+    /// audit indexer will read the same field.
+    function extractWrapOrUnwrapAmount(
+      stable: any,
+      receipt: any,
+      eventName: "Wrap" | "Unwrap",
+    ): string {
+      const iface = stable.interface;
+      for (const log of receipt.logs) {
+        try {
+          const parsed = iface.parseLog({
+            topics: log.topics,
+            data: log.data,
+          });
+          if (parsed && parsed.name === eventName) {
+            return parsed.args[2] as string;
+          }
+        } catch {
+          // Not from this contract — skip.
+        }
+      }
+      throw new Error(`No ${eventName} event in receipt`);
+    }
+
+    it("wrap emits the amount handle, permit-grants caller's kernel + ephemeralEOA, decrypts to the wrapped value", async () => {
+      const { stable, pusdc, alice, aliceClient, acl } =
+        await loadFixture(deployStableFixture);
+      await seedAndApprove(pusdc, stable, alice, 100n * ONE_PUSDC);
+
+      const eph = createEphemeralEOA();
+      const enc = await encUint64(aliceClient, 42n * ONE_PUSDC);
+
+      const tx = await stable.connect(alice).wrap(enc, eph.address);
+      const receipt = await tx.wait();
+      const amountHandle = extractWrapOrUnwrapAmount(stable, receipt, "Wrap");
+
+      // Caller's kernel can decrypt via permit.
+      expect(
+        await acl.isAllowed(handleToUint(amountHandle), alice.address),
+      ).to.equal(true);
+      // Active session can decrypt via permit.
+      expect(
+        await acl.isAllowed(handleToUint(amountHandle), eph.address),
+      ).to.equal(true);
+
+      // The handle in the event resolves to the wrapped value (the audit
+      // primitive — what the user actually wrapped).
+      await hre.cofhe.mocks.expectPlaintext(amountHandle, 42n * ONE_PUSDC);
+    });
+
+    it("unwrap emits the silent-fail-bounded amount handle and decrypts to `actual`", async () => {
+      const { stable, pusdc, alice, aliceClient, acl } =
+        await loadFixture(deployStableFixture);
+      await seedAndApprove(pusdc, stable, alice, 100n * ONE_PUSDC);
+
+      const eph = createEphemeralEOA();
+
+      // Wrap 30 so the requested unwrap can be partially sated.
+      await stable
+        .connect(alice)
+        .wrap(await encUint64(aliceClient, 30n * ONE_PUSDC), eph.address);
+
+      // Successful unwrap (10 of 30 available).
+      let tx = await stable
+        .connect(alice)
+        .unwrap(await encUint64(aliceClient, 10n * ONE_PUSDC), eph.address);
+      let receipt = await tx.wait();
+      let amountHandle = extractWrapOrUnwrapAmount(stable, receipt, "Unwrap");
+
+      expect(
+        await acl.isAllowed(handleToUint(amountHandle), alice.address),
+      ).to.equal(true);
+      expect(
+        await acl.isAllowed(handleToUint(amountHandle), eph.address),
+      ).to.equal(true);
+      // `actual == requested` since requested <= balance.
+      await hre.cofhe.mocks.expectPlaintext(amountHandle, 10n * ONE_PUSDC);
+
+      // Silent-fail unwrap (request 1000 of 20 remaining → actual = 0).
+      tx = await stable
+        .connect(alice)
+        .unwrap(await encUint64(aliceClient, 1000n * ONE_PUSDC), eph.address);
+      receipt = await tx.wait();
+      amountHandle = extractWrapOrUnwrapAmount(stable, receipt, "Unwrap");
+
+      expect(
+        await acl.isAllowed(handleToUint(amountHandle), alice.address),
+      ).to.equal(true);
+      expect(
+        await acl.isAllowed(handleToUint(amountHandle), eph.address),
+      ).to.equal(true);
+      // `actual == 0` per Rule 5 silent-fail. The audit row decrypts to
+      // zero — observers see "user attempted unwrap" but the amount field
+      // tells them nothing was moved.
+      await hre.cofhe.mocks.expectPlaintext(amountHandle, 0n);
+    });
+
+    it("wrapHandle preserves caller's ACL on the input handle and decrypts to the wrapped value", async () => {
+      // Contract-mode caller wraps on behalf of itself. The pre-call ACL
+      // (caller already holds permit on `amount`) must NOT be revoked by
+      // the wrap path's grant logic; the symmetric `FHE.allow(amount,
+      // msg.sender)` is intended to be a no-op for callers that already
+      // have ACL.
+      const { stable, pusdc, alice, aliceClient, acl } =
+        await loadFixture(deployStableFixture);
+      await seedAndApprove(pusdc, stable, alice, 100n * ONE_PUSDC);
+
+      const initialEph = createEphemeralEOA();
+
+      // 1. Wrap once via the EOA path so alice has an mhUSDC balance handle
+      //    she holds permit on (kernel + initialEph). The balance handle is
+      //    a euint64 alice can feed into wrapHandle as the "input handle".
+      await stable
+        .connect(alice)
+        .wrap(await encUint64(aliceClient, 25n * ONE_PUSDC), initialEph.address);
+      const aliceBalHandle = await stable.confidentialBalanceOf(alice.address);
+
+      // 2. Pre-call sanity: alice holds ACL on her balance handle.
+      expect(
+        await acl.isAllowed(handleToUint(aliceBalHandle), alice.address),
+      ).to.equal(true);
+
+      // 3. Re-approve the wrapper for another pull of legacy PUSDC equal
+      //    to the handle's value (alice still has 75 PUSDC left, plenty).
+      //    `wrapHandle` will pull `aliceBalHandle`'s plaintext (25) of
+      //    legacy PUSDC and mint 25 more mhUSDC to alice.
+      const newEph = createEphemeralEOA();
+      const tx = await stable
+        .connect(alice)
+        .wrapHandle(aliceBalHandle, newEph.address);
+      const receipt = await tx.wait();
+
+      // 4. Caller's ACL on the input handle is preserved (regression
+      //    guard: a redundant grant must not corrupt prior state).
+      expect(
+        await acl.isAllowed(handleToUint(aliceBalHandle), alice.address),
+      ).to.equal(true);
+
+      // 5. The Wrap event's amount handle is the same input handle and
+      //    decrypts to the wrapped value (25 PUSDC).
+      const amountHandle = extractWrapOrUnwrapAmount(stable, receipt, "Wrap");
+      expect(amountHandle).to.equal(aliceBalHandle);
+      expect(
+        await acl.isAllowed(handleToUint(amountHandle), alice.address),
+      ).to.equal(true);
+      expect(
+        await acl.isAllowed(handleToUint(amountHandle), newEph.address),
+      ).to.equal(true);
+      await hre.cofhe.mocks.expectPlaintext(amountHandle, 25n * ONE_PUSDC);
     });
   });
 

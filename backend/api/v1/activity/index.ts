@@ -5,7 +5,7 @@ import { withAuth } from '../../../src/interface/middleware/with-auth.js';
 import { withCors } from '../../../src/interface/middleware/with-cors.js';
 import { Response } from '../../../src/interface/response.js';
 
-const useCase = new GetActivityUseCase(container.yieldRecordRepo, container.escrowRepo);
+const useCase = new GetActivityUseCase(container.taxEventRepo, container.userRepo);
 
 const handler = createGetHandler({
   operationName: 'GetActivity',

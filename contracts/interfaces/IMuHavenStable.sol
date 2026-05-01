@@ -55,8 +55,16 @@ interface IMuHavenStable {
     // ── Events ───────────────────────────────────────────────────────────
 
     event StableInitialized(address indexed owner, address indexed legacyPusdc);
-    event Wrap(address indexed account, address indexed ephemeralEOA);
-    event Unwrap(address indexed account, address indexed ephemeralEOA);
+    /// @notice Phase 9.A · Option Z — broadened to carry the encrypted
+    ///         amount handle so the wrap is auditable end-to-end. Decrypt
+    ///         requires a permit grant against `account` or `ephemeralEOA`
+    ///         (both are granted at the call site by `wrap` / `wrapHandle`).
+    event Wrap(address indexed account, address indexed ephemeralEOA, euint64 amount);
+    /// @notice Phase 9.A · Option Z — broadened to carry the silent-fail-
+    ///         bounded `actual` amount handle (i.e. requested-or-balance,
+    ///         whichever is smaller). Permit-decryptable by `account` or
+    ///         `ephemeralEOA`.
+    event Unwrap(address indexed account, address indexed ephemeralEOA, euint64 amount);
     event Transfer(address indexed from, address indexed to);
     event OperatorSet(address indexed holder, address indexed spender, uint48 until);
     event Paused(address indexed by);

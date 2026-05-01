@@ -225,19 +225,43 @@ export interface YieldRecordDto {
   created_at: string
 }
 
+/**
+ * Phase 9.A · Option Z (Option C single-source) — `/activity` reads
+ * `tax_events` only. New shape covers buy/sell/yield + cash-conversion
+ * (wrap/unwrap) rows. Wrap/Unwrap rows carry the encrypted amount handle
+ * in `metadata.encrypted_amount_handle`; the frontend decrypts via permit
+ * on click.
+ */
+export type ActivityItemType =
+  | 'buy'
+  | 'sell'
+  | 'sell-queued'
+  | 'yield'
+  | 'wrap'
+  | 'unwrap'
+  | 'fee'
+
+export interface ActivityItemMetadata {
+  /** 'wrap' | 'unwrap' | 'instant' | 'queued' | 'escalated_to_queue' */
+  kind?: string
+  /** bytes32 hex (cofhe euint64 handle) — only on wrap/unwrap rows */
+  encrypted_amount_handle?: string | null
+  /** Ephemeral EOA recorded at the wrap/unwrap call site (informational). */
+  ephemeral_eoa?: string | null
+  /** Free-form additional fields the backend may attach; never amounts. */
+  [k: string]: unknown
+}
+
 export interface ActivityItemDto {
   id: string
-  type: 'yield' | 'escrow'
-  status: string
+  type: ActivityItemType
+  status: 'confirmed' | 'queued' | 'claimed' | 'pending'
   token_address: string | null
-  amount: string | null
+  amount: string | null // always null post-Option-Z — values stay encrypted
   timestamp: string
-  /**
-   * On-chain transaction hash that produced this activity row.
-   * Optional — older backends / indexer rows may not populate it.
-   * When present, the UI can show an inline privacy-proof panel for the tx.
-   */
-  tx_hash?: string | null
+  /** On-chain tx hash. Always present post-Option-Z (every row is from tax_events). */
+  tx_hash: string
+  metadata?: ActivityItemMetadata | null
 }
 
 export interface BalanceDto {

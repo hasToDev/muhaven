@@ -277,9 +277,15 @@ async function main() {
     } else {
       const queueAddrs = parseAddressList(env.REDEMPTION_QUEUE_ADDRESSES_JSON);
       const snapshotAddrs = parseAddressList(env.YIELD_SNAPSHOT_ADDRESSES_JSON);
-      if (!env.SUBSCRIPTION_ADDRESS && queueAddrs.length === 0 && snapshotAddrs.length === 0) {
+      const hasStable = !!env.STABLE_ADDRESS;
+      if (
+        !env.SUBSCRIPTION_ADDRESS &&
+        queueAddrs.length === 0 &&
+        snapshotAddrs.length === 0 &&
+        !hasStable
+      ) {
         console.warn(
-          '[tax-events] enabled but no SUBSCRIPTION_ADDRESS / REDEMPTION_QUEUE_ADDRESSES_JSON / YIELD_SNAPSHOT_ADDRESSES_JSON configured — skipping',
+          '[tax-events] enabled but no SUBSCRIPTION_ADDRESS / REDEMPTION_QUEUE_ADDRESSES_JSON / YIELD_SNAPSHOT_ADDRESSES_JSON / STABLE_ADDRESS configured — skipping',
         );
       } else {
         const indexer = new TaxEventIndexer(container.taxEventRepo, {
@@ -287,6 +293,11 @@ async function main() {
           subscriptionAddress: env.SUBSCRIPTION_ADDRESS as Address | undefined,
           redemptionQueueAddresses: queueAddrs,
           yieldSnapshotAddresses: snapshotAddrs,
+          // Phase 9.A · Option Z — adds MuHavenStable Wrap/Unwrap to the
+          // feed. Pre-upgrade staging deployments without the post-Option-Z
+          // impl are still supported via the topic filter (no matching
+          // events → no rows).
+          muHavenStableAddress: env.STABLE_ADDRESS as Address | undefined,
           oracleAddress: env.ORACLE_ADDRESS as Address | undefined,
           intervalMs: env.TAX_EVENT_POLLER_INTERVAL_MS,
         });
@@ -298,7 +309,13 @@ async function main() {
   }
 
   // Start Wave 3 blockchain event poller if enabled
-  if (env.BLOCK_POLLER_ENABLED) {
+  if (!env.BLOCK_POLLER_ENABLED) {
+    // Phase 9.A · Option C / Option Z (2026-05-XX) — Wave 3 yield + escrow
+    // paths officially retired post-`earlybot` merge. The legacy poller
+    // can stay env-gated for any future Wave 3 forensic re-poll, but on a
+    // Wave-3.5-only stack `/activity` reads tax_events exclusively.
+    console.log('[poller] Wave 3 BLOCK_POLLER disabled per Phase 9.A Option C');
+  } else {
     // REINEIRA_ESCROW_ADDRESS is retained as the env var name for backwards
     // compatibility with existing homelab configs — semantically it now points
     // at MuHavenEscrow (Phase 19B/19D switched escrow implementations).

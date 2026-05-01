@@ -184,6 +184,13 @@ contract MuHavenStable is
         euint64 amount = FHE.asEuint64(encAmount);
         FHE.allowThis(amount);
 
+        // Phase 9.A · Option Z — grant decrypt ACL on the amount handle to
+        // the caller's kernel + active session. The handle is emitted in
+        // the `Wrap` event below for off-chain audit indexing; without
+        // these grants it would be unreadable to its rightful owner.
+        FHE.allow(amount, msg.sender);
+        FHE.allow(amount, ephemeralEOA);
+
         _doWrap(msg.sender, amount, ephemeralEOA);
     }
 
@@ -204,6 +211,17 @@ contract MuHavenStable is
         // to legacy PUSDC. The `FHE.allow` call below would revert
         // ACL-denied otherwise — that's the only access gate we need.
         FHE.allowThis(amount);
+
+        // Phase 9.A · Option Z — symmetric ACL grants with the EOA `wrap`
+        // path. The msg.sender grant is a no-op for contract callers that
+        // already hold ACL, but it keeps the audit-event handle decryptable
+        // when the caller is itself a user-facing surface. Skip the
+        // ephemeral grant when callers pass `address(0)` (e.g. Treasury
+        // contract callers without a decrypt path).
+        FHE.allow(amount, msg.sender);
+        if (ephemeralEOA != address(0)) {
+            FHE.allow(amount, ephemeralEOA);
+        }
 
         _doWrap(msg.sender, amount, ephemeralEOA);
     }
@@ -228,7 +246,7 @@ contract MuHavenStable is
         if (!ok) revert WrapFailed();
 
         _mintInternal(from, amount, ephemeralEOA);
-        emit Wrap(from, ephemeralEOA);
+        emit Wrap(from, ephemeralEOA, amount);
     }
 
     /// @inheritdoc IMuHavenStable
@@ -257,6 +275,12 @@ contract MuHavenStable is
         // Push legacy PUSDC back to caller. Grant PUSDC ACL on `actual`.
         FHE.allow(actual, legacyPusdc);
 
+        // Phase 9.A · Option Z — grant decrypt ACL on the silent-fail-
+        // bounded `actual` handle to the caller's kernel + active session
+        // so the amount carried in the `Unwrap` event below is auditable.
+        FHE.allow(actual, msg.sender);
+        FHE.allow(actual, ephemeralEOA);
+
         (bool ok, ) = legacyPusdc.call(
             abi.encodeWithSelector(
                 _LEGACY_TRANSFER_UINT256,
@@ -266,7 +290,7 @@ contract MuHavenStable is
         );
         if (!ok) revert UnwrapFailed();
 
-        emit Unwrap(msg.sender, ephemeralEOA);
+        emit Unwrap(msg.sender, ephemeralEOA, actual);
     }
 
     // ── Confidential transfers (modern surface) ─────────────────────────

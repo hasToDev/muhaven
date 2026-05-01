@@ -1,19 +1,42 @@
-import type { IYieldRecordRepository } from '../../../domain/yield-history/repository/yield-record.repository.js';
-import type { IEscrowRepository } from '../../../domain/escrow/repository/escrow.repository.js';
+/**
+ * Phase 9.A · Option Z (Option C single-source) — `/activity` reads from
+ * `tax_events` exclusively. Wave 3 yield + escrow paths are retired post-
+ * `earlybot` merge; existing yield/escrow rows remain in DB but are no
+ * longer surfaced to the feed.
+ *
+ * Encrypted amounts stay encrypted: every row's `amount` is `null`. The
+ * frontend pulls the encrypted handle from `metadata.encrypted_amount_handle`
+ * (Wrap/Unwrap rows only) and decrypts via permit on click.
+ */
+
+import type { ITaxEventRepository } from '../../../domain/tax-event/repository/tax-event.repository.js';
+import type { TaxEvent, TaxEventType } from '../../../domain/tax-event/model/tax-event.js';
+import type { IUserRepository } from '../../../domain/auth/repository/user.repository.js';
+
+export type ActivityItemType =
+  | 'buy'
+  | 'sell'
+  | 'sell-queued'
+  | 'yield'
+  | 'wrap'
+  | 'unwrap'
+  | 'fee';
 
 export interface ActivityItemDto {
   id: string;
-  type: 'yield' | 'escrow';
-  status: string;
+  type: ActivityItemType;
+  status: 'confirmed' | 'queued' | 'claimed' | 'pending';
   token_address: string | null;
-  amount: string | null;
+  amount: string | null; // always null — values stay encrypted
   timestamp: string;
+  tx_hash: string;
+  metadata?: Record<string, unknown> | null;
 }
 
 export class GetActivityUseCase {
   constructor(
-    private readonly yieldRepo: IYieldRecordRepository,
-    private readonly escrowRepo: IEscrowRepository,
+    private readonly taxEventRepo: ITaxEventRepository,
+    private readonly userRepo: IUserRepository,
   ) {}
 
   async execute(
@@ -22,40 +45,82 @@ export class GetActivityUseCase {
   ): Promise<{ items: ActivityItemDto[]; has_more: boolean }> {
     const limit = options?.limit ?? 20;
     const offset = options?.offset ?? 0;
-
-    // Over-fetch by 1 to detect if more items exist beyond this page
     const fetchLimit = limit + offset + 1;
 
-    const [yields, escrows] = await Promise.all([
-      this.yieldRepo.findByUserId(userId, { limit: fetchLimit, offset: 0 }),
-      this.escrowRepo.findByUserId(userId, { limit: fetchLimit }),
-    ]);
+    // tax_events is keyed by `holder_address` (kernel address), but the
+    // `userId` carried by JWT claims is the application-level user id. Map
+    // through the user repo first; bail with an empty page if the user has
+    // no kernel address recorded yet.
+    const user = await this.userRepo.findById(userId);
+    const holder = user?.walletAddress;
+    if (!holder) {
+      return { items: [], has_more: false };
+    }
 
-    const yieldItems: ActivityItemDto[] = yields.items.map((y) => ({
-      id: y.id,
-      type: 'yield' as const,
-      status: y.status,
-      token_address: y.tokenAddress,
-      amount: y.amount ?? null,
-      timestamp: y.createdAt.toISOString(),
-    }));
+    const events = await this.taxEventRepo.findByHolder(holder, fetchLimit);
 
-    const escrowItems: ActivityItemDto[] = escrows.items.map((e) => ({
-      id: e.id,
-      type: 'escrow' as const,
-      status: e.status,
-      token_address: e.tokenAddress ?? null,
-      amount: e.amount != null ? String(e.amount) : null,
-      timestamp: e.createdAt.toISOString(),
-    }));
+    const items: ActivityItemDto[] = events.map(toActivityItem);
 
-    const merged = [...yieldItems, ...escrowItems].sort(
-      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
-    );
-
-    const paged = merged.slice(offset, offset + limit);
-    const hasMore = merged.length > offset + limit;
+    const paged = items.slice(offset, offset + limit);
+    const hasMore = items.length > offset + limit;
 
     return { items: paged, has_more: hasMore };
   }
+}
+
+function toActivityItem(e: TaxEvent): ActivityItemDto {
+  return {
+    id: `${e.txHash}:${e.logIndex}`,
+    type: mapType(e.eventType, e.metadata),
+    status: deriveStatus(e.eventType, e.metadata),
+    token_address: e.tokenAddress,
+    amount: null,
+    timestamp: e.blockTimestamp.toISOString(),
+    tx_hash: e.txHash,
+    metadata: e.metadata ?? null,
+  };
+}
+
+function mapType(t: TaxEventType, metadata: Record<string, unknown> | null): ActivityItemType {
+  switch (t) {
+    case 'Acquisition':
+      return 'buy';
+    case 'Disposition':
+      // Indexer writes `kind`:
+      //   'instant'             → Subscription.Redeemed (in-cap)
+      //   'escalated_to_queue'  → Subscription.Redeemed (auto-escalated)
+      //   'queued'              → RedemptionQueue.QueueClaimed (settled)
+      // First two are "sell that ended up in the queue"; the third is the
+      // queue settlement itself. Both render as `sell-queued` so the user
+      // sees a queued-pill instead of a confirmed-pill.
+      return metadata?.kind === 'queued' || metadata?.kind === 'escalated_to_queue'
+        ? 'sell-queued'
+        : 'sell';
+    case 'IncomeAccrual':
+      return 'yield';
+    case 'Wrap':
+      return 'wrap';
+    case 'Unwrap':
+      return 'unwrap';
+    case 'FeeEvent':
+      return 'fee';
+  }
+}
+
+function deriveStatus(
+  t: TaxEventType,
+  metadata: Record<string, unknown> | null,
+): ActivityItemDto['status'] {
+  if (
+    t === 'Disposition' &&
+    (metadata?.kind === 'queued' || metadata?.kind === 'escalated_to_queue')
+  ) {
+    return 'queued';
+  }
+  // Everything else surfaces as confirmed: indexer only writes after the
+  // log is finalised, so the on-chain side is settled by the time the row
+  // exists. Queued sells are the lone exception — the disposition log
+  // confirms the queue submission, but the cash payout is still pending
+  // epoch processing.
+  return 'confirmed';
 }
