@@ -25,13 +25,20 @@ export class PgTaxEventRepository implements ITaxEventRepository {
       createdAt: e.createdAt,
     }));
 
-    // Idempotent insert keyed on (tx_hash, log_index). Re-polled events are
-    // a no-op. Drizzle's onConflictDoNothing returns the inserted rows so we
-    // can count what actually landed.
+    // Idempotent insert keyed on the table's PRIMARY KEY. Phase 9.A · Option Z
+    // follow-up widened the PK from (tx_hash, log_index) to
+    // (tx_hash, log_index, holder_address) so a single Transfer event can
+    // produce two rows (sender + recipient). The ON CONFLICT target MUST
+    // mirror the actual unique constraint exactly — passing only
+    // (tx_hash, log_index) errors with "no unique or exclusion constraint
+    // matching the ON CONFLICT specification" (Postgres 42P10), the
+    // indexer tick fails, and the cursor doesn't advance.
     const inserted = await this.db
       .insert(taxEvents)
       .values(values)
-      .onConflictDoNothing({ target: [taxEvents.txHash, taxEvents.logIndex] })
+      .onConflictDoNothing({
+        target: [taxEvents.txHash, taxEvents.logIndex, taxEvents.holderAddress],
+      })
       .returning({ txHash: taxEvents.txHash });
     return inserted.length;
   }
