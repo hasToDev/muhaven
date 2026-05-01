@@ -8,8 +8,8 @@ import MButton from '@/components/ui/MButton.vue'
 import MPageLoader from '@/components/ui/MPageLoader.vue'
 import PortfolioDonut from '@/components/charts/PortfolioDonut.vue'
 import {
-  Shield, Lock, ShieldCheck, KeyRound, Key, Eye, EyeOff, ArrowUp,
-  Loader2, Unlock, CircleDot,
+  Shield, Lock, ShieldCheck, KeyRound, Key, Eye, ArrowUp,
+  Loader2, Unlock, CircleDot, RefreshCw,
 } from 'lucide-vue-next'
 import { formatUSD, cn } from '@/lib/utils'
 
@@ -33,6 +33,18 @@ onMounted(async () => {
 const showLoader = computed(() =>
   !portfolio.loaded && !portfolio.error && portfolio.loading,
 )
+
+// Reveal All shows in-flight state whenever ANY decrypt is running on the
+// page (per-holding click or Reveal All click). The pending count drives the
+// "Revealing N…" countdown — it ticks down as each decrypt resolves, giving
+// a concrete progress signal inside the gold CTA.
+const pendingDecryptCount = computed(() => {
+  let n = 0
+  for (const h of portfolio.holdings) if (h.decrypting) n++
+  if (portfolio.pusdcDecrypting) n++
+  return n
+})
+const revealing = computed(() => pendingDecryptCount.value > 0)
 
 async function decryptAll() {
   if (!address.value) return
@@ -256,13 +268,17 @@ const allocationBreakdown = computed(() =>
               v-if="!portfolio.allDecrypted"
               type="button"
               @click="decryptAll"
+              :disabled="revealing"
+              :aria-busy="revealing"
               data-testid="portfolio-reveal-all-cta"
               class="btn-gold-sweep z-10 px-8 py-3.5 rounded-lg font-sans font-semibold text-sm tracking-wide
                      flex items-center gap-2.5 cursor-pointer
-                     transition-all duration-300 hover:-translate-y-0.5 active:scale-[0.98]"
+                     transition-all duration-300 hover:-translate-y-0.5 active:scale-[0.98]
+                     disabled:cursor-wait disabled:hover:translate-y-0"
             >
-              <KeyRound :size="16" :stroke-width="2" />
-              <span>Reveal All</span>
+              <Loader2 v-if="revealing" :size="16" :stroke-width="2" class="animate-spin" />
+              <KeyRound v-else :size="16" :stroke-width="2" />
+              <span aria-live="polite">{{ revealing ? `Revealing ${pendingDecryptCount}…` : 'Reveal All' }}</span>
             </button>
           </div>
 
@@ -326,10 +342,13 @@ const allocationBreakdown = computed(() =>
                 <button
                   type="button"
                   @click="decryptAll"
-                  class="btn-gold-sweep inline-flex items-center gap-2 px-6 py-2.5 rounded-lg font-sans font-semibold text-xs tracking-wide cursor-pointer transition-all duration-300 hover:-translate-y-0.5"
+                  :disabled="revealing"
+                  :aria-busy="revealing"
+                  class="btn-gold-sweep inline-flex items-center gap-2 px-6 py-2.5 rounded-lg font-sans font-semibold text-xs tracking-wide cursor-pointer transition-all duration-300 hover:-translate-y-0.5 disabled:cursor-wait disabled:hover:translate-y-0"
                 >
-                  <Key :size="14" :stroke-width="2" />
-                  Reveal allocation
+                  <Loader2 v-if="revealing" :size="14" :stroke-width="2" class="animate-spin" />
+                  <Key v-else :size="14" :stroke-width="2" />
+                  <span aria-live="polite">{{ revealing ? `Revealing ${pendingDecryptCount}…` : 'Reveal allocation' }}</span>
                 </button>
               </div>
             </div>
@@ -367,20 +386,14 @@ const allocationBreakdown = computed(() =>
             </div>
           </div>
 
-          <!-- Bottom stats strip (always visible) -->
+          <!-- Bottom stats strip (always visible). Cash moved into the
+               dedicated Cash section below the hero — having USDC on both
+               surfaces was a duplicate (Researcher + Architect call). -->
           <div
-            class="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x
+            class="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x
                    divide-haze dark:divide-white/5
                    bg-mist/40 dark:bg-white/[0.02]"
           >
-            <div class="p-6 flex flex-col gap-1">
-              <p class="font-sans text-[10px] uppercase tracking-[0.2em] text-cool">
-                USDC Balance
-              </p>
-              <p class="font-sans text-xl text-midnight dark:text-white tabular-nums font-medium tracking-tight">
-                {{ portfolio.usdcBalance !== null ? formatUSD(Number(portfolio.usdcBalance) / 1e6) : '—' }}
-              </p>
-            </div>
             <div class="p-6 flex flex-col gap-1">
               <p class="font-sans text-[10px] uppercase tracking-[0.2em] text-cool">
                 Holdings
@@ -411,6 +424,146 @@ const allocationBreakdown = computed(() =>
       </section>
 
       <!-- ══════════════════════════════════════════════════════════
+           Cash — Phase 9.A: dedicated section between Hero and Holdings.
+           Holdings is now RWA-only; cash gets equal billing here so the
+           hero "Total Portfolio Value" math reconciles (mhUSDC contributes
+           when revealed). USDC is plaintext on-chain; mhUSDC is the
+           confidential wrapper and decrypts on opt-in.
+           ══════════════════════════════════════════════════════════ -->
+      <section class="space-y-6" data-testid="portfolio-cash-section">
+        <div class="flex items-center justify-between">
+          <h3 class="font-accent italic text-3xl md:text-4xl text-midnight dark:text-white tracking-tight">
+            Cash
+          </h3>
+        </div>
+        <div class="h-px w-full bg-haze dark:bg-white/5" />
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <!-- USDC tile (plaintext ERC-20) -->
+          <div
+            v-if="portfolio.usdcBalance !== null"
+            v-motion
+            :initial="{ opacity: 0, y: 16 }"
+            :visible-once="{ opacity: 1, y: 0, transition: { duration: 400 } }"
+            data-testid="portfolio-cash-usdc-tile"
+            class="rounded-xl p-5 md:p-6 border border-haze dark:border-white/5
+                   bg-white dark:bg-[#171717]
+                   flex flex-col gap-4 md:flex-row md:items-center md:justify-between"
+          >
+            <div class="flex-1 min-w-0">
+              <h4 class="font-accent italic text-xl md:text-2xl text-slate dark:text-body-dark/90 tracking-tight mb-2 leading-tight">
+                Cash Buffer
+              </h4>
+              <div class="flex items-center gap-2.5 flex-wrap">
+                <span
+                  class="font-mono text-[10px] text-slate dark:text-body-dark/70 bg-haze/50 dark:bg-white/5
+                         px-2 py-0.5 rounded tracking-wider font-medium"
+                >
+                  USDC
+                </span>
+                <span class="font-sans text-[10px] text-cool uppercase tracking-[0.18em]">
+                  Standard ERC-20 · plaintext
+                </span>
+              </div>
+            </div>
+            <div class="font-accent italic text-2xl md:text-3xl text-midnight dark:text-white tabular-nums tracking-tight">
+              {{ formatUSD(Number(portfolio.usdcBalance) / 1e6) }}
+            </div>
+          </div>
+
+          <!-- mhUSDC tile (encrypted, opt-in decrypt) -->
+          <div
+            v-motion
+            :initial="{ opacity: 0, y: 16 }"
+            :visible-once="{ opacity: 1, y: 0, transition: { duration: 400, delay: 90 } }"
+            data-testid="portfolio-cash-mhusdc-tile"
+            class="rounded-xl p-5 md:p-6 border border-haze dark:border-white/5
+                   bg-white dark:bg-[#171717]
+                   flex flex-col gap-4 md:flex-row md:items-center md:justify-between"
+          >
+            <div class="flex-1 min-w-0">
+              <h4 class="font-accent italic text-xl md:text-2xl text-midnight dark:text-white tracking-tight mb-2 leading-tight">
+                Encrypted Cash
+              </h4>
+              <div class="flex items-center gap-2.5 flex-wrap">
+                <MBadge variant="privacy">mhUSDC</MBadge>
+                <span class="font-sans text-[10px] text-cool uppercase tracking-[0.18em]">
+                  Confidential stablecoin
+                </span>
+              </div>
+            </div>
+
+            <!-- Locked: blurred placeholder + Decrypt CTA -->
+            <div
+              v-if="portfolio.pusdcConfidentialBalance === null"
+              class="flex items-center gap-3 md:flex-shrink-0"
+            >
+              <span
+                class="font-accent italic text-2xl md:text-3xl text-cool/40 dark:text-body-dark/30
+                       tabular-nums select-none blur-[2.5px] tracking-[0.05em]"
+                aria-hidden="true"
+              >
+                $••••.••
+              </span>
+              <button
+                type="button"
+                @click="decryptPusdc"
+                :disabled="portfolio.pusdcDecrypting"
+                data-testid="portfolio-cash-mhusdc-decrypt-cta"
+                class="font-sans text-[10px] uppercase tracking-[0.2em] font-semibold
+                       text-compute dark:text-signal
+                       border border-compute/30 dark:border-signal/30
+                       hover:text-white dark:hover:text-[#412d00]
+                       hover:bg-compute dark:hover:bg-signal
+                       px-4 py-2 rounded transition-all duration-200 cursor-pointer
+                       disabled:opacity-60 disabled:cursor-wait inline-flex items-center justify-center gap-1.5"
+              >
+                <Loader2 v-if="portfolio.pusdcDecrypting" :size="10" class="animate-spin" />
+                <Eye v-else :size="10" :stroke-width="2" />
+                <span>Decrypt</span>
+              </button>
+            </div>
+
+            <!-- Revealed: value + Refresh affordance -->
+            <div
+              v-else
+              class="flex items-center gap-3 md:flex-shrink-0"
+            >
+              <div class="font-accent italic text-2xl md:text-3xl text-midnight dark:text-white tabular-nums tracking-tight">
+                {{ formatUSD(Number(portfolio.pusdcConfidentialBalance) / 1e6) }}
+              </div>
+              <button
+                type="button"
+                @click="decryptPusdc"
+                :disabled="portfolio.pusdcDecrypting"
+                data-testid="portfolio-cash-mhusdc-refresh-cta"
+                :title="portfolio.pusdcDecrypting ? 'Refreshing…' : 'Re-read + decrypt'"
+                :aria-label="portfolio.pusdcDecrypting ? 'Refreshing encrypted cash balance' : 'Refresh encrypted cash balance'"
+                class="text-[10px] font-sans text-cool hover:text-compute dark:hover:text-signal
+                       transition-colors flex items-center gap-1 cursor-pointer
+                       disabled:opacity-50 disabled:cursor-wait"
+              >
+                <Loader2 v-if="portfolio.pusdcDecrypting" :size="10" class="animate-spin" />
+                <RefreshCw v-else :size="10" />
+                <span class="sr-only md:not-sr-only">Refresh</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- mhUSDC scoped error (was under Holdings; moved here with the
+             card it belongs to). -->
+        <div
+          v-if="portfolio.pusdcError"
+          class="flex items-start gap-2 px-4 py-3 rounded-lg bg-negative/8 border border-negative/20"
+        >
+          <p class="text-[11px] font-sans text-negative leading-relaxed">
+            {{ portfolio.pusdcError }}
+          </p>
+        </div>
+      </section>
+
+      <!-- ══════════════════════════════════════════════════════════
            Holdings
            ══════════════════════════════════════════════════════════ -->
       <section class="space-y-6">
@@ -422,12 +575,16 @@ const allocationBreakdown = computed(() =>
             v-if="!portfolio.allDecrypted"
             type="button"
             @click="decryptAll"
+            :disabled="revealing"
+            :aria-busy="revealing"
             class="btn-gold-sweep px-5 py-2.5 rounded-lg font-sans font-semibold text-xs tracking-wide
                    flex items-center gap-2 cursor-pointer transition-all duration-300
-                   hover:-translate-y-0.5 active:scale-[0.98]"
+                   hover:-translate-y-0.5 active:scale-[0.98]
+                   disabled:cursor-wait disabled:hover:translate-y-0"
           >
-            <KeyRound :size="14" :stroke-width="2" />
-            <span>Reveal All</span>
+            <Loader2 v-if="revealing" :size="14" :stroke-width="2" class="animate-spin" />
+            <KeyRound v-else :size="14" :stroke-width="2" />
+            <span aria-live="polite">{{ revealing ? `Revealing ${pendingDecryptCount}…` : 'Reveal All' }}</span>
           </button>
         </div>
         <div class="h-px w-full bg-haze dark:bg-white/5" />
@@ -542,128 +699,6 @@ const allocationBreakdown = computed(() =>
             </div>
           </div>
 
-          <!-- Cash Buffer: USDC (plaintext ERC-20) -->
-          <div
-            v-if="portfolio.usdcBalance !== null"
-            v-motion
-            :initial="{ opacity: 0, y: 16 }"
-            :visible-once="{ opacity: 1, y: 0, transition: { duration: 400, delay: portfolio.holdings.length * 90 } }"
-            class="rounded-xl p-5 md:p-6 border border-haze dark:border-white/5
-                   bg-white dark:bg-[#171717]
-                   flex items-center justify-between gap-4"
-          >
-            <div class="flex-1 min-w-0">
-              <h4 class="font-accent italic text-xl md:text-2xl text-slate dark:text-body-dark/90 tracking-tight mb-2 leading-tight">
-                Cash Buffer
-              </h4>
-              <div class="flex items-center gap-2.5 flex-wrap">
-                <span
-                  class="font-mono text-[10px] text-slate dark:text-body-dark/70 bg-haze/50 dark:bg-white/5
-                         px-2 py-0.5 rounded tracking-wider font-medium"
-                >
-                  USDC
-                </span>
-                <span class="font-sans text-[10px] text-cool uppercase tracking-[0.18em]">
-                  Standard ERC-20 · not encrypted
-                </span>
-              </div>
-            </div>
-            <div class="flex-1 flex justify-end">
-              <div class="font-accent italic text-2xl md:text-3xl text-midnight dark:text-white tabular-nums tracking-tight">
-                {{ formatUSD(Number(portfolio.usdcBalance) / 1e6) }}
-              </div>
-            </div>
-          </div>
-
-          <!-- Cash Buffer: PUSDC (confidential stablecoin, public + confidential halves) -->
-          <div
-            v-if="portfolio.pusdcPublicBalance !== null"
-            v-motion
-            :initial="{ opacity: 0, y: 16 }"
-            :visible-once="{ opacity: 1, y: 0, transition: { duration: 400, delay: (portfolio.holdings.length + 1) * 90 } }"
-            class="rounded-xl p-5 md:p-6 border border-haze dark:border-white/5
-                   bg-white dark:bg-[#171717]
-                   flex flex-col md:flex-row md:items-stretch gap-4 md:gap-0"
-          >
-            <div class="flex-1 min-w-0">
-              <h4 class="font-accent italic text-xl md:text-2xl text-midnight dark:text-white tracking-tight mb-2 leading-tight">
-                Confidential Cash
-              </h4>
-              <div class="flex items-center gap-2.5 flex-wrap">
-                <MBadge variant="privacy">PUSDC</MBadge>
-                <span class="font-sans text-[10px] text-cool uppercase tracking-[0.18em]">
-                  Public + confidential halves
-                </span>
-              </div>
-            </div>
-
-            <!-- Public half -->
-            <div class="flex-1 md:border-l md:border-haze dark:md:border-white/5 md:pl-6 flex flex-col justify-center">
-              <p class="font-sans text-[10px] uppercase tracking-[0.2em] text-cool mb-1">
-                Public portion
-              </p>
-              <p class="font-accent italic text-xl md:text-2xl text-midnight dark:text-white tabular-nums tracking-tight">
-                {{ formatUSD(Number(portfolio.pusdcPublicBalance) / 1e6) }}
-              </p>
-            </div>
-
-            <!-- Confidential half -->
-            <div class="flex-1 md:border-l md:border-haze dark:md:border-white/5 md:pl-6 flex flex-col justify-center gap-1.5">
-              <div class="flex items-center justify-between">
-                <p class="font-sans text-[10px] uppercase tracking-[0.2em] text-cool">
-                  Confidential portion
-                </p>
-                <button
-                  v-if="portfolio.pusdcConfidentialBalance !== null"
-                  type="button"
-                  @click="decryptPusdc"
-                  :disabled="portfolio.pusdcDecrypting"
-                  data-testid="portfolio-pusdc-refresh"
-                  class="text-[10px] font-sans text-cool hover:text-compute dark:hover:text-signal
-                         transition-colors flex items-center gap-1 cursor-pointer
-                         disabled:opacity-50 disabled:cursor-wait"
-                  title="Re-read + decrypt"
-                >
-                  <Loader2 v-if="portfolio.pusdcDecrypting" :size="10" class="animate-spin" />
-                  <EyeOff v-else :size="10" />
-                  Refresh
-                </button>
-              </div>
-              <div v-if="portfolio.pusdcConfidentialBalance !== null">
-                <p class="font-accent italic text-xl md:text-2xl text-midnight dark:text-white tabular-nums tracking-tight">
-                  {{ formatUSD(Number(portfolio.pusdcConfidentialBalance) / 1e6) }}
-                </p>
-              </div>
-              <button
-                v-else
-                type="button"
-                @click="decryptPusdc"
-                :disabled="portfolio.pusdcDecrypting"
-                data-testid="portfolio-pusdc-decrypt-cta"
-                class="inline-flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.2em] font-semibold
-                       text-compute dark:text-signal
-                       border border-compute/30 dark:border-signal/30
-                       hover:text-white dark:hover:text-[#412d00]
-                       hover:bg-compute dark:hover:bg-signal
-                       px-4 py-2 rounded transition-all duration-200 cursor-pointer
-                       disabled:opacity-60 disabled:cursor-wait self-start"
-              >
-                <Loader2 v-if="portfolio.pusdcDecrypting" :size="10" class="animate-spin" />
-                <Eye v-else :size="10" :stroke-width="2" />
-                Decrypt
-              </button>
-            </div>
-          </div>
-
-          <!-- PUSDC scoped error -->
-          <div
-            v-if="portfolio.pusdcError"
-            class="flex items-start gap-2 px-4 py-3 rounded-lg bg-negative/8 border border-negative/20"
-          >
-            <p class="text-[11px] font-sans text-negative leading-relaxed">
-              {{ portfolio.pusdcError }}
-            </p>
-          </div>
         </div>
       </section>
 

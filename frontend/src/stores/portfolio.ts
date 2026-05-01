@@ -28,11 +28,11 @@ export interface PortfolioHolding {
 export const usePortfolioStore = defineStore('portfolio', () => {
   const holdings = ref<PortfolioHolding[]>([])
   const usdcBalance = ref<bigint | null>(null)
-  // PUSDC has two surfaces: `balanceOf` returns only the plaintext portion,
-  // while `confidentialBalanceOf` returns an encrypted euint64 handle. The
-  // total balance = public + confidential, but the confidential portion needs
-  // FHE decrypt (opt-in, costs a passkey for the self-permit first time).
-  const pusdcPublicBalance = ref<bigint | null>(null)
+  // Wave 3.5 cash: `confidentialBalanceOf` returns an encrypted euint64 handle
+  // (mhUSDC) that needs FHE decrypt — opt-in, costs a passkey on the
+  // first-session self-permit. Pre-cutover (legacy PUSDC) had a plaintext
+  // half too, but Phase 9.A dropped the read + UI: mhUSDC is confidential-
+  // only and the "public portion" was dead surface.
   const pusdcConfidentialBalance = ref<bigint | null>(null)
   const pusdcDecrypting = ref(false)
   // Scoped to the PUSDC card. Writing to the shared `error` ref instead
@@ -136,21 +136,10 @@ export const usePortfolioStore = defineStore('portfolio', () => {
       )
       holdings.value = holdingsWithMeta
 
-      // Load USDC balance (non-encrypted, standard ERC-20) + the plaintext
-      // portion of legacy PUSDC in parallel. The confidential portion stays
-      // null until the user clicks "Decrypt" — same opt-in pattern as
-      // fhERC-20 holdings.
-      //
-      // Phase 7.5: PUSDC public surface still comes from the legacy
-      // contract (mhUSDC has no plaintext shadow — it's confidential-only).
-      // The "decrypted PUSDC" card on PortfolioPage reads mhUSDC when the
-      // wrapper is configured, falling back to legacy PUSDC otherwise.
-      const [usdc, pusdcPublic] = await Promise.all([
-        Erc20Service.balanceOf(addresses.usdc, walletAddress),
-        LegacyPusdcService.balanceOf(walletAddress),
-      ])
-      usdcBalance.value = usdc
-      pusdcPublicBalance.value = pusdcPublic
+      // Load USDC balance (non-encrypted, standard ERC-20). The mhUSDC
+      // confidential balance stays null until the user clicks "Decrypt" —
+      // same opt-in pattern as fhERC-20 holdings.
+      usdcBalance.value = await Erc20Service.balanceOf(addresses.usdc, walletAddress)
 
       loaded.value = true
     } catch (e) {
@@ -215,21 +204,27 @@ export const usePortfolioStore = defineStore('portfolio', () => {
   async function decryptPusdc(walletAddress: `0x${string}`) {
     if (pusdcDecrypting.value) return
     pusdcDecrypting.value = true
-    pusdcConfidentialBalance.value = null
     pusdcError.value = null
     try {
       const { useFhe } = await import('@/composables/useFhe')
       const fhe = useFhe()
       await fhe.initialize()
 
+      // Decrypt then assign — keep the old revealed value visible while the
+      // refresh is in flight so the UI doesn't flicker into the locked
+      // (Decrypt CTA) layout. On failure we null + raise the error so the
+      // user sees the locked layout + scoped error message.
+      let next: bigint
       if (MuHavenStableService.isAvailable()) {
         const ctHash = await MuHavenStableService.confidentialBalanceOf(walletAddress)
-        pusdcConfidentialBalance.value = await fhe.decryptMhUsdcForView(ctHash)
+        next = await fhe.decryptMhUsdcForView(ctHash)
       } else {
         const ctHash = await LegacyPusdcService.confidentialBalanceOf(walletAddress)
-        pusdcConfidentialBalance.value = await fhe.decryptUint64ForView(ctHash)
+        next = await fhe.decryptUint64ForView(ctHash)
       }
+      pusdcConfidentialBalance.value = next
     } catch (e) {
+      pusdcConfidentialBalance.value = null
       pusdcError.value = e instanceof Error ? e.message : 'PUSDC decrypt failed'
     } finally {
       pusdcDecrypting.value = false
@@ -239,7 +234,6 @@ export const usePortfolioStore = defineStore('portfolio', () => {
   function reset() {
     holdings.value = []
     usdcBalance.value = null
-    pusdcPublicBalance.value = null
     pusdcConfidentialBalance.value = null
     pusdcDecrypting.value = false
     pusdcError.value = null
@@ -251,7 +245,6 @@ export const usePortfolioStore = defineStore('portfolio', () => {
   return {
     holdings,
     usdcBalance,
-    pusdcPublicBalance,
     pusdcConfidentialBalance,
     pusdcDecrypting,
     pusdcError,
