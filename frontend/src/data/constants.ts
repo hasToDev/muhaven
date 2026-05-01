@@ -115,11 +115,6 @@ export const YIELDS_DATA = {
 
 // ── Chart Data ──
 
-export const YIELD_CHART_DATA = {
-  labels: ['Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar'],
-  values: [580, 620, 710, 780, 850, 1247.83],
-}
-
 export const TOKEN_GROWTH_DATA: Record<string, { labels: string[]; values: number[] }> = {
   MHTB: { labels: ['Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar'], values: [28, 31, 35, 39, 43, 47] },
   MHMM: { labels: ['Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar'], values: [15, 18, 21, 24, 28, 31] },

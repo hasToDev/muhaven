@@ -1,177 +1,91 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { toast } from 'vue-sonner'
 import type { Address } from 'viem'
-import { YieldSnapshotClient, type EpochView } from '@muhaven/sdk'
-import { useYieldsStore } from '@/stores/yields'
+import { YieldSnapshotClient } from '@muhaven/sdk'
+import { useEpochsStore, type EpochEntry } from '@/stores/epochs'
 import { useWallet } from '@/composables/useWallet'
 import { useFhe } from '@/composables/useFhe'
 import { useMarketplaceStore } from '@/stores/marketplace'
-import * as EscrowService from '@/services/contracts/EscrowService'
-import { WalletNotConnectedError } from '@/services/contracts/errors'
-import { v35Addresses } from '@/contracts/addresses'
-import { buildReadContext, buildWriteContext } from '@/services/v35/context'
+import { buildWriteContext } from '@/services/v35/context'
 import { arbiscanTx } from '@/lib/external'
-import { formatUSD } from '@/lib/utils'
 import MButton from '@/components/ui/MButton.vue'
 import MPageLoader from '@/components/ui/MPageLoader.vue'
-import YieldLineChart from '@/components/charts/YieldLineChart.vue'
+import NavTrendChart from '@/components/charts/NavTrendChart.vue'
 import {
-  DollarSign, Clock, CalendarDays, Inbox, Lock, Coins, ShieldCheck,
-  KeyRound, Loader2, CheckCircle2, AlertTriangle,
+  Clock, Inbox, Coins, KeyRound, Loader2, CheckCircle2,
+  AlertTriangle, Lock, ShieldCheck, TrendingUp,
 } from 'lucide-vue-next'
 
-// YieldsPage — Wave 3.5 pull-based yield epochs (primary) + Wave 3 legacy
-// yield records (secondary, for already-shipped Wave 3 distributions).
-// Each Wave 3.5 epoch is enumerated per-token from the configured YieldSnapshot
-// contracts and annotated with per-investor claimed state.
+// YieldsPage — Wave 3.5 pull-based yield epochs (sole source). Wave 3
+// `yield_records` + push-based escrow surfaces were dropped this phase
+// (Option C single-source — same shape as /activity). Per-investor yield
+// amounts are FHE-encrypted; the page surfaces (1) which epochs are
+// claimable, (2) a per-token NAV trend (asset-side, plaintext) so users
+// can verify the underlying is tracking real-world data.
 
-interface EpochEntry {
-  snapshotAddress: Address
-  tokenAddress: Address
-  tokenSymbol: string
-  tokenName: string
-  epochId: bigint
-  epoch: EpochView
-  /** Encrypted per-investor snapshot balance; non-zero implies inclusion. */
-  encSnapshotBalance: `0x${string}`
-  claimed: boolean
-}
-
-const ZERO_BYTES32 = '0x0000000000000000000000000000000000000000000000000000000000000000'
-
-const yields = useYieldsStore()
+const epochsStore = useEpochsStore()
 const { address, connected } = useWallet()
 const { getEphemeralEOA } = useFhe()
 const marketplace = useMarketplaceStore()
 
-const epochs = ref<EpochEntry[]>([])
-const epochLoading = ref(false)
-const epochError = ref<string | null>(null)
 const claimingKeys = ref<Set<string>>(new Set())
-
 const activeRange = ref<'1m' | '3m' | '6m' | '1y'>('6m')
 const ranges = [
   { label: '1M', value: '1m' as const },
   { label: '3M', value: '3m' as const },
   { label: '6M', value: '6m' as const },
   { label: '1Y', value: '1y' as const },
-]
+] as const
 
-const CLAIM_REFETCH_DELAY_MS = 22_000
-const ARBISCAN_TX_BASE = 'https://sepolia.arbiscan.io/tx/'
-
-// ── Wave 3 legacy store ─────────────────────────────────────────────────
+// ── Lifecycle ───────────────────────────────────────────────────────────
 
 onMounted(async () => {
-  if (!yields.loaded) await yields.load()
   if (!marketplace.loaded) await marketplace.load()
-  if (connected.value) await loadEpochs()
+  if (connected.value && address.value) {
+    if (!epochsStore.loaded || epochsStore.lastLoadedFor?.toLowerCase() !== address.value.toLowerCase()) {
+      await epochsStore.load(address.value as Address)
+    }
+  }
+})
+
+// React to wallet swaps after mount.
+watch(() => address.value, async (next) => {
+  if (next) {
+    await epochsStore.load(next as Address)
+  } else {
+    epochsStore.reset()
+  }
 })
 
 const showLoader = computed(() =>
-  !yields.loaded && !yields.error && yields.loading,
+  !epochsStore.loaded && !epochsStore.error && epochsStore.loading,
 )
 
-// ── Wave 3.5 epoch loader ───────────────────────────────────────────────
+// ── NAV chart token selection ───────────────────────────────────────────
 
-async function loadEpochs() {
-  if (!connected.value || !address.value) return
-  epochLoading.value = true
-  epochError.value = null
-  try {
-    const user = address.value as Address
-    const snapshotEntries = Object.entries(v35Addresses.yieldSnapshots)
-    if (snapshotEntries.length === 0) {
-      epochs.value = []
-      return
-    }
+// Selector tokens = those for which the user has at least one snapshot.
+// On /yields we anchor the asset trend on epoch activity rather than
+// portfolio holdings — the page is about claim activity, not allocation.
+const selectableTokens = computed(() => epochsStore.tokensWithEpochs)
+const selectedToken = ref<Address | null>(null)
 
-    const readCtx = buildReadContext()
-    const collected: EpochEntry[] = []
-
-    // Group tokens by their YieldSnapshot proxy. Multiple tokens may share
-    // the same proxy (staging maps both TBILL1 + GOLD1 to one proxy), and
-    // the contract assigns epoch ids globally per-proxy. Walking per-token
-    // and trusting the iteration key would mis-attribute one token's epoch
-    // as belonging to another whenever the investor was snapshotted in
-    // both. Instead: walk each proxy's full id range exactly once, fetch
-    // `getEpoch(i)` to discover the actual `epoch.token`, then resolve
-    // metadata from that.
-    const byProxy = new Map<Address, Address[]>()
-    for (const [tokenAddrLower, snapshotAddr] of snapshotEntries) {
-      const list = byProxy.get(snapshotAddr) ?? []
-      list.push(tokenAddrLower as Address)
-      byProxy.set(snapshotAddr, list)
-    }
-
-    for (const [snapshotAddr, tokensOnProxy] of byProxy) {
-      const snapshot = new YieldSnapshotClient(readCtx, snapshotAddr)
-
-      // Upper bound for the walk: max(currentEpoch[t]) across every token
-      // we know maps to this proxy. Since the contract increments
-      // `nextEpochId` atomically inside `openEpoch` and writes
-      // `currentEpoch[token] = epochId`, this max equals the proxy's
-      // `nextEpochId` modulo any tokens we don't have addresses for (those
-      // would be unrenderable anyway — no marketplace metadata).
-      const epochCeilings = await Promise.all(
-        tokensOnProxy.map(t => snapshot.getCurrentEpoch(t)),
-      )
-      const maxEpoch = epochCeilings.reduce(
-        (m, e) => (e > m ? e : m),
-        0n,
-      )
-      if (maxEpoch === 0n) continue
-
-      // Epoch 0 is unused. If the walk grows past a few dozen per proxy,
-      // switch to event-indexing.
-      for (let i = 1n; i <= maxEpoch; i++) {
-        const encSnapshotBalance = await snapshot.getSnapshotBalance(i, user)
-        // Zero handle means "not snapshotted for this epoch" — skip.
-        // Cheap to check first so we avoid the `getEpoch` + `hasClaimed`
-        // roundtrip for the (overwhelmingly common) miss case.
-        if (encSnapshotBalance === ZERO_BYTES32) continue
-
-        const [epoch, claimed] = await Promise.all([
-          snapshot.getEpoch(i),
-          snapshot.hasClaimed(i, user),
-        ])
-
-        // Resolve token metadata from the on-chain `epoch.token` (NOT from
-        // the iteration key — it's not bound to a single token here). Fall
-        // back to a truncated address for tokens missing from the
-        // marketplace cache so the user can still see + claim a legitimate
-        // grant rather than have it silently disappear.
-        const tokenMeta = marketplace.getByAddress(epoch.token)
-        const tokenSymbol = tokenMeta?.symbol ?? epoch.token.slice(0, 8)
-        const tokenName = tokenMeta?.name ?? 'Unknown token'
-
-        collected.push({
-          snapshotAddress: snapshotAddr,
-          tokenAddress: epoch.token,
-          tokenSymbol,
-          tokenName,
-          epochId: i,
-          epoch,
-          encSnapshotBalance,
-          claimed,
-        })
-      }
-    }
-    collected.sort((a, b) => (b.epochId > a.epochId ? 1 : -1))
-    epochs.value = collected
-  } catch (e) {
-    epochError.value = e instanceof Error ? e.message : 'Failed to load epochs'
-  } finally {
-    epochLoading.value = false
+watch(selectableTokens, (list) => {
+  if (list.length === 0) {
+    selectedToken.value = null
+    return
   }
-}
+  // Keep the current selection if it's still in the list; otherwise pick
+  // the first (most-recent epoch's token by store sort order).
+  if (
+    !selectedToken.value
+    || !list.some(t => t.address.toLowerCase() === selectedToken.value!.toLowerCase())
+  ) {
+    selectedToken.value = list[0].address
+  }
+}, { immediate: true })
 
-const unclaimedCount = computed(() =>
-  epochs.value.filter(e => !e.claimed && e.epoch.funded).length,
-)
-
-// ── Claim yield ─────────────────────────────────────────────────────────
+// ── Claim ──────────────────────────────────────────────────────────────
 
 async function claimEpoch(entry: EpochEntry) {
   const key = `${entry.snapshotAddress}:${entry.epochId}`
@@ -191,8 +105,7 @@ async function claimEpoch(entry: EpochEntry) {
         onClick: () => window.open(arbiscanTx(hash), '_blank', 'noopener'),
       },
     })
-    // Re-read the epoch's claimed state + snapshot balance post-tx.
-    await loadEpochs()
+    if (address.value) await epochsStore.load(address.value as Address)
   } catch (e) {
     toast.error('Claim failed', {
       description: e instanceof Error ? e.message : String(e),
@@ -205,340 +118,319 @@ async function claimEpoch(entry: EpochEntry) {
 // Per-epoch share decrypt is intentionally omitted. The claimed amount
 // (`encShare128` in YieldSnapshot.claimYield) is ephemeral — emitted as an
 // event param would reveal the claim size; stored in a view would gate on
-// a re-grant path. Instead the UI directs the investor to read their PUSDC
-// balance, which already aggregates every claim.
-
-// ── Wave 3 legacy claim (unchanged) ─────────────────────────────────────
-
-async function claimLegacy(recordId: string, escrowId: string | null) {
-  if (claimingKeys.value.has(recordId)) return
-
-  if (!escrowId) {
-    toast.error('Claim unavailable', {
-      description: 'On-chain escrow not yet indexed — try again shortly',
-    })
-    return
-  }
-
-  if (!connected.value) {
-    toast.error('Wallet not connected', {
-      description: 'Sign in with your passkey to claim yield',
-    })
-    return
-  }
-
-  claimingKeys.value.add(recordId)
-  try {
-    const hash = await EscrowService.redeem(BigInt(escrowId))
-    toast.success('Claim submitted', {
-      description: `tx ${hash.slice(0, 10)}… — status will update once confirmed`,
-      action: {
-        label: 'View',
-        onClick: () => window.open(`${ARBISCAN_TX_BASE}${hash}`, '_blank', 'noopener'),
-      },
-    })
-    await new Promise(r => setTimeout(r, CLAIM_REFETCH_DELAY_MS))
-    await yields.load()
-  } catch (e) {
-    const description = e instanceof WalletNotConnectedError
-      ? 'Sign in with your passkey and try again'
-      : e instanceof Error ? e.message : 'Unknown error'
-    toast.error('Claim failed', { description })
-  } finally {
-    claimingKeys.value.delete(recordId)
-  }
-}
-
-function statusAccent(status: string) {
-  switch (status) {
-    case 'claimed': return { label: 'Claimed', text: 'text-positive', ring: 'border-positive/30' }
-    case 'claimable': return { label: 'Claimable', text: 'text-positive', ring: 'border-positive/30' }
-    case 'pending': return { label: 'Pending', text: 'text-gold', ring: 'border-gold/30' }
-    default: return { label: status, text: 'text-cool', ring: 'border-haze dark:border-white/10' }
-  }
-}
-
+// a re-grant path. Instead, payouts aggregate into the investor's mhUSDC
+// balance, surfaced on /portfolio.
 </script>
 
 <template>
   <div>
     <MPageLoader v-if="showLoader" label="Loading yields" caption="Reading distributions from chain" />
 
-    <div v-else-if="yields.error" class="flex flex-col items-center justify-center py-20 gap-4">
-      <p class="text-base text-cool">{{ yields.error }}</p>
-      <MButton variant="outline" @click="yields.load()">Retry</MButton>
+    <!-- Cold-error: no items ever loaded. Reload-failures fall through to
+         the soft-error strip at the bottom so previously-loaded rows stay
+         on screen. -->
+    <div
+      v-else-if="epochsStore.error && epochsStore.items.length === 0"
+      class="flex flex-col items-center justify-center py-20 gap-4"
+    >
+      <p class="text-base text-cool">{{ epochsStore.error }}</p>
+      <MButton
+        variant="outline"
+        @click="address && epochsStore.load(address as Address)"
+      >Retry</MButton>
     </div>
 
     <div v-else class="flex flex-col gap-6">
-      <!-- Top: Wave 3.5 claimable epochs + stats -->
-      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        <section
-          v-motion
-          :initial="{ opacity: 0, y: 20 }"
-          :visible-once="{ opacity: 1, y: 0, transition: { duration: 520, delay: 100 } }"
-          class="lg:col-span-8 relative overflow-hidden rounded-2xl
-                 border border-haze dark:border-white/5
-                 bg-white/90 dark:bg-[#1c1b1b]/80 backdrop-blur-lg
-                 shadow-[0_14px_40px_-12px_rgba(63,46,12,0.08)]
-                 dark:shadow-[0_20px_60px_-20px_rgba(0,0,0,0.65)]
-                 p-6 md:p-8"
-        >
-          <div aria-hidden="true"
-               class="absolute -top-24 -right-24 w-72 h-72 rounded-full blur-[90px] pointer-events-none bg-gold/10 dark:bg-signal/8" />
-
-          <div class="relative z-10">
-            <div class="flex items-start justify-between gap-4 mb-6">
-              <div>
-                <h3 class="font-accent italic text-2xl md:text-3xl text-midnight dark:text-white tracking-tight">
-                  Yield Epochs
-                </h3>
-                <p class="font-sans text-sm text-cool mt-1">
-                  {{ unclaimedCount > 0
-                    ? 'Funded epochs ready to claim — pull-based per ADR-005.'
-                    : 'No unclaimed funded epochs right now.' }}
-                </p>
-              </div>
-              <div
-                v-if="unclaimedCount > 0"
-                class="flex items-center gap-2 bg-positive/10 border border-positive/25 px-3.5 py-1.5 rounded-full flex-shrink-0"
-              >
-                <span aria-hidden="true" class="w-1.5 h-1.5 rounded-full bg-positive animate-pulse" />
-                <span class="font-sans text-[10px] uppercase tracking-[0.22em] text-positive font-semibold">
-                  {{ unclaimedCount }} Claimable
-                </span>
-              </div>
+      <!-- Privacy proof hero strip -->
+      <section
+        v-motion
+        :initial="{ opacity: 0, y: 16 }"
+        :visible-once="{ opacity: 1, y: 0, transition: { duration: 460, delay: 60 } }"
+        data-testid="yields-privacy-proof"
+        class="rounded-2xl border border-haze dark:border-white/5
+               bg-gradient-to-br from-mist/60 via-white/40 to-haze/30
+               dark:from-[#171717]/60 dark:via-[#1c1b1b]/60 dark:to-[#171717]/60
+               backdrop-blur-md p-5 md:p-6"
+      >
+        <div class="flex items-start gap-4">
+          <div class="flex items-center gap-2 flex-shrink-0">
+            <div class="w-9 h-9 rounded-full bg-gold/12 dark:bg-signal/12 flex items-center justify-center">
+              <ShieldCheck :size="16" :stroke-width="1.8" class="text-compute dark:text-signal" />
             </div>
-
-            <div v-if="epochLoading && epochs.length === 0" class="py-8 flex items-center justify-center">
-              <Loader2 :size="20" class="animate-spin text-cool" />
-            </div>
-
-            <div v-else-if="epochError" class="flex items-start gap-3 p-4 rounded-xl border border-negative/25 bg-negative/5">
-              <AlertTriangle :size="16" :stroke-width="1.8" class="text-negative mt-0.5 flex-shrink-0" />
-              <p class="font-sans text-[12px] text-cool leading-relaxed">{{ epochError }}</p>
-            </div>
-
-            <div v-else-if="epochs.length === 0" class="flex flex-col items-center gap-3 py-8 text-center">
-              <div class="w-14 h-14 rounded-full bg-mist/60 dark:bg-white/5 border border-haze dark:border-white/5 flex items-center justify-center">
-                <CheckCircle2 :size="24" :stroke-width="1.6" class="text-cool/70" />
-              </div>
-              <p class="font-sans text-sm text-cool">All caught up.</p>
-              <p class="font-sans text-[11px] text-cool/70 max-w-sm">
-                Once the issuer opens a new epoch + snapshots + funds it, you'll see it here.
-              </p>
-            </div>
-
-            <div v-else class="space-y-3">
-              <div
-                v-for="e in epochs"
-                :key="`${e.snapshotAddress}:${e.epochId}`"
-                data-testid="epoch-row"
-                :data-epoch-id="String(e.epochId)"
-                class="flex items-center justify-between gap-4 p-4 md:p-5 rounded-xl
-                       border border-haze dark:border-white/5 bg-mist/40 dark:bg-[#171717]
-                       hover:border-gold/30 dark:hover:border-signal/25 transition-colors duration-300"
-              >
-                <div class="flex items-center gap-4 min-w-0 flex-1">
-                  <div
-                    :class="[
-                      'w-11 h-11 rounded-full flex items-center justify-center flex-shrink-0',
-                      e.claimed ? 'bg-compute/15 dark:bg-signal/15 text-compute dark:text-signal'
-                        : e.epoch.funded ? 'bg-positive/15 text-positive'
-                          : 'bg-gold/15 dark:bg-signal/15 text-gold dark:text-signal',
-                    ]"
-                  >
-                    <Coins v-if="e.claimed" :size="18" :stroke-width="1.8" />
-                    <CheckCircle2 v-else-if="e.epoch.funded" :size="18" :stroke-width="1.8" />
-                    <Clock v-else :size="18" :stroke-width="1.8" />
-                  </div>
-                  <div class="min-w-0">
-                    <p class="font-sans text-sm font-semibold text-midnight dark:text-white">
-                      Epoch #{{ e.epochId }} · {{ e.tokenSymbol }}
-                    </p>
-                    <p class="font-sans text-[11px] text-cool mt-0.5">
-                      {{ e.tokenName }}
-                      · {{ e.claimed ? 'claimed — PUSDC credited' : e.epoch.funded ? 'ready to claim' : 'awaiting funding' }}
-                    </p>
-                    <p v-if="e.claimed" class="font-sans text-[11px] text-cool/70 mt-1 italic">
-                      Payout landed in your PUSDC balance. The per-epoch amount is not
-                      stored on-chain — view your PUSDC balance on Portfolio.
-                    </p>
-                  </div>
-                </div>
-                <button
-                  v-if="!e.claimed && e.epoch.funded"
-                  type="button"
-                  @click="claimEpoch(e)"
-                  :disabled="claimingKeys.has(`${e.snapshotAddress}:${e.epochId}`)"
-                  data-testid="epoch-claim-cta"
-                  class="btn-gold-sweep px-6 py-2.5 rounded-lg font-sans font-semibold text-xs tracking-[0.18em] uppercase
-                         flex items-center gap-2 cursor-pointer transition-all duration-300 hover:-translate-y-0.5"
-                >
-                  <Loader2
-                    v-if="claimingKeys.has(`${e.snapshotAddress}:${e.epochId}`)"
-                    :size="13"
-                    class="animate-spin"
-                  />
-                  <KeyRound v-else :size="13" :stroke-width="2" />
-                  <span>Claim</span>
-                </button>
-              </div>
+            <div class="hidden md:flex items-center gap-2 text-cool/60">
+              <span class="font-sans text-xs">·</span>
+              <Lock :size="13" :stroke-width="1.8" class="text-cool" />
+              <span class="font-sans text-xs">·</span>
+              <KeyRound :size="13" :stroke-width="1.8" class="text-gold dark:text-signal" />
             </div>
           </div>
-        </section>
-
-        <div
-          v-motion
-          :initial="{ opacity: 0, y: 20 }"
-          :visible-once="{ opacity: 1, y: 0, transition: { duration: 520, delay: 180 } }"
-          class="lg:col-span-4 flex flex-col gap-4"
-        >
-          <div class="flex-1 relative overflow-hidden rounded-2xl p-5 border border-haze dark:border-white/5 bg-white dark:bg-[#171717]">
-            <DollarSign aria-hidden="true" :size="48" :stroke-width="1" class="absolute top-4 right-4 text-gold/20 dark:text-signal/20" />
-            <p class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool mb-1.5">Total Earned (legacy)</p>
-            <p class="font-accent italic text-3xl md:text-4xl text-midnight dark:text-white tabular-nums tracking-tight">
-              {{ formatUSD(yields.totalEarned) }}
+          <div class="min-w-0 flex-1">
+            <p class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool font-semibold mb-1">
+              How yield works here
             </p>
-          </div>
-          <div class="flex-1 relative overflow-hidden rounded-2xl p-5 border border-haze dark:border-white/5 bg-white dark:bg-[#171717]">
-            <Clock aria-hidden="true" :size="44" :stroke-width="1" class="absolute top-4 right-4 text-gold/20 dark:text-signal/20" />
-            <p class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool mb-1.5">Pending (legacy)</p>
-            <p class="font-accent italic text-2xl md:text-3xl text-gold tabular-nums tracking-tight">
-              {{ formatUSD(yields.totalPending) }}
-            </p>
-          </div>
-          <div class="flex-1 relative overflow-hidden rounded-2xl p-5 border border-haze dark:border-white/5 bg-white dark:bg-[#171717]">
-            <CalendarDays aria-hidden="true" :size="44" :stroke-width="1" class="absolute top-4 right-4 text-cool/25" />
-            <p class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool mb-1.5">Epochs Tracked</p>
-            <p class="font-accent italic text-2xl md:text-3xl text-midnight dark:text-white tabular-nums tracking-tight">
-              {{ epochs.length }}
+            <p class="font-sans text-[13px] leading-relaxed text-midnight/80 dark:text-white/80">
+              Each epoch credits your encrypted
+              <span class="font-mono text-compute dark:text-signal">mhUSDC</span> balance
+              when you claim — the per-claim amount is never stored on-chain.
+              To verify a payout landed, check your mhUSDC balance on
+              <span class="font-mono text-midnight dark:text-white">/portfolio</span>.
             </p>
           </div>
         </div>
-      </div>
+      </section>
 
-      <!-- Yield trend chart -->
+      <!-- Yield Epochs panel -->
       <section
         v-motion
         :initial="{ opacity: 0, y: 20 }"
-        :visible-once="{ opacity: 1, y: 0, transition: { duration: 520, delay: 240 } }"
-        class="relative overflow-hidden rounded-2xl border border-haze dark:border-white/5 bg-white dark:bg-[#171717] p-6 md:p-8"
+        :visible-once="{ opacity: 1, y: 0, transition: { duration: 520, delay: 120 } }"
+        class="relative overflow-hidden rounded-2xl
+               border border-haze dark:border-white/5
+               bg-white/90 dark:bg-[#1c1b1b]/80 backdrop-blur-lg
+               shadow-[0_14px_40px_-12px_rgba(63,46,12,0.08)]
+               dark:shadow-[0_20px_60px_-20px_rgba(0,0,0,0.65)]
+               p-6 md:p-8"
       >
-        <div class="flex items-start justify-between gap-4 mb-6 flex-wrap">
-          <div>
-            <h3 class="font-accent italic text-2xl md:text-3xl text-midnight dark:text-white tracking-tight">Yield Trend</h3>
-            <p class="font-sans text-[11px] uppercase tracking-[0.22em] text-cool mt-1.5">
-              Cumulative rewards over time
+        <div aria-hidden="true"
+             class="absolute -top-24 -right-24 w-72 h-72 rounded-full blur-[90px] pointer-events-none bg-gold/10 dark:bg-signal/8" />
+
+        <div class="relative z-10">
+          <div class="flex items-start justify-between gap-4 mb-6 flex-wrap">
+            <div class="min-w-0">
+              <h3 class="font-accent italic text-2xl md:text-3xl text-midnight dark:text-white tracking-tight">
+                Yield Epochs
+              </h3>
+              <p class="font-sans text-sm text-cool mt-1">
+                {{ epochsStore.unclaimedCount > 0
+                  ? 'Funded epochs ready to claim — pull-based per ADR-005.'
+                  : 'No unclaimed funded epochs right now.' }}
+              </p>
+            </div>
+            <div
+              v-if="epochsStore.items.length > 0"
+              data-testid="yields-meta-strip"
+              class="flex items-center gap-2 flex-wrap font-sans text-[10px] uppercase tracking-[0.22em] text-cool font-semibold"
+            >
+              <span data-testid="yields-meta-tracked">
+                {{ epochsStore.items.length }} Tracked
+              </span>
+              <span aria-hidden="true" class="text-cool/40">·</span>
+              <span data-testid="yields-meta-tokens">
+                {{ epochsStore.tokensTracked }} {{ epochsStore.tokensTracked === 1 ? 'Token' : 'Tokens' }}
+              </span>
+              <template v-if="epochsStore.unclaimedCount > 0">
+                <span aria-hidden="true" class="text-cool/40">·</span>
+                <span
+                  data-testid="yields-meta-claimable"
+                  class="flex items-center gap-1.5 bg-positive/10 border border-positive/25 px-2.5 py-1 rounded-full text-positive"
+                >
+                  <span aria-hidden="true" class="w-1.5 h-1.5 rounded-full bg-positive animate-pulse" />
+                  {{ epochsStore.unclaimedCount }} Claimable
+                </span>
+              </template>
+            </div>
+          </div>
+
+          <div v-if="epochsStore.loading && epochsStore.items.length === 0" class="py-8 flex items-center justify-center">
+            <Loader2 :size="20" class="animate-spin text-cool" />
+          </div>
+
+          <div v-else-if="epochsStore.items.length === 0" class="flex flex-col items-center gap-3 py-10 text-center">
+            <div class="w-14 h-14 rounded-full bg-mist/60 dark:bg-white/5 border border-haze dark:border-white/5 flex items-center justify-center">
+              <Inbox :size="24" :stroke-width="1.4" class="text-cool/70" />
+            </div>
+            <p class="font-sans text-sm text-cool">No epochs yet.</p>
+            <p class="font-sans text-[11px] text-cool/70 max-w-sm">
+              When an issuer opens an epoch and funds it, you'll see a claim row here.
+              Holdings on
+              <span class="font-mono text-midnight dark:text-white">/portfolio</span>
+              accrue value via NAV; epochs are how that value gets paid out as
+              <span class="font-mono text-compute dark:text-signal">mhUSDC</span>.
             </p>
           </div>
-          <div class="flex gap-1 bg-mist/60 dark:bg-[#0d0e10] border border-haze dark:border-white/5 rounded-lg p-1">
+
+          <div v-else class="space-y-3 max-h-[640px] overflow-y-auto pr-1">
+            <div
+              v-for="e in epochsStore.items"
+              :key="`${e.snapshotAddress}:${e.epochId}`"
+              data-testid="epoch-row"
+              :data-epoch-id="String(e.epochId)"
+              class="flex items-center justify-between gap-4 p-4 md:p-5 rounded-xl
+                     border border-haze dark:border-white/5 bg-mist/40 dark:bg-[#171717]
+                     hover:border-gold/30 dark:hover:border-signal/25 transition-colors duration-300"
+            >
+              <div class="flex items-center gap-4 min-w-0 flex-1">
+                <div
+                  :class="[
+                    'w-11 h-11 rounded-full flex items-center justify-center flex-shrink-0',
+                    e.claimed ? 'bg-compute/15 dark:bg-signal/15 text-compute dark:text-signal'
+                      : e.epoch.funded ? 'bg-positive/15 text-positive'
+                        : 'bg-gold/15 dark:bg-signal/15 text-gold dark:text-signal',
+                  ]"
+                >
+                  <Coins v-if="e.claimed" :size="18" :stroke-width="1.8" />
+                  <CheckCircle2 v-else-if="e.epoch.funded" :size="18" :stroke-width="1.8" />
+                  <Clock v-else :size="18" :stroke-width="1.8" />
+                </div>
+                <div class="min-w-0">
+                  <p class="font-sans text-sm font-semibold text-midnight dark:text-white">
+                    Epoch #{{ e.epochId }} · {{ e.tokenSymbol }}
+                  </p>
+                  <p class="font-sans text-[11px] text-cool mt-0.5">
+                    {{ e.tokenName }}
+                    · {{ e.claimed ? 'claimed — credited to mhUSDC' : e.epoch.funded ? 'ready to claim' : 'awaiting funding' }}
+                  </p>
+                </div>
+              </div>
+              <button
+                v-if="!e.claimed && e.epoch.funded"
+                type="button"
+                @click="claimEpoch(e)"
+                :disabled="claimingKeys.has(`${e.snapshotAddress}:${e.epochId}`)"
+                data-testid="epoch-claim-cta"
+                class="btn-gold-sweep px-6 py-2.5 rounded-lg font-sans font-semibold text-xs tracking-[0.18em] uppercase
+                       flex items-center gap-2 cursor-pointer transition-all duration-300 hover:-translate-y-0.5"
+              >
+                <Loader2
+                  v-if="claimingKeys.has(`${e.snapshotAddress}:${e.epochId}`)"
+                  :size="13"
+                  class="animate-spin"
+                />
+                <KeyRound v-else :size="13" :stroke-width="2" />
+                <span>Claim</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- NAV Trend panel -->
+      <section
+        v-if="selectableTokens.length > 0 && selectedToken"
+        v-motion
+        :initial="{ opacity: 0, y: 20 }"
+        :visible-once="{ opacity: 1, y: 0, transition: { duration: 520, delay: 200 } }"
+        data-testid="yields-nav-trend-panel"
+        class="relative overflow-hidden rounded-2xl border border-haze dark:border-white/5 bg-white dark:bg-[#171717] p-6 md:p-8"
+      >
+        <div aria-hidden="true"
+             class="absolute -top-20 -right-20 w-56 h-56 rounded-full blur-[80px] pointer-events-none bg-compute/5 dark:bg-signal/5" />
+
+        <div class="relative z-10">
+          <div class="flex items-start justify-between gap-4 mb-5 flex-wrap">
+            <div class="min-w-0">
+              <div class="flex items-center gap-2">
+                <TrendingUp :size="18" :stroke-width="1.6" class="text-compute dark:text-signal" />
+                <h3 class="font-accent italic text-2xl md:text-3xl text-midnight dark:text-white tracking-tight">
+                  NAV Trend
+                </h3>
+              </div>
+              <p class="font-sans text-[11px] uppercase tracking-[0.22em] text-cool mt-1.5">
+                Per-token net asset value · public oracle data
+              </p>
+            </div>
+            <div
+              class="flex gap-1 bg-mist/60 dark:bg-[#0d0e10] border border-haze dark:border-white/5 rounded-lg p-1"
+            >
+              <button
+                v-for="r in ranges"
+                :key="r.value"
+                type="button"
+                @click="activeRange = r.value"
+                :data-testid="`yields-range-${r.value}`"
+                :class="[
+                  'font-sans text-[10px] uppercase tracking-[0.22em] font-semibold px-5 py-1.5 rounded-md transition-all duration-200 cursor-pointer',
+                  activeRange === r.value
+                    ? 'bg-haze/70 dark:bg-white/10 text-gold dark:text-signal shadow-[0_4px_12px_-4px_rgba(0,0,0,0.18)] dark:shadow-[0_4px_12px_-4px_rgba(0,0,0,0.5)]'
+                    : 'text-cool hover:text-midnight dark:hover:text-white',
+                ]"
+              >
+                {{ r.label }}
+              </button>
+            </div>
+          </div>
+
+          <!-- Token selector pill row (only when >1 token to choose from) -->
+          <div
+            v-if="selectableTokens.length > 1"
+            data-testid="yields-token-selector"
+            class="flex gap-1 bg-mist/60 dark:bg-[#0d0e10] border border-haze dark:border-white/5 rounded-lg p-1 mb-4 w-fit max-w-full overflow-x-auto"
+          >
             <button
-              v-for="r in ranges"
-              :key="r.value"
+              v-for="t in selectableTokens"
+              :key="t.address"
               type="button"
-              @click="activeRange = r.value"
-              :data-testid="`yields-range-${r.value}`"
+              @click="selectedToken = t.address"
+              :data-testid="`yields-token-${t.symbol}`"
               :class="[
-                'font-sans text-[10px] uppercase tracking-[0.22em] font-semibold px-5 py-1.5 rounded-md transition-all duration-200 cursor-pointer',
-                activeRange === r.value
+                'font-sans text-[10px] uppercase tracking-[0.22em] font-semibold px-4 py-1.5 rounded-md transition-all duration-200 cursor-pointer whitespace-nowrap',
+                selectedToken && selectedToken.toLowerCase() === t.address.toLowerCase()
                   ? 'bg-haze/70 dark:bg-white/10 text-gold dark:text-signal shadow-[0_4px_12px_-4px_rgba(0,0,0,0.18)] dark:shadow-[0_4px_12px_-4px_rgba(0,0,0,0.5)]'
                   : 'text-cool hover:text-midnight dark:hover:text-white',
               ]"
             >
-              {{ r.label }}
+              {{ t.symbol }}
             </button>
           </div>
-        </div>
-        <YieldLineChart :range="activeRange" />
-      </section>
 
-      <!-- Legacy history (Wave 3) -->
-      <section
-        v-motion
-        :initial="{ opacity: 0, y: 20 }"
-        :visible-once="{ opacity: 1, y: 0, transition: { duration: 520, delay: 300 } }"
-        class="rounded-2xl border border-haze dark:border-white/5 bg-white dark:bg-[#171717] p-6 md:p-8"
-      >
-        <div class="flex items-center justify-between gap-4 mb-6 flex-wrap">
-          <div>
-            <h3 class="font-accent italic text-2xl md:text-3xl text-midnight dark:text-white tracking-tight">
-              Legacy Distributions
-            </h3>
-            <p class="font-sans text-[11px] uppercase tracking-[0.22em] text-cool mt-1.5">
-              Wave 3 yield records — kept for back-compat, read-only
+          <NavTrendChart :token-address="selectedToken" :range="activeRange" />
+
+          <div class="mt-3 flex items-start gap-2">
+            <Lock :size="11" :stroke-width="1.8" class="text-cool/70 mt-0.5 flex-shrink-0" />
+            <p class="font-sans text-[11px] text-cool/70 italic leading-relaxed">
+              NAV reflects the underlying asset's price, not your earnings.
+              Per-investor yield amounts stay encrypted; multiply NAV change by
+              your decrypted holding (on /portfolio) for a personal estimate.
             </p>
           </div>
-          <p class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool flex items-center gap-2">
-            <ShieldCheck :size="13" :stroke-width="1.8" class="text-compute/80 dark:text-signal/80" />
-            <span>Secured by CoFHE · EIP-712</span>
-          </p>
         </div>
+      </section>
 
-        <!-- Empty -->
-        <div v-if="yields.items.length === 0" class="flex flex-col items-center py-12 gap-3">
-          <Inbox :size="36" :stroke-width="1.4" class="text-cool/35" />
-          <p class="font-sans text-sm text-cool">No yield records yet</p>
-        </div>
-
-        <!-- Grid of history cards -->
-        <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <div
-            v-for="(item, i) in yields.items"
-            :key="item.id"
-            v-motion
-            :initial="{ opacity: 0, y: 12 }"
-            :visible-once="{ opacity: 1, y: 0, transition: { duration: 380, delay: 320 + i * 60 } }"
-            class="rounded-xl border border-haze/60 dark:border-white/5 bg-mist/20 dark:bg-white/[0.02]
-                   p-5 flex flex-col justify-between gap-4
-                   hover:border-gold/30 dark:hover:border-signal/25 transition-colors duration-300"
-          >
-            <div class="flex justify-between items-start gap-3">
-              <div class="min-w-0">
-                <p class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool mb-2">
-                  {{ new Date(item.created_at).toLocaleDateString() }}
-                </p>
-                <p class="font-sans text-sm font-semibold text-midnight dark:text-white mb-3">
-                  Dist #{{ item.distribution_id }}
-                </p>
-                <span
-                  :class="[
-                    'inline-flex items-center font-sans text-[9px] uppercase tracking-[0.22em] font-semibold px-2 py-0.5 rounded border',
-                    statusAccent(item.status).text,
-                    statusAccent(item.status).ring,
-                  ]"
-                >
-                  {{ statusAccent(item.status).label }}
-                </span>
-              </div>
-              <div class="text-right">
-                <p
-                  v-if="item.amount"
-                  class="font-accent italic text-xl text-midnight dark:text-white tabular-nums leading-tight"
-                >
-                  {{ formatUSD(parseFloat(item.amount)) }}
-                </p>
-                <p v-else class="font-sans text-xs text-cool flex items-center gap-1.5 justify-end">
-                  <Lock :size="11" :stroke-width="1.8" />
-                  <span class="italic">Encrypted</span>
-                </p>
-              </div>
-            </div>
-            <button
-              v-if="item.status === 'claimable' && item.escrow_id"
-              type="button"
-              @click="claimLegacy(item.id, item.escrow_id)"
-              :disabled="claimingKeys.has(item.id)"
-              data-testid="legacy-claim-cta"
-              class="btn-gold-sweep px-4 py-2 rounded-lg font-sans font-semibold text-[10px] tracking-[0.18em] uppercase
-                     flex items-center justify-center gap-2 cursor-pointer transition-all duration-300 hover:-translate-y-0.5"
-            >
-              <Loader2 v-if="claimingKeys.has(item.id)" :size="11" class="animate-spin" />
-              <KeyRound v-else :size="11" />
-              Claim
-            </button>
+      <!-- Wave 3.5 source-of-truth notice (when no chart anchor exists) -->
+      <section
+        v-else-if="epochsStore.items.length === 0"
+        v-motion
+        :initial="{ opacity: 0, y: 16 }"
+        :visible-once="{ opacity: 1, y: 0, transition: { duration: 460, delay: 200 } }"
+        data-testid="yields-empty-anticipation"
+        class="rounded-2xl border border-haze dark:border-white/5 bg-mist/30 dark:bg-white/[0.02] p-6 md:p-8"
+      >
+        <div class="flex items-start gap-4">
+          <div class="w-12 h-12 rounded-full bg-gold/12 dark:bg-signal/12 flex items-center justify-center flex-shrink-0">
+            <Coins :size="20" :stroke-width="1.6" class="text-compute dark:text-signal" />
+          </div>
+          <div class="min-w-0">
+            <p class="font-sans text-sm font-semibold text-midnight dark:text-white">
+              Ready when an issuer funds the next epoch.
+            </p>
+            <p class="font-sans text-[12px] text-cool mt-1.5 leading-relaxed max-w-2xl">
+              On Wave 3.5, issuers open an epoch, snapshot balances, and fund it.
+              Once funded, you'll claim from this page and your encrypted
+              <span class="font-mono text-compute dark:text-signal">mhUSDC</span> balance grows.
+              The chart returns once you have at least one snapshotted epoch.
+            </p>
           </div>
         </div>
       </section>
+    </div>
+
+    <!-- Soft error strip: a reload after a successful first load failed
+         (e.g. post-claim refetch). Items above are stale; offer Retry
+         without wiping them off-screen. -->
+    <div
+      v-if="epochsStore.error && epochsStore.items.length > 0"
+      data-testid="yields-soft-error"
+      class="mt-4 flex items-start gap-3 p-4 rounded-xl border border-negative/25 bg-negative/5"
+    >
+      <AlertTriangle :size="16" :stroke-width="1.8" class="text-negative mt-0.5 flex-shrink-0" />
+      <div class="flex-1 min-w-0">
+        <p class="font-sans text-[12px] text-cool leading-relaxed">{{ epochsStore.error }}</p>
+        <button
+          type="button"
+          @click="address && epochsStore.load(address as Address)"
+          class="mt-1.5 font-sans text-[11px] text-negative hover:underline cursor-pointer"
+        >Retry</button>
+      </div>
     </div>
   </div>
 </template>

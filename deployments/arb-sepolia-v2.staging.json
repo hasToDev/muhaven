@@ -1,7 +1,7 @@
 {
   "network": "arb-sepolia",
   "env": "staging",
-  "timestamp": "2026-04-29T00:34:15.200Z",
+  "timestamp": "2026-05-01T10:08:46.516Z",
   "deployer": "0xe11E83398C33A37CaC02C01c43F14A7f95876986",
   "external": {
     "legacyPusdc": "0x6b6e6479b8b3237933c3ab9d8be969862d4ed89f",
@@ -13,7 +13,7 @@
   "contracts": {
     "MuHavenStable": {
       "proxy": "0xf7f6Db67E06923f458F8a465160f53b2486F77Fd",
-      "implementation": "0x896457F7fEB8cF82e81e910480aBe555dcfadd24"
+      "implementation": "0xA42e9Ef29de765c3bE3cF28233bdb047B447963C"
     },
     "ClaimTopicsRegistry": {
       "proxy": "0x8E13fF83E308D4Af52216b83d107e30B314e1fAe",
@@ -68,7 +68,7 @@
       "contracts": {
         "MuHavenToken": {
           "proxy": "0x3E570bDb3928488b0092FBE149d4B7E8d12cb178",
-          "implementation": "0x6FD8eCc7E6d8358f7b7115514e6aDE15e9DDA6c8"
+          "implementation": "0x2248d438a6fB374fA0E3ab6C17160922E75Ea3da"
         },
         "RedemptionQueue": {
           "proxy": "0xcD934a65bFe6C920b15cE3d4e65f7EF0662322Ed",
@@ -92,7 +92,7 @@
       "contracts": {
         "MuHavenToken": {
           "proxy": "0x4963e942A846e7F537358fe0CC18C7aA9B554375",
-          "implementation": "0x6FD8eCc7E6d8358f7b7115514e6aDE15e9DDA6c8"
+          "implementation": "0x2248d438a6fB374fA0E3ab6C17160922E75Ea3da"
         },
         "RedemptionQueue": {
           "proxy": "0x791e2736Bb9f11114E36B40836f7Bd4666f93fA5",

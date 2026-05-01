@@ -178,7 +178,6 @@ export interface LatestNavDto {
 
 export type AssetClass = 'treasury' | 'money_market' | 'private_credit' | 'real_estate' | 'other'
 export type TokenStatus = 'active' | 'paused' | 'winding_down' | 'archived'
-export type YieldStatus = 'pending' | 'claimable' | 'claimed' | 'expired'
 
 export interface TokenResponseDto {
   id: string
@@ -212,17 +211,6 @@ export interface PortfolioPositionDto {
   token_address: string
   token_symbol: string
   last_synced_at: string | null
-}
-
-export interface YieldRecordDto {
-  id: string
-  distribution_id: number
-  escrow_id: string | null
-  token_address: string
-  amount: string | null
-  status: YieldStatus
-  claimed_at: string | null
-  created_at: string
 }
 
 /**
@@ -360,23 +348,6 @@ export const portfolioApi = {
       auth: true,
       body: { token_address: tokenAddress, token_symbol: tokenSymbol },
     })
-  },
-}
-
-// ── Yields endpoint (auth) ──────────────────────────────────────────
-
-export const yieldsApi = {
-  getAll(opts?: {
-    limit?: number
-    offset?: number
-    status?: YieldStatus
-  }): Promise<{ items: YieldRecordDto[]; total: number }> {
-    const params = new URLSearchParams()
-    if (opts?.limit) params.set('limit', String(opts.limit))
-    if (opts?.offset) params.set('offset', String(opts.offset))
-    if (opts?.status) params.set('status', opts.status)
-    const qs = params.toString()
-    return request(`/yields${qs ? `?${qs}` : ''}`, { auth: true })
   },
 }
 
