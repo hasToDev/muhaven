@@ -52,19 +52,26 @@ async function decryptAll() {
     .map((h, i) => h.decryptedBalance === null ? i : -1)
     .filter(i => i >= 0)
 
-  // Kick off the confidential-PUSDC decrypt alongside the per-holding
-  // decrypts so "Reveal All" reveals the whole portfolio in one click.
-  // Guarded against re-running when already revealed or in-flight; the
-  // store's own `pusdcDecrypting` flag is the source of truth, this
-  // outer check just avoids a redundant network round-trip + the brief
-  // mid-flight `pusdcConfidentialBalance = null` flicker that
-  // `decryptPusdc` does at start.
+  // Reveal All previously fired N+1 decrypts via Promise.all. On a fresh
+  // session, each one 403s on the TN's permit check (the wrap-time eph is
+  // gone), and the per-handle refreshDecryptGrant fallback inside
+  // `useFhe.decryptForView` queues a session-key UserOp. N+1 concurrent
+  // UserOps from the same kernel collide on nonces / bundler queueing —
+  // some land, some hit `WaitForUserOperationReceiptTimeoutError` and
+  // fall back to a passkey prompt. Sequential keeps the kernel quiet:
+  // each refresh tx confirms before the next decrypt starts. Cost on
+  // staging (1-2 RWAs + mhUSDC) is the few seconds it takes for each
+  // refresh to confirm, vs. the previous worst case of one timeout
+  // (~30s) followed by the user approving a fallback passkey prompt.
+  //
+  // Future-Wave: batch all refreshes into a single kernel `executeBatch`
+  // UserOp — same UX, one round-trip, scales to many holdings.
+  for (const i of pending) {
+    await portfolio.decryptHolding(i, acct)
+  }
   const pusdcPending =
     portfolio.pusdcConfidentialBalance === null && !portfolio.pusdcDecrypting
-  await Promise.all([
-    ...pending.map(i => portfolio.decryptHolding(i, acct)),
-    ...(pusdcPending ? [portfolio.decryptPusdc(acct)] : []),
-  ])
+  if (pusdcPending) await portfolio.decryptPusdc(acct)
 }
 
 async function decryptOne(index: number) {
