@@ -1,11 +1,16 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount, computed, watch } from 'vue'
 import { usePortfolioStore } from '@/stores/portfolio'
+import { useMarketplaceStore } from '@/stores/marketplace'
 import { useWallet } from '@/composables/useWallet'
 import MFaucetBanner from '@/components/ui/MFaucetBanner.vue'
 import MButton from '@/components/ui/MButton.vue'
 import MPageLoader from '@/components/ui/MPageLoader.vue'
 import PortfolioDonut from '@/components/charts/PortfolioDonut.vue'
+import { getPublicClient } from '@/services/v35/context'
+import { muHavenTokenAbi } from '@/contracts/abis'
+import { v35Addresses, isZeroAddress } from '@/contracts/addresses'
+import { muHavenStableAbi } from '@muhaven/sdk'
 import {
   Shield, Lock, ShieldCheck, KeyRound, Key, Eye, ArrowUp,
   Loader2, Unlock, RefreshCw,
@@ -13,6 +18,7 @@ import {
 import { formatUSD, cn } from '@/lib/utils'
 
 const portfolio = usePortfolioStore()
+const marketplace = useMarketplaceStore()
 const { address } = useWallet()
 
 type HeroTab = 'value' | 'allocation'
@@ -34,6 +40,181 @@ onMounted(async () => {
   if (!address.value) return
   await portfolio.load(address.value as `0x${string}`)
 })
+
+// ── Inbound auto-refresh + holding bloom ───────────────────────────────
+//
+// Symmetry with /cash: /portfolio also subscribes to inbound transfers
+// (per-RWA `MuHavenToken.Transfer` filtered to `to: kernelAddress` +
+// `MuHavenStable.Transfer` for the strip's mhUSDC cell) and bloom-pulses
+// the affected card on receipt. Without this, a recipient watching
+// /portfolio when a P2P share transfer lands has to navigate to
+// /activity and back to see their new holding — bad UX, given /cash
+// already auto-refreshes for analogous events.
+//
+// `holdingBloomActive` keys by lowercased token address; the affected
+// holding card binds to it for the gold-ring overlay. New tokens
+// (auto-discovered by `portfolio.load`'s marketplace walk) get a
+// bloom too — the overlay mounts when their card first renders if
+// the key is set at that moment.
+const holdingBloomActive = reactive<Record<string, boolean>>({})
+const mhusdcStripBloomActive = ref(false)
+const inboundRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const inboundBloomClearTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const inboundWatcherCleanups: Array<() => void> = []
+
+const PORTFOLIO_BLOOM_DEBOUNCE_MS = 1500
+const PORTFOLIO_BLOOM_HOLD_MS = 1200 // slightly longer than /cash — holding cards are larger surfaces
+
+async function handleHoldingInbound(tokenAddress: `0x${string}`) {
+  if (!address.value) return
+  const addr = address.value as `0x${string}`
+  const lower = tokenAddress.toLowerCase()
+
+  // Bloom the affected card (mounts even if the token isn't in
+  // `portfolio.holdings` yet — the matching <transition> on the card
+  // template will fire when the holding renders post-load).
+  holdingBloomActive[lower] = true
+  const prevTimer = inboundBloomClearTimers.get(lower)
+  if (prevTimer) clearTimeout(prevTimer)
+  inboundBloomClearTimers.set(
+    lower,
+    setTimeout(() => {
+      delete holdingBloomActive[lower]
+    }, PORTFOLIO_BLOOM_HOLD_MS),
+  )
+
+  // Snapshot which holdings were revealed pre-refresh so we can re-
+  // decrypt them after `portfolio.load()` rebuilds the array (which
+  // resets every `decryptedBalance` to null). Auto-discovered NEW
+  // holdings stay locked — no surprise session signature for a
+  // value the user never asked to see.
+  const revealedSet = new Set(
+    portfolio.holdings
+      .filter(h => h.decryptedBalance !== null)
+      .map(h => h.tokenAddress.toLowerCase()),
+  )
+
+  try {
+    await portfolio.load(addr)
+  } catch (e) {
+    console.warn('[PortfolioPage] inbound refresh load() failed', e)
+    return
+  }
+
+  // Re-decrypt previously-revealed holdings sequentially. Same
+  // serialisation rationale as `decryptAll` — N+1 concurrent refresh
+  // UserOps from one kernel collide on nonce/bundler queueing.
+  for (let i = 0; i < portfolio.holdings.length; i++) {
+    const h = portfolio.holdings[i]
+    if (revealedSet.has(h.tokenAddress.toLowerCase())) {
+      try {
+        await portfolio.decryptHolding(i, addr)
+      } catch (e) {
+        console.warn(
+          `[PortfolioPage] post-inbound re-decrypt of ${h.symbol} failed`,
+          e,
+        )
+      }
+    }
+  }
+}
+
+function debouncedHoldingInbound(tokenAddress: `0x${string}`) {
+  const lower = tokenAddress.toLowerCase()
+  const prev = inboundRefreshTimers.get(lower)
+  if (prev) clearTimeout(prev)
+  inboundRefreshTimers.set(
+    lower,
+    setTimeout(() => {
+      void handleHoldingInbound(tokenAddress)
+    }, PORTFOLIO_BLOOM_DEBOUNCE_MS),
+  )
+}
+
+let mhusdcStripBloomClearTimer: ReturnType<typeof setTimeout> | null = null
+let mhusdcStripRefreshTimer: ReturnType<typeof setTimeout> | null = null
+
+function debouncedMhusdcStripInbound() {
+  if (mhusdcStripRefreshTimer) clearTimeout(mhusdcStripRefreshTimer)
+  mhusdcStripRefreshTimer = setTimeout(() => {
+    mhusdcStripBloomActive.value = true
+    if (mhusdcStripBloomClearTimer) clearTimeout(mhusdcStripBloomClearTimer)
+    mhusdcStripBloomClearTimer = setTimeout(() => {
+      mhusdcStripBloomActive.value = false
+    }, PORTFOLIO_BLOOM_HOLD_MS)
+    // Re-decrypt only if the user opted into reveal — same privacy
+    // rule as /cash (no surprise session signature on inbound).
+    if (portfolio.pusdcConfidentialBalance !== null && address.value) {
+      void portfolio.decryptPusdc(address.value as `0x${string}`)
+    }
+  }, PORTFOLIO_BLOOM_DEBOUNCE_MS)
+}
+
+function teardownInboundWatchers() {
+  for (const cleanup of inboundWatcherCleanups) {
+    try { cleanup() } catch { /* best-effort */ }
+  }
+  inboundWatcherCleanups.length = 0
+  for (const t of inboundRefreshTimers.values()) clearTimeout(t)
+  inboundRefreshTimers.clear()
+  for (const t of inboundBloomClearTimers.values()) clearTimeout(t)
+  inboundBloomClearTimers.clear()
+  if (mhusdcStripRefreshTimer) { clearTimeout(mhusdcStripRefreshTimer); mhusdcStripRefreshTimer = null }
+  if (mhusdcStripBloomClearTimer) { clearTimeout(mhusdcStripBloomClearTimer); mhusdcStripBloomClearTimer = null }
+  for (const k of Object.keys(holdingBloomActive)) delete holdingBloomActive[k]
+  mhusdcStripBloomActive.value = false
+}
+
+async function setupInboundWatchers(kernelAddress: `0x${string}`) {
+  teardownInboundWatchers()
+
+  // Marketplace gives us the per-RWA token addresses to subscribe to.
+  // Wait for it to load if not warm yet — the watchers depend on the
+  // address list being known.
+  if (!marketplace.loaded) {
+    try { await marketplace.load() } catch (e) {
+      console.warn('[PortfolioPage] marketplace.load failed; inbound watchers disabled', e)
+      return
+    }
+  }
+  const publicClient = getPublicClient()
+
+  for (const t of marketplace.tokens) {
+    const tokenAddr = t.address as `0x${string}`
+    const unwatch = publicClient.watchContractEvent({
+      address: tokenAddr,
+      abi: muHavenTokenAbi,
+      eventName: 'Transfer',
+      args: { to: kernelAddress },
+      pollingInterval: 12_000,
+      onLogs: () => debouncedHoldingInbound(tokenAddr),
+    })
+    inboundWatcherCleanups.push(unwatch)
+  }
+
+  // mhUSDC strip cell — same shape as /cash's mhUSDC tile.
+  if (!isZeroAddress(v35Addresses.muHavenStable)) {
+    const unwatchMhusdc = publicClient.watchContractEvent({
+      address: v35Addresses.muHavenStable,
+      abi: muHavenStableAbi,
+      eventName: 'Transfer',
+      args: { to: kernelAddress },
+      pollingInterval: 12_000,
+      onLogs: () => debouncedMhusdcStripInbound(),
+    })
+    inboundWatcherCleanups.push(unwatchMhusdc)
+  }
+}
+
+watch(
+  () => address.value,
+  (addr) => {
+    if (addr) void setupInboundWatchers(addr as `0x${string}`)
+    else teardownInboundWatchers()
+  },
+  { immediate: true },
+)
+onBeforeUnmount(teardownInboundWatchers)
 
 // Show the logo loader only while we're waiting for the very first fetch.
 // Once `loaded` is true the loader never returns (manual refetches update
@@ -521,8 +702,29 @@ const showBlurredAllocation = computed(() =>
             <!-- mhUSDC cell (encrypted, opt-in reveal-in-cell) -->
             <div
               data-testid="portfolio-strip-mhusdc-cell"
-              class="p-6 flex flex-col gap-1 min-h-[104px] justify-center"
+              class="relative p-6 flex flex-col gap-1 min-h-[104px] justify-center"
             >
+              <!-- Inbound bloom — fires on MuHavenStable.Transfer with
+                   `to: kernel`. For revealed users, the value updates
+                   in lockstep via `decryptPusdc`; locked users see the
+                   bloom only and reveal manually. Same pattern as
+                   /cash's mhUSDC tile. -->
+              <transition
+                enter-active-class="transition-opacity duration-300 ease-out"
+                leave-active-class="transition-opacity duration-500 ease-in"
+                enter-from-class="opacity-0"
+                leave-to-class="opacity-0"
+              >
+                <div
+                  v-if="mhusdcStripBloomActive"
+                  aria-hidden="true"
+                  data-testid="portfolio-strip-mhusdc-bloom"
+                  class="absolute inset-0 pointer-events-none
+                         ring-2 ring-gold/40 dark:ring-signal/40
+                         shadow-[0_0_24px_-4px_rgba(255,186,32,0.45)]
+                         dark:shadow-[0_0_24px_-4px_rgba(255,220,161,0.35)]"
+                />
+              </transition>
               <p class="font-sans text-[10px] uppercase tracking-[0.2em] text-cool">
                 mhUSDC
               </p>
@@ -670,11 +872,32 @@ const showBlurredAllocation = computed(() =>
             :visible-once="{ opacity: 1, y: 0, transition: { duration: 400, delay: i * 90 } }"
             :data-testid="'portfolio-holding-card'"
             :data-token-address="h.tokenAddress"
-            class="rounded-xl p-5 md:p-6 border border-haze dark:border-white/5
+            class="relative overflow-hidden rounded-xl p-5 md:p-6 border border-haze dark:border-white/5
                    bg-white dark:bg-[#171717] hover:border-gold/40 dark:hover:border-signal/25
                    transition-colors duration-300
                    flex items-center justify-between gap-4"
           >
+            <!-- Inbound bloom — fires when MuHavenToken.Transfer with
+                 `to: kernel` lands on this token. Pure visual cue;
+                 the underlying refresh + re-decrypt is handled by
+                 `handleHoldingInbound`. Pointer-events-none so the
+                 Decrypt button + APY remain clickable. -->
+            <transition
+              enter-active-class="transition-opacity duration-300 ease-out"
+              leave-active-class="transition-opacity duration-500 ease-in"
+              enter-from-class="opacity-0"
+              leave-to-class="opacity-0"
+            >
+              <div
+                v-if="holdingBloomActive[h.tokenAddress.toLowerCase()]"
+                aria-hidden="true"
+                :data-testid="`portfolio-holding-bloom-${h.symbol}`"
+                class="absolute inset-0 rounded-xl pointer-events-none
+                       ring-2 ring-gold/40 dark:ring-signal/40
+                       shadow-[0_0_28px_-6px_rgba(255,186,32,0.45)]
+                       dark:shadow-[0_0_28px_-6px_rgba(255,220,161,0.35)]"
+              />
+            </transition>
             <!-- Name + ticker -->
             <div class="flex-1 min-w-[160px]">
               <h4 class="font-accent italic text-xl md:text-2xl text-midnight dark:text-white tracking-tight mb-2 leading-tight">
