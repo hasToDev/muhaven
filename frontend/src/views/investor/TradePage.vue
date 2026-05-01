@@ -493,7 +493,7 @@ async function handlePurchase() {
     txHash.value = hash
     showSuccess.value = true
     toast.success('Purchase confirmed', {
-      description: 'Atomic subscription purchase — PUSDC pulled + shares minted',
+      description: 'Atomic subscription purchase — mhUSDC pulled + shares minted',
     })
 
     if (selectedTokenData.value) {
@@ -612,7 +612,7 @@ async function handleRedeem() {
       })
     } else {
       toast.success('Redemption confirmed', {
-        description: 'Shares burned + PUSDC paid out atomically',
+        description: 'Shares burned + mhUSDC paid out atomically',
       })
     }
 
@@ -797,7 +797,7 @@ const cashLinkLoud = computed(() =>
                 Purchase confirmed
               </p>
               <p class="font-sans text-sm text-cool max-w-md">
-                PUSDC was pulled and shares minted atomically — the exact amount was never in cleartext on-chain.
+                mhUSDC was pulled and shares minted atomically — the exact amount was never in cleartext on-chain.
               </p>
             </div>
             <p v-if="txHash" class="font-mono text-[11px] text-cool">
@@ -833,7 +833,7 @@ const cashLinkLoud = computed(() =>
                 Redemption confirmed
               </p>
               <p class="font-sans text-sm text-cool max-w-md">
-                Shares burned and PUSDC paid out in a single tx — your new balance is encrypted to this session.
+                Shares burned and mhUSDC paid out in a single tx — your new balance is encrypted to this session.
               </p>
             </div>
             <p v-if="txHash" class="font-mono text-[11px] text-cool">
@@ -1072,7 +1072,7 @@ const cashLinkLoud = computed(() =>
                 <Inbox :size="15" :stroke-width="1.8" class="text-gold dark:text-signal mt-0.5 flex-shrink-0" />
                 <p class="font-sans text-[11px] text-cool leading-relaxed">
                   This redemption exceeds the instant cap. Subscription will silently escalate to the redemption queue —
-                  you'll claim PUSDC after the next epoch settles.
+                  you'll claim mhUSDC after the next epoch settles.
                 </p>
               </div>
 

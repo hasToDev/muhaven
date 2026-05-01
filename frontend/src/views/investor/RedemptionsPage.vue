@@ -19,7 +19,7 @@ import {
 // RedemptionsPage — list the investor's queued redemption requests across all
 // tokens with a configured RedemptionQueue address. Claim settled requests
 // with a single button. Per-request decrypt of the encrypted proceeds handle
-// reveals the PUSDC payout amount (post-processEpoch).
+// reveals the mhUSDC payout amount (post-processEpoch).
 
 interface EnrichedRequest {
   queueAddress: Address

@@ -90,9 +90,12 @@ const META: Record<string, ContractMeta> = {
     abi: muHavenTokenAbi,
   },
   [addresses.pusdc.toLowerCase()]: {
-    name: 'PUSDC (confidential USDC)',
+    // Internal: the legacy ConfidentialUSDC contract that mhUSDC wraps.
+    // User-facing label intentionally avoids "PUSDC" — investors see this
+    // surface as the underlying behind their encrypted-cash position.
+    name: 'mhUSDC (legacy underlying)',
     kind: 'confidential',
-    symbol: 'PUSDC',
+    symbol: 'mhUSDC',
     decimals: 6,
     fheType: 'uint64',
   },

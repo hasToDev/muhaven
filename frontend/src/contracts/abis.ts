@@ -292,6 +292,28 @@ export const investorRegistryAbi = [
     ],
     outputs: [{ type: 'address[]' }],
   },
+  // Per-token holder enumeration — Wave 3.5 / per-RWA. Snapshot needs the
+  // exact set of holders for a single token at a moment in time, not the
+  // global investor list. Used by the issuer-side distribution wizard to
+  // populate `snapshotBatch`.
+  {
+    name: 'holderCount',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'token', type: 'address' }],
+    outputs: [{ type: 'uint256' }],
+  },
+  {
+    name: 'getHoldersPaginated',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'token', type: 'address' },
+      { name: 'offset', type: 'uint256' },
+      { name: 'limit', type: 'uint256' },
+    ],
+    outputs: [{ type: 'address[]' }],
+  },
 ] as const
 
 // ── YieldDistributor ───────��───────────────────────────────────────

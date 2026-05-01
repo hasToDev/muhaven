@@ -213,13 +213,32 @@ const queuePermissions = nonZero(
 );
 
 const snapshotPermissions = nonZero(
-  Object.values(v35Addresses.yieldSnapshots).map((snapAddr) => ({
-    target: snapAddr,
-    functionName: 'claimYield',
-    abi: yieldSnapshotAbi,
-    valueLimit: 0n,
-  })),
+  Object.values(v35Addresses.yieldSnapshots).flatMap((snapAddr) => [
+    { target: snapAddr, functionName: 'claimYield', abi: yieldSnapshotAbi, valueLimit: 0n },
+    // Wave 3.5 issuer-side distribution (Phase 9.A · /distribute Wave-3.5
+    // rewrite). Replaces the script-only path. Same proxy is reused
+    // across multiple RWA tokens on staging — `dedupePermissions` collapses
+    // collisions for proxies appearing under multiple keys.
+    { target: snapAddr, functionName: 'openEpoch', abi: yieldSnapshotAbi, valueLimit: 0n },
+    { target: snapAddr, functionName: 'snapshotBatch', abi: yieldSnapshotAbi, valueLimit: 0n },
+    { target: snapAddr, functionName: 'finalizeSnapshot', abi: yieldSnapshotAbi, valueLimit: 0n },
+    { target: snapAddr, functionName: 'fundEpoch', abi: yieldSnapshotAbi, valueLimit: 0n },
+  ]),
 );
+
+// Issuer-side mhUSDC operator approval — required so YieldSnapshot can
+// pull mhUSDC from the issuer during fundEpoch. One-shot per (issuer,
+// snapshotProxy) pair until expiry. Without this entry, the operator-
+// approval tx falls back to the passkey kernel mid-distribution and
+// breaks the silent-flow rhythm of the wizard.
+const stableOperatorPermissions = nonZero([
+  {
+    target: v35Addresses.muHavenStable,
+    functionName: 'setOperator',
+    abi: muHavenStableAbi,
+    valueLimit: 0n,
+  },
+]);
 
 const subscriptionPermissions = nonZero([
   {
@@ -321,6 +340,7 @@ const RAW_SESSION_PERMISSIONS = [
   ...subscriptionPermissions,
   ...queuePermissions,
   ...snapshotPermissions,
+  ...stableOperatorPermissions,
   ...refreshGrantPermissions,
 ];
 

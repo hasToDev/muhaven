@@ -7,8 +7,6 @@ import {
   type IssuerStatsDto,
 } from '@/services/api'
 import * as RegistryService from '@/services/contracts/RegistryService'
-import * as YieldService from '@/services/contracts/YieldService'
-import { DistributionStatus } from '@/services/contracts/types'
 
 export interface IssuerTokenView {
   address: string
@@ -22,20 +20,10 @@ export interface IssuerTokenView {
   assetClass: string
 }
 
-export interface DistributionHistoryItem {
-  distributionId: number
-  token: string
-  totalAmount: string | null
-  investors: number
-  status: 'pending' | 'processing' | 'complete'
-  escrowsCreated: number
-}
-
 export const useIssuerTokensStore = defineStore('issuer-tokens', () => {
   const tokens = ref<IssuerTokenView[]>([])
   const rawTokens = ref<TokenResponseDto[]>([])
   const stats = ref<IssuerStatsDto | null>(null)
-  const distributions = ref<DistributionHistoryItem[]>([])
   const onChainInvestorCount = ref<number | null>(null)
   const loading = ref(false)
   const error = ref<string | null>(null)
@@ -115,47 +103,10 @@ export const useIssuerTokensStore = defineStore('issuer-tokens', () => {
     loading.value = false
   }
 
-  async function loadDistributionHistory() {
-    try {
-      const count = await YieldService.distributionCount()
-      const total = Number(count)
-      if (total === 0) return
-
-      // Load most recent distributions (up to 10) in parallel
-      const start = Math.max(0, total - 10)
-      const ids = Array.from({ length: total - start }, (_, k) => total - 1 - k)
-
-      const results = await Promise.allSettled(
-        ids.map(async (i): Promise<DistributionHistoryItem> => {
-          const dist = await YieldService.getDistribution(BigInt(i))
-          return {
-            distributionId: i,
-            token: dist.token,
-            totalAmount: null, // Encrypted — issuer sees only aggregate
-            investors: Number(dist.investorCount),
-            status: dist.status === DistributionStatus.COMPLETED
-              ? 'complete'
-              : dist.status === DistributionStatus.IN_PROGRESS
-                ? 'processing'
-                : 'pending',
-            escrowsCreated: Number(dist.escrowsCreated),
-          }
-        }),
-      )
-
-      distributions.value = results
-        .filter((r): r is PromiseFulfilledResult<DistributionHistoryItem> => r.status === 'fulfilled')
-        .map(r => r.value)
-    } catch {
-      // Distribution history is non-critical — don't block the page
-    }
-  }
-
   function reset() {
     tokens.value = []
     rawTokens.value = []
     stats.value = null
-    distributions.value = []
     onChainInvestorCount.value = null
     selectedAddress.value = null
     loading.value = false
@@ -167,7 +118,6 @@ export const useIssuerTokensStore = defineStore('issuer-tokens', () => {
     tokens,
     rawTokens,
     stats,
-    distributions,
     onChainInvestorCount,
     selectedAddress,
     loading,
@@ -177,7 +127,6 @@ export const useIssuerTokensStore = defineStore('issuer-tokens', () => {
     aggregateStats,
     selectToken,
     load,
-    loadDistributionHistory,
     reset,
   }
 })
