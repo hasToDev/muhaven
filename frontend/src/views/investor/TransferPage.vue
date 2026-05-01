@@ -132,6 +132,7 @@ watch(recipient, () => {
 async function handleTransfer() {
   if (isProcessing.value || !address.value) return
   if (!recipientAddressValid.value || numericAmount.value <= 0) return
+  if (!selectedToken.value) return
   if (simState.value.kind === 'blocked') return
 
   isProcessing.value = true
@@ -143,10 +144,18 @@ async function handleTransfer() {
     const encrypted = await encryptUint128(amt)
     const ephemeralEOA = getEphemeralEOA()
 
+    // Pass the per-RWA token address — Wave 3.5 onboards each RWA as its own
+    // MuHavenToken proxy (TBILL1, GOLD1, …); defaulting to the Wave 3 single-
+    // token proxy targets a contract the user has zero balance on and whose
+    // ABI may lack the 3-arg transfer overload. Symptom: empty `0x` revert
+    // during eth_estimateUserOperationGas, error toast "User operation
+    // failed: MuHavenToken.transfer()". Same shape as the 0be4850 fix on
+    // /trade Sell-Reveal — every per-RWA service caller needs the address.
     const hash = await TokenService.transferWithEphemeral(
       recipient.value as `0x${string}`,
       encrypted as any,
       ephemeralEOA,
+      selectedToken.value as `0x${string}`,
     )
     txHash.value = hash
     showSuccess.value = true
@@ -174,6 +183,7 @@ const canSubmit = computed(() =>
   !isProcessing.value
   && recipientAddressValid.value
   && numericAmount.value > 0
+  && !!selectedToken.value
   && simState.value.kind === 'ok',
 )
 </script>

@@ -89,13 +89,20 @@ export async function transfer(to: `0x${string}`, encrypted: EncryptedInput): Pr
  * The contract grants FHE-decrypt access on the sender's post-transfer balance
  * handle to `ephemeralEOA` (ADR-021). The overload is resolved by viem via
  * arg count.
+ *
+ * `tokenAddress` is optional + defaults to the Wave 3 `muHavenToken` proxy for
+ * back-compat. Wave 3.5 callers MUST pass an explicit per-RWA address (TBILL1,
+ * GOLD1, …) — defaulting to the legacy contract sends the UserOp at a token
+ * the user has no balance on AND whose ABI may not include the 3-arg transfer
+ * overload, surfacing as an empty `0x` revert during simulation.
  */
 export async function transferWithEphemeral(
   to: `0x${string}`,
   encrypted: EncryptedInput,
   ephemeralEOA: `0x${string}`,
+  tokenAddress: `0x${string}` = addr,
 ): Promise<TxHash> {
-  return contractWrite(addr, muHavenTokenAbi, 'transfer', [to, encrypted, ephemeralEOA], CONTRACT)
+  return contractWrite(tokenAddress, muHavenTokenAbi, 'transfer', [to, encrypted, ephemeralEOA], CONTRACT)
 }
 
 export async function transferFrom(
