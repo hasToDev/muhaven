@@ -103,6 +103,24 @@ const copied = ref(false)
 const balancesLoading = ref(false)
 const usdcBalance = ref<bigint | null>(null)
 
+// Anti-layout-shift gate. The welcome ribbon's `v-if` depends on
+// `isFirstRun` which depends on the async USDC balance read; rendering
+// the main convert card before the read settled meant the card would
+// animate in alone, then the ribbon would mount ~half a second later
+// when the RPC resolved and push the card downward. Holding both
+// sections behind a single `balancesLoaded` flag guarantees they
+// commit to a layout in the same tick — ribbon (if first-run) and
+// card animate together via the stagger on the card's :visible-once.
+//
+// Flipped true:
+//   • after `loadBalances()` resolves (success OR error)
+//   • when there's no wallet to load against (initial state, render
+//     immediately so the disconnected view isn't blank)
+//   • by a 1500ms timeout fallback (degraded RPC: render rather than
+//     leave the page blank; late-arriving RPC could re-trigger the
+//     pop-in but only on truly slow networks, accepted edge case)
+const balancesLoaded = ref(false)
+
 // True first-run state: USDC has been read AND is zero AND the user has
 // no decrypted mhUSDC. Gates the welcome ribbon so returning users
 // topping up don't see onboarding copy on every visit. mhUSDC value
@@ -114,7 +132,12 @@ const isFirstRun = computed(() =>
 )
 
 async function loadBalances() {
-  if (!address.value) return
+  if (!address.value) {
+    // No wallet → nothing to fetch, but the page still needs to render
+    // (the disconnected view shows the form + an aside with `—` balances).
+    balancesLoaded.value = true
+    return
+  }
   balancesLoading.value = true
   try {
     usdcBalance.value = await Erc20Service.balanceOf(
@@ -125,6 +148,7 @@ async function loadBalances() {
     usdcBalance.value = null
   } finally {
     balancesLoading.value = false
+    balancesLoaded.value = true
   }
 }
 
@@ -200,7 +224,19 @@ onMounted(() => {
   if (connected.value) {
     loadBalances()
     refreshOperatorStatus()
+  } else {
+    // No wallet on mount — render the page immediately so the user sees
+    // the form rather than a blank column while we wait for an event
+    // that may never come (`watch(connected)` covers the late-connect
+    // case and re-fires `loadBalances`).
+    balancesLoaded.value = true
   }
+  // 1500ms timeout fallback. If the USDC RPC stalls past this point we
+  // commit to rendering the page anyway — a blank column for several
+  // seconds is worse than a possible late-arriving ribbon push. The
+  // timeout is generous enough that healthy staging RPCs always resolve
+  // first; only genuinely degraded sessions hit the fallback.
+  setTimeout(() => { balancesLoaded.value = true }, 1500)
 })
 
 // ── Mode switcher ──────────────────────────────────────────────────────
@@ -400,6 +436,18 @@ const successCopy = computed(() =>
 <template>
   <div>
     <div class="xl:mr-80">
+      <!-- ── Anti-layout-shift gate ───────────────────────────────────
+           Both the welcome ribbon and the convert card mount only after
+           `balancesLoaded` flips true. This guarantees they commit to a
+           layout in the same tick — without the gate the convert card
+           animated in alone, then the ribbon mounted ~half a second
+           later when the USDC RPC resolved and pushed the card down,
+           which read as a layout bug. The gate also drives the
+           ribbon-vs-card stagger on the convert card's :visible-once
+           (delay: 120ms when first-run, 0ms otherwise — under the
+           ~150ms perceptual-grouping threshold so the eye reads the
+           pair as one composition, not two events). -->
+      <template v-if="balancesLoaded">
       <!-- ── Welcome ribbon — first-run only ──────────────────────────
            Shown when USDC=0 and platform mhUSDC empty: a gentle two-step
            pointer (fund right-aside → convert below). Hidden once the
@@ -437,7 +485,7 @@ const successCopy = computed(() =>
       <section
         v-motion
         :initial="{ opacity: 0, y: 20 }"
-        :visible-once="{ opacity: 1, y: 0, transition: { duration: 520 } }"
+        :visible-once="{ opacity: 1, y: 0, transition: { duration: 520, delay: isFirstRun ? 120 : 0 } }"
         class="relative max-w-2xl mx-auto rounded-2xl overflow-hidden border border-haze dark:border-white/5
                bg-white/90 dark:bg-[#1c1b1b]/80 backdrop-blur-lg
                shadow-[0_14px_40px_-12px_rgba(63,46,12,0.08)]
@@ -680,6 +728,7 @@ const successCopy = computed(() =>
           </div>
         </div>
       </section>
+      </template>
     </div>
 
     <Teleport to="body" :disabled="!isXl">
