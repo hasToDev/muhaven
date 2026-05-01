@@ -25,6 +25,39 @@ export interface PortfolioHolding {
   nav: number | null
 }
 
+/**
+ * Allocation slice for the donut + legend on /portfolio.
+ * Single source of truth — the chart and legend both consume this.
+ */
+export interface AllocationSlice {
+  /** Stable identity: `cash:usdc`, `cash:mhusdc`, or `<tokenAddress>` (lowercased). */
+  key: string
+  name: string
+  /** USD value. Locked entries report 0. */
+  value: number
+  /** Percentage of `totalDecryptedValue`. Locked entries report 0. */
+  pct: number
+  /** Hex color from the Golden Hour Midnight palette. */
+  color: string
+  /** True for cash slices (USDC + mhUSDC) — drives cluster ordering + theming. */
+  isCash: boolean
+  /** True when value is unknown (encrypted handle, user hasn't decrypted). */
+  isLocked: boolean
+}
+
+/**
+ * Slice palette. Cash uses neutral/warm-tertiary tokens so RWAs own the
+ * precious gold/amber accents. Hex pulled from `tailwind.css` @theme:
+ * `--color-cool` / `--color-cipher` / `--color-gold` / `--color-signal` /
+ * `--color-compute`. The 4th RWA slot derives a warm-bronze that's not
+ * in the @theme but harmonises with the cluster.
+ */
+const ALLOCATION_PALETTE = {
+  cashUsdc: '#9E8F78',
+  cashMhusdc: '#D3C4B5',
+  rwa: ['#FFBA20', '#FFDCA1', '#B8860B', '#D4914A'],
+} as const
+
 export const usePortfolioStore = defineStore('portfolio', () => {
   const holdings = ref<PortfolioHolding[]>([])
   const usdcBalance = ref<bigint | null>(null)
@@ -77,6 +110,89 @@ export const usePortfolioStore = defineStore('portfolio', () => {
   const allDecrypted = computed(() =>
     holdings.value.length > 0 && holdings.value.every(h => h.decryptedBalance !== null),
   )
+
+  /**
+   * Donut + legend on /portfolio's Allocation tab consume this. Rules:
+   * - USDC: emit only when value > 0 (USDC is plaintext, no locked state).
+   * - mhUSDC: ALWAYS emit when MuHavenStable is configured (so users see
+   *   "mhUSDC ?" in the legend even before they reveal). Locked when
+   *   `pusdcConfidentialBalance === null`. Revealed-zero is omitted to
+   *   keep the legend tight.
+   * - RWAs: emit each holding. Locked (`decryptedBalance === null`) keeps a
+   *   placeholder slot. Revealed > 0 contributes a real arc. Revealed-zero
+   *   is omitted.
+   * - Sort: cash first (USDC then mhUSDC), then revealed RWAs by value
+   *   descending, then locked RWAs at the end.
+   */
+  const allocationSlices = computed<AllocationSlice[]>(() => {
+    const total = totalDecryptedValue.value
+    const out: AllocationSlice[] = []
+
+    // USDC
+    if (usdcBalance.value !== null && usdcBalance.value > 0n) {
+      const value = Number(usdcBalance.value) / 1e6
+      out.push({
+        key: 'cash:usdc',
+        name: 'USDC',
+        value,
+        pct: total > 0 ? (value / total) * 100 : 0,
+        color: ALLOCATION_PALETTE.cashUsdc,
+        isCash: true,
+        isLocked: false,
+      })
+    }
+
+    // mhUSDC. Always present in the slice list so users see the encrypted
+    // cash row even before they reveal. Revealed-zero omitted (consistent
+    // with USDC=0 and revealed-RWA=0).
+    if (pusdcConfidentialBalance.value === null) {
+      out.push({
+        key: 'cash:mhusdc',
+        name: 'mhUSDC',
+        value: 0,
+        pct: 0,
+        color: ALLOCATION_PALETTE.cashMhusdc,
+        isCash: true,
+        isLocked: true,
+      })
+    } else if (pusdcConfidentialBalance.value > 0n) {
+      const value = Number(pusdcConfidentialBalance.value) / 1e6
+      out.push({
+        key: 'cash:mhusdc',
+        name: 'mhUSDC',
+        value,
+        pct: total > 0 ? (value / total) * 100 : 0,
+        color: ALLOCATION_PALETTE.cashMhusdc,
+        isCash: true,
+        isLocked: false,
+      })
+    }
+
+    // RWA holdings. Two passes — revealed (sorted by value desc) then locked.
+    const revealedRwa: AllocationSlice[] = []
+    const lockedRwa: AllocationSlice[] = []
+    holdings.value.forEach((h, i) => {
+      const color = ALLOCATION_PALETTE.rwa[i % ALLOCATION_PALETTE.rwa.length]
+      const key = h.tokenAddress.toLowerCase()
+      if (h.decryptedBalance === null) {
+        lockedRwa.push({
+          key, name: h.name, value: 0, pct: 0, color,
+          isCash: false, isLocked: true,
+        })
+        return
+      }
+      const value = Number(h.decryptedBalance) * (h.nav ?? 1)
+      if (value <= 0) return
+      revealedRwa.push({
+        key, name: h.name, value,
+        pct: total > 0 ? (value / total) * 100 : 0,
+        color, isCash: false, isLocked: false,
+      })
+    })
+    revealedRwa.sort((a, b) => b.value - a.value)
+
+    return [...out, ...revealedRwa, ...lockedRwa]
+  })
 
   /**
    * Load portfolio positions from backend + token metadata.
@@ -253,6 +369,7 @@ export const usePortfolioStore = defineStore('portfolio', () => {
     loaded,
     totalDecryptedValue,
     allDecrypted,
+    allocationSlices,
     load,
     decryptHolding,
     decryptPusdc,

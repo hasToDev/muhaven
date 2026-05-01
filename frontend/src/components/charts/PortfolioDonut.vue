@@ -3,58 +3,67 @@ import { computed } from 'vue'
 import { Doughnut } from 'vue-chartjs'
 import { Chart as ChartJS, ArcElement, Tooltip } from 'chart.js'
 import { useAppStore } from '@/stores/app'
-import { usePortfolioStore } from '@/stores/portfolio'
 import { formatUSD } from '@/lib/utils'
+import type { AllocationSlice } from '@/stores/portfolio'
 
 ChartJS.register(ArcElement, Tooltip)
 
-const store = useAppStore()
-const portfolio = usePortfolioStore()
+const props = defineProps<{
+  slices: AllocationSlice[]
+  total: number
+}>()
 
-const holdingValues = computed(() =>
-  portfolio.holdings
-    .filter(h => h.decryptedBalance !== null)
-    .map(h => ({
-      name: h.name,
-      // Wave 3.5 raw-integer share convention — see store + page comments.
-      value: Number(h.decryptedBalance!) * (h.nav ?? 1),
-    })),
+const store = useAppStore()
+
+// Locked slices have value=0; rendering them as zero-area arcs breaks
+// Chart.js tooltip math. Filter to revealed, non-zero slices for the arc;
+// the legend (in PortfolioPage.vue) shows the locked entries separately.
+const renderable = computed(() =>
+  props.slices.filter(s => !s.isLocked && s.value > 0),
 )
 
-const totalValue = computed(() => portfolio.totalDecryptedValue)
-
-const colors = {
-  dark: ['#A8F5EC', '#4DB8B0', '#7AADA9', '#C9A84C', '#1B9E8A'],
-  light: ['#1B9E8A', '#1A1A2E', '#4DB8B0', '#C9A84C', '#7AADA9'],
-}
-
 const chartData = computed(() => ({
-  labels: holdingValues.value.map(h => h.name),
+  labels: renderable.value.map(s => s.name),
   datasets: [{
-    data: holdingValues.value.map(h => h.value),
-    backgroundColor: store.isDark
-      ? colors.dark.slice(0, holdingValues.value.length)
-      : colors.light.slice(0, holdingValues.value.length),
-    borderWidth: 0,
-    hoverOffset: 4,
+    data: renderable.value.map(s => s.value),
+    backgroundColor: renderable.value.map(s => s.color),
+    // Canvas-color separator. Adjacent amber slices (gold + signal) read
+    // muddier without a 2px hairline that matches the page background.
+    borderColor: store.isDark ? '#121315' : '#FFFDF7',
+    borderWidth: 2,
+    hoverOffset: 2,
   }],
 }))
+
+const tooltipColors = computed(() => store.isDark ? {
+  bg: '#1A1B1E',
+  title: '#FFDCA1',
+  body: '#FAF5E8',
+  border: 'rgba(255,186,32,0.25)',
+} : {
+  bg: '#FFFDF7',
+  title: '#B8860B',
+  body: '#121315',
+  border: 'rgba(184,134,11,0.25)',
+})
 
 const chartOptions = computed(() => ({
   responsive: true,
   maintainAspectRatio: false,
-  cutout: '72%',
+  cutout: '76%',
   plugins: {
     tooltip: {
-      backgroundColor: '#1A1A2E',
-      titleColor: '#A8F5EC',
-      bodyColor: '#FFFFFF',
-      borderColor: 'rgba(27,158,138,0.3)',
+      backgroundColor: tooltipColors.value.bg,
+      titleColor: tooltipColors.value.title,
+      bodyColor: tooltipColors.value.body,
+      borderColor: tooltipColors.value.border,
       borderWidth: 1,
       padding: 12,
       bodyFont: { family: 'Inter Variable' },
+      displayColors: true,
       callbacks: {
-        label: (ctx: any) => ` $${ctx.parsed.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+        label: (ctx: any) =>
+          ` ${ctx.label}: ${formatUSD(ctx.parsed)}`,
       },
     },
   },
@@ -62,18 +71,26 @@ const chartOptions = computed(() => ({
 </script>
 
 <template>
-  <div class="relative" style="height: 180px">
-    <template v-if="holdingValues.length > 0">
+  <div
+    class="relative"
+    style="height: 180px"
+    data-testid="portfolio-allocation-chart-wrapper"
+    :data-slice-count="renderable.length"
+    :data-total="total"
+  >
+    <template v-if="renderable.length > 0">
       <Doughnut :data="chartData" :options="chartOptions" />
       <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-        <span class="text-xs text-cool">Total</span>
-        <span class="text-lg font-accent italic text-midnight dark:text-white">
-          {{ formatUSD(totalValue) }}
+        <span class="font-sans text-[10px] uppercase tracking-[0.2em] text-cool">
+          Total
+        </span>
+        <span class="font-accent italic text-lg text-midnight dark:text-white tabular-nums">
+          {{ formatUSD(total) }}
         </span>
       </div>
     </template>
-    <div v-else class="h-full flex items-center justify-center">
-      <span class="text-xs text-cool">Decrypt balances to see allocation</span>
+    <div v-else class="h-full flex items-center justify-center" data-testid="portfolio-allocation-empty">
+      <span class="font-sans text-xs text-cool">No allocation yet</span>
     </div>
   </div>
 </template>

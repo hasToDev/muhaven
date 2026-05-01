@@ -91,25 +91,23 @@ function holdingUsdValue(h: typeof portfolio.holdings[number]): string {
   return `${formatTokenAmount(tokens)} ${h.symbol}`
 }
 
-function holdingColorClass(index: number): string {
-  const palette = ['bg-gold', 'bg-signal dark:bg-signal', 'bg-compute', 'bg-cipher']
-  return palette[index % palette.length]
-}
+const hasRevealedAllocationSlice = computed(() =>
+  portfolio.allocationSlices.some(s => !s.isLocked),
+)
 
-/** Allocation percentages (only meaningful when all decrypted). */
-const allocationBreakdown = computed(() =>
-  portfolio.holdings.map((h, i) => {
-    if (h.decryptedBalance === null || portfolio.totalDecryptedValue <= 0) {
-      return { name: h.name, pct: 0, color: holdingColorClass(i) }
-    }
-    // Wave 3.5 raw-integer share convention; see holdingUsdValue.
-    const value = Number(h.decryptedBalance) * (h.nav ?? 1)
-    return {
-      name: h.name,
-      pct: (value / portfolio.totalDecryptedValue) * 100,
-      color: holdingColorClass(i),
-    }
-  }),
+const lockedSliceCount = computed(() =>
+  portfolio.allocationSlices.filter(s => s.isLocked).length,
+)
+
+/**
+ * Show the "Allocation blurred" preview state only when nothing has been
+ * revealed yet AND there's something to decrypt. Once everything has been
+ * decrypted (even if every revealed value is zero) we fall through to the
+ * donut + legend area, which has its own empty state — avoids stranding
+ * users on a "Decrypt to see allocation" CTA after they already decrypted.
+ */
+const showBlurredAllocation = computed(() =>
+  !hasRevealedAllocationSlice.value && lockedSliceCount.value > 0,
 )
 </script>
 
@@ -296,9 +294,13 @@ const allocationBreakdown = computed(() =>
               class="absolute top-1/2 right-1/4 w-44 h-44 bg-cipher/15 dark:bg-cipher/10 rounded-full blur-[55px] -translate-y-1/2 pointer-events-none"
             />
 
-            <!-- LOCKED allocation state -->
+            <!-- LOCKED allocation state — only when there's something
+                 still encrypted AND nothing revealed yet (cold first-run:
+                 zero USDC + locked mhUSDC + every RWA locked). Most users
+                 skip this branch entirely because USDC is plaintext and
+                 known once `portfolio.load` resolves. -->
             <div
-              v-if="!portfolio.allDecrypted"
+              v-if="showBlurredAllocation"
               class="z-10 w-full max-w-md mx-auto text-center space-y-5"
             >
               <!-- Blurred donut icon -->
@@ -352,34 +354,84 @@ const allocationBreakdown = computed(() =>
               </div>
             </div>
 
-            <!-- DECRYPTED allocation state — real donut + legend -->
+            <!-- DECRYPTED allocation state — donut + legend.
+                 Single source of truth: `portfolio.allocationSlices` drives
+                 both the donut arcs and the legend rows. Includes USDC +
+                 mhUSDC (cash cluster) + RWAs. The segmented bar above the
+                 legend was dropped — duplicated the donut. -->
             <div v-else class="z-10 w-full flex flex-col md:flex-row items-center gap-8">
               <div class="w-44 md:w-52 flex-shrink-0">
-                <PortfolioDonut />
+                <PortfolioDonut
+                  :slices="portfolio.allocationSlices"
+                  :total="portfolio.totalDecryptedValue"
+                />
               </div>
-              <div class="flex-1 w-full">
-                <!-- Segmented allocation bar -->
-                <div class="flex h-2.5 rounded-full overflow-hidden gap-0.5 mb-5">
+              <div class="flex-1 w-full" data-testid="portfolio-allocation-legend">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2.5">
                   <div
-                    v-for="a in allocationBreakdown"
-                    :key="a.name"
-                    :class="[a.color, 'rounded-full transition-all duration-1000 ease-out']"
-                    :style="{ width: `${a.pct}%` }"
-                  />
-                </div>
-                <!-- Legend -->
-                <div class="flex flex-wrap gap-x-5 gap-y-2.5">
-                  <div
-                    v-for="a in allocationBreakdown"
-                    :key="a.name"
-                    class="flex items-center gap-2"
+                    v-for="slice in portfolio.allocationSlices"
+                    :key="slice.key"
+                    data-testid="portfolio-allocation-legend-row"
+                    :data-slice-key="slice.key"
+                    :data-slice-locked="slice.isLocked"
+                    class="flex items-center gap-2.5"
                   >
-                    <span :class="['w-2.5 h-2.5 rounded-sm', a.color]" />
-                    <span class="font-sans text-xs text-slate dark:text-body-dark/80 tabular-nums">
-                      {{ a.name }}
-                      <span class="text-cool"> &middot; {{ a.pct.toFixed(0) }}%</span>
+                    <!-- Solid swatch for revealed slices; dashed-outlined
+                         square for locked entries — mirrors "encrypted /
+                         awaiting reveal" without inventing a new visual. -->
+                    <span
+                      v-if="!slice.isLocked"
+                      class="w-2.5 h-2.5 rounded-sm flex-shrink-0"
+                      :style="{ backgroundColor: slice.color }"
+                    />
+                    <span
+                      v-else
+                      class="w-2.5 h-2.5 rounded-sm border border-dashed border-cool/50 flex-shrink-0"
+                    />
+                    <span class="font-sans text-xs text-slate dark:text-body-dark/80 flex-1 truncate">
+                      {{ slice.name }}
                     </span>
+                    <template v-if="!slice.isLocked">
+                      <span class="font-sans text-xs text-cool tabular-nums">
+                        {{ formatUSD(slice.value) }}
+                      </span>
+                      <span class="font-sans text-[10px] text-cool/70 w-10 text-right tabular-nums">
+                        {{ slice.pct.toFixed(0) }}%
+                      </span>
+                    </template>
+                    <Lock
+                      v-else
+                      :size="12"
+                      :stroke-width="1.8"
+                      class="text-cool/60 ml-auto flex-shrink-0"
+                    />
                   </div>
+                </div>
+
+                <!-- Locked-positions notice. Renders only when something
+                     in the legend is locked — gives the user a one-liner
+                     "you're seeing a partial picture" + a Reveal All
+                     shortcut. The hero already has Reveal All but this
+                     surface lives where the eye is when scanning the
+                     allocation tab. -->
+                <div
+                  v-if="lockedSliceCount > 0"
+                  data-testid="portfolio-allocation-locked-notice"
+                  class="mt-4 flex items-center gap-2 text-[11px] font-sans text-cool"
+                >
+                  <Lock :size="12" :stroke-width="1.8" class="flex-shrink-0" />
+                  <span class="flex-1">
+                    {{ lockedSliceCount }} position{{ lockedSliceCount === 1 ? '' : 's' }} still encrypted
+                  </span>
+                  <button
+                    type="button"
+                    @click="decryptAll"
+                    :disabled="revealing"
+                    data-testid="portfolio-allocation-locked-notice-cta"
+                    class="font-semibold uppercase tracking-[0.18em] text-compute dark:text-signal hover:underline cursor-pointer disabled:opacity-50 disabled:cursor-wait"
+                  >
+                    Reveal All
+                  </button>
                 </div>
               </div>
             </div>
