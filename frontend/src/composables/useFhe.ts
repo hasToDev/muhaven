@@ -7,6 +7,24 @@ import { useWalletStore } from '@/stores/wallet'
 import type { EncryptableItem, EncryptedItemInput } from '@cofhe/sdk'
 
 /**
+ * Optional binding for the encrypted-input "owner" account. When provided,
+ * the cofhe SDK signs the verifier proof against this address so the
+ * on-chain `FHE.asEuint*(input)` call recovers a signer that matches
+ * `msg.sender` of the contract calling the FHE precompile.
+ *
+ * Wave 3.5 + ZeroDev kernel: pass the kernel/smart-account address. Without
+ * the binding, the cofhe SDK signs against its connected wallet client (the
+ * per-session ephemeral EOA), and `FHE.asEuint*` reverts with cofhe
+ * TaskManager's `InvalidSigner` (selector `0x7ba5ffb5`) — same root cause as
+ * the SDK-side `withSenderAccount` wrapper in `services/v35/context.ts`.
+ *
+ * Omit (or pass undefined) for legacy Wave 3 paths where the EOA-side wallet
+ * client is already the on-chain `msg.sender` — those paths don't need the
+ * rebind because the cofhe default already lines up.
+ */
+type EncryptOpts = { senderAccount?: Address }
+
+/**
  * useFhe — FHE client composable. Wave 3.5 migration (ADR-021 + PERMIT_DECRYPT_LIFECYCLE.md).
  *
  * Generates a per-session ephemeral EOA at first use, holds the private key in
@@ -173,55 +191,79 @@ export function useFhe() {
 
   // ── Encryption helpers ────────────────────────────────────────────────
 
-  async function encryptUint128(value: bigint): Promise<EncryptedItemInput> {
+  async function encryptUint128(
+    value: bigint,
+    opts: EncryptOpts = {},
+  ): Promise<EncryptedItemInput> {
     const client = await ensureReady()
     const Encryptable = await loadEncryptable()
     try {
-      const [result] = await client
+      const builder = client
         .encryptInputs([Encryptable.uint128(value)])
         .onStep((step: string) => { fheStore.currentStep = step })
-        .execute()
+      const bound = opts.senderAccount
+        ? builder.setAccount(opts.senderAccount)
+        : builder
+      const [result] = await bound.execute()
       return result as unknown as EncryptedItemInput
     } finally {
       fheStore.currentStep = null
     }
   }
 
-  async function encryptUint64(value: bigint): Promise<EncryptedItemInput> {
+  async function encryptUint64(
+    value: bigint,
+    opts: EncryptOpts = {},
+  ): Promise<EncryptedItemInput> {
     const client = await ensureReady()
     const Encryptable = await loadEncryptable()
     try {
-      const [result] = await client
+      const builder = client
         .encryptInputs([Encryptable.uint64(value)])
         .onStep((step: string) => { fheStore.currentStep = step })
-        .execute()
+      const bound = opts.senderAccount
+        ? builder.setAccount(opts.senderAccount)
+        : builder
+      const [result] = await bound.execute()
       return result as unknown as EncryptedItemInput
     } finally {
       fheStore.currentStep = null
     }
   }
 
-  async function encryptAddress(addr: string): Promise<EncryptedItemInput> {
+  async function encryptAddress(
+    addr: string,
+    opts: EncryptOpts = {},
+  ): Promise<EncryptedItemInput> {
     const client = await ensureReady()
     const Encryptable = await loadEncryptable()
     try {
-      const [result] = await client
+      const builder = client
         .encryptInputs([Encryptable.address(addr)])
         .onStep((step: string) => { fheStore.currentStep = step })
-        .execute()
+      const bound = opts.senderAccount
+        ? builder.setAccount(opts.senderAccount)
+        : builder
+      const [result] = await bound.execute()
       return result as unknown as EncryptedItemInput
     } finally {
       fheStore.currentStep = null
     }
   }
 
-  async function encryptBatch(items: EncryptableItem[]): Promise<EncryptedItemInput[]> {
+  async function encryptBatch(
+    items: EncryptableItem[],
+    opts: EncryptOpts = {},
+  ): Promise<EncryptedItemInput[]> {
     const client = await ensureReady()
     try {
-      const results = await client
+      const builder = client
         .encryptInputs(items)
         .onStep((step: string) => { fheStore.currentStep = step })
-        .execute()
+      const bound = opts.senderAccount
+        ? builder.setAccount(opts.senderAccount)
+        : builder
+      const results = await bound.execute()
       return results as unknown as EncryptedItemInput[]
     } finally {
       fheStore.currentStep = null

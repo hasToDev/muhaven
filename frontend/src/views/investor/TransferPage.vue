@@ -141,7 +141,23 @@ async function handleTransfer() {
   try {
     // Raw integer share units per Wave 3.5 convention (see BuyPage note).
     const amt = BigInt(Math.floor(numericAmount.value))
-    const encrypted = await encryptUint128(amt)
+    // Bind the encryption to the kernel address. The on-chain
+    // `MuHavenToken.transfer` calls `FHE.asEuint128(input)`, and cofhe's
+    // TaskManager recovers the verifier-signature signer to compare against
+    // `msg.sender` of that call (= the kernel/smart-account address, since
+    // the UserOp routes kernel → MuHavenToken). Without `senderAccount` the
+    // cofhe SDK signs with its connected wallet client's account — the
+    // per-session ephemeral EOA — and the recovered signer doesn't match
+    // `msg.sender`, surfacing as `InvalidSigner` (selector `0x7ba5ffb5`)
+    // and a misleading "VerificationGasLimitTooLowError" wrapper from viem.
+    // Same fix shape as the SDK-side `withSenderAccount` wrapper in
+    // `services/v35/context.ts`; the SDK clients (Subscription / Stable /
+    // YieldSnapshot) inherit it through `buildWriteContext`. TransferPage
+    // bypasses the SDK and goes straight to `TokenService`, so it has to
+    // bind the encryption itself.
+    const encrypted = await encryptUint128(amt, {
+      senderAccount: address.value as `0x${string}`,
+    })
     const ephemeralEOA = getEphemeralEOA()
 
     // Pass the per-RWA token address — Wave 3.5 onboards each RWA as its own
