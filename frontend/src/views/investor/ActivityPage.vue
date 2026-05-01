@@ -235,7 +235,12 @@ onMounted(async () => {
   // addresses than block the page on the tokens fetch. The labels swap to
   // symbols reactively once the list lands.
   if (!marketplace.loaded) void marketplace.load()
-  if (activity.loaded) return
+  // Always refetch on mount. The previous `if (activity.loaded) return`
+  // guard was an inbox-staleness footgun: a user who visits /activity
+  // within the indexer's 15s polling window after a trade would see an
+  // empty list, the store would latch `loaded=true`, and every revisit
+  // would skip the refetch — even after the indexer had caught up. The
+  // round-trip cost is tiny vs. an inbox showing nothing.
   await activity.load()
 })
 
