@@ -210,9 +210,14 @@ const showBlurredAllocation = computed(() =>
                  shadow-[0_14px_40px_-12px_rgba(63,46,12,0.08)]
                  dark:shadow-[0_20px_60px_-20px_rgba(0,0,0,0.65)]"
         >
-          <!-- Value tab -->
+          <!-- Value tab. v-show (not v-if) so the sibling Allocation tab
+               below stays mounted across tab clicks — keeps the Chart.js
+               donut instance alive and stops the entrance animation from
+               replaying on every Allocation click. First-time animation
+               still plays on page load (chart resizes from 0×0 once the
+               Allocation tab becomes visible). -->
           <div
-            v-if="activeTab === 'value'"
+            v-show="activeTab === 'value'"
             class="p-8 md:p-12 flex flex-col md:flex-row items-start md:items-center justify-between gap-8 border-b border-haze dark:border-white/5 relative"
           >
             <!-- Ambient amber bloom, top-left corner -->
@@ -279,9 +284,10 @@ const showBlurredAllocation = computed(() =>
             </button>
           </div>
 
-          <!-- Allocation tab -->
+          <!-- Allocation tab. Paired v-show with the Value tab above so
+               the donut stays mounted across tab toggles. -->
           <div
-            v-else
+            v-show="activeTab === 'allocation'"
             class="p-8 md:p-10 flex flex-col items-center justify-center border-b border-haze dark:border-white/5 relative min-h-[320px]"
           >
             <!-- Ambient accent bleeds -->
