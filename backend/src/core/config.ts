@@ -118,6 +118,26 @@ const EnvSchema = z.object({
   // filesystem dependency on the deployments JSON (which doesn't ship into
   // the backend container).
   TOKEN_REGISTRY_ADDRESS: z.string().optional(),
+
+  // ── Phase 9.A · Expansion (F2) — self-serve issuer onboarding ──────
+  // Platform addresses needed by `deploy-token.library.ts`. None are
+  // dev-server-required: the apply endpoint works without them; only
+  // the deploy endpoint refuses to start when any are missing.
+  // Singular versions of YieldSnapshot / InvestorRegistry / Compliance
+  // / IdentityRegistry / IssuerControlledOracle — the indexer's
+  // `*_JSON` lists are per-token *subscriptions*, while the platform
+  // contracts here are single-deployment singletons.
+  ISSUER_ONBOARDING_ENABLED: z.coerce.boolean().default(false),
+  PLATFORM_DEPLOYER_PRIVATE_KEY: z.string().optional(),
+  INVESTOR_REGISTRY_V35_ADDRESS: z.string().optional(),
+  YIELD_SNAPSHOT_ADDRESS: z.string().optional(),
+  IDENTITY_REGISTRY_ADDRESS: z.string().optional(),
+  MODULAR_COMPLIANCE_ADDRESS: z.string().optional(),
+  ISSUER_ORACLE_ADDRESS: z.string().optional(),
+  // Path to compiled contract artifacts inside the backend container.
+  // Defaults to walking up to project root in dev; the Dockerfile bakes
+  // artifacts into `/app/contracts-artifacts` for staging.
+  MUHAVEN_ARTIFACTS_DIR: z.string().optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

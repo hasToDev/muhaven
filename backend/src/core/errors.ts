@@ -24,8 +24,8 @@ export class ApplicationHttpError extends Error {
     return new ApplicationHttpError(404, message);
   }
 
-  static conflict(message: string): ApplicationHttpError {
-    return new ApplicationHttpError(409, message);
+  static conflict(message: string, details?: unknown): ApplicationHttpError {
+    return new ApplicationHttpError(409, message, details);
   }
 
   static validationError(details: unknown): ApplicationHttpError {

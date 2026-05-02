@@ -86,6 +86,17 @@ const router = createRouter({
       component: () => import('@/views/issuer/TokensPage.vue'),
       meta: { title: 'Tokens' },
     },
+    // Phase 9.A · Expansion (F2) — self-serve issuer onboarding wizard.
+    // Auth-gated but role-agnostic: an unregistered investor can apply,
+    // and an approved issuer hits the redirect-out branch in
+    // ApplyPage.onMounted to bounce to /tokens. The route is excluded
+    // from `ISSUER_ROUTES` so investors can navigate here without the
+    // role-guardrail kicking them back to /portfolio.
+    {
+      path: '/apply-issuer',
+      component: () => import('@/views/issuer/ApplyPage.vue'),
+      meta: { title: 'Become an Issuer', layout: 'apply' },
+    },
     {
       path: '/distribute',
       component: () => import('@/views/issuer/DistributePage.vue'),

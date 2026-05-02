@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm';
 import type { IUserRepository } from '../../../domain/auth/repository/user.repository.js';
-import { User } from '../../../domain/auth/model/user.js';
+import { User, type IssuerKybSubmission, type IssuerStatus } from '../../../domain/auth/model/user.js';
 import { users } from './schema.js';
 import type { Db } from './db.js';
 
@@ -31,6 +31,11 @@ export class PgUserRepository implements IUserRepository {
         role: user.role,
         email: user.email,
         createdAt: user.createdAt,
+        issuerStatus: user.issuerStatus,
+        issuerDisplayName: user.issuerDisplayName,
+        issuerJurisdiction: user.issuerJurisdiction,
+        issuerApprovedAt: user.issuerApprovedAt,
+        issuerKybSubmission: user.issuerKybSubmission,
       })
       .onConflictDoUpdate({
         target: users.id,
@@ -39,6 +44,11 @@ export class PgUserRepository implements IUserRepository {
           walletProvider: user.walletProvider,
           role: user.role,
           email: user.email,
+          issuerStatus: user.issuerStatus,
+          issuerDisplayName: user.issuerDisplayName,
+          issuerJurisdiction: user.issuerJurisdiction,
+          issuerApprovedAt: user.issuerApprovedAt,
+          issuerKybSubmission: user.issuerKybSubmission,
         },
       });
   }
@@ -51,6 +61,12 @@ export class PgUserRepository implements IUserRepository {
       role: row.role,
       email: row.email ?? undefined,
       createdAt: row.createdAt,
+      issuerStatus: row.issuerStatus as IssuerStatus,
+      issuerDisplayName: row.issuerDisplayName ?? undefined,
+      issuerJurisdiction: row.issuerJurisdiction ?? undefined,
+      issuerApprovedAt: row.issuerApprovedAt ?? undefined,
+      issuerKybSubmission:
+        (row.issuerKybSubmission as IssuerKybSubmission | null) ?? undefined,
     });
   }
 }

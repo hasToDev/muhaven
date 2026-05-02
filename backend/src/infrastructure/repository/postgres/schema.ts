@@ -38,6 +38,35 @@ export const walletProviderEnum = pgEnum('wallet_provider', [
 
 export const userRoleEnum = pgEnum('user_role', ['investor', 'issuer']);
 
+/**
+ * Phase 9.A · Expansion (F2) — issuer KYB lifecycle. `unregistered` is the
+ * default for non-issuers (and for issuer-roled users who haven't yet
+ * walked through `/apply-issuer`). `pending` is reserved for the future
+ * KYB-review queue; today the wizard auto-approves and skips this state.
+ * `suspended` is governance-revoked — no path lands here yet, but the
+ * enum value is reserved so a future ops tool can flip it.
+ */
+export const issuerStatusEnum = pgEnum('issuer_status', [
+  'unregistered',
+  'pending',
+  'approved',
+  'suspended',
+]);
+
+/**
+ * Phase 9.A · Expansion (F2) — token deploy job lifecycle for the
+ * self-serve onboarding wizard. The HTTP layer creates a row with status
+ * `running`, the deploy library writes step transitions through the
+ * progress callback, and the final outcome lands as `succeeded`
+ * (with `result_token_address`) or `failed` (with `error_message` +
+ * `last_step`).
+ */
+export const deployStatusEnum = pgEnum('deploy_status', [
+  'running',
+  'succeeded',
+  'failed',
+]);
+
 export const escrowEventTypeEnum = pgEnum('escrow_event_type', [
   'EscrowCreated',
   'EscrowSettled',
@@ -53,8 +82,54 @@ export const users = pgTable(
     role: userRoleEnum('role').notNull().default('investor'),
     email: text('email'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
+    // Phase 9.A · Expansion (F2) — issuer KYB metadata. `issuerStatus`
+    // defaults to `unregistered` for everyone (including new issuer-roled
+    // signups, until they walk through `/apply-issuer`); the existing
+    // demo issuer rows are flipped to `approved` via
+    // `backend/scripts/backfill-issuer-status.ts`. `issuerKybSubmission`
+    // captures the raw wizard payload so a future re-review queue can
+    // surface what was claimed at apply time.
+    issuerStatus: issuerStatusEnum('issuer_status').notNull().default('unregistered'),
+    issuerDisplayName: text('issuer_display_name'),
+    issuerJurisdiction: text('issuer_jurisdiction'),
+    issuerApprovedAt: timestamp('issuer_approved_at'),
+    issuerKybSubmission: jsonb('issuer_kyb_submission'),
   },
-  (t) => [index('users_wallet_address_idx').on(t.walletAddress)],
+  (t) => [
+    index('users_wallet_address_idx').on(t.walletAddress),
+    index('users_issuer_status_idx').on(t.issuerStatus),
+  ],
+);
+
+/**
+ * Phase 9.A · Expansion (F2) — per-deploy job rows for the self-serve
+ * issuer onboarding wizard. One row per deploy attempt. The HTTP handler
+ * inserts on `POST /v1/issuer/tokens/deploy`, mutates `lastStep` as the
+ * progress callback fires, and finalises with `status = succeeded` (plus
+ * `resultTokenAddress`) or `status = failed` (plus `errorMessage` +
+ * `lastStep`). The SSE channel is in-process; the row is the
+ * reconnect-from-anywhere fallback when the SSE socket drops.
+ */
+export const issuerTokenDeploys = pgTable(
+  'issuer_token_deploys',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .references(() => users.id)
+      .notNull(),
+    symbol: text('symbol').notNull(),
+    config: jsonb('config').notNull(),
+    status: deployStatusEnum('status').notNull().default('running'),
+    lastStep: text('last_step'),
+    resultTokenAddress: text('result_token_address'),
+    errorMessage: text('error_message'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    completedAt: timestamp('completed_at'),
+  },
+  (t) => [
+    index('issuer_token_deploys_user_id_idx').on(t.userId),
+    index('issuer_token_deploys_status_idx').on(t.status),
+  ],
 );
 
 export const sessions = pgTable(

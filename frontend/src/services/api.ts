@@ -448,6 +448,151 @@ export const issuerApi = {
   },
 }
 
+// ── Issuer onboarding (Phase 9.A · Expansion F2) ───────────────────
+
+export type IssuerStatus = 'unregistered' | 'pending' | 'approved' | 'suspended'
+
+export interface ApplyIssuerRequest {
+  display_name: string
+  jurisdiction: string
+  contact_email: string
+  attestation: 'kyb_skipped'
+}
+
+export interface ApplyIssuerResponse {
+  user: {
+    id: string
+    wallet_address: string
+    role: 'issuer'
+    issuer_status: 'approved'
+    issuer_display_name: string
+    issuer_jurisdiction: string
+    issuer_approved_at: string
+  }
+  tokens: TokenResponse
+}
+
+export type DeployStepKey =
+  | 'deploy_token'
+  | 'deploy_queue'
+  | 'deploy_treasury'
+  | 'wire_token_pointers'
+  | 'authorize_investor_registry'
+  | 'authorize_compliance_callers'
+  | 'configure_oracle'
+  | 'register_token'
+
+export const DEPLOY_STEPS: readonly DeployStepKey[] = [
+  'deploy_token',
+  'deploy_queue',
+  'deploy_treasury',
+  'wire_token_pointers',
+  'authorize_investor_registry',
+  'authorize_compliance_callers',
+  'configure_oracle',
+  'register_token',
+]
+
+export interface DeployTokenRequest {
+  symbol: string
+  name: string
+  asset_class: AssetClass
+  initial_nav: string
+  min_investment: string
+  yield_schedule: 'monthly' | 'quarterly' | 'annual'
+}
+
+export interface DeployTokenAccepted {
+  deploy_id: string
+  status: 'running'
+}
+
+export interface DeployTokenStatus {
+  id: string
+  symbol: string
+  status: 'running' | 'succeeded' | 'failed'
+  last_step: DeployStepKey | null
+  result_token_address: string | null
+  error_message: string | null
+  created_at: string
+  completed_at: string | null
+}
+
+export interface DeployStreamEvent {
+  step: DeployStepKey | 'finalize'
+  status: 'pending' | 'sent' | 'mined' | 'succeeded' | 'failed'
+  txHash?: string
+  contractAddress?: string
+  resultTokenAddress?: string
+  errorMessage?: string
+  ts: string
+}
+
+/**
+ * Phase 9.A · Expansion (F2) — typed error for the apply endpoint's
+ * 403 HAS_INVESTOR_ACTIVITY response. Mirrors `RoleMismatchError`'s
+ * shape; the wizard intercepts to show a "register a new kernel"
+ * banner instead of a raw `403`.
+ */
+export class HasInvestorActivityError extends Error {
+  constructor(public readonly source: 'portfolios' | 'tax_events') {
+    super(`Wallet has investor activity (${source})`)
+    this.name = 'HasInvestorActivityError'
+  }
+}
+
+export const issuerOnboardingApi = {
+  apply(req: ApplyIssuerRequest): Promise<ApplyIssuerResponse> {
+    return request('/issuer/apply', {
+      method: 'POST',
+      body: req,
+      auth: true,
+    })
+  },
+
+  startDeploy(req: DeployTokenRequest): Promise<DeployTokenAccepted> {
+    return request('/issuer/tokens/deploy', {
+      method: 'POST',
+      body: req,
+      auth: true,
+    })
+  },
+
+  getDeploy(deployId: string): Promise<DeployTokenStatus> {
+    return request(`/issuer/tokens/deploy/${deployId}`, { auth: true })
+  },
+
+  /**
+   * Open an SSE channel for a deploy. EventSource doesn't accept
+   * Authorization headers, so the access token rides on the URL query
+   * (`?access_token=…`). The backend handler accepts both forms.
+   *
+   * Returns the EventSource and a parsed-event handler. Caller is
+   * responsible for `.close()` on unmount.
+   */
+  streamDeploy(
+    deployId: string,
+    onEvent: (event: DeployStreamEvent) => void,
+    onError?: (err: Event) => void,
+  ): EventSource {
+    const tokens = getStoredTokens()
+    const token = tokens?.access_token ?? ''
+    const url = `${BASE_URL}/issuer/tokens/deploy/${deployId}/events?access_token=${encodeURIComponent(token)}`
+    const es = new EventSource(url)
+    const parse = (raw: MessageEvent) => {
+      try {
+        onEvent(JSON.parse(raw.data))
+      } catch {
+        // ignore malformed events (heartbeat comments don't fire as message)
+      }
+    }
+    es.addEventListener('step', parse as EventListener)
+    es.addEventListener('finalize', parse as EventListener)
+    if (onError) es.addEventListener('error', onError)
+    return es
+  },
+}
+
 // ── Agent response types ───────────────────────────────────────────
 
 export type AgentCardType = 'action' | 'data' | 'form' | 'status' | 'insight'

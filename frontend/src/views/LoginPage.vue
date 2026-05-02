@@ -92,8 +92,13 @@ function redirectToDashboard() {
   const safeRedirect = redirect?.startsWith('/') ? redirect : undefined
   // Phase 9.A: investors land on /cash (the new first nav item) — it's
   // the post-register cockpit (wallet + funding + USDC→mhUSDC). Issuers
-  // unchanged: still /tokens.
-  const target = safeRedirect || (auth.role.value === 'issuer' ? '/tokens' : '/cash')
+  // freshly REGISTERING land on /apply-issuer to walk the F2 wizard
+  // (they have `issuer_status='unregistered'` until apply succeeds);
+  // returning issuer LOGINs land on /tokens. ApplyPage.onMounted has a
+  // bounce-out branch so an approved issuer who hits /apply-issuer
+  // (e.g. via the empty-state CTA on /tokens) is forwarded properly.
+  const issuerTarget = isRegister.value ? '/apply-issuer' : '/tokens'
+  const target = safeRedirect || (auth.role.value === 'issuer' ? issuerTarget : '/cash')
   router.replace(target)
 }
 

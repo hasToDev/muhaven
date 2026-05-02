@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { useIssuerTokensStore } from '@/stores/issuer-tokens'
 import { formatUSD } from '@/lib/utils'
 import MButton from '@/components/ui/MButton.vue'
@@ -9,6 +10,8 @@ import {
   DollarSign, Users, Percent, Coins, Plus, ChevronRight, Landmark, TrendingUp,
 } from 'lucide-vue-next'
 import type { TokenStatus } from '@/services/api'
+
+const router = useRouter()
 
 const store = useIssuerTokensStore()
 
@@ -66,31 +69,29 @@ const selected = computed(() => {
       <MButton variant="outline" size="sm" @click="store.load()">Retry</MButton>
     </div>
 
-    <!-- Empty -->
+    <!-- Empty — Phase 9.A · Expansion (F2): hot-link to wizard step 2 -->
     <div
       v-else-if="store.loaded && store.tokens.length === 0"
       class="flex flex-col items-center gap-4 py-20"
     >
-      <div class="w-16 h-16 rounded-2xl bg-mist/60 dark:bg-white/5 border border-haze dark:border-white/5 flex items-center justify-center">
-        <Coins :size="28" :stroke-width="1.6" class="text-cool/70" />
+      <div class="w-16 h-16 rounded-2xl bg-positive/10 border border-positive/25 flex items-center justify-center">
+        <Coins :size="28" :stroke-width="1.6" class="text-positive" />
       </div>
       <p class="font-accent italic text-xl text-midnight dark:text-white tracking-tight">
-        No tokens issued yet
+        Approved · ready to deploy
       </p>
       <p class="font-sans text-sm text-cool max-w-md text-center">
-        Issue a fhERC-20 vault to start accepting confidential subscriptions.
+        Issue your first fhERC-20 vault to start accepting confidential
+        subscriptions.
       </p>
       <button
         type="button"
-        disabled
-        aria-disabled="true"
-        title="Coming soon — token issuance ships in a future release"
-        class="btn-gold-sweep mt-2 px-6 py-3 rounded-lg font-sans font-semibold text-xs tracking-[0.18em] uppercase
-               flex items-center gap-2 cursor-not-allowed opacity-70"
+        class="btn-gold-sweep mt-2 px-6 py-3 rounded-lg font-sans font-semibold text-xs tracking-[0.18em] uppercase flex items-center gap-2"
+        data-testid="tokens-empty-deploy-cta"
+        @click="router.push('/apply-issuer?skip-welcome')"
       >
         <Plus :size="14" :stroke-width="2.2" aria-hidden="true" />
-        New token
-        <span class="ml-1 font-mono text-[9px] tracking-[0.2em] opacity-70">(soon)</span>
+        Issue your first token
       </button>
     </div>
 

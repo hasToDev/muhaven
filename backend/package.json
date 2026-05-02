@@ -26,6 +26,7 @@
     "seed:sync-issuers": "tsx scripts/sync-token-issuers.ts"
   },
   "dependencies": {
+    "@openzeppelin/contracts": "^5",
     "drizzle-orm": "^0.40",
     "pg": "^8",
     "tsx": "^4",

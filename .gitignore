@@ -18,6 +18,11 @@ artifacts/
 cache/
 typechain-types/
 coverage/
+
+# Phase 9.A · Expansion (F2) — staged-by-deploy-homelab contract bytecode
+# for the self-serve issuer onboarding deploy library. Generated from
+# `artifacts/contracts/` at staging deploy time; not source.
+backend/contracts-artifacts/contracts/
 coverage.json
 deployments/localcofhe/
 deployments/localcofhe.json
