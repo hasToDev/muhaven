@@ -833,12 +833,36 @@ function fmtClaimWindow(claimExpiry: bigint): string {
 
             <!-- Body -->
             <div class="p-6 flex flex-col gap-6">
-              <!-- Asset selector -->
+              <!-- Asset selector — collapses into a static label when
+                   the issuer has exactly one active token. The dropdown
+                   chrome would visually imply a choice that isn't
+                   there; the static label keeps the same visual mass
+                   so 1-token vs 2+ pages don't shift layout. -->
               <div class="flex flex-col gap-2">
                 <label class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool font-semibold">
                   Asset
                 </label>
-                <div ref="tokenDropdownRef" class="relative">
+                <div
+                  v-if="activeTokens.length === 1 && selectedTokenInfo"
+                  data-testid="distribute-token-static"
+                  class="w-full flex items-center justify-between gap-3 rounded-lg px-4 py-3
+                         bg-white dark:bg-[#0e0e0e]
+                         border border-haze dark:border-white/10"
+                >
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="h-8 w-8 rounded-full flex-shrink-0 bg-gold/10 dark:bg-signal/10 border border-gold/25 dark:border-signal/25 flex items-center justify-center text-compute dark:text-signal">
+                      <Landmark :size="14" :stroke-width="1.8" />
+                    </div>
+                    <span class="font-sans font-semibold text-sm text-midnight dark:text-white truncate">
+                      {{ selectedTokenInfo.symbol }}
+                      <span class="font-normal text-cool">· {{ selectedTokenInfo.name }}</span>
+                    </span>
+                  </div>
+                  <span class="font-mono text-[10px] uppercase tracking-[0.2em] text-cool flex-shrink-0">
+                    Only token
+                  </span>
+                </div>
+                <div v-else ref="tokenDropdownRef" class="relative">
                   <button
                     type="button"
                     @click="tokenDropdownOpen = !tokenDropdownOpen"

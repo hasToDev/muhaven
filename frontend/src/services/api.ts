@@ -410,6 +410,20 @@ export const issuerApi = {
     return request('/issuer/stats', { auth: true })
   },
 
+  /**
+   * Phase 9.A · multi-issuer scoping. Returns ONLY the tokens whose
+   * `rwa_tokens.issuer_address` matches the connected kernel (server
+   * derives the address from the JWT; client cannot pass a different
+   * value). Drives the issuer Tokens dashboard + the Distribute
+   * page's token dropdown.
+   *
+   * Investor-side `/marketplace` continues to call the public
+   * `tokensApi.getAll()` — investors must see every active token.
+   */
+  getTokens(): Promise<{ tokens: TokenResponseDto[] }> {
+    return request('/issuer/tokens', { auth: true })
+  },
+
   prepareDistribution(data: PrepareDistributionDto): Promise<PrepareDistributionResult> {
     return request('/issuer/distribute', {
       method: 'POST',

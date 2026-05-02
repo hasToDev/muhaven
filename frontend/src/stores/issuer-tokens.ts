@@ -1,7 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import {
-  tokensApi,
   issuerApi,
   type TokenResponseDto,
   type IssuerStatsDto,
@@ -53,9 +52,13 @@ export const useIssuerTokensStore = defineStore('issuer-tokens', () => {
     loading.value = true
     error.value = null
 
-    // Fetch backend data + on-chain data in parallel
+    // Phase 9.A · multi-issuer scoping. Pulls from `/v1/issuer/tokens`
+    // (auth-gated, JWT-derived issuer address) instead of the public
+    // catalogue — issuers see only their own tokens. Investor-side
+    // marketplace continues to call `tokensApi.getAll()` directly via
+    // `useMarketplaceStore`.
     const [tokensRes, statsRes, investorCount] = await Promise.allSettled([
-      tokensApi.getAll(),
+      issuerApi.getTokens(),
       issuerApi.getStats(),
       RegistryService.investorCount(),
     ])

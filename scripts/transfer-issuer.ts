@@ -151,9 +151,35 @@ async function main() {
   }
 
   console.log(`\nDone. Rotated ${rotated} token(s); skipped ${skipped}.`);
-  console.log(
-    `Verify on /distribute: connect as ${newIssuer} → preflight should now pass the OnlyIssuer guardrail.`,
-  );
+
+  if (rotated > 0) {
+    console.log("");
+    console.log("─".repeat(72));
+    console.log("NEXT: sync the backend's `rwa_tokens.issuer_address` column");
+    console.log("─".repeat(72));
+    console.log(
+      "On-chain issuer is rotated, but the backend's DB row is stale until\n" +
+      "you run the sync. The issuer dashboard (/tokens, /distribute) reads\n" +
+      "from `rwa_tokens.issuer_address`, so the new issuer won't see their\n" +
+      "tokens listed until this lands.\n",
+    );
+    if (env === "staging") {
+      console.log(
+        "  ssh -i ~/.ssh/id_muhaven_vm muhaven@192.168.1.52 \\\n" +
+        "    \"docker compose -f /home/muhaven/Project/Fhenix/MuHaven-stage/docker-compose.stage.yml \\\n" +
+        "      -p muhaven-stage exec -T backend pnpm seed:sync-issuers\"\n",
+      );
+    } else {
+      console.log(
+        "  ssh -i ~/.ssh/id_muhaven_vm muhaven@192.168.1.52 \\\n" +
+        "    \"docker compose -f /home/muhaven/Project/Fhenix/MuHaven/docker-compose.yml \\\n" +
+        "      -p muhaven exec -T backend pnpm seed:sync-issuers\"\n",
+      );
+    }
+    console.log(
+      `Verify on /distribute: connect as ${newIssuer} → preflight should\nnow pass the OnlyIssuer guardrail AND list the rotated tokens.`,
+    );
+  }
 }
 
 main().catch((e) => {
