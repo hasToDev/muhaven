@@ -43,11 +43,13 @@ import {
   yieldSnapshotTaxAbi,
   muHavenStableWrapAbi,
   muHavenTokenTransferAbi,
+  tokenRegistryEventsAbi,
   redemptionQueueTokenViewAbi,
   oracleNavViewAbi,
 } from './tax-event-abis.js';
 import { TaxEvent, type TaxEventType } from '../../domain/tax-event/model/tax-event.js';
 import type { ITaxEventRepository } from '../../domain/tax-event/repository/tax-event.repository.js';
+import type { TokenRegistryHandler } from './token-registry-handler.js';
 import { getLogger } from '../../core/logger.js';
 import type { Logger } from 'pino';
 
@@ -87,6 +89,16 @@ export interface TaxEventIndexerConfig {
    */
   protocolFilterAddresses?: Address[];
   oracleAddress?: Address;
+  /**
+   * Phase 9.A · Expansion (F1) — `TokenRegistry` proxy address. When set
+   * (alongside a non-null `tokenRegistryHandler`), the indexer subscribes
+   * to `IssuerUpdated` events so the operator-runbook step
+   * `pnpm seed:sync-issuers` is no longer required after a
+   * `transfer-issuer.ts` rotation. Leave undefined to disable the
+   * registry leg of the feed (e.g. dev environments where TokenRegistry
+   * isn't part of the deploy).
+   */
+  tokenRegistryAddress?: Address;
   intervalMs: number;
 }
 
@@ -100,6 +112,8 @@ export class TaxEventIndexer {
   /** Lower-cased filter set for fast `has()` lookup during Transfer triage. */
   private readonly protocolFilterAddresses: Set<string>;
   private readonly oracleAddress?: Address;
+  private readonly tokenRegistryAddress?: Address;
+  private readonly tokenRegistryHandler: TokenRegistryHandler | null;
   private readonly logger: Logger;
   private lastProcessedBlock: bigint | null = null;
   private intervalHandle: ReturnType<typeof setInterval> | null = null;
@@ -109,6 +123,7 @@ export class TaxEventIndexer {
     private readonly repo: ITaxEventRepository,
     config: TaxEventIndexerConfig,
     client?: PublicClient,
+    tokenRegistryHandler?: TokenRegistryHandler,
   ) {
     this.client =
       client ??
@@ -125,6 +140,12 @@ export class TaxEventIndexer {
       (config.protocolFilterAddresses ?? []).map((a) => a.toLowerCase()),
     );
     this.oracleAddress = config.oracleAddress;
+    this.tokenRegistryAddress = config.tokenRegistryAddress;
+    // Both the address AND the handler must be present for the registry
+    // leg to fire. Pass either alone and the leg stays disabled — the
+    // dev-server gate logs the half-configured slot before reaching here.
+    this.tokenRegistryHandler =
+      this.tokenRegistryAddress && tokenRegistryHandler ? tokenRegistryHandler : null;
     this.logger = getLogger('TaxEventIndexer');
   }
 
@@ -142,6 +163,7 @@ export class TaxEventIndexer {
         muHavenTokens: this.muHavenTokenAddresses.length,
         protocolFilter: this.protocolFilterAddresses.size,
         oracle: this.oracleAddress ?? null,
+        tokenRegistry: this.tokenRegistryAddress ?? null,
         intervalMs,
       },
       'Starting TaxEventIndexer',
@@ -275,7 +297,23 @@ export class TaxEventIndexer {
       tasks.push(Promise.resolve([] as Log[]));
     }
 
-    const [subLogs, queueLogs, snapLogs, stableLogs, transferLogs] =
+    // Phase 9.A · Expansion (F1) — registry leg. Logs are dispatched into
+    // `TokenRegistryHandler` (NOT folded into `tax_events`) — issuer
+    // rotation is a config change, not a holder-keyed taxable marker.
+    if (this.tokenRegistryAddress && this.tokenRegistryHandler) {
+      tasks.push(
+        this.client.getLogs({
+          address: this.tokenRegistryAddress,
+          events: tokenRegistryEventsAbi,
+          fromBlock,
+          toBlock,
+        }) as Promise<Log[]>,
+      );
+    } else {
+      tasks.push(Promise.resolve([] as Log[]));
+    }
+
+    const [subLogs, queueLogs, snapLogs, stableLogs, transferLogs, registryLogs] =
       await Promise.all(tasks);
 
     const out: TaxEvent[] = [];
@@ -349,6 +387,17 @@ export class TaxEventIndexer {
     for (const log of transferLogs) {
       const built = await this.fromTransferLog(log, fetchBlockTs);
       if (built !== null) out.push(...built);
+    }
+
+    // Registry logs are side-effecting (mutate `rwa_tokens.issuer_address`)
+    // rather than producing `tax_events` rows. Dispatch in-loop so a
+    // throw aborts the chunk and propagates up to `tick()`'s catch — the
+    // cursor MUST NOT advance past a chunk where a registry write
+    // failed, otherwise the rotation is lost forever.
+    if (this.tokenRegistryHandler) {
+      for (const log of registryLogs) {
+        await this.tokenRegistryHandler.applyIssuerUpdated(log);
+      }
     }
 
     return out;

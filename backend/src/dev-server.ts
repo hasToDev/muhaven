@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { getHealthStatus } from './infrastructure/health.js';
 import { getEnv } from './core/config.js';
 import { BlockchainEventPoller, NavWriterCron, TaxEventIndexer } from './infrastructure/blockchain/index.js';
+import { TokenRegistryHandler } from './infrastructure/blockchain/token-registry-handler.js';
 import { ProcessEscrowEventUseCase } from './application/use-case/webhook/process-escrow-event.use-case.js';
 import { container } from './infrastructure/container.js';
 import type { Address } from 'viem';
@@ -306,25 +307,42 @@ async function main() {
         protocolFilter.push(...snapshotAddrs);
         protocolFilter.push(...treasuryAddrs);
 
-        const indexer = new TaxEventIndexer(container.taxEventRepo, {
-          rpcUrl: env.RPC_URL,
-          subscriptionAddress: env.SUBSCRIPTION_ADDRESS as Address | undefined,
-          redemptionQueueAddresses: queueAddrs,
-          yieldSnapshotAddresses: snapshotAddrs,
-          // Phase 9.A · Option Z — adds MuHavenStable Wrap/Unwrap to the
-          // feed. Pre-upgrade staging deployments without the post-Option-Z
-          // impl are still supported via the topic filter (no matching
-          // events → no rows).
-          muHavenStableAddress: env.STABLE_ADDRESS as Address | undefined,
-          // Phase 9.A · Option Z follow-up — adds MuHavenToken Transfer to
-          // the feed. Pre-upgrade tokens (Transfer's old 2-arg signature)
-          // are invisible because their topic0 differs from the broadened
-          // 3-arg signature; no back-index of historical transfers.
-          muHavenTokenAddresses: tokenAddrs,
-          protocolFilterAddresses: protocolFilter,
-          oracleAddress: env.ORACLE_ADDRESS as Address | undefined,
-          intervalMs: env.TAX_EVENT_POLLER_INTERVAL_MS,
-        });
+        // Phase 9.A · Expansion (F1) — `TokenRegistry.IssuerUpdated`
+        // subscription. Replaces the operator runbook step
+        // `pnpm seed:sync-issuers` after a `transfer-issuer.ts` rotation.
+        // The registry leg only fires when BOTH the address and the
+        // handler are present; an unset `TOKEN_REGISTRY_ADDRESS` leaves
+        // the existing 5-event feed unchanged.
+        const registryAddr = env.TOKEN_REGISTRY_ADDRESS as Address | undefined;
+        const registryHandler = registryAddr
+          ? new TokenRegistryHandler(container.rwaTokenRepo)
+          : undefined;
+
+        const indexer = new TaxEventIndexer(
+          container.taxEventRepo,
+          {
+            rpcUrl: env.RPC_URL,
+            subscriptionAddress: env.SUBSCRIPTION_ADDRESS as Address | undefined,
+            redemptionQueueAddresses: queueAddrs,
+            yieldSnapshotAddresses: snapshotAddrs,
+            // Phase 9.A · Option Z — adds MuHavenStable Wrap/Unwrap to the
+            // feed. Pre-upgrade staging deployments without the post-Option-Z
+            // impl are still supported via the topic filter (no matching
+            // events → no rows).
+            muHavenStableAddress: env.STABLE_ADDRESS as Address | undefined,
+            // Phase 9.A · Option Z follow-up — adds MuHavenToken Transfer to
+            // the feed. Pre-upgrade tokens (Transfer's old 2-arg signature)
+            // are invisible because their topic0 differs from the broadened
+            // 3-arg signature; no back-index of historical transfers.
+            muHavenTokenAddresses: tokenAddrs,
+            protocolFilterAddresses: protocolFilter,
+            oracleAddress: env.ORACLE_ADDRESS as Address | undefined,
+            tokenRegistryAddress: registryAddr,
+            intervalMs: env.TAX_EVENT_POLLER_INTERVAL_MS,
+          },
+          undefined,
+          registryHandler,
+        );
         indexer.start(env.TAX_EVENT_POLLER_INTERVAL_MS);
         backgroundShutdown.push(() => indexer.stop());
         console.log(`[tax-events] Started (interval: ${env.TAX_EVENT_POLLER_INTERVAL_MS}ms)`);

@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import type { IRwaTokenRepository } from '../../../domain/token-registry/repository/rwa-token.repository.js';
 import { RwaToken } from '../../../domain/token-registry/model/rwa-token.js';
 import type { TokenStatus, AssetClass } from '../../../domain/token-registry/model/rwa-token.js';
@@ -99,6 +99,34 @@ export class PgRwaTokenRepository implements IRwaTokenRepository {
         archivedAt: token.archivedAt,
       })
       .where(eq(rwaTokens.id, token.id));
+  }
+
+  /**
+   * Phase 9.A · Expansion (F1) — point-update of `issuer_address` driven
+   * by the `TokenRegistry.IssuerUpdated` indexer subscription.
+   *
+   * Address-case posture: viem's event-log decoder hands back checksummed
+   * addresses, while the existing `seed-tokens-v35.ts` and
+   * `sync-token-issuers.ts` paths also write checksummed (the upstream
+   * `getRegisteredTokens` / `getConfig.issuer` reads return
+   * EIP-55-checksummed `Address`). Existing rows are therefore
+   * checksum-cased in the DB. This method matches the rotation-time
+   * indexer feed by lower-casing both sides of the WHERE clause (mirrors
+   * the `pg-tax-event.repository.ts:findByHolder` precedent), and writes
+   * the new issuer as-supplied so the column shape stays consistent with
+   * the seed/sync paths. A new value-cased issuer slots in cleanly next
+   * to existing rows; downstream `findByIssuer(addr)` is exact-match, so
+   * any caller of that method must already pass the checksummed form
+   * (the JWT-derived issuer addr from the `/v1/issuer/*` endpoints
+   * already does — see the issuer JWT issue + GetIssuerStatsUseCase).
+   */
+  async updateIssuer(tokenAddress: string, newIssuer: string): Promise<void> {
+    await this.db
+      .update(rwaTokens)
+      .set({ issuerAddress: newIssuer, updatedAt: new Date() })
+      .where(
+        eq(sql`lower(${rwaTokens.address})`, tokenAddress.toLowerCase()),
+      );
   }
 
   private toDomain(row: typeof rwaTokens.$inferSelect): RwaToken {

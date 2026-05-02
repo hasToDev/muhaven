@@ -135,6 +135,33 @@ export const muHavenTokenTransferAbi = [
   },
 ] as const;
 
+/**
+ * Phase 9.A · Expansion (F1) — `TokenRegistry.IssuerUpdated(token,
+ * oldIssuer, newIssuer)` event ABI. Fired by `TokenRegistry.setIssuer`
+ * whenever the on-chain owner rotates the per-token issuer (see
+ * `contracts/TokenRegistry.sol:123` + the `transfer-issuer.ts` operator
+ * script). The indexer dispatches this into `TokenRegistryHandler` so
+ * `rwa_tokens.issuer_address` rolls forward without an operator running
+ * `pnpm seed:sync-issuers`.
+ *
+ * The event is intentionally NOT mapped into `tax_events` — issuer
+ * rotation is a registry-config change, not a holder-keyed taxable
+ * marker (ADR-020). Adding a sixth `getLogs` task to the indexer is the
+ * minimum viable production-trajectory subscription; expand the array
+ * when more `TokenRegistry` events need backend mirroring.
+ */
+export const tokenRegistryEventsAbi = [
+  {
+    type: 'event',
+    name: 'IssuerUpdated',
+    inputs: [
+      { name: 'token', type: 'address', indexed: true },
+      { name: 'oldIssuer', type: 'address', indexed: true },
+      { name: 'newIssuer', type: 'address', indexed: true },
+    ],
+  },
+] as const;
+
 export const oracleNavViewAbi = [
   {
     type: 'function',
