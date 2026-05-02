@@ -125,6 +125,41 @@ describe('VerifyWalletUseCase', () => {
     ).rejects.toMatchObject({ statusCode: 401 });
   });
 
+  it('falls back to user.role when the DTO omits role on existing-user login', async () => {
+    // Phase 9.A · role guardrail. Login mode UIs may omit the role
+    // because the wallet's stored role is the source of truth. The
+    // use case must accept this and use `user.role` for the JWT
+    // claim. (New-user registration with omitted role is a separate
+    // 400 path — covered in the next test.)
+    await seedNonce();
+    const message = buildSiweMessage(NONCE);
+    await useCase.execute({ wallet_address: WALLET, message, signature: '0xsig', role: 'issuer' as const });
+
+    await nonceRepo.save(WALLET, NONCE, 300);
+    const result = await useCase.execute({
+      wallet_address: WALLET, message, signature: '0xsig',
+      // role intentionally omitted — login-mode shape
+    });
+
+    expect(result.access_token).toBeTruthy();
+    const user = await userRepo.findByWalletAddress(WALLET);
+    expect(user?.role).toBe('issuer');  // unchanged
+  });
+
+  it('rejects role-omitted register on a new wallet with 400', async () => {
+    // Registration MUST carry a role — there's no existing record to
+    // defer to.
+    await seedNonce();
+    const message = buildSiweMessage(NONCE);
+
+    await expect(
+      useCase.execute({ wallet_address: WALLET, message, signature: '0xsig' }),
+    ).rejects.toMatchObject({ statusCode: 400 });
+
+    const user = await userRepo.findByWalletAddress(WALLET);
+    expect(user).toBeNull();
+  });
+
   it('throws ROLE_MISMATCH when an existing user logs in with a different role', async () => {
     // Phase 9.A · role guardrail: registration locks the role on the user
     // record; subsequent logins MUST match. Asserts the structured error

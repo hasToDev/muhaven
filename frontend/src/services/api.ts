@@ -55,7 +55,10 @@ export interface VerifyWalletRequest {
   wallet_address: string
   message: string
   signature: string
-  role: UserRole
+  // Phase 9.A · role guardrail. Optional on login (the backend uses
+  // the wallet's stored role); required on register (backend throws
+  // 400 when omitted for a new wallet).
+  role?: UserRole
   wallet_provider?: WalletProvider
   email?: string
 }

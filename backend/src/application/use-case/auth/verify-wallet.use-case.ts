@@ -44,6 +44,14 @@ export class VerifyWalletUseCase {
 
     let user = await this.userRepository.findByWalletAddress(dto.wallet_address);
     if (!user) {
+      // First-time registration: a role is REQUIRED on the DTO. Login
+      // mode UIs may omit the role to defer to the existing user's
+      // record, but a new wallet has no record to defer to.
+      if (!dto.role) {
+        throw ApplicationHttpError.badRequest(
+          'role is required to register a new wallet',
+        );
+      }
       user = new User({
         id: randomUUID(),
         walletAddress: dto.wallet_address,
@@ -66,6 +74,9 @@ export class VerifyWalletUseCase {
         { code: 'ROLE_MISMATCH', registeredRole: user.role },
       );
     }
+    // When `dto.role` is omitted on login (the post-Phase-9.A
+    // flow), `user.role` is the source of truth and falls through
+    // to the JWT generation below unchanged.
 
     const tokenPair = await this.jwtService.generateTokenPair({
       sub: user.id,

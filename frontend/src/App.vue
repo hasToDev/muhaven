@@ -13,22 +13,24 @@ import MToastProvider from '@/components/ui/MToastProvider.vue'
 const route = useRoute()
 const store = useAppStore()
 
-const investorPaths = [
-  '/portfolio', '/marketplace', '/trade', '/buy', '/deposit', '/cash', '/wrap', '/transfer',
-  '/yields', '/redemptions', '/activity',
-]
-const issuerPaths = ['/tokens', '/distribute', '/investors', '/compliance']
-
 const isLandingPage = computed(() => route.path === '/' || route.meta.layout === 'landing')
 const isLoginPage = computed(() => route.meta.layout === 'login')
 const showChrome = computed(() => !isLandingPage.value && !isLoginPage.value)
 
+// Phase 9.A · role guardrail. The role is the wallet's stored role
+// (server-side source of truth, hydrated by `useAuth.initialize` from
+// the JWT) — NOT a function of the current URL. The legacy
+// path-watcher used to flip `appStore.role` whenever an issuer
+// navigated to `/cash` (which is in the dual-role investor/issuer
+// route set), causing the sidebar to re-render with the wrong nav
+// items. Removed entirely; the route guard in `router/index.ts`
+// already redirects cross-role pasted URLs.
+//
+// Skeleton-loading on navigation is preserved as a tiny side-effect
+// of every path change.
 watch(
   () => route.path,
-  (path) => {
-    if (investorPaths.includes(path)) store.setRole('investor')
-    else if (issuerPaths.includes(path)) store.setRole('issuer')
-    // Trigger skeleton loading on navigation
+  () => {
     store.startLoading()
     store.stopLoading()
   },

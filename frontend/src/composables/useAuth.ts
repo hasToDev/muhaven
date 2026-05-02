@@ -65,6 +65,25 @@ function tokenResponseToStored(res: TokenResponse, addr: string, role: UserRole)
   }
 }
 
+/**
+ * Decode the role claim from a JWT access token. The backend embeds
+ * `role` in the payload (verify-wallet.use-case → JwtService.generateTokenPair).
+ * Used on login when the client didn't pre-pick a role and needs to
+ * pin `appStore.role` + the stored token's role to whatever the
+ * server returned.
+ */
+function decodeRoleFromJwt(accessToken: string): UserRole | null {
+  try {
+    const payload = accessToken.split('.')[1]
+    if (!payload) return null
+    const decoded = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/')))
+    if (decoded.role === 'investor' || decoded.role === 'issuer') return decoded.role
+    return null
+  } catch {
+    return null
+  }
+}
+
 export function useAuth() {
   const authStore = useAuthStore()
   const walletStore = useWalletStore()
@@ -76,8 +95,20 @@ export function useAuth() {
   /**
    * Full login flow: connect wallet → request nonce → sign SIWE → verify → store JWT.
    * If wallet is already connected, skips the connect step.
+   *
+   * `role` is REQUIRED on register (the backend has no existing user
+   * record to defer to) and OPTIONAL on login (the wallet's stored role
+   * is the source of truth; the verify response carries it back via the
+   * JWT payload).
    */
-  async function login(mode: 'login' | 'register', r: UserRole, username?: string): Promise<void> {
+  async function login(
+    mode: 'login' | 'register',
+    role: UserRole | undefined,
+    username?: string,
+  ): Promise<void> {
+    if (mode === 'register' && !role) {
+      throw new Error('Role is required for registration')
+    }
     authStore.loading = true
     authStore.error = null
     try {
@@ -110,7 +141,10 @@ export function useAuth() {
           wallet_address: addr,
           message,
           signature,
-          role: r,
+          // Omit `role` on login when undefined — the backend uses the
+          // wallet's stored role. Always send on register so the new
+          // user record gets the user's pick.
+          ...(role !== undefined ? { role } : {}),
           wallet_provider: 'zerodev',
         })
       } catch (verifyErr) {
@@ -122,10 +156,14 @@ export function useAuth() {
         throw verifyErr
       }
 
-      // Step 5: Store tokens and update state
-      const stored = tokenResponseToStored(tokenRes, addr, r)
+      // Step 5: Store tokens and update state. On register the role we
+      // sent is canonical; on login we read it back from the JWT
+      // payload (server-side source of truth).
+      const effectiveRole: UserRole =
+        role ?? decodeRoleFromJwt(tokenRes.access_token) ?? 'investor'
+      const stored = tokenResponseToStored(tokenRes, addr, effectiveRole)
       authStore.setTokens(stored)
-      appStore.setRole(r)
+      appStore.setRole(effectiveRole)
 
       // FHE client is initialized lazily on first encrypt/decrypt call
       // (via useFhe.ensureReady()) to avoid the self-permit passkey prompt
@@ -184,6 +222,13 @@ export function useAuth() {
    */
   async function initialize(): Promise<void> {
     if (authStore.hydrate()) {
+      // Phase 9.A · role guardrail. Sync `appStore.role` to the
+      // hydrated `authStore.role` so navigation chrome (Sidebar /
+      // TopNav / mobile bar) renders the correct role on every
+      // reload. Without this, `appStore.role` defaults to
+      // 'investor' and the path-watcher (now removed) was the
+      // legacy compensation for the gap.
+      if (authStore.role) appStore.setRole(authStore.role)
       // Tokens loaded from storage and still valid — restore wallet address
       // without triggering a passkey prompt. The provider reconnects lazily
       // via ensureConnected() when the user performs an on-chain action.
@@ -195,6 +240,7 @@ export function useAuth() {
     // Tokens expired or missing — try refresh
     const refreshed = await refreshToken()
     if (refreshed) {
+      if (authStore.role) appStore.setRole(authStore.role)
       walletStore.restoreAddress()
     }
   }

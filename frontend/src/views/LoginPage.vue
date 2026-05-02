@@ -110,9 +110,16 @@ async function handleAuth() {
     // We show a combined progress indicator.
     authStep.value = 'working'
 
+    // Phase 9.A · role guardrail. On login mode we don't pre-pick a
+    // role — the backend uses the wallet's stored role as the source
+    // of truth. On register mode we send the user's pick so the new
+    // user record carries the correct role. `selectedRole` defaults
+    // to 'investor' for the register-mode form; we don't read it on
+    // login to avoid sending a stale guess that a registered-as-issuer
+    // user would hit as a 403 ROLE_MISMATCH on first click.
     await auth.login(
       mode.value,
-      selectedRole.value,
+      isRegister.value ? selectedRole.value : undefined,
       isRegister.value ? username.value.trim() : undefined,
     )
 
