@@ -38,6 +38,10 @@ export class CreateTokenUseCase {
       name: token.name,
       symbol: token.symbol,
       issuer_address: token.issuerAddress,
+      // create-token is the legacy admin endpoint (Wave 3 catalogue
+      // seed); the wizard owns issuer KYB now and goes through
+      // GetTokens / GetIssuerTokens for display name lookup.
+      issuer_display_name: null,
       apy: token.apy ?? null,
       yield_schedule: token.yieldSchedule ?? null,
       kyc_tier: token.kycTier,

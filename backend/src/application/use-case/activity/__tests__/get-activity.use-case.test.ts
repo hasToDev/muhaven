@@ -41,6 +41,9 @@ class FakeUserRepo implements IUserRepository {
   async findByWalletAddress(): Promise<User | null> {
     return null;
   }
+  async findByWalletAddresses(): Promise<User[]> {
+    return [];
+  }
   async save(): Promise<void> {}
 }
 

@@ -9,7 +9,11 @@ import { withRole } from '../../../src/interface/middleware/with-role.js';
 import { withCors } from '../../../src/interface/middleware/with-cors.js';
 import { Response } from '../../../src/interface/response.js';
 
-const getTokensUseCase = new GetTokensUseCase(container.rwaTokenRepo, container.navHistoryRepo);
+const getTokensUseCase = new GetTokensUseCase(
+  container.rwaTokenRepo,
+  container.navHistoryRepo,
+  container.userRepo,
+);
 const createTokenUseCase = new CreateTokenUseCase(container.rwaTokenRepo);
 
 const getHandler = createGetHandler({

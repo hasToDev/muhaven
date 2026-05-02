@@ -9,6 +9,7 @@ import { Response } from '../../../src/interface/response.js';
 const useCase = new GetIssuerTokensUseCase(
   container.rwaTokenRepo,
   container.navHistoryRepo,
+  container.userRepo,
 );
 
 const handler = createGetHandler({

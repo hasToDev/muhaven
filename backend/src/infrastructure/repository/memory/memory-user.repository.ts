@@ -15,6 +15,16 @@ export class MemoryUserRepository implements IUserRepository {
     return null;
   }
 
+  async findByWalletAddresses(addresses: string[]): Promise<User[]> {
+    if (addresses.length === 0) return [];
+    const lowered = new Set(addresses.map((a) => a.toLowerCase()));
+    const out: User[] = [];
+    for (const user of this.store.values()) {
+      if (lowered.has(user.walletAddress.toLowerCase())) out.push(user);
+    }
+    return out;
+  }
+
   async save(user: User): Promise<void> {
     this.store.set(user.id, user);
   }

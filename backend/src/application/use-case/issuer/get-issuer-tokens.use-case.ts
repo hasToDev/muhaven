@@ -1,5 +1,6 @@
 import type { IRwaTokenRepository } from '../../../domain/token-registry/repository/rwa-token.repository.js';
 import type { INavHistoryRepository } from '../../../domain/nav-history/repository/nav-history.repository.js';
+import type { IUserRepository } from '../../../domain/auth/repository/user.repository.js';
 import type { RwaToken } from '../../../domain/token-registry/model/rwa-token.js';
 import type { NavSnapshot } from '../../../domain/nav-history/model/nav-snapshot.js';
 import type { TokenResponseDto, LatestNavDto } from '../../dto/token/token-response.dto.js';
@@ -28,13 +29,18 @@ function navToDto(snapshot: NavSnapshot): LatestNavDto {
   };
 }
 
-function toDto(token: RwaToken, latestNav: NavSnapshot | null): TokenResponseDto {
+function toDto(
+  token: RwaToken,
+  latestNav: NavSnapshot | null,
+  issuerDisplayName: string | null,
+): TokenResponseDto {
   return {
     id: token.id,
     address: token.address,
     name: token.name,
     symbol: token.symbol,
     issuer_address: token.issuerAddress,
+    issuer_display_name: issuerDisplayName,
     apy: token.apy ?? null,
     yield_schedule: token.yieldSchedule ?? null,
     kyc_tier: token.kycTier,
@@ -51,6 +57,7 @@ export class GetIssuerTokensUseCase {
   constructor(
     private readonly tokenRepo: IRwaTokenRepository,
     private readonly navRepo?: INavHistoryRepository,
+    private readonly userRepo?: IUserRepository,
   ) {}
 
   async execute(issuerAddress: string): Promise<{ tokens: TokenResponseDto[] }> {
@@ -64,6 +71,15 @@ export class GetIssuerTokensUseCase {
       }
     }
 
-    return { tokens: tokens.map((t) => toDto(t, navMap.get(t.address) ?? null)) };
+    // Phase 9.A · Expansion (F3) — single issuer, single name lookup.
+    let issuerDisplayName: string | null = null;
+    if (this.userRepo && tokens.length > 0) {
+      const issuer = await this.userRepo.findByWalletAddress(issuerAddress);
+      issuerDisplayName = issuer?.issuerDisplayName ?? null;
+    }
+
+    return {
+      tokens: tokens.map((t) => toDto(t, navMap.get(t.address) ?? null, issuerDisplayName)),
+    };
   }
 }

@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useMarketplaceStore } from '@/stores/marketplace'
-import { formatUSD } from '@/lib/utils'
+import { formatAddress, formatUSD } from '@/lib/utils'
 import MButton from '@/components/ui/MButton.vue'
 import MPageLoader from '@/components/ui/MPageLoader.vue'
 import {
   Search, TrendingUp, ShieldCheck, Inbox, EyeOff,
 } from 'lucide-vue-next'
+import type { TokenResponseDto } from '@/services/api'
 
 const marketplace = useMarketplaceStore()
 
@@ -16,6 +17,17 @@ const assetClassLabels: Record<string, string> = {
   private_credit: 'Private Credit',
   real_estate: 'Real Estate',
   other: 'Other',
+}
+
+/**
+ * Phase 9.A · Expansion (F3) — multi-issuer marketplace metadata. Token
+ * cards surface the issuer name directly so investors can distinguish
+ * different SPVs at a glance. Falls back to the formatted issuer wallet
+ * address for legacy tokens whose issuer didn't walk the F2 wizard
+ * (those rows have `issuer_display_name = null`).
+ */
+function issuerLabel(token: TokenResponseDto): string {
+  return token.issuer_display_name?.trim() || formatAddress(token.issuer_address)
 }
 
 onMounted(async () => {
@@ -169,8 +181,14 @@ const heroDescription = computed(() => {
               <h1 class="font-accent italic text-2xl lg:text-3xl text-midnight dark:text-white mb-2 leading-tight tracking-tight">
                 {{ selected.name }}
               </h1>
-              <p class="font-mono text-sm text-compute/80 dark:text-signal/80 uppercase tracking-widest mb-6">
+              <p class="font-mono text-sm text-compute/80 dark:text-signal/80 uppercase tracking-widest mb-2">
                 {{ selected.symbol }}
+              </p>
+              <p
+                data-testid="marketplace-hero-issuer"
+                class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool font-semibold mb-6"
+              >
+                by {{ issuerLabel(selected) }}
               </p>
             </div>
 
@@ -352,6 +370,12 @@ const heroDescription = computed(() => {
                 ]"
               >
                 {{ token.symbol }}
+              </p>
+              <p
+                data-testid="marketplace-token-issuer"
+                class="mt-1 font-sans text-[10px] uppercase tracking-[0.22em] text-cool"
+              >
+                by {{ issuerLabel(token) }}
               </p>
             </div>
             <div class="flex justify-between items-end gap-3">

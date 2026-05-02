@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import type { IUserRepository } from '../../../domain/auth/repository/user.repository.js';
 import { User, type IssuerKybSubmission, type IssuerStatus } from '../../../domain/auth/model/user.js';
 import { users } from './schema.js';
@@ -19,6 +19,18 @@ export class PgUserRepository implements IUserRepository {
       where: eq(users.walletAddress, address),
     });
     return row ? this.toDomain(row) : null;
+  }
+
+  async findByWalletAddresses(addresses: string[]): Promise<User[]> {
+    if (addresses.length === 0) return [];
+    // Lowercase both sides — wallet_address column is stored case-as-supplied
+    // and callers may pass EIP-55-checksummed addresses from on-chain reads.
+    // Mirrors the `lower()` posture in `pg-rwa-token.repository.ts`.
+    const lowered = addresses.map((a) => a.toLowerCase());
+    const rows = await this.db.query.users.findMany({
+      where: inArray(sql`lower(${users.walletAddress})`, lowered),
+    });
+    return rows.map((r) => this.toDomain(r));
   }
 
   async save(user: User): Promise<void> {

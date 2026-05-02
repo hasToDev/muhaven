@@ -188,6 +188,12 @@ export interface TokenResponseDto {
   name: string
   symbol: string
   issuer_address: string
+  /**
+   * Phase 9.A · Expansion (F3) — issuer display name from KYB submission.
+   * Null when the issuer wallet predates the F2 wizard onboarding (older
+   * demo issuers); UI falls back to a formatted address.
+   */
+  issuer_display_name: string | null
   apy: string | null
   yield_schedule: string | null
   kyc_tier: number

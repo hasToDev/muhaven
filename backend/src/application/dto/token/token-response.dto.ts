@@ -30,6 +30,13 @@ export interface TokenResponseDto {
   name: string;
   symbol: string;
   issuer_address: string;
+  /**
+   * Display name from the issuer's KYB submission (`users.issuer_display_name`).
+   * Null when the issuer wallet hasn't walked the F2 onboarding wizard
+   * (e.g. a Wave-3.5 demo issuer that pre-dates F2). Frontend falls back
+   * to a formatted address when null.
+   */
+  issuer_display_name: string | null;
   apy: string | null;
   yield_schedule: string | null;
   kyc_tier: number;

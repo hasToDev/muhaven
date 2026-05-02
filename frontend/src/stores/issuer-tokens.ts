@@ -57,10 +57,9 @@ export const useIssuerTokensStore = defineStore('issuer-tokens', () => {
     // catalogue — issuers see only their own tokens. Investor-side
     // marketplace continues to call `tokensApi.getAll()` directly via
     // `useMarketplaceStore`.
-    const [tokensRes, statsRes, investorCount] = await Promise.allSettled([
+    const [tokensRes, statsRes] = await Promise.allSettled([
       issuerApi.getTokens(),
       issuerApi.getStats(),
-      RegistryService.investorCount(),
     ])
 
     // Tokens are critical — surface the error if this fails
@@ -98,8 +97,30 @@ export const useIssuerTokensStore = defineStore('issuer-tokens', () => {
       stats.value = statsRes.value
     }
 
-    if (investorCount.status === 'fulfilled') {
-      onChainInvestorCount.value = Number(investorCount.value)
+    // Phase 9.A · Expansion (F3) — multi-issuer scoping. Pre-F3 this
+    // read the platform-wide `RegistryService.investorCount()`, which
+    // counts every investor across every issuer (Wave-3 back-compat
+    // API). Switched to per-token `holderCount(token)` aggregated over
+    // only this issuer's own tokens, deduped by address — matches the
+    // /investors page scoping in `issuer-investors.ts`.
+    if (rawTokens.value.length > 0) {
+      try {
+        const perToken = await Promise.all(
+          rawTokens.value.map(t =>
+            RegistryService.getHoldersPaginated(t.address as `0x${string}`, 0n, 1000n),
+          ),
+        )
+        const seen = new Set<string>()
+        for (const list of perToken) {
+          for (const h of list) seen.add(h.toLowerCase())
+        }
+        onChainInvestorCount.value = seen.size
+      } catch {
+        // Non-critical — leave at null; aggregateStats falls back to
+        // `stats.total_investors` and ultimately 0.
+      }
+    } else {
+      onChainInvestorCount.value = 0
     }
 
     loaded.value = true

@@ -19,6 +19,18 @@ onMounted(async () => {
 const showLoader = computed(() =>
   !store.loaded && !store.error && store.loading,
 )
+
+/**
+ * Phase 9.A · Expansion (F3) — scoping caption above the table. Frames
+ * the per-token holder walk so issuers see at a glance which of their
+ * tokens drive the list.
+ */
+const scopingCaption = computed(() => {
+  const symbols = store.scopedTokenSymbols
+  if (symbols.length === 0) return ''
+  const noun = symbols.length === 1 ? 'token' : 'tokens'
+  return `Showing investors holding your ${symbols.length} ${noun} (${symbols.join(', ')})`
+})
 </script>
 
 <template>
@@ -179,6 +191,16 @@ const showLoader = computed(() =>
           </div>
         </div>
       </section>
+
+      <!-- Phase 9.A · Expansion (F3) scoping caption — frames the per-token
+           walk so issuers know the list is scoped to their own tokens. -->
+      <p
+        v-if="scopingCaption"
+        data-testid="investors-scoping-caption"
+        class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool font-semibold -mt-2"
+      >
+        {{ scopingCaption }}
+      </p>
 
       <!-- Table (real <table> with horizontal scroll on narrow — Q4 A) -->
       <section
