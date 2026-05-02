@@ -2,10 +2,9 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import type { Address } from 'viem'
 import { useIssuerTokensStore } from '@/stores/issuer-tokens'
+import { usePortfolioStore } from '@/stores/portfolio'
 import { useWallet } from '@/composables/useWallet'
-import * as MuHavenStableService from '@/services/contracts/MuHavenStableService'
 import * as SnapshotService from '@/services/v35/SnapshotService'
-import { useFhe } from '@/composables/useFhe'
 import { formatUSD } from '@/lib/utils'
 import {
   AlertTriangle, ArrowRight, Coins, ShieldCheck, Lock, Loader2, Eye,
@@ -14,12 +13,17 @@ import {
 
 /**
  * Issuer-side context block for /cash. Surfaces the connection between
- * cash held + epochs in flight: "Next epoch on TBILL1 needs $X mhUSDC.
- * You have $Y. Click to autofill the convert form with the shortfall."
+ * cash held + epochs in flight: "Next epoch on TBILL1 is awaiting funds.
+ * You have $Y. Click to autofill the convert form with a top-up amount."
  *
  * Renders only when role==='issuer' on /cash. The wrap engine on /cash
  * itself stays unchanged — this card is read-only context plus a small
  * amount-autofill affordance via the `autofill` event.
+ *
+ * mhUSDC balance is sourced from the shared `usePortfolioStore` so a
+ * Reveal click here reveals the right-aside cockpit tile too (and vice
+ * versa). Avoids the dual-Reveal-button confusion the user saw on the
+ * first issuer-side smoke pass.
  */
 
 const emit = defineEmits<{
@@ -27,8 +31,8 @@ const emit = defineEmits<{
 }>()
 
 const tokenStore = useIssuerTokensStore()
+const portfolio = usePortfolioStore()
 const { address } = useWallet()
-const fhe = useFhe()
 
 interface InFlightEpoch {
   tokenAddress: Address
@@ -40,9 +44,6 @@ interface InFlightEpoch {
 
 const inFlightEpochs = ref<InFlightEpoch[]>([])
 const loading = ref(false)
-
-const mhUsdcBalance = ref<bigint | null>(null)
-const mhUsdcDecrypting = ref(false)
 
 // ── Loaders ────────────────────────────────────────────────────────────
 
@@ -81,17 +82,11 @@ async function loadInFlight() {
 }
 
 async function decryptMhUsdc() {
-  if (!address.value || mhUsdcDecrypting.value) return
-  mhUsdcDecrypting.value = true
-  try {
-    await fhe.initialize()
-    const handle = await MuHavenStableService.confidentialBalanceOf(
-      address.value as Address,
-    )
-    mhUsdcBalance.value = await fhe.decryptMhUsdcForView(handle)
-  } finally {
-    mhUsdcDecrypting.value = false
-  }
+  if (!address.value || portfolio.pusdcDecrypting) return
+  // Routes through the shared portfolio store so the right-aside
+  // cockpit's mhUSDC tile reveals at the same time. Single source of
+  // truth — one Reveal click, both surfaces light up.
+  await portfolio.decryptPusdc(address.value as `0x${string}`)
 }
 
 // ── Display ────────────────────────────────────────────────────────────
@@ -99,17 +94,14 @@ async function decryptMhUsdc() {
 const hasInFlight = computed(() => inFlightEpochs.value.length > 0)
 
 const balanceLabel = computed(() => {
-  if (mhUsdcBalance.value === null) return null
-  return formatUSD(Number(mhUsdcBalance.value) / 1e6)
+  if (portfolio.pusdcConfidentialBalance === null) return null
+  return formatUSD(Number(portfolio.pusdcConfidentialBalance) / 1e6)
 })
 
 function autofillForFunding() {
-  // Amount-only autofill — the actual fund step happens on /distribute.
-  // The issuer might want to top up MORE than the immediate need, so we
-  // suggest a sensible default and let them edit. Default = 1.5x the
-  // largest unfunded-epoch hint OR the wallet's revealed balance gap.
-  // Without a per-epoch totalYield value (encrypted), we can't compute
-  // a precise shortfall here — surface a generic "top up" amount.
+  // Generic top-up suggestion. Per-epoch totalYield is encrypted, so we
+  // can't compute a precise shortfall here. Issuer edits before
+  // submitting on the convert form below.
   emit('autofill', '100')
 }
 
@@ -165,10 +157,10 @@ watch(() => tokenStore.loaded, (loaded) => {
           </div>
         </div>
         <button
-          v-if="mhUsdcBalance === null"
+          v-if="portfolio.pusdcConfidentialBalance === null"
           type="button"
           @click="decryptMhUsdc"
-          :disabled="mhUsdcDecrypting"
+          :disabled="portfolio.pusdcDecrypting"
           data-testid="issuer-cash-context-reveal"
           class="inline-flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.2em] font-semibold
                  text-compute dark:text-signal
@@ -178,9 +170,9 @@ watch(() => tokenStore.loaded, (loaded) => {
                  px-4 py-2 rounded transition-all duration-200 cursor-pointer
                  disabled:opacity-60 disabled:cursor-wait"
         >
-          <Loader2 v-if="mhUsdcDecrypting" :size="11" class="animate-spin" />
+          <Loader2 v-if="portfolio.pusdcDecrypting" :size="11" class="animate-spin" />
           <Eye v-else :size="11" :stroke-width="2" />
-          {{ mhUsdcDecrypting ? 'Decrypting…' : 'Reveal' }}
+          {{ portfolio.pusdcDecrypting ? 'Decrypting…' : 'Reveal' }}
         </button>
       </div>
 

@@ -21,9 +21,9 @@
  */
 
 import type { Address, Hash } from 'viem'
-import { YieldSnapshotClient, StableClient, type EpochView } from '@muhaven/sdk'
+import { YieldSnapshotClient, StableClient, tokenRegistryAbi, type EpochView } from '@muhaven/sdk'
 import { v35Addresses, isZeroAddress } from '@/contracts/addresses'
-import { buildReadContext, buildWriteContext } from '@/services/v35/context'
+import { buildReadContext, buildWriteContext, getPublicClient } from '@/services/v35/context'
 import * as MuHavenStableService from '@/services/contracts/MuHavenStableService'
 import * as LegacyPusdcService from '@/services/contracts/LegacyPusdcService'
 import * as RegistryService from '@/services/contracts/RegistryService'
@@ -71,6 +71,17 @@ export interface PreflightStatus {
   wrapperToSnapshotOperatorOk: boolean
   /** Holder count for the selected token. */
   holderCount: number
+  /**
+   * The on-chain issuer registered for this token, read from
+   * `TokenRegistry.getConfig(token).issuer`. The connected kernel must
+   * match this exactly — every YieldSnapshot write checks
+   * `msg.sender == _issuerOf(token)` and reverts `OnlyIssuer()` (selector
+   * `0x55b51ef1`) on mismatch. Surface this in the UI before submission
+   * so the user gets an actionable error instead of a cryptic revert.
+   */
+  onChainIssuer: Address
+  /** True iff the connected kernel === `onChainIssuer`. */
+  callerIsOnChainIssuer: boolean
 }
 
 export interface InFlightSnapshot {
@@ -122,12 +133,18 @@ export async function preflight(
     legacyToWrapperOperatorOk,
     wrapperToSnapshotOperatorOk,
     rawHolderCount,
+    tokenConfig,
   ] = await Promise.all([
     MuHavenStableService.confidentialBalanceOf(issuer),
     LegacyPusdcService.isOperator(issuer, v35Addresses.muHavenStable),
     MuHavenStableService.isOperator(issuer, snapshotAddr),
     RegistryService.holderCount(token),
+    readTokenRegistryConfig(token),
   ])
+
+  const onChainIssuer = tokenConfig.issuer as Address
+  const callerIsOnChainIssuer =
+    onChainIssuer.toLowerCase() === issuer.toLowerCase()
 
   return {
     mhUsdcHandle,
@@ -135,7 +152,38 @@ export async function preflight(
     legacyToWrapperOperatorOk,
     wrapperToSnapshotOperatorOk,
     holderCount: Number(rawHolderCount),
+    onChainIssuer,
+    callerIsOnChainIssuer,
   }
+}
+
+/**
+ * Read `TokenRegistry.getConfig(token)` directly via viem. The SDK
+ * doesn't ship a TokenRegistryClient yet (read-only surface only), so
+ * we use the abi + a plain `readContract` call. Used by `preflight` to
+ * surface the `OnlyIssuer()` mismatch path early, before the user
+ * submits a guaranteed-failing UserOp.
+ */
+interface TokenRegistryConfig {
+  active: boolean
+  treasury: string
+  queue: string
+  oracle: string
+  issuer: string
+  minInvestment: bigint
+  instantRedeemCap: bigint
+  epochDuration: number
+  paused: boolean
+}
+
+async function readTokenRegistryConfig(token: Address): Promise<TokenRegistryConfig> {
+  const client = getPublicClient()
+  return (await client.readContract({
+    address: v35Addresses.tokenRegistry,
+    abi: tokenRegistryAbi,
+    functionName: 'getConfig',
+    args: [token],
+  })) as unknown as TokenRegistryConfig
 }
 
 // ── Operator grants ────────────────────────────────────────────────────

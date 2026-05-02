@@ -154,10 +154,19 @@ const allPreflightGreen = computed(() => {
     && holderTotal.value > 0
 })
 
+// `callerIsOnChainIssuer` is the OnlyIssuer guardrail: the kernel must
+// match `TokenRegistry.getConfig(token).issuer` exactly. We treat
+// `null` preflight as "haven't checked yet, allow click → handler runs
+// preflight → throws useful error if mismatch."
+const callerIsOnChainIssuer = computed(() =>
+  preflightStatus.value === null ? true : preflightStatus.value.callerIsOnChainIssuer,
+)
+
 const canDistribute = computed(() =>
   selectedToken.value
     && amountValid.value
     && holderTotal.value > 0
+    && callerIsOnChainIssuer.value
     && !distributionStore.isProcessing,
 )
 
@@ -226,11 +235,13 @@ async function runPreflight() {
       walletAddress.value as Address,
       selectedToken.value as Address,
     )
-    // Auto-expand if anything is off.
+    // Auto-expand if anything is off — including the OnlyIssuer
+    // guardrail mismatch, which blocks the entire flow.
     if (
       !preflightStatus.value.legacyToWrapperOperatorOk
       || !preflightStatus.value.wrapperToSnapshotOperatorOk
       || preflightStatus.value.holderCount === 0
+      || !preflightStatus.value.callerIsOnChainIssuer
     ) {
       preflightExpanded.value = true
     }
@@ -333,6 +344,18 @@ async function handleDistribute() {
     if (p.holderCount === 0) {
       throw new Error(
         `No holders for ${selectedTokenInfo.value?.symbol ?? 'this token'} yet — mint MuHavenToken to a KYC-approved address first`,
+      )
+    }
+    // OnlyIssuer guardrail. Every YieldSnapshot write checks
+    // `msg.sender == TokenRegistry.getConfig(token).issuer` and reverts
+    // with `OnlyIssuer()` (selector 0x55b51ef1) on mismatch. Block the
+    // submission before we waste a passkey + bundler roundtrip on a
+    // guaranteed-failing UserOp.
+    if (!p.callerIsOnChainIssuer) {
+      const onChain = p.onChainIssuer
+      const sym = selectedTokenInfo.value?.symbol ?? 'this token'
+      throw new Error(
+        `Wallet is not the on-chain issuer for ${sym}. The token's TokenRegistry entry lists ${onChain.slice(0, 6)}…${onChain.slice(-4)} as the issuer. Run scripts/transfer-issuer.ts (operator-only) to grant rights to this kernel.`,
       )
     }
 
@@ -890,9 +913,33 @@ function fmtClaimWindow(claimExpiry: bigint): string {
                 </div>
               </div>
 
+              <!-- OnlyIssuer guardrail panel — the connected kernel
+                   doesn't match the token's on-chain issuer. Blocks
+                   submission and surfaces the actionable runbook. -->
+              <div
+                v-if="preflightStatus && !preflightStatus.callerIsOnChainIssuer"
+                data-testid="distribute-not-on-chain-issuer"
+                class="rounded-xl p-5 border border-negative/30 bg-negative/8 flex items-start gap-3"
+              >
+                <AlertTriangle :size="18" :stroke-width="1.8" class="text-negative flex-shrink-0 mt-0.5" />
+                <div class="min-w-0 flex-1">
+                  <p class="font-sans text-sm font-semibold text-midnight dark:text-white">
+                    Wallet isn't the on-chain issuer for {{ selectedTokenInfo?.symbol ?? 'this token' }}
+                  </p>
+                  <p class="font-sans text-[12px] text-cool mt-1.5 leading-relaxed max-w-md">
+                    <span class="font-mono text-midnight dark:text-white">TokenRegistry</span>
+                    lists
+                    <span class="font-mono text-midnight dark:text-white">{{ preflightStatus.onChainIssuer.slice(0, 10) }}…{{ preflightStatus.onChainIssuer.slice(-4) }}</span>
+                    as the issuer. The deployer can transfer rights to this kernel by running
+                    <span class="font-mono text-midnight dark:text-white">scripts/transfer-issuer.ts</span>
+                    once.
+                  </p>
+                </div>
+              </div>
+
               <!-- Empty state for cold issuer (no holders) -->
               <div
-                v-if="preflightStatus && preflightStatus.holderCount === 0"
+                v-if="preflightStatus && preflightStatus.holderCount === 0 && preflightStatus.callerIsOnChainIssuer"
                 data-testid="distribute-empty-no-holders"
                 class="rounded-xl p-6 border border-haze dark:border-white/5 bg-mist/30 dark:bg-white/[0.02] flex items-start gap-4"
               >
@@ -919,9 +966,15 @@ function fmtClaimWindow(claimExpiry: bigint): string {
                 </div>
               </div>
 
-              <!-- Encrypted amount input -->
+              <!-- Encrypted amount input — hidden when blocked by the
+                   issuer-mismatch panel above (no point letting the
+                   user fill the form when the click is guaranteed to
+                   reject). -->
               <div
-                v-if="!preflightStatus || preflightStatus.holderCount > 0"
+                v-if="
+                  (!preflightStatus || preflightStatus.holderCount > 0)
+                  && (!preflightStatus || preflightStatus.callerIsOnChainIssuer)
+                "
                 class="flex flex-col gap-2"
               >
                 <label
