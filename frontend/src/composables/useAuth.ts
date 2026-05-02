@@ -3,12 +3,37 @@ import { useAuthStore } from '@/stores/auth'
 import { useWalletStore } from '@/stores/wallet'
 import { useAppStore } from '@/stores/app'
 import {
+  ApiError,
   authApi,
   type StoredTokens,
   type UserRole,
   type TokenResponse,
 } from '@/services/api'
 import { useRouter } from 'vue-router'
+
+/**
+ * Phase 9.A · role guardrail. Backend rejects login when the
+ * submitted role doesn't match the wallet's registered role with
+ * a structured 403 carrying:
+ *   `{ status: 403, body: { details: { code: 'ROLE_MISMATCH',
+ *      registeredRole: 'investor' | 'issuer' } } }`.
+ * The login form catches this class and auto-flips its role toggle.
+ */
+export class RoleMismatchError extends Error {
+  constructor(public readonly registeredRole: UserRole) {
+    super(`Wallet registered as ${registeredRole}`)
+    this.name = 'RoleMismatchError'
+  }
+}
+
+function isRoleMismatch(err: unknown): RoleMismatchError | null {
+  if (!(err instanceof ApiError) || err.status !== 403) return null
+  const body = err.body as { details?: { code?: string; registeredRole?: string } } | null
+  const detail = body?.details
+  if (detail?.code !== 'ROLE_MISMATCH') return null
+  if (detail.registeredRole !== 'investor' && detail.registeredRole !== 'issuer') return null
+  return new RoleMismatchError(detail.registeredRole)
+}
 
 const CHAIN_ID = 421614 // Arbitrum Sepolia
 const DOMAIN = window.location.host
@@ -79,13 +104,23 @@ export function useAuth() {
       const signature = await walletStore.signMessage(message)
 
       // Step 4: Verify with backend → receive JWT
-      const tokenRes = await authApi.verify({
-        wallet_address: addr,
-        message,
-        signature,
-        role: r,
-        wallet_provider: 'zerodev',
-      })
+      let tokenRes: TokenResponse
+      try {
+        tokenRes = await authApi.verify({
+          wallet_address: addr,
+          message,
+          signature,
+          role: r,
+          wallet_provider: 'zerodev',
+        })
+      } catch (verifyErr) {
+        // Phase 9.A · role guardrail — surface ROLE_MISMATCH as a typed
+        // error so the login form can auto-flip its role toggle to the
+        // registered role without inspecting raw HTTP body.
+        const mismatch = isRoleMismatch(verifyErr)
+        if (mismatch) throw mismatch
+        throw verifyErr
+      }
 
       // Step 5: Store tokens and update state
       const stored = tokenResponseToStored(tokenRes, addr, r)
@@ -143,48 +178,6 @@ export function useAuth() {
   }
 
   /**
-   * Switch role via silent re-auth.
-   * Wallet is already connected — just sign a new SIWE message with the new role.
-   */
-  async function switchRole(newRole: UserRole): Promise<void> {
-    if (!walletStore.connected || !walletStore.address) {
-      throw new Error('Wallet not connected')
-    }
-
-    authStore.loading = true
-    authStore.error = null
-    try {
-      const addr = walletStore.address
-      const { nonce } = await authApi.getNonce(addr)
-
-      const message = buildSiweMessage(
-        addr,
-        nonce,
-        `Switch to ${newRole} role on MuHaven.`,
-      )
-      const signature = await walletStore.signMessage(message)
-
-      const tokenRes = await authApi.verify({
-        wallet_address: addr,
-        message,
-        signature,
-        role: newRole,
-        wallet_provider: 'zerodev',
-      })
-
-      const stored = tokenResponseToStored(tokenRes, addr, newRole)
-      authStore.setTokens(stored)
-      appStore.setRole(newRole)
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Role switch failed'
-      authStore.error = msg
-      throw e
-    } finally {
-      authStore.loading = false
-    }
-  }
-
-  /**
    * Initialize auth on app load.
    * Hydrates from localStorage. If tokens are valid, restores session.
    * If expired, attempts refresh. If all fails, user stays unauthenticated.
@@ -217,7 +210,6 @@ export function useAuth() {
     login,
     logout,
     refreshToken,
-    switchRole,
     initialize,
   }
 }

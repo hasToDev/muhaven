@@ -40,7 +40,10 @@ const investorNav = [
   { path: '/agent', label: 'Agent', icon: Sparkles },
 ]
 
+// Phase 9.A · /cash is dual-role; issuer side needs mhUSDC float for
+// distribute. Mirror the Sidebar.vue ordering exactly.
 const issuerNav = [
+  { path: '/cash', label: 'Cash', icon: Banknote },
   { path: '/tokens', label: 'Tokens', icon: Coins },
   { path: '/distribute', label: 'Distribute', icon: Share2 },
   { path: '/investors', label: 'Investors', icon: Users },

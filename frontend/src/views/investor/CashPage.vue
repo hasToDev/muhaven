@@ -6,7 +6,10 @@ import { toast } from 'vue-sonner'
 import { StableClient } from '@muhaven/sdk'
 import { useWallet } from '@/composables/useWallet'
 import { useFhe } from '@/composables/useFhe'
+import { useAppStore } from '@/stores/app'
+import { useIssuerTokensStore } from '@/stores/issuer-tokens'
 import { usePortfolioStore } from '@/stores/portfolio'
+import IssuerContextCard from '@/components/cash/IssuerContextCard.vue'
 import { buildWriteContext, getPublicClient } from '@/services/v35/context'
 import * as VaultService from '@/services/contracts/VaultService'
 import * as Erc20Service from '@/services/contracts/Erc20Service'
@@ -53,6 +56,20 @@ const { initialize: initFhe, getEphemeralEOA } = useFhe()
 // renders the value (CashPage tile, TradePage glance bar, Portfolio
 // dashboard) without each page maintaining its own ref.
 const portfolio = usePortfolioStore()
+const appStore = useAppStore()
+const issuerTokens = useIssuerTokensStore()
+
+// Phase 9.A · /cash is dual-role. Issuers see an IssuerContextCard
+// above the convert form that surfaces in-flight epochs + a top-up
+// affordance. Investor side renders unchanged.
+const isIssuer = computed(() => appStore.role === 'issuer')
+
+function handleIssuerAutofill(amountString: string) {
+  // The convert form's `amount` v-model expects a string. The card
+  // emits a generic top-up suggestion; the issuer can edit before
+  // converting.
+  amount.value = amountString
+}
 
 const isXl = useMediaQuery('(min-width: 1280px)')
 
@@ -387,6 +404,11 @@ onMounted(() => {
     // case and re-fires `loadBalances`).
     balancesLoaded.value = true
   }
+  // Phase 9.A · issuer-side context — load tokens lazily so the card
+  // can read in-flight epochs. Investors don't need this fetch.
+  if (isIssuer.value && !issuerTokens.loaded) {
+    issuerTokens.load().catch(() => {/* non-blocking */})
+  }
   // 1500ms timeout fallback. If the USDC RPC stalls past this point we
   // commit to rendering the page anyway — a blank column for several
   // seconds is worse than a possible late-arriving ribbon push. The
@@ -604,12 +626,24 @@ const successCopy = computed(() =>
            ~150ms perceptual-grouping threshold so the eye reads the
            pair as one composition, not two events). -->
       <template v-if="balancesLoaded">
-      <!-- ── Welcome ribbon — first-run only ──────────────────────────
+      <!-- ── Issuer context card — issuer role only ─────────────────
+           Surfaces in-flight epochs + a top-up affordance that
+           autofills the convert form below. Lives above the welcome
+           ribbon so issuers see the operating-cash framing first.
+           Investor view skips this card entirely. -->
+      <IssuerContextCard
+        v-if="mode === 'cash' && isIssuer && !showSuccess && !errMsg"
+        class="max-w-2xl mx-auto mb-6"
+        @autofill="handleIssuerAutofill"
+      />
+
+      <!-- ── Welcome ribbon — investor first-run only ──────────────────
            Shown when USDC=0 and platform mhUSDC empty: a gentle two-step
            pointer (fund right-aside → convert below). Hidden once the
-           user has any balance, so returning top-ups stay quiet. -->
+           user has any balance, so returning top-ups stay quiet. Issuer
+           role gets the IssuerContextCard above instead. -->
       <section
-        v-if="mode === 'cash' && isFirstRun && !showSuccess && !errMsg"
+        v-if="mode === 'cash' && !isIssuer && isFirstRun && !showSuccess && !errMsg"
         v-motion
         :initial="{ opacity: 0, y: 12 }"
         :visible-once="{ opacity: 1, y: 0, transition: { duration: 460 } }"

@@ -44,7 +44,12 @@ const investorNav = [
   { path: '/agent', label: 'Agent', icon: Sparkles },
 ]
 
+// Phase 9.A · issuer needs mhUSDC operating cash to fund distributions —
+// surface /cash as the first issuer-side nav item, mirroring the
+// investor side. The page is role-aware (renders an IssuerContextCard
+// when role==='issuer') so the wrap mechanic stays single-source.
 const issuerNav = [
+  { path: '/cash', label: 'Cash', icon: Banknote },
   { path: '/tokens', label: 'Tokens', icon: Coins },
   { path: '/distribute', label: 'Distribute', icon: Share2 },
   { path: '/investors', label: 'Investors', icon: Users },

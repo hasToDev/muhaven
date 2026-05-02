@@ -54,8 +54,17 @@ export class VerifyWalletUseCase {
       });
       await this.userRepository.save(user);
     } else if (dto.role && dto.role !== user.role) {
-      user = new User({ ...user, role: dto.role });
-      await this.userRepository.save(user);
+      // Phase 9.A · role guardrail. Existing wallet's role is locked at
+      // registration; reject role-mismatched login with a structured 403
+      // so the frontend can auto-flip the role toggle to the registered
+      // value. The previous behaviour silently overwrote `user.role` on
+      // every login, which let any user act as either side and broke the
+      // RWA-platform invariant that issuer ≠ investor for a single
+      // counterparty identity.
+      throw ApplicationHttpError.forbidden(
+        `Wallet registered as ${user.role}`,
+        { code: 'ROLE_MISMATCH', registeredRole: user.role },
+      );
     }
 
     const tokenPair = await this.jwtService.generateTokenPair({

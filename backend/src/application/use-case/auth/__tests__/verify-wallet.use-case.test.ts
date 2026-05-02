@@ -124,4 +124,25 @@ describe('VerifyWalletUseCase', () => {
       useCase.execute({ wallet_address: WALLET, message, signature: '0xsig', role: 'investor' as const }),
     ).rejects.toMatchObject({ statusCode: 401 });
   });
+
+  it('throws ROLE_MISMATCH when an existing user logs in with a different role', async () => {
+    // Phase 9.A · role guardrail: registration locks the role on the user
+    // record; subsequent logins MUST match. Asserts the structured error
+    // shape so the frontend can auto-flip its role toggle.
+    await seedNonce();
+    const message = buildSiweMessage(NONCE);
+    await useCase.execute({ wallet_address: WALLET, message, signature: '0xsig', role: 'investor' as const });
+
+    await nonceRepo.save(WALLET, NONCE, 300);
+    await expect(
+      useCase.execute({ wallet_address: WALLET, message, signature: '0xsig', role: 'issuer' as const }),
+    ).rejects.toMatchObject({
+      statusCode: 403,
+      details: { code: 'ROLE_MISMATCH', registeredRole: 'investor' },
+    });
+
+    // Confirm the role stays locked — no silent overwrite.
+    const user = await userRepo.findByWalletAddress(WALLET);
+    expect(user?.role).toBe('investor');
+  });
 });

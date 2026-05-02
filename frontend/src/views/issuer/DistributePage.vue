@@ -112,7 +112,13 @@ const selectedTokenInfo = computed(() =>
 )
 
 const amountUnits = computed<bigint>(() => {
-  const v = amount.value.trim()
+  // Defensive String coercion — Vue 3's v-model on `<input type="number">`
+  // can hand back a number under specific edits (e.g. when the input was
+  // programmatically set to a string then user-edited), which would throw
+  // TypeError inside `.trim()` and silently re-use the previously-cached
+  // value (= the auto-filled amount). Coerce so reactivity tracks every
+  // edit cleanly.
+  const v = String(amount.value ?? '').trim()
   if (!v) return 0n
   const [whole = '0', frac = ''] = v.split('.')
   const fracPadded = (frac + '000000').slice(0, 6)

@@ -24,11 +24,14 @@ const investorTabs = [
   { path: '/redemptions', icon: Undo2, label: 'Redeem' },
 ]
 
+// Phase 9.A · /cash is dual-role on the mobile bar too. Bumps
+// Compliance off the bottom bar (still reachable via TopNav menu) so
+// the Distribute → Cash funnel is one tap away from anywhere.
 const issuerTabs = [
+  { path: '/cash', icon: Banknote, label: 'Cash' },
   { path: '/tokens', icon: Coins, label: 'Tokens' },
   { path: '/distribute', icon: Share2, label: 'Distribute' },
   { path: '/investors', icon: Users, label: 'Investors' },
-  { path: '/compliance', icon: ClipboardCheck, label: 'Compliance' },
 ]
 
 const tabs = computed(() => {

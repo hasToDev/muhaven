@@ -113,6 +113,22 @@ const router = createRouter({
   ],
 })
 
+// Phase 9.A · role guardrail. Routes are bucketed by role so an
+// authenticated user can't accidentally land on the other side via a
+// pasted URL or a stale link. `/cash` and `/agent` stay dual-role
+// (cash conversion is the same mechanic for both; agent surfaces will
+// gate per-role internally in Wave 4).
+const ISSUER_ROUTES = new Set(['/tokens', '/distribute', '/investors', '/compliance'])
+const INVESTOR_ROUTES = new Set([
+  '/portfolio',
+  '/marketplace',
+  '/trade',
+  '/transfer',
+  '/yields',
+  '/redemptions',
+  '/activity',
+])
+
 // Auth guard — redirect unauthenticated users to /login
 router.beforeEach((to) => {
   if (PUBLIC_ROUTES.has(to.path)) return true
@@ -120,6 +136,18 @@ router.beforeEach((to) => {
   const authStore = useAuthStore()
   if (!authStore.isAuthenticated) {
     return { path: '/login', query: { redirect: to.fullPath } }
+  }
+
+  // Role-aware redirect: issuers lose access to investor surfaces and
+  // vice versa. Backend ROLE_MISMATCH is the source of truth on login;
+  // this guard prevents an in-session navigation typo from rendering
+  // a page that wouldn't have data for the wrong role.
+  const role = authStore.role
+  if (role === 'investor' && ISSUER_ROUTES.has(to.path)) {
+    return { path: '/portfolio' }
+  }
+  if (role === 'issuer' && INVESTOR_ROUTES.has(to.path)) {
+    return { path: '/tokens' }
   }
 
   return true

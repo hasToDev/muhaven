@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { useAuth } from '@/composables/useAuth'
+import { useAuth, RoleMismatchError } from '@/composables/useAuth'
 import { useHomeTarget } from '@/composables/useHomeTarget'
 import { cn } from '@/lib/utils'
 import MButton from '@/components/ui/MButton.vue'
@@ -141,6 +141,23 @@ async function handleAuth() {
     redirectToDashboard()
   } catch (e) {
     authStep.value = 'idle'
+    if (e instanceof RoleMismatchError) {
+      // Phase 9.A · role guardrail. Auto-flip the selector to the
+      // registered role so the user's next click is the success path.
+      // Inline error names the registered role explicitly — actionable
+      // disambiguation, not security theater. Researcher's "forgiveness"
+      // pattern (Nielsen): one-step recovery from a typo.
+      const registered = e.registeredRole
+      localError.value =
+        `This passkey is registered as ${registered === 'investor' ? 'an Investor' : 'an Issuer'}. `
+        + `Switched the role selector — sign in again to continue.`
+      selectedRole.value = registered
+      // The selector flips to the registered role; user clicks Sign In
+      // again to retry. We don't auto-resubmit because the password-less
+      // ZeroDev passkey kernel may have already consumed an enableSig
+      // ceremony for this attempt.
+      return
+    }
     localError.value = auth.error.value || (e instanceof Error ? e.message : 'Authentication failed')
   }
 }
@@ -350,8 +367,14 @@ function toggleMode() {
             leave-to-class="opacity-0"
           >
             <div v-if="!isWorking && authStep !== 'done' && authStep !== 'awaiting-whitelist'">
-              <!-- Role selector -->
+              <!-- Role selector — register mode only. Phase 9.A · role
+                   guardrail: roles lock at registration; on login the
+                   wallet's registered role is the source of truth (server
+                   returns ROLE_MISMATCH if the submitted role disagrees).
+                   Showing the selector on login would let users assume
+                   they can change roles silently. -->
               <div
+                v-if="isRegister"
                 v-motion
                 :initial="{ opacity: 0, y: 8 }"
                 :enter="{ opacity: 1, y: 0, transition: { delay: 200, duration: 400 } }"
@@ -376,6 +399,30 @@ function toggleMode() {
                     {{ r }}
                   </button>
                 </div>
+                <p
+                  data-testid="auth-role-lock-hint"
+                  class="mt-2 font-sans text-[11px] text-cool italic leading-relaxed"
+                >
+                  Choose carefully — this passkey can't switch roles later.
+                  Create a separate passkey if you need both.
+                </p>
+              </div>
+
+              <!-- Login mode: show the registered-role hint after a
+                   ROLE_MISMATCH so the user knows the selector flipped.
+                   Otherwise the role is invisible to them — server-side
+                   source of truth. -->
+              <div
+                v-else
+                v-motion
+                :initial="{ opacity: 0, y: 8 }"
+                :enter="{ opacity: 1, y: 0, transition: { delay: 200, duration: 400 } }"
+                class="mb-6 flex items-center gap-2 px-3 py-2.5 rounded-lg bg-mist/40 dark:bg-midnight/40 border border-haze/60 dark:border-white/5"
+              >
+                <Fingerprint :size="14" :stroke-width="1.8" class="text-cool flex-shrink-0" />
+                <p class="font-sans text-[11px] text-cool leading-relaxed">
+                  Your passkey already knows whether this account is an Investor or Issuer.
+                </p>
               </div>
 
               <!-- Username (register mode only) -->

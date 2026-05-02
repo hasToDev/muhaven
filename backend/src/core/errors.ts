@@ -16,8 +16,8 @@ export class ApplicationHttpError extends Error {
     return new ApplicationHttpError(401, message);
   }
 
-  static forbidden(message: string): ApplicationHttpError {
-    return new ApplicationHttpError(403, message);
+  static forbidden(message: string, details?: unknown): ApplicationHttpError {
+    return new ApplicationHttpError(403, message, details);
   }
 
   static notFound(message: string): ApplicationHttpError {
