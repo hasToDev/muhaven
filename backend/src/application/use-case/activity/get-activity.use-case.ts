@@ -6,7 +6,10 @@
  *
  * Encrypted amounts stay encrypted: every row's `amount` is `null`. The
  * frontend pulls the encrypted handle from `metadata.encrypted_amount_handle`
- * (Wrap/Unwrap rows only) and decrypts via permit on click.
+ * (Wrap/Unwrap rows + yield-claim rows post-2026-05-03 audit-handle
+ * upgrade — closes the cumulative `_balances[investor]` chain-depth issue
+ * by giving investors a fresh, indexable handle for each claim's amount;
+ * see `project_cofhe_tn_chain_length_cap`) and decrypts via permit on click.
  */
 
 import type { ITaxEventRepository } from '../../../domain/tax-event/repository/tax-event.repository.js';

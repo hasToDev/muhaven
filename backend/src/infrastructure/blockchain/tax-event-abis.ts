@@ -52,12 +52,16 @@ export const redemptionQueueTaxAbi = [
 
 export const yieldSnapshotTaxAbi = [
   {
+    // Phase 9.A audit-handle follow-up: broadened with `amount` (euint64
+    // handle, bytes32) — the per-claim audit handle that bypasses the
+    // cumulative `MuHavenStable._balances[investor]` chain-depth issue.
     type: 'event',
     name: 'YieldClaimed',
     inputs: [
       { name: 'token', type: 'address', indexed: true },
       { name: 'investor', type: 'address', indexed: true },
       { name: 'epochId', type: 'uint256', indexed: true },
+      { name: 'amount', type: 'bytes32', indexed: false },
     ],
   },
 ] as const;

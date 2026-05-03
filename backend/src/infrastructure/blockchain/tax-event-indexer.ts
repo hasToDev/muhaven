@@ -508,6 +508,12 @@ export class TaxEventIndexer {
     const token = args.token as Address;
     const investor = args.investor as Address;
     const epochId = (args.epochId as bigint).toString();
+    // Phase 9.A audit-handle follow-up: broadened YieldClaimed event
+    // carries an `amount` handle (bytes32). Older events from the
+    // pre-upgrade contract have args.amount === undefined — capture
+    // when present so /activity can render a Decrypt button on the
+    // claim row, fall back gracefully on legacy events.
+    const amountHandle = args.amount as `0x${string}` | undefined;
     const ts = await fetchBlockTs(log.blockNumber);
     // IncomeAccrual: NAV is captured for parity with other markers, but the
     // claim itself is denominated in PUSDC, not in shares — UI uses this for
@@ -524,7 +530,7 @@ export class TaxEventIndexer {
       blockTimestamp: ts,
       navAtTime: nav,
       referenceId: epochId,
-      metadata: null,
+      metadata: amountHandle ? { encrypted_amount_handle: amountHandle } : null,
     });
   }
 

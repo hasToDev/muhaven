@@ -57,6 +57,17 @@ export const yieldSnapshotAbi = [
     ],
     outputs: [],
   },
+  // ── Audit-handle cross-session decrypt (ADR-042 mirror) ──────────────
+  {
+    name: 'refreshAuditGrant',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'handle', type: 'bytes32' },
+      { name: 'ephemeralEOA', type: 'address' },
+    ],
+    outputs: [],
+  },
   // ── Views ─────────────────────────────────────────────────────────────
   {
     name: 'getEpoch',
@@ -161,12 +172,28 @@ export const yieldSnapshotAbi = [
     anonymous: false,
   },
   {
+    // Phase 9.A audit-handle follow-up: broadened with `amount` (euint64
+    // handle, bytes32). Carries kernel + ephemeralEOA ACL grants so the
+    // investor can decrypt the per-claim amount via the audit handle —
+    // bypasses the cumulative `MuHavenStable._balances[investor]`
+    // chain-depth issue (`project_cofhe_tn_chain_length_cap`).
     name: 'YieldClaimed',
     type: 'event',
     inputs: [
       { name: 'token', type: 'address', indexed: true },
       { name: 'investor', type: 'address', indexed: true },
       { name: 'epochId', type: 'uint256', indexed: true },
+      { name: 'amount', type: 'bytes32', indexed: false },
+    ],
+    anonymous: false,
+  },
+  {
+    name: 'AuditGrantRefreshed',
+    type: 'event',
+    inputs: [
+      { name: 'kernel', type: 'address', indexed: true },
+      { name: 'ephemeralEOA', type: 'address', indexed: true },
+      { name: 'handle', type: 'bytes32', indexed: false },
     ],
     anonymous: false,
   },

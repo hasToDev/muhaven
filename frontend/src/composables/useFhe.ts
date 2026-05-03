@@ -352,6 +352,31 @@ export function useFhe() {
   }
 
   /**
+   * Phase 9.A audit-handle follow-up for YieldSnapshot — decrypt a
+   * HISTORICAL `YieldClaimed.amount` audit handle. Closes the
+   * cumulative `MuHavenStable._balances[investor]` chain-depth issue
+   * (`project_cofhe_tn_chain_length_cap`) by giving investors a fresh,
+   * indexer-friendly handle for each claim's amount.
+   *
+   * Same shape as `decryptAuditHandleForView` (uint64 mhUSDC base
+   * units) but dispatches its 403 refresh fallback against the
+   * SPECIFIC YieldSnapshot proxy's `refreshAuditGrant`. The snapshot
+   * address is required — Wave 3.5 staging shares one snapshot proxy
+   * across multiple RWA tokens, and the audit handle ACL lives on
+   * that contract.
+   */
+  async function decryptYieldClaimAuditHandleForView(
+    ctHash: bigint | string,
+    snapshotAddress: `0x${string}`,
+  ): Promise<bigint> {
+    return decryptForView(ctHash, 64, {
+      withRefresh: true,
+      kind: 'yieldClaimAudit',
+      snapshotAddress,
+    })
+  }
+
+  /**
    * Decrypt an encrypted handle for UI display. Returns `0n` immediately for
    * a zero handle — the TN 403s on unregistered ctHashes and a zero value is
    * the expected "no confidential state yet" reading.
@@ -377,7 +402,13 @@ export function useFhe() {
     opts: {
       withRefresh?: boolean
       tokenAddress?: `0x${string}`
-      kind?: 'muHavenToken' | 'muHavenStable' | 'mhUsdcAudit' | 'muHavenTokenAudit'
+      snapshotAddress?: `0x${string}`
+      kind?:
+        | 'muHavenToken'
+        | 'muHavenStable'
+        | 'mhUsdcAudit'
+        | 'muHavenTokenAudit'
+        | 'yieldClaimAudit'
     } = {},
   ): Promise<bigint> {
     const hashAsBigInt = typeof ctHash === 'bigint' ? ctHash : BigInt(ctHash)
@@ -419,6 +450,7 @@ export function useFhe() {
       | 'muHavenStable'
       | 'mhUsdcAudit'
       | 'muHavenTokenAudit'
+      | 'yieldClaimAudit'
       | 'none' =
       opts.kind ?? (bits === 128 ? 'muHavenToken' : 'none')
 
@@ -524,6 +556,32 @@ export function useFhe() {
               address as `0x${string}`,
               opts.tokenAddress,
             )
+          } else if (kind === 'yieldClaimAudit') {
+            // Phase 9.A audit-handle follow-up for YieldSnapshot —
+            // YieldClaimed audit-row decrypt. Same shape as the
+            // mhUsdcAudit path but dispatches against the SPECIFIC
+            // YieldSnapshot proxy (Wave 3.5 staging shares one proxy
+            // across multiple RWA tokens; the audit handle ACL lives
+            // on that contract). The snapshot address is required —
+            // defaulting elsewhere targets the wrong contract.
+            if (!opts.snapshotAddress) {
+              throw new Error(
+                'yieldClaimAudit decrypt requires the YieldSnapshot proxy address — '
+                + 'pass it via `decryptYieldClaimAuditHandleForView(handle, snapshotAddress)`.',
+              )
+            }
+            const { YieldSnapshotClient } = await import('@muhaven/sdk')
+            const { buildWriteContext } = await import(
+              '@/services/v35/context'
+            )
+            const ctx = await buildWriteContext()
+            const snapshot = new YieldSnapshotClient(ctx, opts.snapshotAddress)
+            const handleHex =
+              `0x${hashAsBigInt.toString(16).padStart(64, '0')}` as `0x${string}`
+            await snapshot.refreshAuditGrant(
+              handleHex,
+              address as `0x${string}`,
+            )
           }
           return await runDecrypt()
         } catch (refreshErr) {
@@ -595,6 +653,7 @@ export function useFhe() {
     decryptMhUsdcForView,
     decryptAuditHandleForView,
     decryptTokenAuditHandleForView,
+    decryptYieldClaimAuditHandleForView,
     getRawClient,
     destroy,
   }

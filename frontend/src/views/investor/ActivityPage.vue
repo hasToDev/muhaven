@@ -4,6 +4,7 @@ import { useActivityStore } from '@/stores/activity'
 import { useMarketplaceStore } from '@/stores/marketplace'
 import { formatUSD, formatAddress } from '@/lib/utils'
 import { useFhe } from '@/composables/useFhe'
+import * as SnapshotService from '@/services/v35/SnapshotService'
 import MButton from '@/components/ui/MButton.vue'
 import MPageLoader from '@/components/ui/MPageLoader.vue'
 import MPrivacyProofPanel from '@/components/ui/MPrivacyProofPanel.vue'
@@ -47,14 +48,26 @@ function isTransferType(t: ActivityItemType): boolean {
   return t === 'transfer-in' || t === 'transfer-out'
 }
 
+function isYieldClaimType(t: ActivityItemType): boolean {
+  return t === 'yield'
+}
+
 /**
  * Decryptable types — rows that carry an encrypted amount handle in
- * `metadata.encrypted_amount_handle` (the cash + transfer rows). The
- * handle width differs (cash = euint64; transfer = euint128) so the
- * decrypt path branches by type.
+ * `metadata.encrypted_amount_handle`:
+ *   - cash rows (wrap/unwrap) — euint64 mhUSDC base units.
+ *   - transfer rows (transfer-in/-out) — euint128 share amount on a
+ *     per-RWA token.
+ *   - yield rows — euint64 mhUSDC base units, dispatched against the
+ *     YieldSnapshot proxy's `refreshAuditGrant` (Phase 9.A audit-handle
+ *     follow-up; closes the cumulative `_balances[investor]` chain-
+ *     depth issue per `project_cofhe_tn_chain_length_cap`).
+ *
+ * The decrypt path branches by type — different handle widths and
+ * different refresh-grant target contracts.
  */
 function isDecryptableType(t: ActivityItemType): boolean {
-  return isCashType(t) || isTransferType(t)
+  return isCashType(t) || isTransferType(t) || isYieldClaimType(t)
 }
 
 function matchesFilter(item: ActivityItemDto, f: FilterType): boolean {
@@ -322,6 +335,27 @@ async function decryptAmount(item: ActivityItemDto) {
         handle,
         item.token_address as `0x${string}`,
       )
+    } else if (isYieldClaimType(item.type)) {
+      // Phase 9.A audit-handle follow-up — yield-claim rows decrypt
+      // against the YieldSnapshot proxy that hosts the token. Wave 3.5
+      // staging shares one snapshot proxy across multiple tokens; the
+      // audit handle ACL was stamped on that contract at claim time.
+      // SnapshotService.snapshotProxyFor falls back to the singleton
+      // VITE_YIELD_SNAPSHOT_ADDRESS for wizard-deployed tokens that
+      // aren't in the static per-token map.
+      if (!item.token_address) {
+        throw new Error('Yield-claim row missing token_address — cannot decrypt')
+      }
+      const snapshotAddr = SnapshotService.snapshotProxyFor(
+        item.token_address as `0x${string}`,
+      )
+      if (!snapshotAddr) {
+        throw new Error(
+          `No YieldSnapshot proxy configured for token ${item.token_address} — `
+          + 'set VITE_YIELD_SNAPSHOT_ADDRESS in frontend/.env.stage and rebuild.',
+        )
+      }
+      value = await fhe.decryptYieldClaimAuditHandleForView(handle, snapshotAddr)
     } else {
       throw new Error(`No decrypt path for type=${item.type}`)
     }
@@ -342,16 +376,16 @@ async function refreshAmount(item: ActivityItemDto) {
 }
 
 /**
- * Format a revealed audit amount for display. Cash rows (wrap/unwrap) are
- * mhUSDC base units (6 decimals → USD); transfer rows are raw share
- * counts per Wave 3.5 convention (1 share == 1n on-chain). For transfer
- * rows we also tack the symbol on so the row reads "12 TBILL1" instead
- * of just "12".
+ * Format a revealed audit amount for display. Cash rows (wrap/unwrap)
+ * + yield-claim rows are mhUSDC base units (6 decimals → USD); transfer
+ * rows are raw share counts per Wave 3.5 convention (1 share == 1n
+ * on-chain). For transfer rows we also tack the symbol on so the row
+ * reads "12 TBILL1" instead of just "12".
  */
 function formatRevealedAmount(item: ActivityItemDto): string {
   const v = revealedAmounts[item.id]
   if (v === undefined) return ''
-  if (isCashType(item.type)) {
+  if (isCashType(item.type) || isYieldClaimType(item.type)) {
     return formatUSD(Number(v) / 1e6)
   }
   // Transfer — raw share count.
@@ -498,10 +532,11 @@ const showLoader = computed(() =>
                               class="animate-spin"
                             />
                             <Eye v-else :size="11" :stroke-width="1.8" />
-                            <!-- Cash rows show a USD bullet placeholder;
-                                 transfer rows show a share-count bullet so
-                                 the locked state hints at the unit. -->
-                            <span v-if="isCashType(item.type)">$••••.••</span>
+                            <!-- Cash + yield-claim rows show a USD bullet
+                                 placeholder; transfer rows show a share-
+                                 count bullet so the locked state hints
+                                 at the unit. -->
+                            <span v-if="isCashType(item.type) || isYieldClaimType(item.type)">$••••.••</span>
                             <span v-else>•••• {{ tokenSymbol(item.token_address) }}</span>
                           </button>
                           <span

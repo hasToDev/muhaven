@@ -39,6 +39,19 @@ const HINT_CAP = 1_000_000n;
 const DEFAULT_NAV = ONE_PUSDC;
 const EPOCH_DURATION = 60 * 60;
 
+/**
+ * Match any euint handle (bytes32 hex string). Used in event-emit asserts
+ * where the content-addressed handle bytes vary across mock-replays. Mirror
+ * of the helper in MuHavenStable.test.ts. Used for the broadened
+ * `YieldClaimed(token, investor, epochId, euint64 amount)` event +
+ * `AuditGrantRefreshed(kernel, eph, handle)` event introduced in the
+ * Phase 9.A audit-handle follow-up.
+ */
+function anyHandle() {
+  return (v: unknown) =>
+    typeof v === "string" && v.startsWith("0x") && v.length === 66;
+}
+
 async function encUint128(client: any, value: bigint) {
   const [enc] = await client.encryptInputs([Encryptable.uint128(value)]).execute();
   return enc;
@@ -596,9 +609,13 @@ describe("YieldSnapshot", () => {
       );
 
       // investor: 60/100 * 1000 = 600 PUSDC
+      // Phase 9.A · YieldSnapshot audit-handle follow-up: YieldClaimed
+      // event broadened with `euint64 amount`. Asserting via `anyHandle`
+      // matcher — content-addressed bytes32 handle is unstable across
+      // mock-replays.
       await expect(snapshot.connect(investor).claimYield(1n, eph.address))
         .to.emit(snapshot, "YieldClaimed")
-        .withArgs(await token.getAddress(), investor.address, 1n);
+        .withArgs(await token.getAddress(), investor.address, 1n, anyHandle());
 
       expect(await snapshot.hasClaimed(1n, investor.address)).to.equal(true);
       // Investor PUSDC after purchase = 940 (1000 - 60 shares at 1 PUSDC);
@@ -749,6 +766,182 @@ describe("YieldSnapshot", () => {
 
       await snapshot.connect(bob).claimYield(1n, bobEph.address);
       expect(await snapshot.hasClaimed(1n, bob.address)).to.equal(true);
+    });
+  });
+
+  // ── Audit handle on YieldClaimed + refreshAuditGrant ─────────────────────
+
+  /**
+   * Phase 9.A · YieldSnapshot audit-handle follow-up. Mirrors the pattern
+   * from Phase 9.A · Option Z (which added audit handles to
+   * `MuHavenStable.Wrap` / `Unwrap` and `MuHavenToken.Transfer`). Closes
+   * the demo-blocking cofhe TN chain-length pathology
+   * (`project_cofhe_tn_chain_length_cap`): the cumulative
+   * `MuHavenStable._balances[investor]` chain depth grows past the
+   * indexer threshold (~5-7 ops) after multiple mhUSDC ops, making the
+   * post-claim live balance handle unindexable. The audit handle on
+   * `YieldClaimed.amount` is a fresh `mul → cast` chain (≈2-3 ops) and
+   * stays indexer-friendly indefinitely — investors decrypt the
+   * per-claim amount via the audit handle on /activity, bypassing the
+   * cumulative-chain-depth issue on `_balances[investor]`.
+   */
+  describe("audit handle (YieldClaimed.amount + refreshAuditGrant)", () => {
+    async function fullEpochSetup(
+      snapshot: any,
+      token: any,
+      issuer: any,
+      investors: string[],
+      yieldAmt: bigint,
+      issuerClient: any,
+    ) {
+      await snapshot.connect(issuer).openEpoch(await token.getAddress());
+      await snapshot.connect(issuer).snapshotBatch(1n, investors);
+      await snapshot.connect(issuer).finalizeSnapshot(1n);
+      await snapshot
+        .connect(issuer)
+        .fundEpoch(1n, await encUint128(issuerClient, yieldAmt));
+    }
+
+    /**
+     * Helper — extract the encrypted `amount` (handle) from a
+     * `YieldClaimed` event in a tx receipt. Mirror of
+     * MuHavenStable.test.ts:307 `extractWrapOrUnwrapAmount`.
+     */
+    function extractClaimAmount(snapshot: any, receipt: any): string {
+      const iface = snapshot.interface;
+      for (const log of receipt.logs) {
+        try {
+          const parsed = iface.parseLog({ topics: log.topics, data: log.data });
+          if (parsed && parsed.name === "YieldClaimed") {
+            // Args: token (indexed), investor (indexed), epochId (indexed), amount (handle)
+            return parsed.args[3] as string;
+          }
+        } catch {
+          /* not from this contract — skip */
+        }
+      }
+      throw new Error("No YieldClaimed event in receipt");
+    }
+
+    it("YieldClaimed carries the encrypted amount handle, kernel + eph have ACL post-claim", async () => {
+      const { snapshot, token, issuer, investor, alice, eph, issuerClient } =
+        await loadFixture(deploySnapshotFixture);
+      await fullEpochSetup(
+        snapshot,
+        token,
+        issuer,
+        [investor.address, alice.address],
+        1000n * ONE_PUSDC,
+        issuerClient,
+      );
+
+      const tx = await snapshot.connect(investor).claimYield(1n, eph.address);
+      const receipt = await tx.wait();
+      const amountHandle = extractClaimAmount(snapshot, receipt);
+      expect(amountHandle).to.match(/^0x[0-9a-fA-F]{64}$/);
+
+      const acl = await hre.cofhe.mocks.getMockACL();
+      // Investor kernel grant — durable post-claim, lets `refreshAuditGrant`
+      // re-stamp future sessions without trusting a separate registry.
+      expect(
+        await acl.isAllowed(BigInt(amountHandle), investor.address),
+      ).to.equal(true);
+      // Claim-time ephemeralEOA grant — lets the originating session
+      // decrypt the amount via permit without a re-grant tx.
+      expect(
+        await acl.isAllowed(BigInt(amountHandle), eph.address),
+      ).to.equal(true);
+    });
+
+    it("refreshAuditGrant: rightful investor re-stamps grant on a previously-claimed handle", async () => {
+      const { snapshot, token, issuer, investor, alice, eph, issuerClient } =
+        await loadFixture(deploySnapshotFixture);
+      await fullEpochSetup(
+        snapshot,
+        token,
+        issuer,
+        [investor.address, alice.address],
+        1000n * ONE_PUSDC,
+        issuerClient,
+      );
+
+      const tx = await snapshot.connect(investor).claimYield(1n, eph.address);
+      const receipt = await tx.wait();
+      const amountHandle = extractClaimAmount(snapshot, receipt);
+
+      // Pre-state: kernel + claim-time eph have ACL; a fresh-session eph does not.
+      const freshEph = createEphemeralEOA();
+      const acl = await hre.cofhe.mocks.getMockACL();
+      expect(
+        await acl.isAllowed(BigInt(amountHandle), freshEph.address),
+      ).to.equal(false);
+
+      // Re-grant from the rightful kernel.
+      await expect(
+        snapshot.connect(investor).refreshAuditGrant(amountHandle, freshEph.address),
+      )
+        .to.emit(snapshot, "AuditGrantRefreshed")
+        .withArgs(investor.address, freshEph.address, anyHandle());
+
+      // Fresh session can now decrypt via permit.
+      expect(
+        await acl.isAllowed(BigInt(amountHandle), freshEph.address),
+      ).to.equal(true);
+      // Original kernel + claim-time eph grants remain (additive).
+      expect(
+        await acl.isAllowed(BigInt(amountHandle), investor.address),
+      ).to.equal(true);
+      expect(
+        await acl.isAllowed(BigInt(amountHandle), eph.address),
+      ).to.equal(true);
+    });
+
+    it("refreshAuditGrant: stranger rejection (NotAuditHandleOwner)", async () => {
+      const { snapshot, token, issuer, investor, alice, bob, eph, issuerClient } =
+        await loadFixture(deploySnapshotFixture);
+      await fullEpochSetup(
+        snapshot,
+        token,
+        issuer,
+        [investor.address, alice.address],
+        1000n * ONE_PUSDC,
+        issuerClient,
+      );
+
+      const tx = await snapshot.connect(investor).claimYield(1n, eph.address);
+      const receipt = await tx.wait();
+      const amountHandle = extractClaimAmount(snapshot, receipt);
+
+      // Bob has no ACL on investor's claim handle (claim stamped grants
+      // for this contract + investor + claim-eph only; bob is not in that
+      // set). Attempting to re-grant bounces.
+      const bobEph = createEphemeralEOA();
+      await expect(
+        snapshot.connect(bob).refreshAuditGrant(amountHandle, bobEph.address),
+      ).to.be.revertedWithCustomError(snapshot, "NotAuditHandleOwner");
+    });
+
+    it("refreshAuditGrant: zero ephemeralEOA rejection (InvalidEphemeralEOA)", async () => {
+      const { snapshot, token, issuer, investor, alice, eph, issuerClient } =
+        await loadFixture(deploySnapshotFixture);
+      await fullEpochSetup(
+        snapshot,
+        token,
+        issuer,
+        [investor.address, alice.address],
+        1000n * ONE_PUSDC,
+        issuerClient,
+      );
+
+      const tx = await snapshot.connect(investor).claimYield(1n, eph.address);
+      const receipt = await tx.wait();
+      const amountHandle = extractClaimAmount(snapshot, receipt);
+
+      await expect(
+        snapshot
+          .connect(investor)
+          .refreshAuditGrant(amountHandle, hre.ethers.ZeroAddress),
+      ).to.be.revertedWithCustomError(snapshot, "InvalidEphemeralEOA");
     });
   });
 

@@ -283,6 +283,36 @@ export class YieldSnapshotClient {
     return hash
   }
 
+  /**
+   * Re-stamp the ACL grant on a previously-issued audit handle (the
+   * `amount` field of a past `YieldClaimed` event) to a new ephemeralEOA.
+   * Cross-session decrypt path — the originating claim's eph is gone
+   * after a session rotation, but the kernel that owned the claim still
+   * has a durable ACL grant on the handle (granted at claim time via
+   * `FHE.allow(handle, msg.sender)`). Mirror of
+   * `MuHavenStable.refreshAuditGrant` (ADR-042).
+   *
+   * The contract gates this on `FHE.isAllowed(handle, msg.sender)`, so
+   * only the rightful kernel passes — strangers passing in someone
+   * else's audit handle bounce with `NotAuditHandleOwner`.
+   */
+  async refreshAuditGrant(
+    handle: `0x${string}`,
+    ephemeralEOA: Address,
+  ): Promise<Hash> {
+    requireEphemeralEOA(ephemeralEOA)
+    const { hash } = await writeAndWait({
+      publicClient: this.ctx.publicClient,
+      sender: this.ctx.sender,
+      address: this.address,
+      abi: yieldSnapshotAbi,
+      functionName: 'refreshAuditGrant',
+      args: [handle, ephemeralEOA],
+      operation: 'YieldSnapshot.refreshAuditGrant',
+    })
+    return hash
+  }
+
   // ── Views ─────────────────────────────────────────────────────────────
 
   async getEpoch(epochId: bigint): Promise<EpochView> {

@@ -223,6 +223,13 @@ const snapshotPermissions = nonZero(
     { target: snapAddr, functionName: 'snapshotBatch', abi: yieldSnapshotAbi, valueLimit: 0n },
     { target: snapAddr, functionName: 'finalizeSnapshot', abi: yieldSnapshotAbi, valueLimit: 0n },
     { target: snapAddr, functionName: 'fundEpoch', abi: yieldSnapshotAbi, valueLimit: 0n },
+    // Phase 9.A audit-handle follow-up — cross-session decrypt for the
+    // YieldClaimed audit handle. Lets investors re-stamp ACL on a
+    // historical claim handle via session-key (no passkey prompt) when
+    // they revisit /activity in a new browser session. Mirror of the
+    // MuHavenStable.refreshAuditGrant + MuHavenToken.refreshAuditGrant
+    // entries elsewhere in this file.
+    { target: snapAddr, functionName: 'refreshAuditGrant', abi: yieldSnapshotAbi, valueLimit: 0n },
   ]),
 );
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import {InEuint128, euint128} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
+import {InEuint128, euint128, euint64} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
 
 /// @title IYieldSnapshot
 /// @notice Pull-based yield distribution per ADR-005. Replaces the Wave 3
@@ -48,10 +48,32 @@ interface IYieldSnapshot {
     event SnapshotBatchApplied(uint256 indexed epochId, uint256 batchSize);
     event SnapshotFinalized(address indexed token, uint256 indexed epochId, uint256 holderCount);
     event EpochFunded(address indexed token, uint256 indexed epochId);
-    event YieldClaimed(address indexed token, address indexed investor, uint256 indexed epochId);
+    /// @notice Emitted when an investor claims yield for an epoch.
+    /// @param amount  Encrypted per-claim amount (euint64). Carries an
+    ///                audit handle (kernel + ephemeralEOA grants) so the
+    ///                investor can decrypt the per-claim amount via
+    ///                `cofheClient.decryptForView` even when the cumulative
+    ///                `MuHavenStable._balances[investor]` chain has grown
+    ///                past the cofhe TN indexer threshold (~5-7 ops). The
+    ///                audit handle's chain is short (`mul → cast` ≈ 2-3
+    ///                ops) and indexer-friendly. See ADR-046 for the
+    ///                wrapper-side bypass that this complements.
+    event YieldClaimed(
+        address indexed token,
+        address indexed investor,
+        uint256 indexed epochId,
+        euint64 amount
+    );
     event EpochExpired(address indexed token, uint256 indexed epochId);
     event IssuerUpdated(address indexed token, address indexed oldIssuer, address indexed newIssuer);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    /// @notice Emitted when a kernel re-stamps the audit-handle ACL grant
+    ///         to a new ephemeralEOA. Mirrors `MuHavenStable.AuditGrantRefreshed`.
+    event AuditGrantRefreshed(
+        address indexed kernel,
+        address indexed ephemeralEOA,
+        euint64 handle
+    );
 
     // ── Errors ────────────────────────────────────────────────────────────
 
@@ -66,6 +88,10 @@ interface IYieldSnapshot {
     error NotYetExpired();
     error AlreadyClaimed();
     error InvalidEphemeralEOA();
+    /// @notice `refreshAuditGrant` caller is not the rightful audit-handle
+    ///         owner — they don't have an existing ACL grant on the handle
+    ///         (i.e. they aren't the original claimer's kernel).
+    error NotAuditHandleOwner();
 
     // ── Issuer cold path ─────────────────────────────────────────────────
 
@@ -95,6 +121,18 @@ interface IYieldSnapshot {
     /// @notice Claim the investor's proportional yield for a funded epoch.
     ///         Idempotent: re-calls revert with `AlreadyClaimed`.
     function claimYield(uint256 epochId, address ephemeralEOA) external;
+
+    /// @notice Re-stamp the ACL grant on a previously-issued audit handle
+    ///         (the `amount` field of a past `YieldClaimed` event) to a new
+    ///         ephemeralEOA. Cross-session decrypt path — the originating
+    ///         claim's eph is gone after a session rotation, but the
+    ///         kernel that owned the claim still has a durable ACL grant
+    ///         on the handle (granted at claim time via `FHE.allow(handle,
+    ///         msg.sender)`). The auth gate is `FHE.isAllowed(handle,
+    ///         msg.sender)` — strangers passing in someone else's audit
+    ///         handle bounce with `NotAuditHandleOwner`. Mirrors
+    ///         `MuHavenStable.refreshAuditGrant` (ADR-042).
+    function refreshAuditGrant(euint64 handle, address ephemeralEOA) external;
 
     // ── Views ─────────────────────────────────────────────────────────────
 

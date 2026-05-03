@@ -501,6 +501,22 @@ contract YieldSnapshot is Initializable, ReentrancyGuardTransient, IYieldSnapsho
         FHE.allowThis(encShare64);
         FHE.allow(encShare64, pusdc);
 
+        // Audit-handle grants: the post-claim `_balances[investor]` handle on
+        // the wrapper accumulates FHE op-chain depth across the kernel's
+        // mhUSDC ops (each wrap → buy → claim extends it via FHE.add). After
+        // 3-4 mutations the chain crosses cofhe TN's indexer threshold (~5-7
+        // ops, see `project_cofhe_tn_chain_length_cap` memory) and view-only
+        // decrypt fails with a 204-stream timeout. `encShare64` is a fresh
+        // handle whose chain is short (`mul → cast` = 2-3 ops) and reliably
+        // indexable. Granting kernel + ephemeralEOA here lets investors
+        // decrypt the per-claim amount via the audit handle in
+        // `YieldClaimed`'s `amount` field (Activity page surface), bypassing
+        // the cumulative-chain-depth issue on the live balance handle.
+        // Mirrors the Phase 9.A · Option Z pattern that added audit handles
+        // to MuHavenStable.Wrap/Unwrap and MuHavenToken.Transfer.
+        FHE.allow(encShare64, msg.sender);
+        FHE.allow(encShare64, ephemeralEOA);
+
         // Decrement conservation counter BEFORE PUSDC transfer — a failed
         // transfer reverts the whole tx and restores state anyway, so
         // ordering is cosmetic. Keeping state updates before external
@@ -556,7 +572,24 @@ contract YieldSnapshot is Initializable, ReentrancyGuardTransient, IYieldSnapsho
             ephemeralEOA
         );
 
-        emit YieldClaimed(e.token, msg.sender, epochId);
+        emit YieldClaimed(e.token, msg.sender, epochId, encShare64);
+    }
+
+    /// @inheritdoc IYieldSnapshot
+    /// @dev Mirror of `MuHavenStable.refreshAuditGrant` (ADR-042 cross-
+    ///      session audit-decrypt pattern). The audit handle on a past
+    ///      `YieldClaimed` event was granted to the ephemeralEOA at claim
+    ///      time, but that eph is gone after a session rotation. The
+    ///      handle's kernel-side ACL grant is durable on-chain (granted
+    ///      via `FHE.allow(encShare64, msg.sender)` in `claimYield`), so
+    ///      the rightful kernel can re-stamp the handle to a new eph
+    ///      without touching `_snapshots` / `_claimed` / `_encRemaining`
+    ///      state. No reentrancy concern — pure ACL-only mutation.
+    function refreshAuditGrant(euint64 handle, address ephemeralEOA) external {
+        if (ephemeralEOA == address(0)) revert InvalidEphemeralEOA();
+        if (!FHE.isAllowed(handle, msg.sender)) revert NotAuditHandleOwner();
+        FHE.allow(handle, ephemeralEOA);
+        emit AuditGrantRefreshed(msg.sender, ephemeralEOA, handle);
     }
 
     // ── Views ────────────────────────────────────────────────────────────
