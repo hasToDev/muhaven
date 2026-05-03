@@ -509,7 +509,14 @@ const showLoader = computed(() =>
                              Cash handles are mhUSDC euint64 base units;
                              transfer handles are euint128 raw share counts —
                              `decryptAmount` branches by type internally. -->
-                        <template v-if="isDecryptableType(item.type)">
+                        <!-- Decrypt only renders when the row actually
+                             carries an audit handle. Pre-upgrade
+                             YieldClaimed events lack the `amount` field
+                             entirely (audit-handle slate landed
+                             2026-05-03); their indexer rows have
+                             metadata=null and the button stays hidden so
+                             the user doesn't click into a silent no-op. -->
+                        <template v-if="isDecryptableType(item.type) && item.metadata?.encrypted_amount_handle">
                           <button
                             v-if="revealedAmounts[item.id] === undefined"
                             type="button"
