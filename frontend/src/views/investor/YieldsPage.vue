@@ -108,25 +108,23 @@ async function claimEpoch(entry: EpochEntry) {
       },
     })
     if (address.value) {
-      // Refresh both surfaces in parallel: epochsStore (this page —
-      // collapses the row to "claimed") and portfolioStore (so /portfolio
-      // doesn't show stale revealed mhUSDC after the claim crediting).
-      // Privacy rule preserved: portfolioStore.decryptPusdc only re-fires
-      // if mhUSDC was already revealed in this session.
+      // ONLY await epochsStore.load — the row's "claimed" state must
+      // resolve synchronously so the row collapses + the row's per-key
+      // claim spinner can clear in `finally`. The portfolio refresh is
+      // fire-and-forget: the cofhe TN sealOutput indexer can be slow on
+      // post-claim handles (chain-length pathology — see
+      // `project_cofhe_tn_chain_length_cap`), and awaiting a
+      // 30-45s decrypt blocks the row's claim spinner needlessly. The
+      // user navigates to /portfolio when they're ready; the spinner
+      // there manages its own decrypt state.
+      const addr = address.value as `0x${string}`
       const wasRevealed = portfolioStore.pusdcConfidentialBalance !== null
-      await Promise.all([
-        epochsStore.load(address.value as Address),
-        portfolioStore.load(address.value as `0x${string}`).catch((e) => {
-          console.warn('[YieldsPage] portfolio.load post-claim failed', e)
-        }),
-      ])
-      if (wasRevealed) {
-        try {
-          await portfolioStore.decryptPusdc(address.value as `0x${string}`)
-        } catch (e) {
-          console.warn('[YieldsPage] mhUSDC re-decrypt post-claim failed', e)
-        }
-      }
+      await epochsStore.load(addr as Address)
+      void portfolioStore.load(addr)
+        .then(() => wasRevealed ? portfolioStore.decryptPusdc(addr) : null)
+        .catch((e) => {
+          console.warn('[YieldsPage] post-claim portfolio refresh failed', e)
+        })
     }
   } catch (e) {
     toast.error('Claim failed', {

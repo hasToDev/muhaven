@@ -387,8 +387,29 @@ export function useFhe() {
     const { FheTypes } = await import('@cofhe/sdk')
     const utype = bits === 64 ? FheTypes.Uint64 : FheTypes.Uint128
 
+    // Cofhe TN's sealOutput stream can hang for ~5 minutes when the indexer
+    // hasn't picked up a fresh handle (the chain-length pathology documented
+    // at `project_cofhe_tn_chain_length_cap` — handles whose FHE op-chain is
+    // ≥5-7 ops can be silently refused and surface as 204 streams). Without
+    // a frontend-side cap, the spinner sits forever and the user has no
+    // indication anything is wrong. 45s is short enough to not feel
+    // "forever" but long enough to absorb the typical 2-15s success window
+    // plus the 2s TN-propagation retry below. The error message embeds
+    // "sealoutput" so existing TN-outage detectors (e.g. MPrivacyProofPanel
+    // line 474) trip and surface the right user-facing copy.
+    const DECRYPT_TIMEOUT_MS = 45_000
     const runDecrypt = () =>
-      client.decryptForView(ctHash, utype).execute() as Promise<bigint>
+      Promise.race<bigint>([
+        client.decryptForView(ctHash, utype).execute() as Promise<bigint>,
+        new Promise<bigint>((_, reject) => {
+          setTimeout(() => {
+            reject(new Error(
+              'Decrypt timed out — cofhe TN sealoutput stream did not respond within 45s. '
+              + 'The handle may be queued for indexing; retry in a moment.',
+            ))
+          }, DECRYPT_TIMEOUT_MS)
+        }),
+      ])
 
     // Default `kind` — uint128 = MuHavenToken (Phase 7), uint64 = legacy
     // PUSDC (no refresh). Callers wanting the mhUSDC path pass

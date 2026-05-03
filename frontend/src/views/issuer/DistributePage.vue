@@ -461,12 +461,22 @@ async function handleDistribute() {
         description: `Epoch #${distributionStore.epochId} funded — investors can pull-claim from /yields`,
       })
       // Refresh side state — local DistributePage tile + global
-      // portfolio store + recent epochs strip.
+      // portfolio store + recent epochs strip. The local-page refreshes
+      // (runPreflight, loadRecentEpochs) are awaited so the visible
+      // page state under the receipt updates synchronously. The global
+      // portfolio re-decrypt is fire-and-forget — cofhe TN sealOutput
+      // can lag for tens of seconds on post-distribute handles
+      // (`project_cofhe_tn_chain_length_cap`), and awaiting it would
+      // pin `pusdcDecrypting === true` on the shared portfolio store
+      // for the whole duration, making /cash + /portfolio mhUSDC tiles
+      // show forever-spinners on first navigation post-distribute.
       mhUsdcBalance.value = null
+      void refreshAfterDistribute().catch((e) => {
+        console.warn('[DistributePage] background portfolio refresh failed', e)
+      })
       await Promise.all([
         runPreflight(),
         loadRecentEpochs(),
-        refreshAfterDistribute(),
       ])
     } else if (distributionStore.phase === 'error') {
       toast.error('Distribution failed', {
@@ -570,14 +580,18 @@ async function resumeDistribution() {
     toast.success('Distribution complete', {
       description: `Epoch #${distributionStore.epochId} funded — investors can pull-claim from /yields`,
     })
-    // Mirror handleDistribute's success-side state refresh — collapse the
-    // revealed mhUSDC, re-run preflight, reload Recent Epochs, refresh
-    // the global portfolio store so /portfolio doesn't show stale mhUSDC.
+    // Mirror handleDistribute's success-side state refresh — collapse
+    // the revealed mhUSDC, re-run preflight, reload Recent Epochs, and
+    // FIRE-AND-FORGET the global portfolio refresh (same rationale as
+    // handleDistribute: avoid pinning shared `pusdcDecrypting` true for
+    // the duration of a slow cofhe TN sealOutput call).
     mhUsdcBalance.value = null
+    void refreshAfterDistribute().catch((e) => {
+      console.warn('[DistributePage] background portfolio refresh failed (resume)', e)
+    })
     await Promise.all([
       runPreflight(),
       loadRecentEpochs(),
-      refreshAfterDistribute(),
     ])
   } else if (distributionStore.phase === 'error') {
     toast.error('Distribution failed', {
