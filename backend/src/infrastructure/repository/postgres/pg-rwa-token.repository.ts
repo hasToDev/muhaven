@@ -137,6 +137,20 @@ export class PgRwaTokenRepository implements IRwaTokenRepository {
       );
   }
 
+  async updatePausedStatus(tokenAddress: string, paused: boolean): Promise<void> {
+    const now = new Date();
+    await this.db
+      .update(rwaTokens)
+      .set(
+        paused
+          ? { status: 'paused', pausedAt: now, updatedAt: now }
+          : { status: 'active', pausedAt: null, updatedAt: now },
+      )
+      .where(
+        eq(sql`lower(${rwaTokens.address})`, tokenAddress.toLowerCase()),
+      );
+  }
+
   private toDomain(row: typeof rwaTokens.$inferSelect): RwaToken {
     return new RwaToken({
       id: row.id,

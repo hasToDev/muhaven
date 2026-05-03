@@ -389,14 +389,23 @@ export class TaxEventIndexer {
       if (built !== null) out.push(...built);
     }
 
-    // Registry logs are side-effecting (mutate `rwa_tokens.issuer_address`)
-    // rather than producing `tax_events` rows. Dispatch in-loop so a
-    // throw aborts the chunk and propagates up to `tick()`'s catch — the
-    // cursor MUST NOT advance past a chunk where a registry write
-    // failed, otherwise the rotation is lost forever.
+    // Registry logs are side-effecting (mutate `rwa_tokens.issuer_address`
+    // for IssuerUpdated, `rwa_tokens.status` for PausedUpdated) rather
+    // than producing `tax_events` rows. Dispatch by event name so a
+    // single chunk carrying both event types lands both writes; a throw
+    // in either aborts the chunk and propagates up to `tick()`'s catch —
+    // the cursor MUST NOT advance past a chunk where a registry write
+    // failed, otherwise the rotation/status flip is lost forever.
     if (this.tokenRegistryHandler) {
       for (const log of registryLogs) {
-        await this.tokenRegistryHandler.applyIssuerUpdated(log);
+        const eventName = (log as Log & { eventName?: string }).eventName;
+        if (eventName === 'IssuerUpdated') {
+          await this.tokenRegistryHandler.applyIssuerUpdated(log);
+        } else if (eventName === 'PausedUpdated') {
+          await this.tokenRegistryHandler.applyPausedUpdated(log);
+        }
+        // Other registry events (MinInvestmentUpdated etc.) have no DB
+        // mirror today; ignore — adding the leg is the next iteration.
       }
     }
 

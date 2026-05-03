@@ -160,6 +160,20 @@ export const tokenRegistryEventsAbi = [
       { name: 'newIssuer', type: 'address', indexed: true },
     ],
   },
+  {
+    // Phase 9.A · Expansion (F1 follow-up). `TokenRegistry.setPaused`
+    // emits `PausedUpdated(token, paused)` — fired by the F2 wizard
+    // (registers tokens paused), the operator's `unpause-token.ts`
+    // (flips paused=false post-NAV-publish), and any future
+    // emergency-pause path. Subscribing keeps `rwa_tokens.status` in
+    // sync without an operator-driven seed:tokens:v35 refresh.
+    type: 'event',
+    name: 'PausedUpdated',
+    inputs: [
+      { name: 'token', type: 'address', indexed: true },
+      { name: 'paused', type: 'bool', indexed: false },
+    ],
+  },
 ] as const;
 
 export const oracleNavViewAbi = [

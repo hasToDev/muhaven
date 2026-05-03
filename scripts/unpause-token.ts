@@ -255,30 +255,41 @@ async function main() {
   if (unpaused > 0) {
     console.log("");
     console.log("─".repeat(72));
-    console.log("NEXT: refresh the backend's rwa_tokens catalog");
+    console.log("NEXT: how the dashboard catches up");
     console.log("─".repeat(72));
     console.log(
-      "Wizard-deployed tokens land in `rwa_tokens` only when the operator\n" +
-        "runs the catalog seed (the F1 indexer catches IssuerUpdated, not\n" +
-        "TokenRegistered). Without this, the new token is invisible in\n" +
-        "/marketplace, /portfolio, and /tokens regardless of the unpause.\n",
+      "On a healthy stack the F1 indexer subscribes to TokenRegistry's\n" +
+        "PausedUpdated + IssuerUpdated events and refreshes `rwa_tokens.status`\n" +
+        "within ~15s of each tx mining. /tokens, /marketplace, and /portfolio\n" +
+        "should all reflect the unpause without a follow-up step.\n",
+    );
+    console.log("If /tokens still shows the token as 'paused' after ~30s:\n");
+    console.log(
+      "  1. Confirm the indexer is running:\n" +
+        "       curl -s https://nagreg" +
+        (env === "staging" ? "-stage" : "") +
+        ".hasto.dev/health\n",
+    );
+    console.log(
+      "  2. Recovery — re-seed from on-chain truth (refreshes existing rows):\n",
     );
     if (env === "staging") {
       console.log(
-        "  ssh -i ~/.ssh/id_muhaven_vm muhaven@192.168.1.52 \\\n" +
-          "    \"docker compose -f /home/muhaven/Project/Fhenix/MuHaven-stage/docker-compose.stage.yml \\\n" +
-          "      -p muhaven-stage exec -T backend pnpm seed:tokens:v35\"\n",
+        "       ssh -i ~/.ssh/id_muhaven_vm muhaven@192.168.1.52 \\\n" +
+          "         \"docker compose -f /home/muhaven/Project/Fhenix/MuHaven-stage/docker-compose.stage.yml \\\n" +
+          "           -p muhaven-stage exec -T backend pnpm seed:tokens:v35\"\n",
       );
     } else {
       console.log(
-        "  ssh -i ~/.ssh/id_muhaven_vm muhaven@192.168.1.52 \\\n" +
-          "    \"docker compose -f /home/muhaven/Project/Fhenix/MuHaven/docker-compose.yml \\\n" +
-          "      -p muhaven exec -T backend pnpm seed:tokens:v35\"\n",
+        "       ssh -i ~/.ssh/id_muhaven_vm muhaven@192.168.1.52 \\\n" +
+          "         \"docker compose -f /home/muhaven/Project/Fhenix/MuHaven/docker-compose.yml \\\n" +
+          "           -p muhaven exec -T backend pnpm seed:tokens:v35\"\n",
       );
     }
     console.log(
-      "After both steps run, /marketplace lists the new token as 'active'\n" +
-        "and an investor whitelisted by the issuer can buy it.",
+      "     The seed is now refresh-aware: it point-updates `status` and\n" +
+        "     `issuer_address` for existing rows when on-chain differs, and\n" +
+        "     inserts new tokens when missing. Idempotent, safe to re-run.",
     );
   }
 }

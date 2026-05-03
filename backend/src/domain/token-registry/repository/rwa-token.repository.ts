@@ -21,4 +21,17 @@ export interface IRwaTokenRepository {
    * indexer has already applied.
    */
   updateIssuer(tokenAddress: string, newIssuer: string): Promise<void>;
+
+  /**
+   * Phase 9.A · Expansion (F1 follow-up) — point-update of `status` when
+   * the on-chain `TokenRegistry.PausedUpdated` event fires. Mirrors
+   * `updateIssuer` posture: case-insensitive WHERE, idempotent (no-op
+   * when the column already matches), updates `pausedAt` to the
+   * current timestamp on a paused→active flip back to active is left
+   * intentionally NULL (the column means "currently paused since X",
+   * not "last paused at Y"). Kept out of `save()`'s SET clause so a
+   * re-seed cannot clobber a status flip the indexer has already
+   * applied.
+   */
+  updatePausedStatus(tokenAddress: string, paused: boolean): Promise<void>;
 }

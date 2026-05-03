@@ -111,6 +111,12 @@ class StubRwaTokenRepo implements IRwaTokenRepository {
       (row as { issuerAddress: string }).issuerAddress = newIssuer;
     }
   }
+
+  async updatePausedStatus(tokenAddress: string, paused: boolean): Promise<void> {
+    const row = await this.findByAddress(tokenAddress);
+    if (!row) return;
+    (row as { status: TokenStatus }).status = paused ? 'paused' : 'active';
+  }
 }
 
 function makeStubLibrary(opts: {

@@ -7,11 +7,13 @@
  * the indexer knows how to fetch logs for an address-set, but the
  * dispatch + repo write for each registry event lives here.
  *
- * Today it handles only `IssuerUpdated` — `TokenRegistry` also emits
- * `PausedUpdated`, `MinInvestmentUpdated`, `InstantRedeemCapUpdated`,
- * `EpochDurationUpdated`, but those have no DB column to mutate today.
- * Add a method here + an entry to `tokenRegistryEventsAbi` when a
- * downstream column lands.
+ * Today it handles `IssuerUpdated` (auto-rotates `rwa_tokens.issuer_address`
+ * after `transfer-issuer.ts`) and `PausedUpdated` (auto-flips
+ * `rwa_tokens.status` after `unpause-token.ts` or any other paused-state
+ * change). `TokenRegistry` also emits `MinInvestmentUpdated`,
+ * `InstantRedeemCapUpdated`, `EpochDurationUpdated`, but those have no
+ * downstream DB column today. Add a method here + an entry to
+ * `tokenRegistryEventsAbi` when a downstream column lands.
  *
  * Failure posture: any repo write error must propagate to the caller so
  * `TaxEventIndexer.tick()` catches it and refuses to advance the
@@ -62,6 +64,37 @@ export class TokenRegistryHandler {
         txHash: log.transactionHash ?? null,
       },
       'Applied IssuerUpdated rotation',
+    );
+  }
+
+  /**
+   * Handle a single decoded `PausedUpdated(token, paused)` log. Mirrors
+   * `applyIssuerUpdated` posture: defensive on missing fields, throws on
+   * repo errors so the cursor doesn't advance past a failed write.
+   *
+   * The repo's `updatePausedStatus` is idempotent (no row updated when
+   * the column already matches) so a replay-after-crash is safe.
+   */
+  async applyPausedUpdated(log: Log): Promise<void> {
+    const eventName = (log as Log & { eventName?: string }).eventName;
+    const args = (log as Log & { args?: Record<string, unknown> }).args;
+    if (eventName !== 'PausedUpdated' || !args) return;
+
+    const token = args.token as Address | undefined;
+    const paused = args.paused as boolean | undefined;
+    if (!token || typeof paused !== 'boolean') {
+      this.logger.warn({ log }, 'PausedUpdated missing token / paused');
+      return;
+    }
+
+    await this.rwaTokenRepo.updatePausedStatus(token, paused);
+    this.logger.info(
+      {
+        token,
+        paused,
+        txHash: log.transactionHash ?? null,
+      },
+      'Applied PausedUpdated status sync',
     );
   }
 }

@@ -156,19 +156,16 @@ async function main() {
   const repo = new PgRwaTokenRepository(db);
 
   let inserted = 0;
+  let refreshed = 0;
   let skipped = 0;
 
   for (const tokenAddr of tokenAddrs) {
-    // Existence check first — saves an RPC roundtrip on tokens already in DB.
-    const existing = await repo.findByAddress(tokenAddr);
-    if (existing) {
-      console.log(`[skip] already registered: ${tokenAddr}`);
-      skipped += 1;
-      continue;
-    }
-
-    // Pull symbol + name from the token contract; pull issuer from
-    // TokenRegistry (single source of truth — issuer rotation propagates).
+    // Always read on-chain truth — issuer rotation, paused-state flips,
+    // and (future) per-token config changes all need to flow into
+    // `rwa_tokens` regardless of whether the row exists yet. Cheap on
+    // a public RPC; the alternative ("skip if row exists") was the
+    // pre-2026-05-03 behaviour that left the dashboard stale after
+    // every `unpause-token.ts` run.
     const [symbol, name, cfg] = await Promise.all([
       client.readContract({ address: tokenAddr, abi: MUHAVEN_TOKEN_ABI, functionName: 'symbol' }),
       client.readContract({ address: tokenAddr, abi: MUHAVEN_TOKEN_ABI, functionName: 'name' }),
@@ -185,6 +182,38 @@ async function main() {
       console.log(`[warn] no MARKETING entry for "${symbol}" — using 'other' defaults`);
     }
 
+    const existing = await repo.findByAddress(tokenAddr);
+    const expectedStatus = cfg.paused ? 'paused' : 'active';
+
+    if (existing) {
+      // Existing row — point-update only the columns the F1 indexer is
+      // responsible for (status + issuer_address). Other columns (name,
+      // apy, asset_class, etc.) stay as the operator / wizard set them
+      // — re-seeding is for catching missed events, not for clobbering
+      // operator overrides. Both repo methods are idempotent (no-op
+      // when the column already matches).
+      let didUpdate = false;
+      if (existing.status !== expectedStatus) {
+        await repo.updatePausedStatus(tokenAddr, cfg.paused);
+        didUpdate = true;
+      }
+      if (existing.issuerAddress.toLowerCase() !== cfg.issuer.toLowerCase()) {
+        await repo.updateIssuer(tokenAddr, cfg.issuer);
+        didUpdate = true;
+      }
+      if (didUpdate) {
+        console.log(
+          `[refresh] ${symbol} (${tokenAddr}) → status=${expectedStatus}, ` +
+            `issuer=${cfg.issuer}`,
+        );
+        refreshed += 1;
+      } else {
+        console.log(`[skip] already in sync: ${symbol} (${tokenAddr})`);
+        skipped += 1;
+      }
+      continue;
+    }
+
     const now = new Date();
     const token = new RwaToken({
       id: randomUUID(),
@@ -199,7 +228,7 @@ async function main() {
       minInvestment: meta.minInvestment,
       // Mirror the on-chain pause state into the application status — a token
       // registered as paused on-chain shouldn't show as 'active' in the API.
-      status: cfg.paused ? 'paused' : 'active',
+      status: expectedStatus,
       createdAt: now,
       updatedAt: now,
       ...(cfg.paused ? { pausedAt: now } : {}),
@@ -213,7 +242,7 @@ async function main() {
     inserted += 1;
   }
 
-  console.log(`\nDone. inserted=${inserted}, skipped=${skipped}.`);
+  console.log(`\nDone. inserted=${inserted}, refreshed=${refreshed}, skipped=${skipped}.`);
   process.exit(0);
 }
 

@@ -30,7 +30,10 @@ function emptyTaxEventRepo(): ITaxEventRepository {
   };
 }
 
-function fakeRwaTokenRepo(): IRwaTokenRepository & { updateIssuer: ReturnType<typeof vi.fn> } {
+function fakeRwaTokenRepo(): IRwaTokenRepository & {
+  updateIssuer: ReturnType<typeof vi.fn>;
+  updatePausedStatus: ReturnType<typeof vi.fn>;
+} {
   return {
     save: vi.fn(),
     findById: vi.fn(),
@@ -40,6 +43,7 @@ function fakeRwaTokenRepo(): IRwaTokenRepository & { updateIssuer: ReturnType<ty
     findByStatus: vi.fn().mockResolvedValue([]),
     update: vi.fn(),
     updateIssuer: vi.fn().mockResolvedValue(undefined),
+    updatePausedStatus: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -337,6 +341,169 @@ describe('TaxEventIndexer · IssuerUpdated dispatch (F1)', () => {
     await indexer.tick();
 
     expect(rwaTokenRepo.updateIssuer).not.toHaveBeenCalled();
+    expect(indexer.getStatus().lastProcessedBlock).toBe('105');
+  });
+
+  it('dispatches a PausedUpdated log to updatePausedStatus (true)', async () => {
+    let blockCallCount = 0;
+    const pausedLog = {
+      eventName: 'PausedUpdated',
+      args: { token: TOKEN_A, paused: true },
+      transactionHash: '0xPausedTx',
+      blockNumber: 102n,
+      logIndex: 0,
+      address: REGISTRY_ADDR,
+    } as any;
+    const client = createMockClient({
+      getBlockNumber: vi.fn().mockImplementation(() => {
+        blockCallCount++;
+        return Promise.resolve(blockCallCount === 1 ? 100n : 105n);
+      }),
+      getLogs: vi.fn().mockImplementation((params: any) => {
+        if (
+          params.address === REGISTRY_ADDR ||
+          (Array.isArray(params.address) && params.address.includes(REGISTRY_ADDR))
+        ) {
+          return Promise.resolve([pausedLog]);
+        }
+        return Promise.resolve([]);
+      }),
+    });
+
+    const handler = new TokenRegistryHandler(rwaTokenRepo);
+    const indexer = new TaxEventIndexer(
+      taxEventRepo,
+      defaultIndexerConfig({ tokenRegistryAddress: REGISTRY_ADDR }),
+      client,
+      handler,
+    );
+
+    await indexer.tick();
+    await indexer.tick();
+
+    expect(rwaTokenRepo.updatePausedStatus).toHaveBeenCalledTimes(1);
+    expect(rwaTokenRepo.updatePausedStatus).toHaveBeenCalledWith(TOKEN_A, true);
+    // The IssuerUpdated leg must NOT have fired on a PausedUpdated log.
+    expect(rwaTokenRepo.updateIssuer).not.toHaveBeenCalled();
+  });
+
+  it('dispatches paused=false (the unpause-token.ts case) so /tokens flips to active', async () => {
+    let blockCallCount = 0;
+    const unpausedLog = {
+      eventName: 'PausedUpdated',
+      args: { token: TOKEN_A, paused: false },
+      transactionHash: '0xUnpausedTx',
+      blockNumber: 102n,
+      logIndex: 0,
+      address: REGISTRY_ADDR,
+    } as any;
+    const client = createMockClient({
+      getBlockNumber: vi.fn().mockImplementation(() => {
+        blockCallCount++;
+        return Promise.resolve(blockCallCount === 1 ? 100n : 105n);
+      }),
+      getLogs: vi.fn().mockImplementation((params: any) => {
+        if (
+          params.address === REGISTRY_ADDR ||
+          (Array.isArray(params.address) && params.address.includes(REGISTRY_ADDR))
+        ) {
+          return Promise.resolve([unpausedLog]);
+        }
+        return Promise.resolve([]);
+      }),
+    });
+
+    const handler = new TokenRegistryHandler(rwaTokenRepo);
+    const indexer = new TaxEventIndexer(
+      taxEventRepo,
+      defaultIndexerConfig({ tokenRegistryAddress: REGISTRY_ADDR }),
+      client,
+      handler,
+    );
+
+    await indexer.tick();
+    await indexer.tick();
+
+    expect(rwaTokenRepo.updatePausedStatus).toHaveBeenCalledWith(TOKEN_A, false);
+  });
+
+  it('handles a mixed batch with both IssuerUpdated and PausedUpdated logs in one chunk', async () => {
+    let blockCallCount = 0;
+    const client = createMockClient({
+      getBlockNumber: vi.fn().mockImplementation(() => {
+        blockCallCount++;
+        return Promise.resolve(blockCallCount === 1 ? 100n : 105n);
+      }),
+      getLogs: vi.fn().mockImplementation((params: any) => {
+        if (
+          params.address === REGISTRY_ADDR ||
+          (Array.isArray(params.address) && params.address.includes(REGISTRY_ADDR))
+        ) {
+          return Promise.resolve([
+            issuerUpdatedLog({ blockNumber: 101n }),
+            {
+              eventName: 'PausedUpdated',
+              args: { token: TOKEN_A, paused: false },
+              transactionHash: '0xUnpausedTx',
+              blockNumber: 102n,
+              logIndex: 0,
+              address: REGISTRY_ADDR,
+            } as any,
+          ]);
+        }
+        return Promise.resolve([]);
+      }),
+    });
+
+    const handler = new TokenRegistryHandler(rwaTokenRepo);
+    const indexer = new TaxEventIndexer(
+      taxEventRepo,
+      defaultIndexerConfig({ tokenRegistryAddress: REGISTRY_ADDR }),
+      client,
+      handler,
+    );
+
+    await indexer.tick();
+    await indexer.tick();
+
+    expect(rwaTokenRepo.updateIssuer).toHaveBeenCalledWith(TOKEN_A, ISSUER_NEW);
+    expect(rwaTokenRepo.updatePausedStatus).toHaveBeenCalledWith(TOKEN_A, false);
+  });
+
+  it('PausedUpdated with non-boolean `paused` arg → defensive skip (no repo call)', async () => {
+    let blockCallCount = 0;
+    const client = createMockClient({
+      getBlockNumber: vi.fn().mockImplementation(() => {
+        blockCallCount++;
+        return Promise.resolve(blockCallCount === 1 ? 100n : 105n);
+      }),
+      getLogs: vi.fn().mockImplementation((params: any) => {
+        if (
+          params.address === REGISTRY_ADDR ||
+          (Array.isArray(params.address) && params.address.includes(REGISTRY_ADDR))
+        ) {
+          // Args missing the `paused` boolean — defensive guard kicks in.
+          return Promise.resolve([
+            { eventName: 'PausedUpdated', args: { token: TOKEN_A } } as any,
+          ]);
+        }
+        return Promise.resolve([]);
+      }),
+    });
+
+    const handler = new TokenRegistryHandler(rwaTokenRepo);
+    const indexer = new TaxEventIndexer(
+      taxEventRepo,
+      defaultIndexerConfig({ tokenRegistryAddress: REGISTRY_ADDR }),
+      client,
+      handler,
+    );
+
+    await indexer.tick();
+    await indexer.tick();
+
+    expect(rwaTokenRepo.updatePausedStatus).not.toHaveBeenCalled();
+    // Cursor still advances — defensive skip is not a failure.
     expect(indexer.getStatus().lastProcessedBlock).toBe('105');
   });
 });
