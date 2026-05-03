@@ -1177,8 +1177,29 @@ const successCopy = computed(() =>
               >
                 {{ formatUSD(Number(portfolio.pusdcConfidentialBalance) / 1e6) }}
               </span>
-              <span class="font-sans text-[10px] text-cool/80 leading-tight">
+              <span
+                v-if="!portfolio.pusdcStale"
+                class="font-sans text-[10px] text-cool/80 leading-tight"
+              >
                 Confidential cash · spend on Trade
+              </span>
+              <!-- Stale sub-line: most-recent passive refresh failed but
+                   the cached value is still visible. Inline Retry re-fires
+                   the decrypt. Same shape as PortfolioPage's strip cell
+                   (one bug, one fix, one indicator pattern). -->
+              <span
+                v-else
+                data-testid="cash-mhusdc-stale"
+                class="font-sans text-[10px] text-cool/80 leading-tight flex items-center gap-1"
+              >
+                <span>Last refresh failed</span>
+                <span aria-hidden="true">·</span>
+                <button
+                  type="button"
+                  @click="decryptMhUsdcBalance"
+                  :disabled="portfolio.pusdcDecrypting"
+                  class="text-compute dark:text-signal hover:underline cursor-pointer disabled:opacity-50 disabled:cursor-wait"
+                >retry</button>
               </span>
             </template>
 

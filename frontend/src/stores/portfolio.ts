@@ -74,6 +74,16 @@ export const usePortfolioStore = defineStore('portfolio', () => {
   // dashboard with a Retry button), wiping every other loaded card for a
   // localized PUSDC failure. Keep this local.
   const pusdcError = ref<string | null>(null)
+  /**
+   * `true` when the most-recent PASSIVE re-decrypt failed but a previously-
+   * revealed value is still cached. UI surfaces this via a "Last refresh
+   * failed · retry" sub-line so the user knows the cached value isn't
+   * fresh — closes the auto-hide-after-time bug where transient cofhe TN
+   * sealOutput failures (~1-5% per call per the documented chain-length
+   * pathology) on the 30s safety poll silently wiped the revealed value.
+   * Cleared on the next successful decrypt (passive or interactive).
+   */
+  const pusdcStale = ref(false)
   const loading = ref(false)
   const error = ref<string | null>(null)
   const loaded = ref(false)
@@ -281,6 +291,21 @@ export const usePortfolioStore = defineStore('portfolio', () => {
         })),
       ]
 
+      // Preserve previously-decrypted balances across the rebuild. Without
+      // this, every safety-poll-triggered `load()` (every 30s on /portfolio)
+      // would wipe `decryptedBalance` for every holding — RWA cards would
+      // flicker back to locked just as the mhUSDC tile bug does. Watcher +
+      // post-action paths (handleHoldingInbound, refreshAfterTrade, etc.)
+      // remain the authoritative invalidators when on-chain state for a
+      // specific token actually changes; they re-decrypt explicitly.
+      // Lookup keyed by lowercased address (memory:
+      // `feedback_address_case_at_repo_boundary`).
+      const prevBalanceByAddress = new Map<string, bigint | null>()
+      for (const h of holdings.value) {
+        if (h.decryptedBalance !== null) {
+          prevBalanceByAddress.set(h.tokenAddress.toLowerCase(), h.decryptedBalance)
+        }
+      }
       const holdingsWithMeta = await Promise.all(
         allPositions.map(async (pos) => {
           const tokenAddr = pos.token_address as `0x${string}`
@@ -295,6 +320,7 @@ export const usePortfolioStore = defineStore('portfolio', () => {
               console.warn(`[portfolio] on-chain NAV read failed for ${pos.token_symbol}`, e)
             }
           }
+          const preservedBalance = prevBalanceByAddress.get(tokenAddr.toLowerCase()) ?? null
           return {
             tokenAddress: tokenAddr,
             symbol: pos.token_symbol,
@@ -302,7 +328,7 @@ export const usePortfolioStore = defineStore('portfolio', () => {
             apy: token?.apy ? parseFloat(token.apy) : null,
             assetClass: token?.asset_class ?? 'other',
             encryptedBalance: null as `0x${string}` | null,
-            decryptedBalance: null as bigint | null,
+            decryptedBalance: preservedBalance as bigint | null,
             decrypting: false,
             nav: onChainNav ?? backendNav,
           }
@@ -375,6 +401,20 @@ export const usePortfolioStore = defineStore('portfolio', () => {
    * builds fall back to legacy PUSDC reads which can still 403 — that's
    * the gap the wrapper closes.
    */
+  /**
+   * Decrypt the caller's confidential mhUSDC balance for the UI.
+   *
+   * Failure semantics auto-derive from the cached state at call time:
+   *   - **Cached value exists** (refresh/passive-poll path): preserve the
+   *     cached value, set `pusdcStale = true`, log warn. The UI can swap
+   *     its sub-line copy to "Last refresh failed · retry" while keeping
+   *     the value visible. This closes the auto-hide-after-time bug
+   *     where transient cofhe TN sealOutput failures (~1-5% per call per
+   *     `project_cofhe_tn_chain_length_cap`) on the 30s safety poll
+   *     silently nulled the revealed value.
+   *   - **No cached value** (fresh reveal click): null + set
+   *     `pusdcError` for the locked-tile error path.
+   */
   async function decryptPusdc(walletAddress: `0x${string}`) {
     if (pusdcDecrypting.value) return
     pusdcDecrypting.value = true
@@ -386,8 +426,7 @@ export const usePortfolioStore = defineStore('portfolio', () => {
 
       // Decrypt then assign — keep the old revealed value visible while the
       // refresh is in flight so the UI doesn't flicker into the locked
-      // (Decrypt CTA) layout. On failure we null + raise the error so the
-      // user sees the locked layout + scoped error message.
+      // (Decrypt CTA) layout.
       let next: bigint
       if (MuHavenStableService.isAvailable()) {
         const ctHash = await MuHavenStableService.confidentialBalanceOf(walletAddress)
@@ -397,9 +436,21 @@ export const usePortfolioStore = defineStore('portfolio', () => {
         next = await fhe.decryptUint64ForView(ctHash)
       }
       pusdcConfidentialBalance.value = next
+      pusdcStale.value = false
     } catch (e) {
-      pusdcConfidentialBalance.value = null
-      pusdcError.value = e instanceof Error ? e.message : 'PUSDC decrypt failed'
+      const msg = e instanceof Error ? e.message : 'PUSDC decrypt failed'
+      if (pusdcConfidentialBalance.value !== null) {
+        // Refresh-shape failure with a cached value — preserve it +
+        // mark stale + log. Do NOT set `pusdcError` (that surface is
+        // for the locked-tile-with-error state; setting it here would
+        // bleed the failure into the locked layout even though we're
+        // staying revealed).
+        pusdcStale.value = true
+        console.warn('[portfolio] mhUSDC re-decrypt failed; keeping cached value', e)
+      } else {
+        // Fresh-reveal failure — locked tile + scoped error message.
+        pusdcError.value = msg
+      }
     } finally {
       pusdcDecrypting.value = false
     }
@@ -411,6 +462,7 @@ export const usePortfolioStore = defineStore('portfolio', () => {
     pusdcConfidentialBalance.value = null
     pusdcDecrypting.value = false
     pusdcError.value = null
+    pusdcStale.value = false
     loading.value = false
     error.value = null
     loaded.value = false
@@ -422,6 +474,7 @@ export const usePortfolioStore = defineStore('portfolio', () => {
     pusdcConfidentialBalance,
     pusdcDecrypting,
     pusdcError,
+    pusdcStale,
     loading,
     error,
     loaded,

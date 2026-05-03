@@ -848,10 +848,29 @@ const showBlurredAllocation = computed(() =>
                 </button>
               </div>
               <p
-                v-if="portfolio.pusdcConfidentialBalance !== null"
+                v-if="portfolio.pusdcConfidentialBalance !== null && !portfolio.pusdcStale"
                 class="font-sans text-[10px] text-cool/70 tracking-wide"
               >
                 Confidential stablecoin
+              </p>
+              <!-- Stale sub-line: most-recent passive refresh failed but the
+                   cached value is still visible. Surface the failure mode
+                   inline (financial dashboards must not lie about freshness)
+                   with an inline Retry that re-fires the decrypt — same
+                   action as the small RefreshCw button, just labeled. -->
+              <p
+                v-else-if="portfolio.pusdcConfidentialBalance !== null && portfolio.pusdcStale"
+                data-testid="portfolio-strip-mhusdc-stale"
+                class="font-sans text-[10px] text-cool/70 tracking-wide flex items-center gap-1"
+              >
+                <span>Last refresh failed</span>
+                <span aria-hidden="true">·</span>
+                <button
+                  type="button"
+                  @click="decryptPusdc"
+                  :disabled="portfolio.pusdcDecrypting"
+                  class="text-compute dark:text-signal hover:underline cursor-pointer disabled:opacity-50 disabled:cursor-wait"
+                >retry</button>
               </p>
             </div>
 
