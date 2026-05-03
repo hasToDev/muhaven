@@ -35,7 +35,14 @@ const OPERATOR_EXPIRY_SECONDS = 365 * 24 * 60 * 60
 /** Phases a distribution moves through, end-to-end. */
 export type DistributionPhase =
   | 'idle'
-  | 'preflight'      // balance check + 2 operator approvals + auto-wrap
+  | 'preparing'      // pre-flight refresh + decrypt-if-locked + operator
+                     // grants + auto-wrap (work that runs BEFORE the on-
+                     // chain epoch lifecycle starts; gives the click-
+                     // handler immediate phase-machine visibility so the
+                     // CTA flips to "Preparing…" within 100ms of click)
+  | 'preflight'      // store-initialised, about to call runOpenEpoch.
+                     // Transient: start() flips here, runDistribution
+                     // immediately moves to 'opening'.
   | 'opening'        // openEpoch tx in flight
   | 'snapshotting'   // batched; carries (current, total) progress
   | 'finalizing'

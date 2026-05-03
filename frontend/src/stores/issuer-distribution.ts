@@ -173,6 +173,23 @@ export const useIssuerDistributionStore = defineStore('issuer-distribution', () 
     if (snapshot.value) persist(account, snapshot.value)
   }
 
+  /**
+   * Flip phase to `'preparing'` immediately on Distribute click, before
+   * any pre-phase work runs (preflight refresh, mhUSDC decrypt, operator
+   * grants, auto-wrap). Closes the click-to-feedback latency gap where
+   * the CTA stayed at "Distribute · $X" with no spinner for 3-10s while
+   * silent work landed UserOps. The button reads `isProcessing` (which
+   * already covers any non-idle/done/error phase) and switches to
+   * "Preparing…" within one tick of the click.
+   *
+   * No persistence — pre-phase work has no token/snapshot binding yet,
+   * and `snapshot.value` is null until `start()` runs.
+   */
+  function markPreparing() {
+    errorMessage.value = null
+    phase.value = 'preparing'
+  }
+
   function setError(account: Address, msg: string) {
     errorMessage.value = msg
     phase.value = 'error'
@@ -428,6 +445,8 @@ export const useIssuerDistributionStore = defineStore('issuer-distribution', () 
     snapshotProgress,
     snapshot,
     hydrate,
+    markPreparing,
+    setError,
     start,
     reset,
     runOpenEpoch,

@@ -334,6 +334,14 @@ async function handleDistribute() {
 
   preflightError.value = null
 
+  // Flip phase to 'preparing' immediately so the CTA + form pick up
+  // the in-progress visual state within 100ms of the click. Without
+  // this, the silent pre-phase work (preflight refresh, mhUSDC decrypt,
+  // operator grants, auto-wrap) leaves the button at "Distribute · $X"
+  // for 3-10s — past the threshold where users start re-clicking or
+  // blaming the system.
+  distributionStore.markPreparing()
+
   try {
     // Phase 1: preflight grants + auto-wrap.
     if (!preflightStatus.value) {
@@ -432,6 +440,13 @@ async function handleDistribute() {
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'Distribution failed'
     preflightError.value = msg
+    // Flip phase from 'preparing' (or wherever the throw landed) to
+    // 'error' so the wizard's error panel renders with its actionable
+    // retry CTA — without this the wizard would freeze at "Preparing…"
+    // forever on a pre-phase failure (e.g. OnlyIssuer guardrail trip).
+    if (walletAddress.value) {
+      distributionStore.setError(walletAddress.value as Address, msg)
+    }
     toast.error('Distribution failed', { description: msg })
   }
 }
@@ -439,6 +454,17 @@ async function handleDistribute() {
 async function resumeDistribution() {
   if (!walletAddress.value) return
   preflightError.value = null
+
+  // Capture the resume-from phase BEFORE markPreparing flips it. The
+  // store's runDistribution gates each on-chain step on the current
+  // phase, so we need to restore it after the pre-phase work resolves
+  // — otherwise runDistribution would no-op (no phase matches its
+  // 'preflight'/'snapshotting'/'finalizing'/'funding' branches).
+  const resumeFromPhase = distributionStore.phase
+
+  // Same click-to-feedback fix as handleDistribute: flip to 'preparing'
+  // so the resume CTA's spinner + label update within one tick of click.
+  distributionStore.markPreparing()
 
   try {
     // Re-run preflight + re-grant operator approvals before retrying the
@@ -460,10 +486,32 @@ async function resumeDistribution() {
       }
     }
 
+    // Restore the resume-from phase so runDistribution's phase-gated
+    // branches pick up at the right step. On a pre-phase failure
+    // (epochId === null) we restart from 'preflight' (runOpenEpoch).
+    // On a mid-flow failure we re-derive phase from on-chain truth via
+    // detectInFlight — finalized + funded is no-op (already 'done'),
+    // finalized + not-funded → 'funding', otherwise → 'snapshotting'.
+    if (distributionStore.epochId === null) {
+      distributionStore.phase = 'preflight'
+    } else if (resumeFromPhase === 'error' && tokenAddr) {
+      const inflight = await SnapshotService.detectInFlight(tokenAddr)
+      distributionStore.phase = inflight?.phase === 'done'
+        ? 'done'
+        : inflight?.phase === 'funding'
+          ? 'funding'
+          : 'snapshotting'
+    } else {
+      distributionStore.phase = resumeFromPhase
+    }
+
     await distributionStore.runDistribution(walletAddress.value as Address)
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'Resume failed'
     preflightError.value = msg
+    if (walletAddress.value) {
+      distributionStore.setError(walletAddress.value as Address, msg)
+    }
     toast.error('Resume failed', { description: msg })
     return
   }
@@ -495,6 +543,24 @@ async function resumeDistribution() {
     toast.error('Distribution failed', {
       description: distributionStore.errorMessage ?? 'Unknown error',
     })
+  }
+}
+
+/**
+ * Single retry CTA for the error panel. Branches on epochId:
+ *   - epochId === null → pre-phase failure (e.g., OnlyIssuer guardrail
+ *     trip, holder count zero, auto-wrap reverted). No epoch was opened
+ *     on-chain, so resumeDistribution would no-op. Re-run the full
+ *     handleDistribute flow from scratch.
+ *   - epochId !== null → mid-flow failure (snapshot batch dropped, fund
+ *     reverted). resumeDistribution re-runs preflight + grants and
+ *     picks up the on-chain lifecycle from where it stopped.
+ */
+function handleErrorRetry() {
+  if (distributionStore.epochId === null) {
+    void handleDistribute()
+  } else {
+    void resumeDistribution()
   }
 }
 
@@ -654,12 +720,18 @@ function fmtClaimWindow(claimExpiry: bigint): string {
         </div>
       </section>
 
-      <!-- Stepper -->
+      <!-- Stepper. Visible during processing + on the error panel; HIDDEN
+           on the success/receipt frame (the receipt's spring-scaled
+           CheckCircle2 is the celebration beat — the stepper's persistent
+           gold checkmarks would steal focus from the teal positive ring
+           and create visual conflict in the receipt frame). The 200ms
+           opacity exit motion prevents single-frame collapse. -->
       <section
-        v-if="distributionStore.isProcessing || distributionStore.phase === 'error' || showReceipt"
+        v-if="distributionStore.isProcessing || distributionStore.phase === 'error'"
         v-motion
         :initial="{ opacity: 0, y: 16 }"
         :enter="{ opacity: 1, y: 0, transition: { duration: 360 } }"
+        :leave="{ opacity: 0, y: -8, transition: { duration: 200 } }"
         data-testid="distribute-stepper"
         class="rounded-xl border border-haze/60 dark:border-white/5 bg-mist/30 dark:bg-[#1c1b1b]/30 backdrop-blur-md py-4 px-6"
       >
@@ -690,9 +762,15 @@ function fmtClaimWindow(claimExpiry: bigint): string {
                       : 'text-cool/60',
                 ]"
               >{{ s.label }}</span>
-              <!-- Inline snapshot sub-progress -->
+              <!-- Inline snapshot sub-progress — renders only for
+                   multi-batch distributions where the per-batch
+                   tx-by-tx fill provides genuine motion. For single-
+                   batch demos (1-N holders → 1 tx) the bar fills
+                   0→100% in ~3s with no intermediate motion, reading
+                   as ornamental dead air; the active step's
+                   animate-pulse circle alone carries the signal. -->
               <div
-                v-if="i === 1 && distributionStore.phase === 'snapshotting' && distributionStore.holderTotal > 0"
+                v-if="i === 1 && distributionStore.phase === 'snapshotting' && distributionStore.holderTotal > 0 && distributionStore.batchCount > 1"
                 data-testid="distribute-snapshot-progress"
                 class="mt-1 w-32 flex flex-col gap-1"
               >
@@ -847,8 +925,12 @@ function fmtClaimWindow(claimExpiry: bigint): string {
             </p>
             <div class="flex gap-3">
               <MButton variant="outline" @click="resetForm">Cancel</MButton>
-              <MButton variant="primary" @click="resumeDistribution" data-testid="distribute-resume-cta">
-                Resume distribution
+              <MButton
+                variant="primary"
+                @click="handleErrorRetry"
+                data-testid="distribute-resume-cta"
+              >
+                {{ distributionStore.epochId === null ? 'Try again' : 'Resume distribution' }}
               </MButton>
             </div>
           </div>
@@ -1123,11 +1205,13 @@ function fmtClaimWindow(claimExpiry: bigint): string {
                 >
                   <Loader2 v-if="distributionStore.isProcessing" :size="14" class="animate-spin" />
                   <Coins v-else :size="13" :stroke-width="2" />
-                  <span>{{ distributionStore.isProcessing
-                    ? 'Distributing…'
-                    : amountValid
-                      ? `Distribute · ${formatUSD(Number(amountUnits) / 1e6)}`
-                      : 'Distribute'
+                  <span>{{ distributionStore.phase === 'preparing'
+                    ? 'Preparing…'
+                    : distributionStore.isProcessing
+                      ? 'Distributing…'
+                      : amountValid
+                        ? `Distribute · ${formatUSD(Number(amountUnits) / 1e6)}`
+                        : 'Distribute'
                   }}</span>
                   <ArrowRight v-if="!distributionStore.isProcessing" :size="13" :stroke-width="2" />
                 </button>
