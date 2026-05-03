@@ -293,7 +293,7 @@ function nextStep() {
     return
   }
   if (wizard.step === 3 && !canAdvanceFromStep3.value) {
-    formError.value = 'NAV + min investment must be non-negative integers (PUSDC base units)'
+    formError.value = 'NAV + min investment must be non-negative integers (mhUSDC base units)'
     return
   }
   if (wizard.step === 4) {
@@ -532,7 +532,7 @@ function deployStepUi(key: DeployStepKey) {
           <div class="grid gap-4">
             <label class="flex flex-col gap-1.5">
               <span class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool font-semibold">
-                Initial NAV (PUSDC base units / share)
+                Initial NAV (mhUSDC base units / share)
               </span>
               <input
                 v-model="wizard.formData.initial_nav"
@@ -543,13 +543,13 @@ function deployStepUi(key: DeployStepKey) {
                 placeholder="1000000"
               />
               <span class="font-sans text-[11px] text-cool">
-                Default <code class="font-mono">1000000</code> = 1.00 USDC. Used by the
+                Default <code class="font-mono">1000000</code> = 1.00 mhUSDC. Used by the
                 wizard's recap; the kernel publishes the live NAV in step 6.
               </span>
             </label>
             <label class="flex flex-col gap-1.5">
               <span class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool font-semibold">
-                Min investment (PUSDC base units)
+                Min investment (mhUSDC base units)
               </span>
               <input
                 v-model="wizard.formData.min_investment"
@@ -590,9 +590,9 @@ function deployStepUi(key: DeployStepKey) {
               <dt class="text-cool">Asset class</dt>
               <dd class="text-midnight dark:text-white">{{ wizard.formData.asset_class }}</dd>
               <dt class="text-cool">Initial NAV</dt>
-              <dd class="text-midnight dark:text-white font-mono">{{ wizard.formData.initial_nav }}</dd>
+              <dd class="text-midnight dark:text-white font-mono">{{ wizard.formData.initial_nav }} <span class="text-cool font-sans text-[11px]">mhUSDC base units</span></dd>
               <dt class="text-cool">Min investment</dt>
-              <dd class="text-midnight dark:text-white font-mono">{{ wizard.formData.min_investment }}</dd>
+              <dd class="text-midnight dark:text-white font-mono">{{ wizard.formData.min_investment }} <span class="text-cool font-sans text-[11px]">mhUSDC base units</span></dd>
               <dt class="text-cool">Yield schedule</dt>
               <dd class="text-midnight dark:text-white">{{ wizard.formData.yield_schedule }}</dd>
             </dl>
@@ -601,7 +601,7 @@ function deployStepUi(key: DeployStepKey) {
             <p class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool font-semibold">Locked defaults</p>
             <ul class="font-sans text-xs text-cool list-disc pl-4 space-y-1">
               <li>Compliance bundle: KYC required, no country allow-list, unlimited holders</li>
-              <li>Epoch duration: 86400 s · Instant redeem cap: 100 USDC</li>
+              <li>Epoch duration: 86400 s · Instant redeem cap: 100 mhUSDC</li>
               <li>Oracle: issuer-controlled (Chainlink path stays operator-only)</li>
               <li>Token registers paused — kernel publishes first NAV + unpauses (step 6)</li>
             </ul>
