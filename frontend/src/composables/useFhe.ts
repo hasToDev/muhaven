@@ -528,6 +528,27 @@ export function useFhe() {
           return await runDecrypt()
         } catch (refreshErr) {
           console.warn('[useFhe] refreshDecryptGrant fallback failed', refreshErr)
+          // Specific signature: 403 → ACL refreshed → 204-stream timeout on
+          // retry. Refresh succeeded on-chain but the indexer can't return
+          // the ciphertext within the timeout window. The most common cause
+          // on staging is the documented cofhe TN chain-length cap
+          // (`project_cofhe_tn_chain_length_cap`): handles whose cumulative
+          // FHE op-chain exceeds ~5-7 ops are silently refused. This
+          // accumulates across the kernel's mhUSDC operations (wrap → buy →
+          // claim grow the chain on each mutation of `_balances[holder]`).
+          // Surface a chain-length-specific message instead of the generic
+          // 403 fallthrough below — the user's actual problem is "indexer
+          // can't read this handle", not "I don't have an ACL grant".
+          const refreshMsg = refreshErr instanceof Error ? refreshErr.message : String(refreshErr)
+          if (/sealoutput|timed out/i.test(refreshMsg)) {
+            throw new Error(
+              'Fhenix TN sealOutput indexer can\'t resolve this handle within the timeout. '
+              + 'Likely cause: the encrypted balance has accumulated too many FHE ops to '
+              + 'index reliably (known cofhe TN testnet limitation, ADR-046). '
+              + 'Verify the operation succeeded via /activity; the on-chain state is correct '
+              + 'even when this view-only decrypt path is unavailable.',
+            )
+          }
         }
       }
       if (is403Error(e)) {
