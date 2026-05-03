@@ -71,7 +71,11 @@ const ORACLE_ABI = [
   "function getNAV(address token) view returns (uint256 nav, uint64 timestamp)",
   "function setNAV(address token, uint256 newNav)",
   "function setNavWriter(address token, address newWriter)",
-  "function navWriter(address token) view returns (address)",
+  // The view is `getNavWriter`, not `navWriter`. Earlier drafts of this
+  // script declared `navWriter(address)`, which has no matching selector
+  // on `IssuerControlledOracle` and reverts at the static-call layer
+  // — see IIssuerControlledOracle.sol:86 + impl line 293.
+  "function getNavWriter(address token) view returns (address)",
   "function owner() view returns (address)",
 ];
 
@@ -208,7 +212,7 @@ async function main() {
     // 1) Ensure the deployer can write NAV. The wizard set the applicant
     //    kernel as nav writer; rotate to deployer for the setNAV call,
     //    then rotate back.
-    const originalWriter: string = await oracle.navWriter(job.tokenAddr);
+    const originalWriter: string = await oracle.getNavWriter(job.tokenAddr);
     let rotatedWriter = false;
     if (originalWriter.toLowerCase() !== signer.address.toLowerCase()) {
       console.log(
