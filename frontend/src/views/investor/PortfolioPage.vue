@@ -61,9 +61,17 @@ const mhusdcStripBloomActive = ref(false)
 const inboundRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const inboundBloomClearTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const inboundWatcherCleanups: Array<() => void> = []
+// Safety-net poll. See CashPage for rationale: viem's
+// watchContractEvent uses eth_newFilter polling and some Arb Sepolia
+// RPCs garbage-collect filters mid-session, killing the watcher
+// silently. This interval refreshes portfolio.load() (and re-decrypts
+// mhUSDC if revealed) every SAFETY_POLL_MS regardless of watcher
+// state. No bloom — bloom is the watcher's job.
+let safetyPollTimer: ReturnType<typeof setInterval> | null = null
 
 const PORTFOLIO_BLOOM_DEBOUNCE_MS = 1500
 const PORTFOLIO_BLOOM_HOLD_MS = 1200 // slightly longer than /cash — holding cards are larger surfaces
+const PORTFOLIO_SAFETY_POLL_MS = 30_000
 
 async function handleHoldingInbound(tokenAddress: `0x${string}`) {
   if (!address.value) return
@@ -175,6 +183,7 @@ function teardownInboundWatchers() {
   if (mhusdcStripRefreshTimer) { clearTimeout(mhusdcStripRefreshTimer); mhusdcStripRefreshTimer = null }
   if (mhusdcStripBloomClearTimer) { clearTimeout(mhusdcStripBloomClearTimer); mhusdcStripBloomClearTimer = null }
   if (usdcStripRefreshTimer) { clearTimeout(usdcStripRefreshTimer); usdcStripRefreshTimer = null }
+  if (safetyPollTimer) { clearInterval(safetyPollTimer); safetyPollTimer = null }
   for (const k of Object.keys(holdingBloomActive)) delete holdingBloomActive[k]
   mhusdcStripBloomActive.value = false
 }
@@ -202,6 +211,9 @@ async function setupInboundWatchers(kernelAddress: `0x${string}`) {
       args: { to: kernelAddress },
       pollingInterval: 12_000,
       onLogs: () => debouncedHoldingInbound(tokenAddr),
+      onError: (err) => {
+        console.warn(`[PortfolioPage] ${t.symbol} inbound watcher error`, err)
+      },
     })
     inboundWatcherCleanups.push(unwatch)
   }
@@ -215,6 +227,9 @@ async function setupInboundWatchers(kernelAddress: `0x${string}`) {
       args: { to: kernelAddress },
       pollingInterval: 12_000,
       onLogs: () => debouncedMhusdcStripInbound(),
+      onError: (err) => {
+        console.warn('[PortfolioPage] mhUSDC inbound watcher error', err)
+      },
     })
     inboundWatcherCleanups.push(unwatchMhusdc)
   }
@@ -231,8 +246,26 @@ async function setupInboundWatchers(kernelAddress: `0x${string}`) {
     args: { to: kernelAddress },
     pollingInterval: 12_000,
     onLogs: () => debouncedUsdcStripInbound(),
+    onError: (err) => {
+      console.warn('[PortfolioPage] USDC inbound watcher error', err)
+    },
   })
   inboundWatcherCleanups.push(unwatchUsdc)
+
+  // Safety-net poll. See CashPage rationale: when viem's filter-based
+  // watchContractEvent silently dies (RPC garbage-collects the
+  // filter), this interval guarantees the dashboard reflects on-chain
+  // state within ~30s regardless. portfolio.load() refreshes USDC +
+  // holdings + investor count in one shot. mhUSDC re-decrypt only
+  // fires if the user has revealed it (privacy: no surprise session
+  // signature on a passive interval).
+  safetyPollTimer = setInterval(() => {
+    if (!address.value) return
+    void portfolio.load(address.value as `0x${string}`)
+    if (portfolio.pusdcConfidentialBalance !== null) {
+      void portfolio.decryptPusdc(address.value as `0x${string}`)
+    }
+  }, PORTFOLIO_SAFETY_POLL_MS)
 }
 
 watch(

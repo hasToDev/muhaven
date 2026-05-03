@@ -260,10 +260,18 @@ let usdcDeltaClearTimer: ReturnType<typeof setTimeout> | null = null
 let mhusdcBloomTimer: ReturnType<typeof setTimeout> | null = null
 let mhusdcBloomClearTimer: ReturnType<typeof setTimeout> | null = null
 const watcherCleanups: Array<() => void> = []
+// Safety-net polling. viem's watchContractEvent uses eth_newFilter +
+// eth_getFilterChanges by default; some RPCs garbage-collect filters
+// after a TTL, which silently kills the watcher. This interval guarantees
+// the USDC + mhUSDC balances refresh every SAFETY_POLL_MS regardless of
+// watcher state, with no bloom animation (the bloom is the watcher's job;
+// this is just data freshness). Cleared in teardownWatchers.
+let safetyPollTimer: ReturnType<typeof setInterval> | null = null
 
 const BLOOM_DEBOUNCE_MS = 1500
 const BLOOM_HOLD_MS = 900            // gold ring visible duration (≈ 600ms enter + 300ms hold before fade)
 const SUBTITLE_PERSIST_MS = 3500
+const SAFETY_POLL_MS = 30_000         // 30s: cheap, much faster than the user noticing staleness
 
 function triggerUsdcBloom(deltaUnits: bigint) {
   // 6-decimal USDC base units → cents (1e-2). Sub-dollar dust still
@@ -315,6 +323,7 @@ function teardownWatchers() {
   if (usdcDeltaClearTimer) { clearTimeout(usdcDeltaClearTimer); usdcDeltaClearTimer = null }
   if (mhusdcBloomTimer) { clearTimeout(mhusdcBloomTimer); mhusdcBloomTimer = null }
   if (mhusdcBloomClearTimer) { clearTimeout(mhusdcBloomClearTimer); mhusdcBloomClearTimer = null }
+  if (safetyPollTimer) { clearInterval(safetyPollTimer); safetyPollTimer = null }
   pendingUsdcDeltaCents = 0
   usdcBloomActive.value = false
   mhusdcBloomActive.value = false
@@ -343,6 +352,14 @@ function setupInboundWatchers(kernelAddress: `0x${string}`) {
       }
       if (total > 0n) triggerUsdcBloom(total)
     },
+    // Surface RPC errors (filter dropped, rate limit, etc.) so the
+    // user can see why the bloom stopped firing. Without this, viem's
+    // poll loop swallows errors and the watcher silently dies. The
+    // safety-net poll below covers the data-freshness side regardless;
+    // this is just diagnostics.
+    onError: (err) => {
+      console.warn('[CashPage] USDC inbound watcher error', err)
+    },
   })
   watcherCleanups.push(unwatchUsdc)
 
@@ -358,9 +375,26 @@ function setupInboundWatchers(kernelAddress: `0x${string}`) {
       args: { to: kernelAddress },
       pollingInterval: 12_000,
       onLogs: () => triggerMhusdcBloom(),
+      onError: (err) => {
+        console.warn('[CashPage] mhUSDC inbound watcher error', err)
+      },
     })
     watcherCleanups.push(unwatchMhusdc)
   }
+
+  // Safety-net poll. Some Arb Sepolia RPCs (notably the public
+  // endpoints) drop eth_newFilter handles after a TTL, which kills
+  // viem's watchContractEvent silently mid-session. This interval is
+  // independent of the watcher: every SAFETY_POLL_MS we re-read the
+  // USDC balance + (if revealed) the mhUSDC balance. No bloom — the
+  // bloom is the watcher's job. This guarantees the displayed value
+  // is at most ~30s stale even when the watcher fully fails.
+  safetyPollTimer = setInterval(() => {
+    void loadBalances()
+    if (portfolio.pusdcConfidentialBalance !== null && address.value) {
+      void portfolio.decryptPusdc(address.value as `0x${string}`)
+    }
+  }, SAFETY_POLL_MS)
 }
 
 // Re-arm the watchers whenever the connected address changes (login /
