@@ -11,17 +11,36 @@ app.use(pinia)
 app.use(router)
 app.use(MotionPlugin)
 
-// Hydrate auth state from localStorage before first navigation.
-// Wallet address is restored from localStorage (no passkey prompt).
-// Wallet provider reconnects lazily via ensureConnected() on first on-chain action.
+// Hydrate auth state from localStorage and kick off `/users/me` for
+// `issuerStatus` (Phase 9.A · Expansion F2). Wallet address is
+// restored from localStorage without prompting; the wallet provider
+// reconnects lazily via `ensureConnected()` on first on-chain action.
+//
+// We hydrate synchronously here (don't use `useAuth.initialize()`,
+// which needs `useRouter()` and therefore a component context) and
+// kick off `fetchUserMeta()` without blocking mount. The router's
+// `beforeEach` awaits the same in-flight promise so the first guarded
+// navigation never renders before /me resolves.
 import { useAuthStore } from './stores/auth'
 import { useWalletStore } from './stores/wallet'
+import { useAppStore } from './stores/app'
+
 const authStore = useAuthStore()
 const hydrated = authStore.hydrate()
 
 if (hydrated) {
   const walletStore = useWalletStore()
   walletStore.restoreAddress()
+  // Phase 9.A · role guardrail. Mirror the JWT-derived role into the
+  // app store so the navigation chrome renders the correct role on
+  // the very first paint. Without this `appStore.role` defaults to
+  // 'investor' and the sidebar would briefly show investor nav for an
+  // issuer reload.
+  if (authStore.role) useAppStore().setRole(authStore.role)
+  // Fire-and-forget: the router guard awaits the same promise via
+  // `authStore.fetchUserMeta()` (idempotent — concurrent callers share
+  // the in-flight promise).
+  void authStore.fetchUserMeta()
 }
 
 app.mount('#app')

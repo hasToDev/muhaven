@@ -14,7 +14,7 @@ import { toast } from 'vue-sonner'
 import {
   PieChart, ShoppingCart, TrendingUp, Activity, Store, Sparkles, Send, Undo2,
   Coins, Share2, Users, ClipboardCheck, Wallet, LogOut, LogIn, Loader2,
-  Copy, Check, Banknote,
+  Copy, Check, Banknote, FileSignature,
 } from 'lucide-vue-next'
 
 // Role is chosen at login (see LoginPage.vue). The sidebar no longer offers a
@@ -28,6 +28,28 @@ const authStore = useAuthStore()
 const walletStore = useWalletStore()
 const auth = useAuth()
 const homeTarget = useHomeTarget()
+
+// Phase 9.A · Expansion (F2). Surface the issuer-onboarding wizard
+// in the sidebar when the connected issuer hasn't finished KYB.
+// Status drives both visibility and label:
+//   - 'unregistered' → "Apply" + amber bloom on the row + pulsed dot
+//                      (action required, this is your next step).
+//   - 'pending'      → "Application" + static amber dot (informational,
+//                      we're waiting on review — no action required).
+//   - 'approved' / 'suspended' → item hidden (item is for "still
+//                                  onboarding" states only; suspended
+//                                  has no UX path in this build).
+const showOnboardingNav = computed(
+  () =>
+    store.role === 'issuer'
+    && (authStore.issuerStatus === 'unregistered' || authStore.issuerStatus === 'pending'),
+)
+const onboardingNavLabel = computed(() =>
+  authStore.issuerStatus === 'pending' ? 'Application' : 'Apply',
+)
+const onboardingNavIsActionable = computed(
+  () => authStore.issuerStatus === 'unregistered',
+)
 
 // Phase 9.A: Cash promoted to first nav item — it's the post-register
 // landing AND the universal first-action page (USDC → mhUSDC). Portfolio
@@ -132,6 +154,52 @@ onBeforeUnmount(() => {
 
     <!-- Nav items -->
     <nav class="flex-1 px-3 space-y-1 overflow-y-auto no-scrollbar">
+      <!-- Phase 9.A · Expansion (F2) — issuer onboarding wizard.
+           Pinned ABOVE the regular issuer nav because onboarding is the
+           prerequisite gate for everything below it (Cash / Tokens /
+           Distribute / etc all redirect back to /apply-issuer until
+           KYB is approved). Disappears entirely once status flips to
+           'approved'. Amber bloom + pulsed dot draw the eye on the
+           'unregistered' state where action is required; the 'pending'
+           variant is quieter — informational, not a CTA. -->
+      <RouterLink
+        v-if="showOnboardingNav"
+        to="/apply-issuer"
+        data-testid="sidebar-nav-apply"
+        :class="cn(
+          'relative flex items-center gap-3 py-2.5 px-4 text-sm font-sans transition-all duration-200 group',
+          route.path === '/apply-issuer'
+            ? 'border-l-2 border-gold bg-compute/8 dark:bg-signal/5 text-compute dark:text-signal font-semibold rounded-r-lg pl-[14px]'
+            : onboardingNavIsActionable
+              ? 'rounded-lg font-semibold text-midnight dark:text-white bg-gold/8 dark:bg-signal/5 ring-1 ring-gold/30 dark:ring-signal/25 hover:bg-gold/12 dark:hover:bg-signal/8'
+              : 'text-cool hover:text-midnight dark:hover:text-white hover:bg-mist/70 dark:hover:bg-white/5 rounded-lg font-medium',
+        )"
+      >
+        <span class="relative inline-flex">
+          <FileSignature
+            :size="18"
+            :stroke-width="route.path === '/apply-issuer' ? 2.2 : 1.7"
+            :class="route.path === '/apply-issuer'
+              ? 'text-gold'
+              : onboardingNavIsActionable
+                ? 'text-gold'
+                : 'text-cool/80 group-hover:text-compute dark:group-hover:text-signal transition-colors'"
+          />
+          <!-- Status dot — amber pulse when actionable, static when pending. -->
+          <span
+            v-if="route.path !== '/apply-issuer'"
+            aria-hidden="true"
+            :class="cn(
+              'absolute -top-0.5 -right-0.5 inline-flex h-1.5 w-1.5 rounded-full',
+              onboardingNavIsActionable
+                ? 'bg-gold animate-pulse'
+                : 'bg-gold/70',
+            )"
+          />
+        </span>
+        <span class="tracking-wide">{{ onboardingNavLabel }}</span>
+      </RouterLink>
+
       <RouterLink
         v-for="item in navItems"
         :key="item.path"

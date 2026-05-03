@@ -88,16 +88,18 @@ async function isV35DevModeOn(): Promise<boolean> {
 
 function redirectToDashboard() {
   const redirect = route.query.redirect as string | undefined
-  // Only allow relative paths to prevent open redirect
+  // Only allow relative paths to prevent open redirect.
   const safeRedirect = redirect?.startsWith('/') ? redirect : undefined
-  // Phase 9.A: investors land on /cash (the new first nav item) — it's
-  // the post-register cockpit (wallet + funding + USDC→mhUSDC). Issuers
-  // freshly REGISTERING land on /apply-issuer to walk the F2 wizard
-  // (they have `issuer_status='unregistered'` until apply succeeds);
-  // returning issuer LOGINs land on /tokens. ApplyPage.onMounted has a
-  // bounce-out branch so an approved issuer who hits /apply-issuer
-  // (e.g. via the empty-state CTA on /tokens) is forwarded properly.
-  const issuerTarget = isRegister.value ? '/apply-issuer' : '/tokens'
+  // Phase 9.A · Expansion (F2). Issuers route based on `issuerStatus`:
+  // `unregistered` (fresh register OR returning issuer who never
+  // finished KYB) → /apply-issuer; `approved` → /tokens. The /me
+  // fetch in `useAuth.login()` resolves the status before we get
+  // here. Investors always land on /cash. A query-param `?redirect`
+  // wins over the role default — but the router's beforeEach guard
+  // will still bounce an unregistered issuer back to /apply-issuer
+  // if the redirect target isn't on the allowlist, so this is safe.
+  const status = authStore.issuerStatus
+  const issuerTarget = status === 'approved' ? '/tokens' : '/apply-issuer'
   const target = safeRedirect || (auth.role.value === 'issuer' ? issuerTarget : '/cash')
   router.replace(target)
 }

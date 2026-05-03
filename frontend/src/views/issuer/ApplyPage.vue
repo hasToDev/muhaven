@@ -93,15 +93,25 @@ onMounted(async () => {
     showResumeDialog.value = true
   }
 
-  // Bounce-out: an authenticated approved issuer who hits this route
-  // without an in-flight wizard goes back to /tokens. We can't tell
-  // status from the JWT today (issuer_status not embedded), so this
-  // is a best-effort guard via the resume dialog: if no draft exists
-  // and the user is already issuer-roled, we still show step 1 so
-  // they can fill the form (apply will return 409 ALREADY_APPROVED if
-  // they really are approved, which we surface as a redirect).
   if (!authStore.isAuthenticated) {
     router.replace({ path: '/login', query: { redirect: '/apply-issuer' } })
+    return
+  }
+
+  // Phase 9.A · Expansion (F2). Bounce-out: an already-approved issuer
+  // who hits this route without an in-flight wizard goes back to
+  // /tokens. `issuerStatus` is hydrated by `useAuth.login()` and
+  // `main.ts`'s `fetchUserMeta()` so it's reliable here. The
+  // skip-welcome shortcut above stays open (approved issuer using
+  // /tokens' "Issue another" CTA jumps to step 2).
+  if (
+    authStore.issuerStatus === 'approved'
+    && route.query['skip-welcome'] === undefined
+    && wizard.step < 2
+    && wizard.finalizeStatus === null
+  ) {
+    router.replace('/tokens')
+    return
   }
 
   // Re-attach to an in-flight deploy if the page reloaded mid-flight.
@@ -162,6 +172,10 @@ async function handleApply() {
       role: 'issuer',
     })
     appStore.setRole('issuer')
+    // Phase 9.A · Expansion (F2). Server flipped status to 'approved'
+    // — mirror into the auth store so the router guard + nav
+    // affordance update without waiting for a /me roundtrip.
+    authStore.setIssuerStatus(result.user.issuer_status, result.user.issuer_display_name)
     wizard.setStep(2)
   } catch (err) {
     formError.value = parseError(err)
@@ -178,7 +192,10 @@ function parseError(err: unknown): string {
     const body = err.body as { details?: { code?: string }; title?: string } | null
     const code = body?.details?.code
     if (code === 'ALREADY_APPROVED') {
-      // Already approved → skip the wizard.
+      // Already approved → skip the wizard. Mirror the server-side
+      // truth into the auth store so the router guard doesn't bounce
+      // us back to /apply-issuer on the redirect.
+      authStore.setIssuerStatus('approved')
       router.replace('/tokens')
       return 'Already approved — redirecting…'
     }

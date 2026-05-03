@@ -140,14 +140,32 @@ const INVESTOR_ROUTES = new Set([
   '/activity',
 ])
 
+// Phase 9.A · Expansion (F2) — onboarding gate. An issuer whose
+// `issuerStatus` is not `approved` (i.e. `unregistered` or `pending`)
+// only has access to a small allowlist of universal routes; every
+// other authenticated path forwards to `/apply-issuer` so they can
+// finish KYB. `/cash` stays open because it's the dual-role landing
+// surface and forcing it off-limits would trap them with no
+// orientation point.
+const UNAPPROVED_ISSUER_ALLOWLIST = new Set(['/apply-issuer', '/agent', '/cash'])
+
 // Auth guard — redirect unauthenticated users to /login
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
   if (PUBLIC_ROUTES.has(to.path)) return true
 
   const authStore = useAuthStore()
   if (!authStore.isAuthenticated) {
     return { path: '/login', query: { redirect: to.fullPath } }
   }
+
+  // Phase 9.A · Expansion (F2). Wait for the in-flight `/users/me`
+  // fetch (kicked off by main.ts on hydrate, by useAuth.login on
+  // sign-in) to resolve before deciding the issuer-onboarding
+  // redirect. Idempotent: when no fetch is in flight this resolves
+  // immediately. Without this await, a fresh page-load on `/tokens`
+  // for an unregistered issuer would briefly render /tokens before
+  // the redirect lands.
+  await authStore.fetchUserMeta()
 
   // Role-aware redirect: issuers lose access to investor surfaces and
   // vice versa. Backend ROLE_MISMATCH is the source of truth on login;
@@ -159,6 +177,23 @@ router.beforeEach((to) => {
   }
   if (role === 'issuer' && INVESTOR_ROUTES.has(to.path)) {
     return { path: '/tokens' }
+  }
+
+  // Phase 9.A · Expansion (F2). Issuer onboarding gate: an issuer
+  // whose KYB hasn't completed must finish the wizard before any
+  // issuer dashboard page renders. Match unregistered/pending only —
+  // 'suspended' has no UX path in this build but should NOT be
+  // funneled through /apply-issuer (the apply endpoint would 403
+  // ISSUER_SUSPENDED, trapping them without recourse).
+  const isUnapproved =
+    authStore.issuerStatus === 'unregistered'
+    || authStore.issuerStatus === 'pending'
+  if (
+    role === 'issuer'
+    && isUnapproved
+    && !UNAPPROVED_ISSUER_ALLOWLIST.has(to.path)
+  ) {
+    return { path: '/apply-issuer' }
   }
 
   return true

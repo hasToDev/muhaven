@@ -31,6 +31,13 @@ export interface StoredTokens {
   expires_at: number // unix ms
   wallet_address: string
   role: UserRole
+  // Phase 9.A · Expansion (F2). Cached so a page-reload doesn't bounce
+  // an approved issuer to /apply-issuer while the /me fetch is in
+  // flight (or if it fails on a transient network blip). Refreshed
+  // every time `/me` resolves and on apply-issuer success. Optional
+  // for backward-compat with localStorage payloads written before
+  // this field existed.
+  issuer_status?: 'unregistered' | 'pending' | 'approved' | 'suspended'
 }
 
 export function getStoredTokens(): StoredTokens | null {
@@ -100,6 +107,11 @@ async function refreshAccessToken(): Promise<StoredTokens | null> {
       expires_at: Date.now() + data.expires_in * 1000,
       wallet_address: tokens.wallet_address,
       role: tokens.role,
+      // Phase 9.A · Expansion (F2). Preserve cached issuer status
+      // across token refresh so the router guard doesn't briefly
+      // regress to the default 'unregistered' for an approved
+      // issuer mid-session.
+      issuer_status: tokens.issuer_status,
     }
     setStoredTokens(stored)
     return stored
@@ -317,6 +329,30 @@ export const authApi = {
       method: 'DELETE',
       auth: true,
     })
+  },
+}
+
+// ── Current user (auth) ─────────────────────────────────────────────
+
+export interface MeResponseDto {
+  id: string
+  wallet_address: string
+  wallet_provider: string
+  role: UserRole
+  email?: string
+  created_at: string
+  // Phase 9.A · Expansion (F2) — drives the issuer onboarding route
+  // guard + the conditional sidebar nav item. JWT does not carry this;
+  // /me is the source of truth and is fetched on login + on hydrate.
+  issuer_status: 'unregistered' | 'pending' | 'approved' | 'suspended'
+  issuer_display_name?: string
+  issuer_jurisdiction?: string
+  issuer_approved_at?: string
+}
+
+export const usersApi = {
+  me(): Promise<MeResponseDto> {
+    return request('/users/me', { auth: true })
   },
 }
 

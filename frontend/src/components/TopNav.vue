@@ -15,7 +15,7 @@ import { toast } from 'vue-sonner'
 import {
   PieChart, ShoppingCart, TrendingUp, Activity, Store, Sparkles, Send, Undo2,
   Coins, Share2, Users, ClipboardCheck, Wallet, LogOut, LogIn, Loader2,
-  Copy, Check, Banknote,
+  Copy, Check, Banknote, FileSignature,
 } from 'lucide-vue-next'
 
 const route = useRoute()
@@ -26,6 +26,22 @@ const walletStore = useWalletStore()
 const auth = useAuth()
 const { isScrolled } = useGlassNav(20)
 const homeTarget = useHomeTarget()
+
+// Phase 9.A · Expansion (F2). Mirror Sidebar.vue's onboarding nav
+// item — same logic, no amber ring (horizontal nav crops borders
+// awkwardly on mobile per UI Designer). Status dot + bold label
+// weight carry the attention signal instead.
+const showOnboardingNav = computed(
+  () =>
+    store.role === 'issuer'
+    && (authStore.issuerStatus === 'unregistered' || authStore.issuerStatus === 'pending'),
+)
+const onboardingNavLabel = computed(() =>
+  authStore.issuerStatus === 'pending' ? 'Application' : 'Apply',
+)
+const onboardingNavIsActionable = computed(
+  () => authStore.issuerStatus === 'unregistered',
+)
 
 // Phase 9.A: Cash promoted to first nav item — matches Sidebar.vue.
 const investorNav = [
@@ -126,6 +142,37 @@ onBeforeUnmount(() => {
 
       <!-- Nav items (hidden on mobile — MMobileTabBar handles it) -->
       <div class="hidden md:flex items-center gap-1">
+        <!-- Phase 9.A · Expansion (F2) — onboarding wizard. See
+             Sidebar.vue for the rationale; identical logic. -->
+        <router-link
+          v-if="showOnboardingNav"
+          to="/apply-issuer"
+          data-testid="topnav-nav-apply"
+          :class="cn(
+            'relative flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-sans transition-all duration-200',
+            route.path === '/apply-issuer'
+              ? 'bg-compute/12 text-compute border border-compute/25 font-semibold'
+              : onboardingNavIsActionable
+                ? 'text-midnight dark:text-white font-semibold hover:bg-mist dark:hover:bg-midnight-mid'
+                : 'text-cool font-medium hover:bg-mist dark:hover:bg-midnight-mid hover:text-midnight dark:hover:text-white',
+          )"
+        >
+          <span class="relative inline-flex">
+            <FileSignature :size="16" :stroke-width="1.8" />
+            <span
+              v-if="route.path !== '/apply-issuer'"
+              aria-hidden="true"
+              :class="cn(
+                'absolute -top-0.5 -right-0.5 inline-flex h-1.5 w-1.5 rounded-full',
+                onboardingNavIsActionable
+                  ? 'bg-gold animate-pulse'
+                  : 'bg-gold/70',
+              )"
+            />
+          </span>
+          <span>{{ onboardingNavLabel }}</span>
+        </router-link>
+
         <router-link
           v-for="item in navItems"
           :key="item.path"

@@ -165,6 +165,15 @@ export function useAuth() {
       authStore.setTokens(stored)
       appStore.setRole(effectiveRole)
 
+      // Phase 9.A · Expansion (F2). Fetch /me to populate
+      // `issuerStatus` so the LoginPage redirect + router guards can
+      // route an unregistered issuer to /apply-issuer. Awaited so the
+      // caller's redirect logic sees the resolved status. For a fresh
+      // register (first-ever login of a new passkey), the user row was
+      // just created server-side with `issuerStatus='unregistered'`;
+      // /me returns that immediately.
+      await authStore.fetchUserMeta()
+
       // FHE client is initialized lazily on first encrypt/decrypt call
       // (via useFhe.ensureReady()) to avoid the self-permit passkey prompt
       // during the register/login flow.
@@ -207,6 +216,9 @@ export function useAuth() {
         authStore.walletAddress ?? '',
         authStore.role,
       )
+      // Phase 9.A · Expansion (F2). Carry the cached issuer status
+      // across the refresh so router guards stay coherent.
+      stored.issuer_status = authStore.issuerStatus
       authStore.setTokens(stored)
       return true
     } catch {
@@ -219,6 +231,12 @@ export function useAuth() {
    * Initialize auth on app load.
    * Hydrates from localStorage. If tokens are valid, restores session.
    * If expired, attempts refresh. If all fails, user stays unauthenticated.
+   *
+   * Side effect: kicks off `/users/me` to populate `issuerStatus` (Phase
+   * 9.A · F2). The fetch promise lives on the auth store so the router
+   * `beforeEach` can await it and avoid flashing a guarded page before
+   * the redirect resolves. Awaited here so the very first navigation
+   * already sees the resolved status.
    */
   async function initialize(): Promise<void> {
     if (authStore.hydrate()) {
@@ -234,6 +252,7 @@ export function useAuth() {
       // via ensureConnected() when the user performs an on-chain action.
       // FHE client also initializes lazily on first encrypt/decrypt.
       walletStore.restoreAddress()
+      await authStore.fetchUserMeta()
       return
     }
 
@@ -242,6 +261,7 @@ export function useAuth() {
     if (refreshed) {
       if (authStore.role) appStore.setRole(authStore.role)
       walletStore.restoreAddress()
+      await authStore.fetchUserMeta()
     }
   }
 
