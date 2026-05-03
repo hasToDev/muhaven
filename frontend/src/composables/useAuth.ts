@@ -198,6 +198,16 @@ export function useAuth() {
         const { useFhe } = await import('@/composables/useFhe')
         useFhe().destroy()
       } catch { /* FHE may not have been initialized */ }
+      // Phase 9.A · Expansion (F2). Wipe the issuer-onboarding wizard
+      // state — sessionStorage persists across same-tab logout, and
+      // Pinia's in-memory store survives re-login as a different user.
+      // Without this teardown a fresh sign-in inherits the prior
+      // user's KYB draft + success card. Dynamic import keeps the
+      // wizard module out of the auth-only bundle path.
+      try {
+        const { useIssuerOnboardingStore } = await import('@/stores/issuer-onboarding')
+        useIssuerOnboardingStore().tearDown()
+      } catch { /* wizard store may not have been touched this session */ }
       authStore.clearAuth()
       await walletStore.disconnect()
       router.push('/login')
