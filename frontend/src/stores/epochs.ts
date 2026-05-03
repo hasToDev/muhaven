@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { Address } from 'viem'
 import { YieldSnapshotClient, type EpochView } from '@muhaven/sdk'
-import { v35Addresses } from '@/contracts/addresses'
+import { v35Addresses, isZeroAddress } from '@/contracts/addresses'
 import { buildReadContext } from '@/services/v35/context'
 import { useMarketplaceStore } from '@/stores/marketplace'
 
@@ -81,17 +81,6 @@ export const useEpochsStore = defineStore('epochs', () => {
       const marketplace = useMarketplaceStore()
       if (!marketplace.loaded) await marketplace.load()
 
-      const snapshotEntries = Object.entries(v35Addresses.yieldSnapshots)
-      if (snapshotEntries.length === 0) {
-        items.value = []
-        loaded.value = true
-        lastLoadedFor.value = user
-        return
-      }
-
-      const readCtx = buildReadContext()
-      const collected: EpochEntry[] = []
-
       // Group tokens by their YieldSnapshot proxy. Multiple tokens may share
       // the same proxy (staging maps both TBILL1 + GOLD1 to one proxy), and
       // the contract assigns epoch ids globally per-proxy. Walking per-token
@@ -100,12 +89,37 @@ export const useEpochsStore = defineStore('epochs', () => {
       // both. Instead: walk each proxy's full id range exactly once, fetch
       // `getEpoch(i)` to discover the actual `epoch.token`, then resolve
       // metadata from that.
+      //
+      // Augment the static per-token map with marketplace tokens missing
+      // entries — the F2 wizard deploys new RWA tokens at runtime, but the
+      // VITE_YIELD_SNAPSHOTS_JSON env-var map is baked at build time. The
+      // singleton `v35Addresses.yieldSnapshot` is the structural fallback;
+      // every wizard-deployed token routes to it.
       const byProxy = new Map<Address, Address[]>()
-      for (const [tokenAddrLower, snapshotAddr] of snapshotEntries) {
+      for (const [tokenAddrLower, snapshotAddr] of Object.entries(v35Addresses.yieldSnapshots)) {
         const list = byProxy.get(snapshotAddr) ?? []
         list.push(tokenAddrLower as Address)
         byProxy.set(snapshotAddr, list)
       }
+      const singleton = v35Addresses.yieldSnapshot
+      if (!isZeroAddress(singleton)) {
+        const knownLower = new Set(Object.keys(v35Addresses.yieldSnapshots))
+        const list = byProxy.get(singleton) ?? []
+        for (const t of marketplace.tokens) {
+          const lower = t.address.toLowerCase()
+          if (!knownLower.has(lower)) list.push(lower as Address)
+        }
+        if (list.length > 0) byProxy.set(singleton, list)
+      }
+      if (byProxy.size === 0) {
+        items.value = []
+        loaded.value = true
+        lastLoadedFor.value = user
+        return
+      }
+
+      const readCtx = buildReadContext()
+      const collected: EpochEntry[] = []
 
       for (const [snapshotAddr, tokensOnProxy] of byProxy) {
         const snapshot = new YieldSnapshotClient(readCtx, snapshotAddr)

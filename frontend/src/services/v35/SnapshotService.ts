@@ -22,7 +22,7 @@
 
 import type { Address, Hash } from 'viem'
 import { YieldSnapshotClient, StableClient, tokenRegistryAbi, type EpochView } from '@muhaven/sdk'
-import { v35Addresses, isZeroAddress } from '@/contracts/addresses'
+import { v35Addresses, isZeroAddress, getYieldSnapshot } from '@/contracts/addresses'
 import { buildReadContext, buildWriteContext, getPublicClient } from '@/services/v35/context'
 import * as MuHavenStableService from '@/services/contracts/MuHavenStableService'
 import * as LegacyPusdcService from '@/services/contracts/LegacyPusdcService'
@@ -99,11 +99,13 @@ export interface InFlightSnapshot {
  * RWA token to a snapshot proxy; staging shares one proxy across multiple
  * tokens, but the lookup is keyed by token address so consumers don't
  * have to know which proxy hosts which token.
+ *
+ * Falls back to the singleton `v35Addresses.yieldSnapshot` when the
+ * per-token map has no entry — necessary because wizard-deployed tokens
+ * (F2 self-serve onboarding) don't auto-update the static JSON map.
  */
 export function snapshotProxyFor(token: Address): Address | null {
-  const proxy = v35Addresses.yieldSnapshots[token.toLowerCase()] ?? null
-  if (!proxy || isZeroAddress(proxy)) return null
-  return proxy as Address
+  return getYieldSnapshot(token) as Address | null
 }
 
 // ── Preflight ──────────────────────────────────────────────────────────

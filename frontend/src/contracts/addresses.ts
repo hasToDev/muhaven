@@ -49,6 +49,17 @@ export interface V35Addresses {
   queues: Record<string, `0x${string}`>
   /** Per-token yield snapshot — same JSON-map shape. */
   yieldSnapshots: Record<string, `0x${string}`>
+  /**
+   * Singleton YieldSnapshot proxy. Wave 3.5 deploys ONE snapshot proxy
+   * across every RWA token (per the staging env example: "every entry in
+   * VITE_YIELD_SNAPSHOTS_JSON points to the same proxy"). Wizard-deployed
+   * tokens (F2 self-serve onboarding) don't add entries to the per-token
+   * map at runtime, so consumers must fall back to this singleton when
+   * the per-token lookup misses. Set via VITE_YIELD_SNAPSHOT_ADDRESS.
+   * Zero-address signals "no fallback configured" — same as a missing
+   * per-token entry.
+   */
+  yieldSnapshot: `0x${string}`
 }
 
 const arbSepolia: ContractAddresses = {
@@ -121,6 +132,7 @@ export const v35Addresses: V35Addresses = {
   treasuries: parsePerTokenMap(import.meta.env.VITE_TREASURIES_JSON),
   queues: parsePerTokenMap(import.meta.env.VITE_QUEUES_JSON),
   yieldSnapshots: parsePerTokenMap(import.meta.env.VITE_YIELD_SNAPSHOTS_JSON),
+  yieldSnapshot: pick(import.meta.env.VITE_YIELD_SNAPSHOT_ADDRESS, ZERO),
 }
 
 export function isZeroAddress(addr: `0x${string}`): boolean {
@@ -136,5 +148,12 @@ export function getQueue(token: `0x${string}`): `0x${string}` | null {
 }
 
 export function getYieldSnapshot(token: `0x${string}`): `0x${string}` | null {
-  return v35Addresses.yieldSnapshots[token.toLowerCase()] ?? null
+  const perToken = v35Addresses.yieldSnapshots[token.toLowerCase()]
+  if (perToken && !isZeroAddress(perToken)) return perToken
+  // Singleton fallback — covers wizard-deployed tokens absent from the
+  // static per-token JSON map. The Wave 3.5 deployment shares one
+  // YieldSnapshot proxy across every RWA token, so the fallback is
+  // structurally correct.
+  if (!isZeroAddress(v35Addresses.yieldSnapshot)) return v35Addresses.yieldSnapshot
+  return null
 }
