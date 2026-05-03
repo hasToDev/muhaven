@@ -8,8 +8,8 @@ import MButton from '@/components/ui/MButton.vue'
 import MPageLoader from '@/components/ui/MPageLoader.vue'
 import PortfolioDonut from '@/components/charts/PortfolioDonut.vue'
 import { getPublicClient } from '@/services/v35/context'
-import { muHavenTokenAbi } from '@/contracts/abis'
-import { v35Addresses, isZeroAddress } from '@/contracts/addresses'
+import { erc20Abi, muHavenTokenAbi } from '@/contracts/abis'
+import { addresses, v35Addresses, isZeroAddress } from '@/contracts/addresses'
 import { muHavenStableAbi } from '@muhaven/sdk'
 import {
   Shield, Lock, ShieldCheck, KeyRound, Key, Eye, ArrowUp,
@@ -150,6 +150,19 @@ function debouncedMhusdcStripInbound() {
   }, PORTFOLIO_BLOOM_DEBOUNCE_MS)
 }
 
+// USDC strip cell — symmetric to mhUSDC but rebinds via portfolio.load()
+// (not decrypt). Pre-fix the USDC tile only refreshed on full page mount;
+// faucets, cross-account transfers, and post-trade USDC top-ups never
+// surfaced until manual reload.
+let usdcStripRefreshTimer: ReturnType<typeof setTimeout> | null = null
+function debouncedUsdcStripInbound() {
+  if (usdcStripRefreshTimer) clearTimeout(usdcStripRefreshTimer)
+  usdcStripRefreshTimer = setTimeout(() => {
+    if (!address.value) return
+    void portfolio.load(address.value as `0x${string}`)
+  }, PORTFOLIO_BLOOM_DEBOUNCE_MS)
+}
+
 function teardownInboundWatchers() {
   for (const cleanup of inboundWatcherCleanups) {
     try { cleanup() } catch { /* best-effort */ }
@@ -161,6 +174,7 @@ function teardownInboundWatchers() {
   inboundBloomClearTimers.clear()
   if (mhusdcStripRefreshTimer) { clearTimeout(mhusdcStripRefreshTimer); mhusdcStripRefreshTimer = null }
   if (mhusdcStripBloomClearTimer) { clearTimeout(mhusdcStripBloomClearTimer); mhusdcStripBloomClearTimer = null }
+  if (usdcStripRefreshTimer) { clearTimeout(usdcStripRefreshTimer); usdcStripRefreshTimer = null }
   for (const k of Object.keys(holdingBloomActive)) delete holdingBloomActive[k]
   mhusdcStripBloomActive.value = false
 }
@@ -204,6 +218,21 @@ async function setupInboundWatchers(kernelAddress: `0x${string}`) {
     })
     inboundWatcherCleanups.push(unwatchMhusdc)
   }
+
+  // USDC strip cell — same shape as /cash's USDC watcher. Without
+  // this, the USDC tile on /portfolio only refreshed on full page
+  // mount — faucet drops, cross-account transfers, and post-trade USDC
+  // top-ups silently failed to update. portfolio.load() rereads the
+  // USDC balance alongside the holdings, so refresh is centralized.
+  const unwatchUsdc = publicClient.watchContractEvent({
+    address: addresses.usdc,
+    abi: erc20Abi,
+    eventName: 'Transfer',
+    args: { to: kernelAddress },
+    pollingInterval: 12_000,
+    onLogs: () => debouncedUsdcStripInbound(),
+  })
+  inboundWatcherCleanups.push(unwatchUsdc)
 }
 
 watch(
