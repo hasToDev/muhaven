@@ -438,7 +438,36 @@ async function handleDistribute() {
 
 async function resumeDistribution() {
   if (!walletAddress.value) return
-  await distributionStore.runDistribution(walletAddress.value as Address)
+  preflightError.value = null
+
+  try {
+    // Re-run preflight + re-grant operator approvals before retrying the
+    // on-chain lifecycle. Most resumes happen seconds after the original
+    // failure (RPC blip, bundler hiccup) so grants are still good — but
+    // a session-expired wrapper→snapshot grant would re-trip the same
+    // PaymentTransferFailed at runFund. Cheap to re-check; expensive to
+    // re-fail.
+    const tokenAddr = distributionStore.tokenAddress
+    const snapAddr = distributionStore.snapshotAddress
+    if (tokenAddr && snapAddr) {
+      const fresh = await SnapshotService.preflight(
+        walletAddress.value as Address,
+        tokenAddr,
+      )
+      preflightStatus.value = fresh
+      if (!fresh.wrapperToSnapshotOperatorOk) {
+        await SnapshotService.grantWrapperToSnapshotOperator(snapAddr)
+      }
+    }
+
+    await distributionStore.runDistribution(walletAddress.value as Address)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'Resume failed'
+    preflightError.value = msg
+    toast.error('Resume failed', { description: msg })
+    return
+  }
+
   if (distributionStore.phase === 'done' && distributionStore.epochId !== null) {
     const epoch = await SnapshotService.detectInFlight(distributionStore.tokenAddress!)
     receiptData.value = {
@@ -454,7 +483,18 @@ async function resumeDistribution() {
       txHash: distributionStore.lastTxHash,
     }
     showReceipt.value = true
+    toast.success('Distribution complete', {
+      description: `Epoch #${distributionStore.epochId} funded — investors can pull-claim from /yields`,
+    })
+    // Mirror handleDistribute's success-side state refresh — collapse the
+    // revealed mhUSDC, re-run preflight, reload Recent Epochs.
+    mhUsdcBalance.value = null
+    await runPreflight()
     await loadRecentEpochs()
+  } else if (distributionStore.phase === 'error') {
+    toast.error('Distribution failed', {
+      description: distributionStore.errorMessage ?? 'Unknown error',
+    })
   }
 }
 
