@@ -860,6 +860,62 @@ describe("YieldSnapshot", () => {
       ).to.equal(true);
     });
 
+    it("encTotalYield + encTotalSupply gain kernel + eph ACL grants post-claim (Round 3 decoupled-decrypt)", async () => {
+      // Phase 9.A · Round 3 (2026-05-04). encRatio's chain depth
+      // (`max(encYCanonical, encTotalSupply) + 1`) crosses cofhe TN's
+      // staging threshold — even the Round 2 decoupled-decrypt path
+      // 204s. Round 3 grants ACL on `encTotalYield` (depth ~3,
+      // wrapper-free) AND `encTotalSupply` (same shape as
+      // snapshotBalance, known-good) so frontends can compute
+      // `floor(balance × totalYield / totalSupply)` from depth-shallow
+      // inputs only.
+      const { snapshot, token, issuer, investor, alice, eph, issuerClient } =
+        await loadFixture(deploySnapshotFixture);
+      await fullEpochSetup(
+        snapshot,
+        token,
+        issuer,
+        [investor.address, alice.address],
+        1000n * ONE_PUSDC,
+        issuerClient,
+      );
+
+      await snapshot.connect(investor).claimYield(1n, eph.address);
+
+      const epoch = await snapshot.getEpoch(1n);
+      const acl = await hre.cofhe.mocks.getMockACL();
+
+      // encTotalYield — kernel + eph
+      expect(
+        await acl.isAllowed(BigInt(epoch.encTotalYield), investor.address),
+        "encTotalYield kernel grant missing",
+      ).to.equal(true);
+      expect(
+        await acl.isAllowed(BigInt(epoch.encTotalYield), eph.address),
+        "encTotalYield eph grant missing",
+      ).to.equal(true);
+
+      // encTotalSupply — kernel + eph
+      expect(
+        await acl.isAllowed(BigInt(epoch.encTotalSupply), investor.address),
+        "encTotalSupply kernel grant missing",
+      ).to.equal(true);
+      expect(
+        await acl.isAllowed(BigInt(epoch.encTotalSupply), eph.address),
+        "encTotalSupply eph grant missing",
+      ).to.equal(true);
+
+      // Negative path — alice (a snapshotted holder who hasn't claimed
+      // yet) must NOT see investor's eph grant on the shared aggregates.
+      // The grant is per-investor session, not global. The shared
+      // handle's kernel grant is on the CLAIMING investor only —
+      // alice gets her own grants when she claims.
+      expect(
+        await acl.isAllowed(BigInt(epoch.encTotalYield), alice.address),
+        "alice should not have encTotalYield grant before her own claim",
+      ).to.equal(false);
+    });
+
     it("YieldClaimed carries the encrypted amount handle, kernel + eph have ACL post-claim", async () => {
       const { snapshot, token, issuer, investor, alice, eph, issuerClient } =
         await loadFixture(deploySnapshotFixture);

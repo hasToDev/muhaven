@@ -338,13 +338,34 @@ async function decryptAmount(item: ActivityItemDto) {
         item.token_address as `0x${string}`,
       )
     } else if (isYieldClaimType(item.type)) {
-      // Yield-claim decoupled-decrypt path. The audit handle in
-      // YieldClaimed.amount (encShare64) is wrapper-touching — empirical
-      // testing on staging showed cofhe TN's wrapper-scoped indexer
-      // refuses it even at the documented "5-op" threshold. The
-      // working path: decrypt encRatio + snapshotBalance separately
-      // (both on non-wrapper contracts — YieldSnapshot + MuHavenToken)
-      // and multiply locally. Inputs:
+      // Yield-claim decoupled-decrypt path · Round 3 (2026-05-04).
+      // The audit handle in YieldClaimed.amount (encShare64) is
+      // wrapper-touching — empirical testing on staging showed cofhe
+      // TN's wrapper-scoped indexer refuses it even at the documented
+      // "5-op" threshold. Round 2 fell back to encRatio +
+      // snapshotBalance, but encRatio (depth ~max(encYCanonical,
+      // encTotalSupply) + 1) ALSO 204s on staging because its
+      // denominator inherits the wrapper-tainted ancestry through
+      // each investor's `_balances[i]`.
+      //
+      // Round 3: decrypt three depth-shallow OR known-good handles —
+      //   - encTotalYield (depth ~3, fresh-from-issuer, never touches
+      //     the wrapper, never aggregated)
+      //   - snapshotBalance (frozen at snapshot time, same shape as
+      //     `_balances[investor]` which decrypts fine per memory)
+      //   - encTotalSupply (sum-of-snapshot-balances, same shape as
+      //     snapshotBalance for 1-investor demos; depth grows with
+      //     holderCount but stays in the working range for ≤4)
+      // Compute `claimAmount = floor(snapshotBalance × totalYield /
+      // totalSupply)` locally. Sidesteps `encRatio` entirely.
+      //
+      // Contract-side ACL grants (post-Round-3 upgrade): claimYield
+      // stamps kernel + ephemeralEOA on encTotalYield + encTotalSupply
+      // (additive — Round 2's encRatio grants stay in place for any
+      // single-investor case where encRatio happens to land in the
+      // working range).
+      //
+      // Inputs:
       //   - epochId (from item.reference_id, populated by the indexer
       //     from YieldClaimed.epochId).
       //   - snapshotAddr (resolved via SnapshotService — singleton
@@ -374,18 +395,24 @@ async function decryptAmount(item: ActivityItemDto) {
       const snapshotClient = new YieldSnapshotClient(buildReadContext(), snapshotAddr)
       const epochId = BigInt(item.reference_id)
 
-      // Two parallel reads, two parallel decrypts.
+      // Two parallel reads, three parallel decrypts.
       const [epoch, snapshotBalanceHandle] = await Promise.all([
         snapshotClient.getEpoch(epochId),
         snapshotClient.getSnapshotBalance(epochId, walletAddress.value as `0x${string}`),
       ])
-      const [ratio, snapshotBalance] = await Promise.all([
-        // encRatio: kernel + eph ACL granted by claimYield (post-2026-05-03
-        // contract upgrade). Decrypt via the standard uint128 path; the
-        // refresh fallback hits the legacy MuHavenToken refreshDecryptGrant
-        // path which is a no-op for snapshot-stored handles, but the
-        // initial decrypt should succeed if claim landed post-upgrade.
-        fhe.decryptUint128ForView(epoch.encRatio),
+      // encTotalSupply for a 1-investor epoch is literally the same
+      // handle as snapshotBalance (snapshotBatch's `runningSupply =
+      // bal` branch). De-dupe to avoid two parallel decrypt requests
+      // for the same ctHash — TN treats each as independent and the
+      // second usually flat-out 404s during the first's processing
+      // window.
+      const supplyEqualsBalance =
+        epoch.encTotalSupply.toLowerCase() === snapshotBalanceHandle.toLowerCase()
+      const [totalYield, snapshotBalance, totalSupply] = await Promise.all([
+        // encTotalYield: kernel + eph ACL granted by claimYield (post-
+        // 2026-05-04 Round 3 upgrade). Depth ~3 (asEuint128 →
+        // asEuint64 → asEuint128), wrapper-free. Reliable.
+        fhe.decryptUint128ForView(epoch.encTotalYield),
         // Snapshot balance: same handle as MuHavenToken._balances at
         // snapshot time. Investor has ACL via the original mint —
         // decrypts via the per-RWA token path.
@@ -393,12 +420,34 @@ async function decryptAmount(item: ActivityItemDto) {
           snapshotBalanceHandle,
           item.token_address as `0x${string}`,
         ),
+        // encTotalSupply: kernel + eph ACL granted by claimYield
+        // (Round 3). For 1-investor case, alias to snapshotBalance to
+        // skip the redundant TN round-trip.
+        supplyEqualsBalance
+          ? Promise.resolve<bigint | null>(null)
+          : fhe.decryptUint128ForView(epoch.encTotalSupply),
       ])
+      const supply = supplyEqualsBalance ? snapshotBalance : (totalSupply as bigint)
 
-      // Compute claim amount in JS. ratio is in mhUSDC base units per
-      // share unit (totalYield/totalSupply, integer floor); balance is
-      // share count. Product is mhUSDC base units (uint64-bounded by
-      // construction — encShare64 cast in the contract).
+      // Compute claim amount in JS, mirroring the contract's
+      // floor-division order so the displayed value equals what
+      // `trustedPayout` actually moved on-chain. Contract:
+      //   encRatio  = floor(encTotalYield / encTotalSupply)
+      //   encShare  = encBalance × encRatio       (no further /)
+      //   encShare64 = asEuint64(encShare)        (truncates u64)
+      // → JS:
+      //   ratio = totalYield / supply             (BigInt floor)
+      //   share = balance × ratio                 (matches encShare128)
+      // Reordering to `(balance × totalYield) / supply` would over-
+      // count by ≤ (supply-1) per share — a discrepancy a careful
+      // user cross-checking against on-chain mhUSDC delta would spot.
+      // Truncation to u64 is omitted: legitimate yields stay inside
+      // u64 by construction (totalYield itself is u64-bounded by
+      // PUSDC's width) and a pathological overflow is loud-better.
+      if (supply === 0n) {
+        throw new Error('Snapshot total supply is zero — cannot compute claim amount')
+      }
+      const ratio = totalYield / supply
       value = snapshotBalance * ratio
     } else {
       throw new Error(`No decrypt path for type=${item.type}`)

@@ -64,6 +64,19 @@ import {ITokenRegistry} from "./interfaces/ITokenRegistry.sol";
 ///      Idempotent: re-calls revert with `AlreadyClaimed` (interface
 ///      natspec — "double claim is an operator/tooling bug, not a malicious
 ///      side-channel", so *not* silent-fail).
+///
+///      Decoupled-decrypt audit path (Round 3, 2026-05-04): in addition
+///      to the encShare64 (Round 1) and encRatio (Round 2) ACL grants
+///      preserved for backward compat, `claimYield` also stamps
+///      kernel + ephemeralEOA grants on `encTotalYield` (depth ~3,
+///      wrapper-free) and `encTotalSupply` (same shape as the
+///      investor's snapshot-time balance handle, known-good per
+///      `project_cofhe_tn_chain_length_cap`). Frontends compute claim
+///      amount as `floor(snapshotBalance × encTotalYield /
+///      encTotalSupply)` locally — sidesteps `encRatio`'s deeper FHE
+///      op chain (max(encYCanonical, encTotalSupply) + 1) which the
+///      cofhe TN testnet indexer refuses on staging.
+///
 ///   6. After `claimExpiry`, issuer `sweepExpired(epochId)` — returns any
 ///      unclaimed PUSDC back to the issuer. Single-shot: a subsequent
 ///      sweep on the same epoch reverts with `AlreadySwept`.
@@ -511,27 +524,66 @@ contract YieldSnapshot is Initializable, ReentrancyGuardTransient, IYieldSnapsho
         FHE.allow(encShare64, msg.sender);
         FHE.allow(encShare64, ephemeralEOA);
 
-        // ── Decoupled-decrypt audit path (the one that actually works) ──
-        // Frontend computes `claimAmount = snapshotBalance × encRatio` in
-        // JS by decrypting each input separately. Both inputs live on
-        // non-wrapper contracts (MuHavenToken + YieldSnapshot) which
-        // don't hit the wrapper-scoped indexer issue: TBILL1 / MUSTB
-        // share-balance decrypts have always worked even at depths >5.
-        //   - snapshotBalance = `_snapshots[epochId][msg.sender]`, the
-        //     SAME handle as `MuHavenToken._balances[msg.sender]` at
-        //     snapshot time. Investor already has ACL via the original
-        //     mint/transfer — no extra grant needed here.
-        //   - encRatio = `e.encRatio`, kernel-only ACL pre-this-change.
-        //     Granting kernel + eph here lets the investor decrypt it
-        //     via the same permit flow used for share balances.
-        // Privacy trade-off: per-investor ratio is now decryptable. For
-        // single-investor epochs ratio == totalYield (so totalYield
-        // becomes inferrable). For multi-investor epochs ratio reveals
-        // only the per-share rate. Acceptable for the audit trail use
-        // case (claim verification); contract-mediated paths
-        // (sweepExpired, downstream computation) remain encrypted via
-        // YieldSnapshot's kernel-only ACL on the snapshot's mhUSDC
-        // float (`_encRemaining`).
+        // ── Decoupled-decrypt audit path · Round 3 (the one that works) ──
+        // Frontend computes `claimAmount = floor(snapshotBalance ×
+        // encTotalYield / encTotalSupply)` in JS by decrypting each
+        // input separately and combining locally.
+        //
+        // Why not encRatio: `encRatio = FHE.div(encYCanonical,
+        // encTotalSupply)` from `fundEpoch` has chain depth `max(3, k)
+        // + 1` where `k` is `encTotalSupply`'s depth — which itself
+        // grows with the snapshot batch's `FHE.add` accumulator AND
+        // inherits each investor's `_balances[i]` chain (each balance
+        // is wrapper-tainted via `Subscription.purchase`'s
+        // `actualShares = select(eq(actualPaid, encCost), bounded, 0)`
+        // chain, so its ancestry crosses `MuHavenStable.transferFrom`).
+        // Empirical Round 2 finding (2026-05-04): even at the
+        // documented "5 works" boundary the cofhe Threshold Network's
+        // testnet indexer queues encRatio at HTTP 204 indefinitely.
+        // Decrypting encRatio is therefore unreliable on staging.
+        //
+        // Round 3 inputs (depth-shallow OR known-good):
+        //   - encTotalYield = encYCanonical = asEuint128(asEuint64(
+        //     asEuint128(InEuint128 calldata))). Depth ~3, fully
+        //     fresh — never touches the wrapper, never aggregated
+        //     across investors. Reliably decrypts on TN.
+        //   - encTotalSupply = sum-of-snapshot-balances accumulator
+        //     from `snapshotBatch`. Depth ≈ max(bal_i depth) + (N-1)
+        //     where N = `holderCount`. Wrapper-tainted via each
+        //     balance's `_mintInternal` ancestry, BUT this is the
+        //     same shape as `_balances[investor]` (TBILL1 / MUSTB
+        //     share-balance decrypts work, per
+        //     `project_cofhe_tn_chain_length_cap`). For demo-scale
+        //     (1-2 investors) depth stays ≤ 6; multi-investor at
+        //     production scale may need separate compaction.
+        //   - snapshotBalance = `_snapshots[epochId][msg.sender]`,
+        //     the SAME handle as `MuHavenToken._balances[msg.sender]`
+        //     at snapshot time (frozen — post-claim mutations create
+        //     new live handles, this one stays at snapshot depth).
+        //     Investor already has ACL via the original mint /
+        //     transfer-in — no grant needed here.
+        //
+        // Round 2's `encRatio` grants are kept as a fallback so
+        // pre-Round-3 frontend builds keep working when the chain
+        // depth happens to land below the indexer's threshold (e.g.
+        // single-investor demo on a freshly-funded epoch where
+        // encTotalSupply equals a single shallow balance handle).
+        //
+        // Privacy trade-off: investor learns totalYield + totalSupply
+        // (for own epoch). totalYield is the issuer's published
+        // distribution amount and is already inferable from cleartext
+        // PUSDC custody on the snapshot proxy. totalSupply combined
+        // with own balance reveals the holder set's aggregate share
+        // count — but `holderCount` is already public-cleartext on
+        // the epoch view, and per-investor balances stay encrypted.
+        // Acceptable for the audit-trail use case; contract-mediated
+        // paths (sweepExpired, encRemaining decrement) remain
+        // operationally private via kernel-only ACL on the float.
+        FHE.allow(e.encTotalYield, msg.sender);
+        FHE.allow(e.encTotalYield, ephemeralEOA);
+        FHE.allow(e.encTotalSupply, msg.sender);
+        FHE.allow(e.encTotalSupply, ephemeralEOA);
+        // Round 2 encRatio grants — preserved for backward compat.
         FHE.allow(e.encRatio, msg.sender);
         FHE.allow(e.encRatio, ephemeralEOA);
 
