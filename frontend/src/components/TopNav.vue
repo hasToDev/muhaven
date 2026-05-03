@@ -140,25 +140,31 @@ onBeforeUnmount(() => {
         <span class="text-lg font-sans font-bold text-midnight dark:text-white hidden sm:inline tracking-tight">MuHaven</span>
       </router-link>
 
-      <!-- Nav items (hidden on mobile — MMobileTabBar handles it) -->
+      <!-- Nav items (hidden on mobile — MMobileTabBar handles it).
+           Active state mirrors Sidebar.vue's gold-pill spec — same
+           visual language across desktop and mobile chrome. The
+           Apply item's off-route attention signal is just the gold
+           icon + pulsed dot (no bold weight, no border) so it
+           doesn't compete with whichever route is actually
+           selected. -->
       <div class="hidden md:flex items-center gap-1">
-        <!-- Phase 9.A · Expansion (F2) — onboarding wizard. See
-             Sidebar.vue for the rationale; identical logic. -->
         <router-link
           v-if="showOnboardingNav"
           to="/apply-issuer"
           data-testid="topnav-nav-apply"
           :class="cn(
-            'relative flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-sans transition-all duration-200',
+            'relative flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-sans transition-colors duration-200',
             route.path === '/apply-issuer'
-              ? 'bg-compute/12 text-compute border border-compute/25 font-semibold'
-              : onboardingNavIsActionable
-                ? 'text-midnight dark:text-white font-semibold hover:bg-mist dark:hover:bg-midnight-mid'
-                : 'text-cool font-medium hover:bg-mist dark:hover:bg-midnight-mid hover:text-midnight dark:hover:text-white',
+              ? 'bg-gold/12 dark:bg-signal/8 ring-1 ring-gold/35 dark:ring-signal/30 text-compute dark:text-signal font-semibold'
+              : 'text-cool font-medium hover:bg-mist dark:hover:bg-midnight-mid hover:text-midnight dark:hover:text-white',
           )"
         >
           <span class="relative inline-flex">
-            <FileSignature :size="16" :stroke-width="1.8" />
+            <FileSignature
+              :size="16"
+              :stroke-width="1.8"
+              :class="route.path === '/apply-issuer' ? 'text-compute dark:text-signal' : 'text-gold dark:text-signal'"
+            />
             <span
               v-if="route.path !== '/apply-issuer'"
               aria-hidden="true"
@@ -178,13 +184,18 @@ onBeforeUnmount(() => {
           :key="item.path"
           :to="item.path"
           :class="cn(
-            'flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-sans font-medium transition-all duration-200',
+            'flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-sans transition-colors duration-200',
             route.path === item.path
-              ? 'bg-compute/12 text-compute border border-compute/25'
-              : 'text-cool hover:bg-mist dark:hover:bg-midnight-mid hover:text-midnight dark:hover:text-white',
+              ? 'bg-gold/12 dark:bg-signal/8 ring-1 ring-gold/35 dark:ring-signal/30 text-compute dark:text-signal font-semibold'
+              : 'text-cool font-medium hover:bg-mist dark:hover:bg-midnight-mid hover:text-midnight dark:hover:text-white',
           )"
         >
-          <component :is="item.icon" :size="16" :stroke-width="1.8" />
+          <component
+            :is="item.icon"
+            :size="16"
+            :stroke-width="1.8"
+            :class="route.path === item.path ? 'text-compute dark:text-signal' : ''"
+          />
           <span>{{ item.label }}</span>
         </router-link>
       </div>

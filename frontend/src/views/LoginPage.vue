@@ -422,22 +422,13 @@ function toggleMode() {
                 </p>
               </div>
 
-              <!-- Login mode: show the registered-role hint after a
-                   ROLE_MISMATCH so the user knows the selector flipped.
-                   Otherwise the role is invisible to them — server-side
-                   source of truth. -->
-              <div
-                v-else
-                v-motion
-                :initial="{ opacity: 0, y: 8 }"
-                :enter="{ opacity: 1, y: 0, transition: { delay: 200, duration: 400 } }"
-                class="mb-6 flex items-center gap-2 px-3 py-2.5 rounded-lg bg-mist/40 dark:bg-midnight/40 border border-haze/60 dark:border-white/5"
-              >
-                <Fingerprint :size="14" :stroke-width="1.8" class="text-cool flex-shrink-0" />
-                <p class="font-sans text-[11px] text-cool leading-relaxed">
-                  Your passkey already knows whether this account is an Investor or Issuer.
-                </p>
-              </div>
+              <!-- Login mode intentionally renders no role-hint card.
+                   The role selector is hidden (server-side source of
+                   truth via ROLE_MISMATCH); a hint that explains the
+                   absence read as redundant chrome to the user. The
+                   ROLE_MISMATCH inline error below the form remains
+                   the recovery path if a typo'd kernel returns the
+                   wrong role. -->
 
               <!-- Username (register mode only) -->
               <transition

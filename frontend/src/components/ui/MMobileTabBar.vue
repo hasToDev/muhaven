@@ -69,9 +69,9 @@ const tabs = computed(() => {
         v-for="tab in tabs"
         :key="tab.path"
         :class="cn(
-          'flex flex-col items-center gap-1 px-3 py-2 rounded-xl transition-all duration-200 cursor-pointer',
+          'flex flex-col items-center gap-1 px-3 py-2 rounded-xl transition-colors duration-200 cursor-pointer',
           route.path === tab.path
-            ? 'text-compute bg-compute/10'
+            ? 'bg-gold/12 dark:bg-signal/8 ring-1 ring-gold/35 dark:ring-signal/30 text-compute dark:text-signal'
             : 'text-cool hover:text-midnight dark:hover:text-white',
         )"
         @click="router.push(tab.path)"

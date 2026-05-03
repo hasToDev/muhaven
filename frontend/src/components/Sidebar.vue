@@ -155,24 +155,31 @@ onBeforeUnmount(() => {
     <!-- Nav items -->
     <nav class="flex-1 px-3 space-y-1 overflow-y-auto no-scrollbar">
       <!-- Phase 9.A · Expansion (F2) — issuer onboarding wizard.
-           Pinned ABOVE the regular issuer nav because onboarding is the
-           prerequisite gate for everything below it (Cash / Tokens /
-           Distribute / etc all redirect back to /apply-issuer until
-           KYB is approved). Disappears entirely once status flips to
-           'approved'. Amber bloom + pulsed dot draw the eye on the
-           'unregistered' state where action is required; the 'pending'
-           variant is quieter — informational, not a CTA. -->
+           Pinned ABOVE the regular issuer nav because onboarding is
+           the prerequisite gate for everything below it (Cash /
+           Tokens / Distribute / etc all redirect back to
+           /apply-issuer until KYB is approved). Disappears entirely
+           once status flips to 'approved'.
+
+           Visual states (post-revamp 2026-05-03):
+             - on /apply-issuer → inherits the canonical active-route
+               style (fully-rounded gold pill).
+             - off /apply-issuer + actionable (status === 'unregistered')
+               → quiet item; the only attention signal is the gold
+               icon + pulsed amber dot. No bg, no ring — keeps the
+               currently-active item visually unambiguous when the
+               user has navigated to /cash etc.
+             - off /apply-issuer + pending → identical quiet item, dot
+               is static (informational, not a CTA). -->
       <RouterLink
         v-if="showOnboardingNav"
         to="/apply-issuer"
         data-testid="sidebar-nav-apply"
         :class="cn(
-          'relative flex items-center gap-3 py-2.5 px-4 text-sm font-sans transition-all duration-200 group',
+          'relative flex items-center gap-3 py-2.5 px-4 text-sm font-sans rounded-lg transition-colors duration-200 group',
           route.path === '/apply-issuer'
-            ? 'border-l-2 border-gold bg-compute/8 dark:bg-signal/5 text-compute dark:text-signal font-semibold rounded-r-lg pl-[14px]'
-            : onboardingNavIsActionable
-              ? 'rounded-lg font-semibold text-midnight dark:text-white bg-gold/8 dark:bg-signal/5 ring-1 ring-gold/30 dark:ring-signal/25 hover:bg-gold/12 dark:hover:bg-signal/8'
-              : 'text-cool hover:text-midnight dark:hover:text-white hover:bg-mist/70 dark:hover:bg-white/5 rounded-lg font-medium',
+            ? 'bg-gold/12 dark:bg-signal/8 ring-1 ring-gold/35 dark:ring-signal/30 text-compute dark:text-signal font-semibold'
+            : 'text-cool hover:text-midnight dark:hover:text-white hover:bg-mist/70 dark:hover:bg-white/5 font-medium',
         )"
       >
         <span class="relative inline-flex">
@@ -180,12 +187,11 @@ onBeforeUnmount(() => {
             :size="18"
             :stroke-width="route.path === '/apply-issuer' ? 2.2 : 1.7"
             :class="route.path === '/apply-issuer'
-              ? 'text-gold'
-              : onboardingNavIsActionable
-                ? 'text-gold'
-                : 'text-cool/80 group-hover:text-compute dark:group-hover:text-signal transition-colors'"
+              ? 'text-compute dark:text-signal'
+              : 'text-gold dark:text-signal'"
           />
-          <!-- Status dot — amber pulse when actionable, static when pending. -->
+          <!-- Status dot — amber pulse when actionable, static when
+               pending. Hidden on the active route (urgency resolved). -->
           <span
             v-if="route.path !== '/apply-issuer'"
             aria-hidden="true"
@@ -206,10 +212,10 @@ onBeforeUnmount(() => {
         :to="item.path"
         :data-testid="`sidebar-nav-${item.label.toLowerCase()}`"
         :class="cn(
-          'flex items-center gap-3 py-2.5 px-4 text-sm font-sans transition-all duration-200 group',
+          'flex items-center gap-3 py-2.5 px-4 text-sm font-sans rounded-lg transition-colors duration-200 group',
           route.path === item.path
-            ? 'border-l-2 border-gold bg-compute/8 dark:bg-signal/5 text-compute dark:text-signal font-semibold rounded-r-lg pl-[14px]'
-            : 'text-cool hover:text-midnight dark:hover:text-white hover:bg-mist/70 dark:hover:bg-white/5 rounded-lg font-medium',
+            ? 'bg-gold/12 dark:bg-signal/8 ring-1 ring-gold/35 dark:ring-signal/30 text-compute dark:text-signal font-semibold'
+            : 'text-cool hover:text-midnight dark:hover:text-white hover:bg-mist/70 dark:hover:bg-white/5 font-medium',
         )"
       >
         <component
@@ -217,7 +223,7 @@ onBeforeUnmount(() => {
           :size="18"
           :stroke-width="route.path === item.path ? 2.2 : 1.7"
           :class="route.path === item.path
-            ? 'text-gold'
+            ? 'text-compute dark:text-signal'
             : 'text-cool/80 group-hover:text-compute dark:group-hover:text-signal transition-colors'"
         />
         <span class="tracking-wide">{{ item.label }}</span>
