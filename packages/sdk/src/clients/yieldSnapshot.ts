@@ -24,6 +24,14 @@ export interface EpochView {
   encRatio: `0x${string}`
   claimExpiry: bigint
   holderCount: bigint
+  /**
+   * Phase 9.B / Option A — issuer-provided cleartext per-share yield
+   * rate. `floor(totalYield / totalSupply)` in PUSDC-base-units per
+   * share-base-unit. Zero for legacy pre-Option-A epochs (claimYield
+   * falls back to the encRatio path for those). Public on-chain by
+   * design; per-investor balances and shares stay encrypted.
+   */
+  ratePerShare: bigint
 }
 
 /**
@@ -175,16 +183,32 @@ export class YieldSnapshotClient {
   }
 
   /**
-   * Pull PUSDC from the issuer and compute `encRatio` for the epoch.
-   * Caller MUST have granted `YieldSnapshot` operator access on PUSDC
-   * beforehand (`pusdc.setOperator(yieldSnapshot, ttl)`).
+   * Pull PUSDC from the issuer and store the per-share yield rate
+   * for the epoch. Caller MUST have granted `YieldSnapshot` operator
+   * access on PUSDC beforehand (`pusdc.setOperator(yieldSnapshot,
+   * ttl)`).
+   *
+   * Phase 9.B / Option A (2026-05-04): the third arg `ratePerShare`
+   * is the issuer's off-chain `floor(totalYield / totalSupply)`. It
+   * is stored cleartext on-chain and used in `claimYield` via a
+   * depth-1 trivial encryption — sidestepping the deep `encRatio`
+   * ancestry that empirically stalled cofhe TN's resolution path.
+   * See `PHASE9A_CHAIN_LENGTH_BLOCKER.md > Option A`. MUST be > 0.
+   *
+   * Privacy boundary: per-share rate is publicly readable on-chain.
+   * Per-investor balances and per-claim shares stay encrypted.
    */
   async fundEpoch(
     epochId: bigint,
     totalYield: bigint,
+    ratePerShare: bigint,
     opts?: { onProgress?: ProgressCallback },
   ): Promise<Hash> {
     if (totalYield <= 0n) throw new ConfigError(`totalYield must be > 0, got ${totalYield}`)
+    if (ratePerShare <= 0n) throw new ConfigError(`ratePerShare must be > 0, got ${ratePerShare}`)
+    if (ratePerShare > (1n << 128n) - 1n) {
+      throw new ConfigError(`ratePerShare overflows uint128, got ${ratePerShare}`)
+    }
 
     opts?.onProgress?.({
       stage: 'encrypt',
@@ -209,6 +233,7 @@ export class YieldSnapshotClient {
           utype: enc.utype,
           signature: enc.signature,
         },
+        ratePerShare,
       ],
       operation: 'YieldSnapshot.fundEpoch',
     })

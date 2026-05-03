@@ -36,8 +36,12 @@ async function main() {
     .execute();
   console.log(`[1] enc.ctHash=${enc.ctHash.toString()}, sigLen=${(enc.signature as string).length}`);
 
+  // Phase 9.B / Option A — fundEpoch ABI changed to take ratePerShare
+  // as a third arg. Probe uses a placeholder rate of 1n (the actual
+  // value isn't important for revert-selector capture; the ABI just
+  // needs to match the deployed contract).
   const iface = new ethers.Interface([
-    "function fundEpoch(uint256 epochId, (uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) encTotalYield)",
+    "function fundEpoch(uint256 epochId, (uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) encTotalYield, uint128 ratePerShare)",
   ]);
   const data = iface.encodeFunctionData("fundEpoch", [
     epochId,
@@ -47,6 +51,7 @@ async function main() {
       utype: enc.utype,
       signature: enc.signature,
     },
+    1n,
   ]);
 
   console.log("\n[2] eth_call simulation...");

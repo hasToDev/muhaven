@@ -35,6 +35,12 @@ interface PersistedSnapshot {
   epochId: string | null   // bigint serialised as decimal string
   phase: DistributionPhase
   totalYieldUnits: string  // bigint serialised
+  /**
+   * Phase 9.B / Option A — issuer's pre-computed cleartext per-share
+   * yield rate (`floor(totalYield / totalSupply)`), persisted across
+   * reloads alongside totalYield. Decoded as bigint at hydrate time.
+   */
+  ratePerShareUnits: string
   holderTotal: number
   holderProcessed: number
   batchIndex: number
@@ -61,6 +67,10 @@ function loadPersisted(smartAccount: Address | null): EpochInFlight | null {
       epochId: obj.epochId === null ? null : BigInt(obj.epochId),
       phase: obj.phase,
       totalYieldUnits: BigInt(obj.totalYieldUnits),
+      // Phase 9.B / Option A — fall back to 0n for legacy persisted
+      // records that pre-date the field (the wizard will refuse to
+      // start runFund with rate==0, so no claim damage).
+      ratePerShareUnits: BigInt(obj.ratePerShareUnits ?? '0'),
       holderTotal: obj.holderTotal,
       holderProcessed: obj.holderProcessed,
       batchIndex: obj.batchIndex,
@@ -82,6 +92,7 @@ function persist(smartAccount: Address, state: EpochInFlight) {
     epochId: state.epochId === null ? null : state.epochId.toString(),
     phase: state.phase,
     totalYieldUnits: state.totalYieldUnits.toString(),
+    ratePerShareUnits: state.ratePerShareUnits.toString(),
     holderTotal: state.holderTotal,
     holderProcessed: state.holderProcessed,
     batchIndex: state.batchIndex,
@@ -112,6 +123,7 @@ export const useIssuerDistributionStore = defineStore('issuer-distribution', () 
   const epochId = ref<bigint | null>(null)
   const phase = ref<DistributionPhase>('idle')
   const totalYieldUnits = ref<bigint>(0n)
+  const ratePerShareUnits = ref<bigint>(0n)  // Phase 9.B / Option A
 
   const holderTotal = ref(0)
   const holderProcessed = ref(0)
@@ -158,6 +170,7 @@ export const useIssuerDistributionStore = defineStore('issuer-distribution', () 
       epochId: epochId.value,
       phase: phase.value,
       totalYieldUnits: totalYieldUnits.value,
+      ratePerShareUnits: ratePerShareUnits.value,
       holderTotal: holderTotal.value,
       holderProcessed: holderProcessed.value,
       batchIndex: batchIndex.value,
@@ -221,6 +234,7 @@ export const useIssuerDistributionStore = defineStore('issuer-distribution', () 
     epochId.value = persisted.epochId
     phase.value = persisted.phase
     totalYieldUnits.value = persisted.totalYieldUnits
+    ratePerShareUnits.value = persisted.ratePerShareUnits
     holderTotal.value = persisted.holderTotal
     holderProcessed.value = persisted.holderProcessed
     batchIndex.value = persisted.batchIndex
@@ -268,6 +282,12 @@ export const useIssuerDistributionStore = defineStore('issuer-distribution', () 
     token: Address
     snapshotAddr: Address
     totalYieldUnits: bigint
+    /**
+     * Phase 9.B / Option A — issuer's pre-computed cleartext per-share
+     * yield rate (`floor(totalYield / totalSupply)`). Required;
+     * `runFund` will refuse to call `fundEpoch` when this is zero.
+     */
+    ratePerShareUnits: bigint
     holderTotal: number
   }) {
     tokenAddress.value = input.token
@@ -275,6 +295,7 @@ export const useIssuerDistributionStore = defineStore('issuer-distribution', () 
     epochId.value = null
     phase.value = 'preflight'
     totalYieldUnits.value = input.totalYieldUnits
+    ratePerShareUnits.value = input.ratePerShareUnits
     holderTotal.value = input.holderTotal
     holderProcessed.value = 0
     batchIndex.value = 0
@@ -291,6 +312,7 @@ export const useIssuerDistributionStore = defineStore('issuer-distribution', () 
     epochId.value = null
     phase.value = 'idle'
     totalYieldUnits.value = 0n
+    ratePerShareUnits.value = 0n
     holderTotal.value = 0
     holderProcessed.value = 0
     batchIndex.value = 0
@@ -396,6 +418,17 @@ export const useIssuerDistributionStore = defineStore('issuer-distribution', () 
       setError(account, 'Fund pre-state missing')
       return
     }
+    if (ratePerShareUnits.value <= 0n) {
+      // Phase 9.B / Option A — guardrail. Zero rate would silent-fail
+      // every claim; prefer to error out at the wizard layer with an
+      // actionable message instead of letting `InvalidRatePerShare`
+      // bubble up from the contract.
+      setError(
+        account,
+        'Per-share rate is zero — totalYield must be ≥ totalSupply for claims to land.',
+      )
+      return
+    }
     phase.value = 'funding'
     persistIfActive(account)
     try {
@@ -403,6 +436,7 @@ export const useIssuerDistributionStore = defineStore('issuer-distribution', () 
         snapshotAddress.value,
         epochId.value,
         totalYieldUnits.value,
+        ratePerShareUnits.value,
       )
       lastTxHash.value = txHash
       phase.value = 'done'
@@ -434,6 +468,7 @@ export const useIssuerDistributionStore = defineStore('issuer-distribution', () 
     epochId,
     phase,
     totalYieldUnits,
+    ratePerShareUnits,
     holderTotal,
     holderProcessed,
     batchIndex,

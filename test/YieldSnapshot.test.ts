@@ -485,7 +485,7 @@ describe("YieldSnapshot", () => {
       await snapshot.connect(issuer).finalizeSnapshot(1n);
     }
 
-    it("pulls PUSDC + computes encRatio + sets claim expiry", async () => {
+    it("pulls PUSDC + stores ratePerShare + computes encRatio + sets claim expiry", async () => {
       const { snapshot, token, issuer, investor, alice, issuerClient, pusdc } =
         await loadFixture(deploySnapshotFixture);
       await openAndFinalize(snapshot, token, issuer, [
@@ -493,23 +493,24 @@ describe("YieldSnapshot", () => {
         alice.address,
       ]);
 
-      // 100 shares total supply, 10 PUSDC distributed → ratio = 10/100 = 0 (floor).
-      // Bump to 1000 PUSDC → ratio = 1000/100 = 10 PUSDC per share.
+      // 100 shares total supply, 1000 PUSDC → rate = 10 PUSDC per share base unit.
       const totalYield = 1000n * ONE_PUSDC;
+      const totalSupply = 100n;
+      const ratePerShare = totalYield / totalSupply;
       const encYield = await encUint128(issuerClient, totalYield);
 
-      const issuerBefore = await pusdc.confidentialBalanceOf(issuer.address);
-      await expect(snapshot.connect(issuer).fundEpoch(1n, encYield))
+      await expect(snapshot.connect(issuer).fundEpoch(1n, encYield, ratePerShare))
         .to.emit(snapshot, "EpochFunded")
         .withArgs(await token.getAddress(), 1n);
 
       const e = await snapshot.getEpoch(1n);
       expect(e.funded).to.equal(true);
       expect(e.claimExpiry).to.be.greaterThan(0n);
+      expect(e.ratePerShare).to.equal(ratePerShare);
 
       // encTotalYield matches the pulled amount.
       await hre.cofhe.mocks.expectPlaintext(e.encTotalYield, totalYield);
-      // encRatio = 1000*10^6 / 100 = 10^7 per share.
+      // Legacy encRatio still computed for audit-trail backward compat.
       await hre.cofhe.mocks.expectPlaintext(e.encRatio, totalYield / 100n);
 
       // Issuer PUSDC decremented; snapshot contract credited.
@@ -523,13 +524,24 @@ describe("YieldSnapshot", () => {
       );
     });
 
+    it("rejects fund with zero ratePerShare", async () => {
+      const { snapshot, token, issuer, investor, issuerClient } =
+        await loadFixture(deploySnapshotFixture);
+      await openAndFinalize(snapshot, token, issuer, [investor.address]);
+      await expect(
+        snapshot
+          .connect(issuer)
+          .fundEpoch(1n, await encUint128(issuerClient, 100n * ONE_PUSDC), 0n)
+      ).to.be.revertedWithCustomError(snapshot, "InvalidRatePerShare");
+    });
+
     it("uses default claim expiry when unset", async () => {
       const { snapshot, token, issuer, investor, issuerClient } =
         await loadFixture(deploySnapshotFixture);
       await openAndFinalize(snapshot, token, issuer, [investor.address]);
       await snapshot
         .connect(issuer)
-        .fundEpoch(1n, await encUint128(issuerClient, 100n * ONE_PUSDC));
+        .fundEpoch(1n, await encUint128(issuerClient, 100n * ONE_PUSDC), 100n);
 
       const e = await snapshot.getEpoch(1n);
       const blockTs = BigInt((await hre.ethers.provider.getBlock("latest"))!.timestamp);
@@ -545,7 +557,7 @@ describe("YieldSnapshot", () => {
       await expect(
         snapshot
           .connect(issuer)
-          .fundEpoch(1n, await encUint128(issuerClient, 100n * ONE_PUSDC))
+          .fundEpoch(1n, await encUint128(issuerClient, 100n * ONE_PUSDC), 100n)
       ).to.be.revertedWithCustomError(snapshot, "SnapshotNotFinalized");
     });
 
@@ -555,11 +567,11 @@ describe("YieldSnapshot", () => {
       await openAndFinalize(snapshot, token, issuer, [investor.address]);
       await snapshot
         .connect(issuer)
-        .fundEpoch(1n, await encUint128(issuerClient, 100n * ONE_PUSDC));
+        .fundEpoch(1n, await encUint128(issuerClient, 100n * ONE_PUSDC), 100n);
       await expect(
         snapshot
           .connect(issuer)
-          .fundEpoch(1n, await encUint128(issuerClient, 100n * ONE_PUSDC))
+          .fundEpoch(1n, await encUint128(issuerClient, 100n * ONE_PUSDC), 100n)
       ).to.be.revertedWithCustomError(snapshot, "EpochAlreadyFunded");
     });
 
@@ -571,7 +583,7 @@ describe("YieldSnapshot", () => {
       await expect(
         snapshot
           .connect(stranger)
-          .fundEpoch(1n, await encUint128(strangerClient, 100n * ONE_PUSDC))
+          .fundEpoch(1n, await encUint128(strangerClient, 100n * ONE_PUSDC), 100n)
       ).to.be.revertedWithCustomError(snapshot, "OnlyIssuer");
     });
   });
@@ -585,14 +597,20 @@ describe("YieldSnapshot", () => {
       issuer: any,
       investors: string[],
       yieldAmt: bigint,
-      issuerClient: any
+      issuerClient: any,
+      // Phase 9.B / Option A — issuer-supplied per-share rate. Default
+      // assumes the fixture's investorShares=60 + aliceShares=40 → total
+      // 100, matching the deploySnapshotFixture default. Override for
+      // single-investor or non-default-supply tests.
+      totalSupplyForRate: bigint = 100n,
     ) {
       await snapshot.connect(issuer).openEpoch(await token.getAddress());
       await snapshot.connect(issuer).snapshotBatch(1n, investors);
       await snapshot.connect(issuer).finalizeSnapshot(1n);
+      const ratePerShare = yieldAmt / totalSupplyForRate;
       await snapshot
         .connect(issuer)
-        .fundEpoch(1n, await encUint128(issuerClient, yieldAmt));
+        .fundEpoch(1n, await encUint128(issuerClient, yieldAmt), ratePerShare);
     }
 
     it("investor claims proportional share + marks claimed", async () => {
@@ -793,13 +811,15 @@ describe("YieldSnapshot", () => {
       investors: string[],
       yieldAmt: bigint,
       issuerClient: any,
+      totalSupplyForRate: bigint = 100n,
     ) {
       await snapshot.connect(issuer).openEpoch(await token.getAddress());
       await snapshot.connect(issuer).snapshotBatch(1n, investors);
       await snapshot.connect(issuer).finalizeSnapshot(1n);
+      const ratePerShare = yieldAmt / totalSupplyForRate;
       await snapshot
         .connect(issuer)
-        .fundEpoch(1n, await encUint128(issuerClient, yieldAmt));
+        .fundEpoch(1n, await encUint128(issuerClient, yieldAmt), ratePerShare);
     }
 
     /**
@@ -914,6 +934,56 @@ describe("YieldSnapshot", () => {
         await acl.isAllowed(BigInt(epoch.encTotalYield), alice.address),
         "alice should not have encTotalYield grant before her own claim",
       ).to.equal(false);
+    });
+
+    it("Phase 9.B / Option A — fundEpoch stores ratePerShare; claimYield uses cleartext rate path", async () => {
+      // Locks in the Option A invariants:
+      //   1. fundEpoch persists `ratePerShare` cleartext on the epoch.
+      //   2. claimYield's payout matches snapshotBalance × ratePerShare
+      //      (matching the legacy encRatio semantics — same conservation,
+      //      just shallower handle ancestry).
+      // Conservation = ratePerShare × totalSupply ≤ totalYield. With
+      // totalYield = 1000e6 and totalSupply = 100, ratePerShare = 10e6
+      // PUSDC base units per share base unit. Investor's 60 shares →
+      // payout 600e6 PUSDC. Alice's 40 shares → 400e6.
+      const { snapshot, token, issuer, investor, alice, eph, pusdc, issuerClient, aliceEph } =
+        await loadFixture(deploySnapshotFixture);
+      const totalYield = 1000n * ONE_PUSDC;
+      await fullEpochSetup(
+        snapshot,
+        token,
+        issuer,
+        [investor.address, alice.address],
+        totalYield,
+        issuerClient,
+      );
+
+      const e = await snapshot.getEpoch(1n);
+      // ratePerShare = 1000e6 / 100 = 10e6.
+      expect(e.ratePerShare).to.equal(10n * ONE_PUSDC);
+
+      // Investor 60 shares × 10e6 = 600e6 payout.
+      const investorPusdcBefore = 940n * ONE_PUSDC;  // 1000 minted - 60 spent
+      await snapshot.connect(investor).claimYield(1n, eph.address);
+      await hre.cofhe.mocks.expectPlaintext(
+        await pusdc.confidentialBalanceOf(investor.address),
+        investorPusdcBefore + 600n * ONE_PUSDC,
+      );
+
+      // Alice 40 shares × 10e6 = 400e6 payout. Conservation: total
+      // claimed = 1000e6, snapshot float drains exactly to zero.
+      const alicePusdcBefore = 960n * ONE_PUSDC;  // 1000 minted - 40 spent
+      await snapshot.connect(alice).claimYield(1n, aliceEph.address);
+      await hre.cofhe.mocks.expectPlaintext(
+        await pusdc.confidentialBalanceOf(alice.address),
+        alicePusdcBefore + 400n * ONE_PUSDC,
+      );
+
+      // Snapshot's mhUSDC float drained.
+      await hre.cofhe.mocks.expectPlaintext(
+        await pusdc.confidentialBalanceOf(await snapshot.getAddress()),
+        0n,
+      );
     });
 
     it("YieldClaimed carries the encrypted amount handle, kernel + eph have ACL post-claim", async () => {
@@ -1055,9 +1125,10 @@ describe("YieldSnapshot", () => {
         .connect(issuer)
         .snapshotBatch(1n, [investor.address, alice.address]);
       await snapshot.connect(issuer).finalizeSnapshot(1n);
+      const ratePerShare = yieldAmt / 100n;
       await snapshot
         .connect(issuer)
-        .fundEpoch(1n, await encUint128(issuerClient, yieldAmt));
+        .fundEpoch(1n, await encUint128(issuerClient, yieldAmt), ratePerShare);
     }
 
     it("sweeps remaining yield back to issuer after expiry", async () => {

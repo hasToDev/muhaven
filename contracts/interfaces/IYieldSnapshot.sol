@@ -37,9 +37,30 @@ interface IYieldSnapshot {
         bool     funded;
         euint128 encTotalYield;
         euint128 encTotalSupply;
-        euint128 encRatio;          // = encTotalYield / encTotalSupply
+        euint128 encRatio;          // = encTotalYield / encTotalSupply (legacy / Phase 9.A pre-Option-A; kept for backward-compat on pre-rev3 epochs)
         uint256  claimExpiry;
         uint256  holderCount;
+        /// @notice Cleartext per-share yield rate (Phase 9.B / Option A,
+        ///         2026-05-04). Issuer submits at `fundEpoch` time as the
+        ///         floor-divide of `totalYield / totalSupply` in their own
+        ///         off-chain ledger. claimYield's payout is
+        ///         `encShare = FHE.mul(snapshotBalance,
+        ///         FHE.asEuint128(uint256(ratePerShare)))` — the trivial-
+        ///         encrypted cleartext rate has chain depth 1, so the
+        ///         resulting `encShare` ancestry doesn't trace through the
+        ///         deep `encRatio` accumulator that empirically stalls
+        ///         cofhe TN's resolution. See `PHASE9A_CHAIN_LENGTH_BLOCKER.md`.
+        ///
+        ///         Privacy boundary: per-share rate is publicly observable
+        ///         on-chain (storage slot is unencrypted). For RWAs this is
+        ///         conventionally OK — yield rates are published off-chain
+        ///         anyway (TBILL APY, dividend per share, etc). Per-investor
+        ///         balances and per-investor shares stay encrypted.
+        ///
+        ///         Zero means "legacy epoch (pre-Option-A) — claim falls
+        ///         back to the encRatio path." New epochs MUST set this
+        ///         to a non-zero value.
+        uint128  ratePerShare;
     }
 
     // ── Events ────────────────────────────────────────────────────────────
@@ -92,6 +113,10 @@ interface IYieldSnapshot {
     ///         owner — they don't have an existing ACL grant on the handle
     ///         (i.e. they aren't the original claimer's kernel).
     error NotAuditHandleOwner();
+    /// @notice Phase 9.B / Option A — `fundEpoch` rejected a zero
+    ///         `ratePerShare`. Zero would silent-fail every claim
+    ///         (mul-by-zero), stranding the funded PUSDC.
+    error InvalidRatePerShare();
 
     // ── Issuer cold path ─────────────────────────────────────────────────
 
@@ -107,11 +132,32 @@ interface IYieldSnapshot {
     ///         `MuHavenToken`. Subsequent `snapshotBatch` calls revert.
     function finalizeSnapshot(uint256 epochId) external;
 
-    /// @notice Pull `encTotalYield` PUSDC from the issuer and compute
-    ///         `encRatio`. `claimExpiry` is set to
-    ///         `block.timestamp + claimExpirySeconds` (implementation-level
-    ///         per-token knob, not part of this interface).
-    function fundEpoch(uint256 epochId, InEuint128 calldata encTotalYield) external;
+    /// @notice Pull `encTotalYield` PUSDC from the issuer and store the
+    ///         issuer-provided per-share yield rate cleartext. Phase 9.B /
+    ///         Option A (2026-05-04) — replaces the previous on-chain
+    ///         `encRatio = FHE.div(encTotalYield, encTotalSupply)`
+    ///         computation, which produced a deep handle ancestry that
+    ///         empirically stalled cofhe TN's resolution path (see
+    ///         `PHASE9A_CHAIN_LENGTH_BLOCKER.md`).
+    ///
+    ///         `ratePerShare` is computed by the issuer off-chain as
+    ///         `floor(totalYieldCleartext / totalSupplyCleartext)`. It is
+    ///         stored cleartext on the epoch struct. Per-share rate
+    ///         disclosure is the privacy trade-off; per-investor balances
+    ///         and per-claim shares stay encrypted.
+    ///
+    ///         Conservation guard: contract enforces
+    ///         `ratePerShare > 0` (zero would silent-fail every claim,
+    ///         leaving funded PUSDC stranded until sweep).
+    ///
+    ///         `claimExpiry` is set to
+    ///         `block.timestamp + claimExpirySeconds` (implementation-
+    ///         level per-token knob, not part of this interface).
+    function fundEpoch(
+        uint256 epochId,
+        InEuint128 calldata encTotalYield,
+        uint128 ratePerShare
+    ) external;
 
     /// @notice Reclaim unclaimed PUSDC after `claimExpiry`. Issuer-only.
     function sweepExpired(uint256 epochId) external;

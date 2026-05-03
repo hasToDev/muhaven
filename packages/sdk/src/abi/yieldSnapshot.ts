@@ -36,6 +36,7 @@ export const yieldSnapshotAbi = [
     inputs: [
       { name: 'epochId', type: 'uint256' },
       { name: 'encTotalYield', ...inEncryptedTuple },
+      { name: 'ratePerShare', type: 'uint128' },
     ],
     outputs: [],
   },
@@ -88,6 +89,7 @@ export const yieldSnapshotAbi = [
           { name: 'encRatio', type: 'bytes32' },
           { name: 'claimExpiry', type: 'uint256' },
           { name: 'holderCount', type: 'uint256' },
+          { name: 'ratePerShare', type: 'uint128' },
         ],
       },
     ],

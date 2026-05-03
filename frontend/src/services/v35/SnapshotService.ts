@@ -57,6 +57,13 @@ export interface EpochInFlight {
   epochId: bigint | null            // null until openEpoch lands
   phase: DistributionPhase
   totalYieldUnits: bigint            // 6-decimal mhUSDC base units
+  /**
+   * Phase 9.B / Option A — issuer's pre-computed cleartext per-share
+   * yield rate (`floor(totalYield / totalSupply)`). Persisted across
+   * reloads alongside totalYieldUnits so a wizard resume can complete
+   * the funding step without re-prompting the issuer for total supply.
+   */
+  ratePerShareUnits: bigint
   // Snapshot progress
   holderTotal: number
   holderProcessed: number
@@ -294,10 +301,11 @@ export async function fundEpoch(
   snapshotAddr: Address,
   epochId: bigint,
   totalYield: bigint,
+  ratePerShare: bigint,
 ): Promise<Hash> {
   const ctx = await buildWriteContext()
   const client = new YieldSnapshotClient(ctx, snapshotAddr)
-  return client.fundEpoch(epochId, totalYield)
+  return client.fundEpoch(epochId, totalYield, ratePerShare)
 }
 
 // ── Holder enumeration ─────────────────────────────────────────────────

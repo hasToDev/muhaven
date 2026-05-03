@@ -33,15 +33,21 @@ import {ITokenRegistry} from "./interfaces/ITokenRegistry.sol";
 ///   3. Issuer `finalizeSnapshot(epochId)` — reads `encryptedTotalSupply`
 ///      via `MuHavenToken.snapshotTotalSupply`, stores, flips
 ///      `finalized = true`, locks further `snapshotBatch` calls.
-///   4. Issuer `fundEpoch(epochId, encTotalYield)` — pulls PUSDC from
-///      the issuer via the ADR-008 legacy `confidentialTransferFrom
-///      (address,address,uint256)` selector, computes
-///      `encRatio = encTotalYield / encTotalSupply` at `euint128` width,
-///      sets `claimExpiry = block.timestamp + claimExpirySeconds(token)`.
-///      Issuer must have pre-granted this contract operator rights on
-///      PUSDC (standard operator-model flow).
+///   4. Issuer `fundEpoch(epochId, encTotalYield, ratePerShare)` —
+///      pulls PUSDC from the issuer via the ADR-008 legacy
+///      `confidentialTransferFrom(address,address,uint256)` selector,
+///      stores the issuer-provided cleartext `ratePerShare` (Phase
+///      9.B / Option A — 2026-05-04), and sets `claimExpiry =
+///      block.timestamp + claimExpirySeconds(token)`. Issuer must
+///      have pre-granted this contract operator rights on PUSDC
+///      (standard operator-model flow). The legacy `encRatio` is
+///      still computed and stored for the audit-trail surface but
+///      `claimYield` no longer multiplies through it — see step 5.
 ///   5. Each investor `claimYield(epochId, ephemeralEOA)` — computes their
-///      proportional share `encShare = FHE.mul(encBalance, encRatio)`,
+///      proportional share `encShare = FHE.mul(encBalance,
+///      FHE.asEuint128(uint256(ratePerShare)))` (Phase 9.B / Option A —
+///      the cleartext rate becomes a depth-1 trivial encryption,
+///      breaking the deep ancestry of the legacy `encRatio` path),
 ///      narrows to PUSDC's `euint64` width, grants `ephemeralEOA` decrypt
 ///      per ADR-021, transfers to investor via the trusted-payer bypass
 ///      surface `IMuHavenStable.trustedPayout(investor, encShare64,
@@ -373,18 +379,26 @@ contract YieldSnapshot is Initializable, ReentrancyGuardTransient, IYieldSnapsho
     }
 
     /// @inheritdoc IYieldSnapshot
-    /// @dev Pulls PUSDC from the issuer, canonicalises the amount by
-    ///      narrowing to `euint64` and widening back (so the ratio math
-    ///      operates on the same amount actually on-chain — see
-    ///      contract-level natspec "Width handling"), then computes
-    ///      `encRatio = encTotalYield / encTotalSupply`.
+    /// @dev Phase 9.B / Option A (2026-05-04): replaces the previous
+    ///      on-chain `encRatio = FHE.div(encTotalYield, encTotalSupply)`
+    ///      computation with an issuer-provided cleartext
+    ///      `ratePerShare`. The legacy `encRatio` is still computed and
+    ///      stored to preserve the audit-trail surface (and to support
+    ///      pre-Option-A epochs whose `ratePerShare` slot is zero), but
+    ///      `claimYield` now multiplies `snapshotBalance` by a trivial
+    ///      encryption of `ratePerShare` instead. The trivial handle
+    ///      has chain depth 1, breaking the deep ancestry that stalled
+    ///      cofhe TN's resolution. See
+    ///      `PHASE9A_CHAIN_LENGTH_BLOCKER.md > Option A`.
     function fundEpoch(
         uint256 epochId,
-        InEuint128 calldata encTotalYield
+        InEuint128 calldata encTotalYield,
+        uint128 ratePerShare
     ) external nonReentrant onlyIssuerForEpoch(epochId) {
         Epoch storage e = _epochs[epochId];
         if (!e.finalized) revert SnapshotNotFinalized();
         if (e.funded) revert EpochAlreadyFunded();
+        if (ratePerShare == 0) revert InvalidRatePerShare();
 
         // Verify the client-encrypted input here — it's bound to issuer's
         // signature, and msg.sender is the issuer in this context.
@@ -412,7 +426,7 @@ contract YieldSnapshot is Initializable, ReentrancyGuardTransient, IYieldSnapsho
         if (!ok) revert PaymentTransferFailed();
 
         // Widen back — canonicalises to the actually-pulled amount so
-        // the ratio denominator matches the PUSDC pool.
+        // the conservation accounting matches the PUSDC pool.
         euint128 encYCanonical = FHE.asEuint128(encY64);
         FHE.allowThis(encYCanonical);
         FHE.allow(encYCanonical, msg.sender);  // issuer can decrypt/verify
@@ -421,12 +435,15 @@ contract YieldSnapshot is Initializable, ReentrancyGuardTransient, IYieldSnapsho
         // sweep path doesn't rely on a half-initialised epoch on revert.
         _encRemaining[epochId] = encY64;
 
-        // encRatio = encTotalYield / encTotalSupply (integer / floor)
+        // Legacy encRatio still computed for backward compat with pre-
+        // Option-A audit paths. Not used by claimYield post-Option-A —
+        // see contract-level natspec "Decoupled-decrypt audit path".
         euint128 encRatio = FHE.div(encYCanonical, e.encTotalSupply);
         FHE.allowThis(encRatio);
 
         e.encTotalYield = encYCanonical;
         e.encRatio = encRatio;
+        e.ratePerShare = ratePerShare;     // Phase 9.B / Option A
         e.funded = true;
         e.claimExpiry = block.timestamp + _claimExpiryFor(e.token);
 
@@ -502,10 +519,31 @@ contract YieldSnapshot is Initializable, ReentrancyGuardTransient, IYieldSnapsho
 
         FHE.allowThis(encBalance);
 
-        // Proportional share = snapshotBalance * ratio (floor).
+        // Proportional share = snapshotBalance * ratePerShare (floor).
+        // Phase 9.B / Option A (2026-05-04): use the cleartext
+        // `e.ratePerShare` via `FHE.asEuint128(uint256(ratePerShare))`
+        // — depth-1 trivial — instead of the encrypted `e.encRatio`.
+        // This breaks the deep ancestry that empirically stalled cofhe
+        // TN's resolution path on the post-claim mhUSDC handle. See
+        // `PHASE9A_CHAIN_LENGTH_BLOCKER.md > Option A`.
+        //
+        // Backward-compat: pre-Option-A epochs (funded before this
+        // contract upgrade) have `e.ratePerShare == 0`. For those we
+        // fall back to the legacy `e.encRatio` path. New epochs MUST
+        // set ratePerShare via the new fundEpoch signature, which
+        // reverts on zero.
+        //
         // Upper bound argued in contract-level natspec: for any
         // snapshotted investor encShare <= encTotalYield <= 2^64 - 1.
-        euint128 encShare128 = FHE.mul(encBalance, e.encRatio);
+        euint128 encShare128;
+        if (e.ratePerShare != 0) {
+            euint128 trivialRate = FHE.asEuint128(uint256(e.ratePerShare));
+            FHE.allowThis(trivialRate);
+            encShare128 = FHE.mul(encBalance, trivialRate);
+        } else {
+            // Legacy path — kept for any pre-Option-A epochs still in-flight.
+            encShare128 = FHE.mul(encBalance, e.encRatio);
+        }
         FHE.allowThis(encShare128);
         FHE.allow(encShare128, ephemeralEOA);  // per ADR-021 / Rule 2
 

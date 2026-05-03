@@ -48,6 +48,13 @@ const fhe = useFhe()
 
 const selectedToken = ref<Address | ''>('')
 const amount = ref('')
+// Phase 9.B / Option A — issuer's off-chain ledger value for the
+// token's outstanding supply (in human-readable units, 6-decimal
+// shares). Used to compute the cleartext `ratePerShare` passed to
+// `fundEpoch`. Required because the on-chain
+// `MuHavenToken.encryptedTotalSupply` isn't ACL'd to the issuer; we
+// can't derive supply from chain state without breaking privacy.
+const totalSupply = ref('')
 const tokenDropdownOpen = ref(false)
 const tokenDropdownRef = useTemplateRef<HTMLDivElement>('tokenDropdownRef')
 onClickOutside(tokenDropdownRef, () => { tokenDropdownOpen.value = false })
@@ -131,6 +138,30 @@ const amountUnits = computed<bigint>(() => {
 
 const amountValid = computed(() => amountUnits.value > 0n)
 
+// Phase 9.B / Option A — total supply input parsed to base units, same
+// 6-decimal scheme as `amount`.
+const totalSupplyUnits = computed<bigint>(() => {
+  const v = String(totalSupply.value ?? '').trim()
+  if (!v) return 0n
+  const [whole = '0', frac = ''] = v.split('.')
+  const fracPadded = (frac + '000000').slice(0, 6)
+  const wholeBI = BigInt(whole.replace(/\D/g, '') || '0')
+  const fracBI = BigInt(fracPadded.replace(/\D/g, '') || '0')
+  return wholeBI * 1_000_000n + fracBI
+})
+
+// ratePerShare = floor(totalYield / totalSupply). Must be > 0 — zero
+// would silent-fail every claim. The wizard surfaces a friendly error
+// when the issuer enters values that floor to zero.
+const ratePerShareUnits = computed<bigint>(() => {
+  if (totalSupplyUnits.value === 0n) return 0n
+  return amountUnits.value / totalSupplyUnits.value
+})
+
+const totalSupplyValid = computed(
+  () => totalSupplyUnits.value > 0n && ratePerShareUnits.value > 0n,
+)
+
 const holderTotal = computed(() => preflightStatus.value?.holderCount ?? 0)
 const batchCountPreview = computed(() =>
   Math.max(1, Math.ceil(holderTotal.value / 50)),
@@ -167,6 +198,7 @@ const callerIsOnChainIssuer = computed(() =>
 const canDistribute = computed(() =>
   selectedToken.value
     && amountValid.value
+    && totalSupplyValid.value
     && holderTotal.value > 0
     && callerIsOnChainIssuer.value
     && !distributionStore.isProcessing,
@@ -192,6 +224,15 @@ onMounted(async () => {
     if (distributionStore.phase !== 'idle') {
       selectedToken.value = distributionStore.tokenAddress!
       amount.value = (Number(distributionStore.totalYieldUnits) / 1_000_000).toString()
+      // Phase 9.B / Option A — restore totalSupply input from
+      // ratePerShare so a wizard resume mid-flight doesn't ask the
+      // issuer to re-enter the supply value. We don't persist supply
+      // directly; we derive: totalSupply = totalYield / ratePerShare.
+      const r = distributionStore.ratePerShareUnits
+      const y = distributionStore.totalYieldUnits
+      if (r > 0n && y > 0n) {
+        totalSupply.value = (Number(y / r)).toString()
+      }
     }
   }
   // Recent epochs strip
@@ -434,6 +475,10 @@ async function handleDistribute() {
       token,
       snapshotAddr,
       totalYieldUnits: amountUnits.value,
+      // Phase 9.B / Option A — issuer-supplied ratePerShare for the
+      // cleartext-rate claim path. Computed from the form's
+      // `totalSupply` field (issuer's off-chain ledger value).
+      ratePerShareUnits: ratePerShareUnits.value,
       holderTotal: p.holderCount,
     })
 
@@ -626,6 +671,7 @@ function pickToken(addr: string) {
 function resetForm() {
   showReceipt.value = false
   amount.value = ''
+  totalSupply.value = ''
   distributionStore.reset()
 }
 
@@ -1230,6 +1276,64 @@ function fmtClaimWindow(claimExpiry: bigint): string {
                     Short {{ formatUSD(Number(mhUsdcShortfall) / 1e6) }} — auto-wraps before fund
                   </span>
                 </div>
+              </div>
+
+              <!-- Phase 9.B / Option A — total supply input. Required so
+                   the wizard can compute the cleartext per-share rate
+                   (`floor(totalYield / totalSupply)`) that fundEpoch
+                   stores on-chain. The on-chain encryptedTotalSupply
+                   isn't ACL'd to the issuer, so this comes from the
+                   issuer's off-chain ledger. Disclosed publicly via
+                   the per-share rate; per-investor balances stay
+                   encrypted. -->
+              <div
+                v-if="
+                  (!preflightStatus || preflightStatus.holderCount > 0)
+                  && (!preflightStatus || preflightStatus.callerIsOnChainIssuer)
+                "
+                class="flex flex-col gap-2"
+              >
+                <label
+                  for="distribute-supply-input"
+                  class="font-sans text-[10px] uppercase tracking-[0.22em] text-compute dark:text-signal font-semibold flex items-center gap-1.5"
+                >
+                  Outstanding token supply
+                </label>
+                <div class="relative bg-white dark:bg-[#0e0e0e] border-b border-compute/30 dark:border-signal/30 px-4 pb-2 pt-2 transition-colors focus-within:border-compute/70 dark:focus-within:border-signal/70">
+                  <input
+                    id="distribute-supply-input"
+                    v-model="totalSupply"
+                    placeholder="100"
+                    type="number"
+                    step="0.000001"
+                    min="0"
+                    aria-label="Total outstanding token supply (issuer's off-chain ledger value)"
+                    :disabled="distributionStore.isProcessing"
+                    data-testid="distribute-supply-input"
+                    class="w-full bg-transparent border-0 text-right
+                           font-accent italic text-2xl md:text-3xl text-midnight dark:text-white tabular-nums tracking-tight
+                           placeholder:text-cool/40 focus:outline-none focus:ring-0 p-0 leading-none
+                           disabled:opacity-50
+                           [&::-webkit-outer-spin-button]:appearance-none
+                           [&::-webkit-inner-spin-button]:appearance-none"
+                  />
+                </div>
+                <p class="font-sans text-[11px] text-cool flex items-center gap-1.5">
+                  <span v-if="totalSupplyValid">
+                    Per-share rate
+                    <span class="font-medium text-midnight dark:text-white tabular-nums">
+                      {{ formatUSD(Number(ratePerShareUnits) / 1e6) }}
+                    </span>
+                    per share — public on-chain (per-investor balances stay encrypted)
+                  </span>
+                  <span v-else-if="totalSupply.length > 0 && amountValid && totalSupplyUnits > 0n" class="text-gold">
+                    <AlertTriangle :size="12" :stroke-width="1.8" />
+                    Per-share rate floors to zero — totalYield must be ≥ totalSupply
+                  </span>
+                  <span v-else>
+                    Issuer's off-chain ledger value. Required for claim math.
+                  </span>
+                </p>
               </div>
             </div>
 

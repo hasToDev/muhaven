@@ -230,11 +230,12 @@ describe("Wave 3.5 Phase 5 integration — YieldSnapshot end-to-end", () => {
       aliceShares + bobShares + carolShares
     );
 
-    // Fund with 1000 PUSDC.
+    // Fund with 1000 PUSDC. Phase 9.B / Option A: ratePerShare =
+    // floor(totalYield / totalSupply) = 1000e6 / 100 = 10e6.
     const totalYield = 1000n * ONE_PUSDC;
     await snapshot
       .connect(issuer)
-      .fundEpoch(1n, await encUint128(issuerClient, totalYield));
+      .fundEpoch(1n, await encUint128(issuerClient, totalYield), totalYield / 100n);
 
     // Ratio = 1000e6 / 100 = 10e6 per share.
     const e1 = await snapshot.getEpoch(1n);
@@ -305,7 +306,7 @@ describe("Wave 3.5 Phase 5 integration — YieldSnapshot end-to-end", () => {
     const totalYield = 1000n * ONE_PUSDC;
     await snapshot
       .connect(issuer)
-      .fundEpoch(1n, await encUint128(issuerClient, totalYield));
+      .fundEpoch(1n, await encUint128(issuerClient, totalYield), totalYield / 100n);
 
     // Only Alice claims (500 PUSDC). Bob + Carol forget to claim.
     const aliceEph = createEphemeralEOA();
@@ -357,7 +358,7 @@ describe("Wave 3.5 Phase 5 integration — YieldSnapshot end-to-end", () => {
     await snapshot.connect(issuer).finalizeSnapshot(1n);
     await snapshot
       .connect(issuer)
-      .fundEpoch(1n, await encUint128(issuerClient, 500n * ONE_PUSDC));
+      .fundEpoch(1n, await encUint128(issuerClient, 500n * ONE_PUSDC), 5n * ONE_PUSDC);
 
     // Epoch 2.
     await snapshot.connect(issuer).openEpoch(await token.getAddress());
@@ -367,7 +368,7 @@ describe("Wave 3.5 Phase 5 integration — YieldSnapshot end-to-end", () => {
     await snapshot.connect(issuer).finalizeSnapshot(2n);
     await snapshot
       .connect(issuer)
-      .fundEpoch(2n, await encUint128(issuerClient, 1000n * ONE_PUSDC));
+      .fundEpoch(2n, await encUint128(issuerClient, 1000n * ONE_PUSDC), 10n * ONE_PUSDC);
 
     expect(await snapshot.currentEpoch(await token.getAddress())).to.equal(2n);
 
@@ -433,7 +434,7 @@ describe("Wave 3.5 Phase 5 integration — YieldSnapshot end-to-end", () => {
     await snapshot.connect(issuer).finalizeSnapshot(1n);
     await snapshot
       .connect(issuer)
-      .fundEpoch(1n, await encUint128(issuerClient, 1000n * ONE_PUSDC));
+      .fundEpoch(1n, await encUint128(issuerClient, 1000n * ONE_PUSDC), 10n * ONE_PUSDC);
 
     const aliceEph = createEphemeralEOA();
     const stranger = createEphemeralEOA();
@@ -503,12 +504,13 @@ describe("Wave 3.5 Phase 5 integration — YieldSnapshot end-to-end", () => {
     const e = await snapshot.getEpoch(1n);
     await hre.cofhe.mocks.expectPlaintext(e.encTotalSupply, 50n);
 
-    // Fund 1000 PUSDC. Ratio = 1000e6 / 50 = 20 PUSDC per share.
-    // Alice gets 50 * 20 = 1000 — the entire pool, since she's the only
-    // snapshotted holder. Conservation: sum(encShare) = encTotalYield.
+    // Fund 1000 PUSDC. Ratio = 1000e6 / 50 = 20e6 PUSDC per share.
+    // Alice gets 50 * 20e6 = 1000e6 — the entire pool, since she's
+    // the only snapshotted holder. Conservation: sum(encShare) =
+    // encTotalYield.
     await snapshot
       .connect(issuer)
-      .fundEpoch(1n, await encUint128(issuerClient, 1000n * ONE_PUSDC));
+      .fundEpoch(1n, await encUint128(issuerClient, 1000n * ONE_PUSDC), 20n * ONE_PUSDC);
 
     const aliceEph = createEphemeralEOA();
     await snapshot.connect(alice).claimYield(1n, aliceEph.address);
@@ -568,7 +570,7 @@ describe("Wave 3.5 Phase 5 integration — YieldSnapshot end-to-end", () => {
 
     await snapshot
       .connect(issuer)
-      .fundEpoch(1n, await encUint128(issuerClient, 1000n * ONE_PUSDC));
+      .fundEpoch(1n, await encUint128(issuerClient, 1000n * ONE_PUSDC), 10n * ONE_PUSDC);
 
     // All three claim. Alice: 500. Bob: 300 (snapshot balance, despite
     // having 0 shares on-chain now). Carol: 200. Total = 1000 = encTotalYield.

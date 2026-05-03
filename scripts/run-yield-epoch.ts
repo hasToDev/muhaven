@@ -33,11 +33,22 @@
  *   MUHAVEN_TOKEN_SYMBOL TBILL1 | GOLD1 (must match a token in the deployment file)
  *   MUHAVEN_TOTAL_YIELD  uint128 amount of PUSDC base units (6-decimal)
  *                          e.g. "1000000000" = 1000 PUSDC
+ *   MUHAVEN_TOTAL_SUPPLY uint128 outstanding token supply in base units
+ *                          (Phase 9.B / Option A — issuer's off-chain ledger
+ *                           value; on-chain encryptedTotalSupply is unreadable
+ *                           from a script). e.g. "100000000" = 100 tokens at
+ *                           6 decimals. ratePerShare =
+ *                           floor(MUHAVEN_TOTAL_YIELD / MUHAVEN_TOTAL_SUPPLY).
+ *                           Must be > 0 and produce a non-zero ratePerShare;
+ *                           tiny yields below totalSupply silently round to
+ *                           zero — same precision constraint as the
+ *                           pre-Option-A encRatio path.
  *
  * Usage:
  *   MUHAVEN_ENV=staging \
  *   MUHAVEN_TOKEN_SYMBOL=TBILL1 \
  *   MUHAVEN_TOTAL_YIELD=1000000000 \
+ *   MUHAVEN_TOTAL_SUPPLY=100000000 \
  *   pnpm hardhat run scripts/run-yield-epoch.ts --network arb-sepolia
  */
 
@@ -54,12 +65,12 @@ const SNAPSHOT_ABI = [
   "function openEpoch(address token) returns (uint256)",
   "function snapshotBatch(uint256 epochId, address[] investors)",
   "function finalizeSnapshot(uint256 epochId)",
-  "function fundEpoch(uint256 epochId, (uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) encTotalYield)",
+  "function fundEpoch(uint256 epochId, (uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) encTotalYield, uint128 ratePerShare)",
   "function currentEpoch(address token) view returns (uint256)",
   // Field order MUST match `IYieldSnapshot.Epoch` exactly. ethers decodes
   // tuples positionally regardless of named labels — a shuffled ABI silently
   // returns wrong values (e.g. `snapshotStartTs` mis-read as `finalized`).
-  "function getEpoch(uint256 epochId) view returns (tuple(address token, uint256 snapshotStartTs, uint256 snapshotEndTs, bool finalized, bool funded, bytes32 encTotalYield, bytes32 encTotalSupply, bytes32 encRatio, uint256 claimExpiry, uint256 holderCount))",
+  "function getEpoch(uint256 epochId) view returns (tuple(address token, uint256 snapshotStartTs, uint256 snapshotEndTs, bool finalized, bool funded, bytes32 encTotalYield, bytes32 encTotalSupply, bytes32 encRatio, uint256 claimExpiry, uint256 holderCount, uint128 ratePerShare))",
 ];
 
 const REGISTRY_ABI = [
@@ -103,6 +114,19 @@ async function main() {
   const symbol = envOrDie("MUHAVEN_TOKEN_SYMBOL");
   const totalYield = BigInt(envOrDie("MUHAVEN_TOTAL_YIELD"));
   if (totalYield <= 0n) throw new Error("MUHAVEN_TOTAL_YIELD must be > 0");
+  const totalSupply = BigInt(envOrDie("MUHAVEN_TOTAL_SUPPLY"));
+  if (totalSupply <= 0n) throw new Error("MUHAVEN_TOTAL_SUPPLY must be > 0");
+  const ratePerShare = totalYield / totalSupply;
+  if (ratePerShare <= 0n) {
+    throw new Error(
+      `MUHAVEN_TOTAL_YIELD (${totalYield}) / MUHAVEN_TOTAL_SUPPLY (${totalSupply}) ` +
+      `floors to 0 — every claim would silent-fail to zero. ` +
+      `Phase 9.B / Option A requires ratePerShare > 0; size totalYield ≥ totalSupply.`,
+    );
+  }
+  if (ratePerShare > 2n ** 128n - 1n) {
+    throw new Error(`Computed ratePerShare ${ratePerShare} overflows uint128`);
+  }
 
   const path = deploymentPath(env);
   if (!existsSync(path)) throw new Error(`Deployment file not found: ${path}`);
@@ -129,13 +153,15 @@ async function main() {
     signer.provider!,
   ).pusdc();
 
-  console.log(`Network    : ${network.name}`);
-  console.log(`Env        : ${env}`);
-  console.log(`Token      : ${symbol} (${tokenAddr})`);
-  console.log(`Snapshot   : ${snapshotAddr}`);
-  console.log(`PusdcSrc   : ${pusdcAddr} (YieldSnapshot.pusdc — pull target)`);
-  console.log(`TotalYield : ${totalYield.toString()} (PUSDC base units)`);
-  console.log(`Signer     : ${signer.address}\n`);
+  console.log(`Network     : ${network.name}`);
+  console.log(`Env         : ${env}`);
+  console.log(`Token       : ${symbol} (${tokenAddr})`);
+  console.log(`Snapshot    : ${snapshotAddr}`);
+  console.log(`PusdcSrc    : ${pusdcAddr} (YieldSnapshot.pusdc — pull target)`);
+  console.log(`TotalYield  : ${totalYield.toString()} (PUSDC base units)`);
+  console.log(`TotalSupply : ${totalSupply.toString()} (token base units, off-chain ledger)`);
+  console.log(`RatePerShare: ${ratePerShare.toString()} (PUSDC base units per token base unit, floor div)`);
+  console.log(`Signer      : ${signer.address}\n`);
 
   const registry = new ethers.Contract(investorRegistryAddr, REGISTRY_ABI, signer);
   const pusdc = new ethers.Contract(pusdcAddr, PUSDC_ABI, signer);
@@ -351,12 +377,16 @@ async function main() {
     .setAccount(signer.address)
     .execute();
 
-  const fundTx = await snapshot.fundEpoch(epochId, {
-    ctHash: enc.ctHash,
-    securityZone: enc.securityZone,
-    utype: enc.utype,
-    signature: enc.signature,
-  });
+  const fundTx = await snapshot.fundEpoch(
+    epochId,
+    {
+      ctHash: enc.ctHash,
+      securityZone: enc.securityZone,
+      utype: enc.utype,
+      signature: enc.signature,
+    },
+    ratePerShare,
+  );
   console.log(`[4/4]   tx: ${fundTx.hash}`);
   await fundTx.wait();
   console.log("");

@@ -769,9 +769,9 @@ describe("MuHaven SDK Wave 3.5 clients (integration)", function () {
       const snapshotFinalized = await ysClient.getEpoch(epochId);
       expect(snapshotFinalized.finalized).to.equal(true);
 
-      // Fund with 1000 PUSDC. Ratio = 1000e6 / 100 = 10e6 per share.
+      // Fund with 1000 PUSDC. ratePerShare = 1000e6 / 100 = 10e6 per share.
       const totalYield = 1000n * ONE_PUSDC;
-      await ysClient.fundEpoch(epochId, totalYield);
+      await ysClient.fundEpoch(epochId, totalYield, totalYield / 100n);
       const funded = await ysClient.getEpoch(epochId);
       expect(funded.funded).to.equal(true);
 
@@ -849,7 +849,8 @@ describe("MuHaven SDK Wave 3.5 clients (integration)", function () {
       const { epochId } = await ysClient.openEpoch(tokenAddr);
       await ysClient.snapshotBatch(epochId, [alice.address as Address]);
       await ysClient.finalizeSnapshot(epochId);
-      await ysClient.fundEpoch(epochId, 100n * ONE_PUSDC);
+      // Single-investor 50 shares: ratePerShare = 100e6/50 = 2e6.
+      await ysClient.fundEpoch(epochId, 100n * ONE_PUSDC, 2n * ONE_PUSDC);
 
       // Fast-forward past claimExpiry (default 365d).
       await time.increase(400 * 24 * 60 * 60);
@@ -864,7 +865,9 @@ describe("MuHaven SDK Wave 3.5 clients (integration)", function () {
         ctx,
         (yieldSnapshot as any).target as Address,
       );
-      await expect(client.fundEpoch(1n, 0n)).to.be.rejectedWith(ConfigError);
+      await expect(client.fundEpoch(1n, 0n, 1n)).to.be.rejectedWith(ConfigError);
+      // Phase 9.B / Option A — also rejects zero ratePerShare.
+      await expect(client.fundEpoch(1n, 100n, 0n)).to.be.rejectedWith(ConfigError);
     });
 
     it("claimYield rejects zero ephemeralEOA pre-flight", async function () {

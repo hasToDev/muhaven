@@ -1213,7 +1213,9 @@ describe("Phase 8 — YieldSnapshot.claimYield split-grant (PHASE8_BLOCKER fix)"
     await snapshot.connect(issuer).snapshotBatch(1n, [investor.address]);
     await snapshot.connect(issuer).finalizeSnapshot(1n);
     const encYield = await encUint128(issuerClient, 50n * ONE_PUSDC);
-    await snapshot.connect(issuer).fundEpoch(1n, encYield);
+    // Phase 9.B / Option A — single-investor epoch (60 shares).
+    // ratePerShare = floor(50e6 / 60) = 833_333.
+    await snapshot.connect(issuer).fundEpoch(1n, encYield, (50n * ONE_PUSDC) / 60n);
 
     await snapshot.connect(investor).claimYield(1n, eph.address);
 
@@ -1239,7 +1241,9 @@ describe("Phase 8 — YieldSnapshot.claimYield split-grant (PHASE8_BLOCKER fix)"
     await snapshot.connect(issuer).snapshotBatch(1n, [investor.address]);
     await snapshot.connect(issuer).finalizeSnapshot(1n);
     const encYield = await encUint128(issuerClient, 50n * ONE_PUSDC);
-    await snapshot.connect(issuer).fundEpoch(1n, encYield);
+    // Phase 9.B / Option A — single-investor epoch (60 shares).
+    // ratePerShare = floor(50e6 / 60) = 833_333.
+    await snapshot.connect(issuer).fundEpoch(1n, encYield, (50n * ONE_PUSDC) / 60n);
 
     await snapshot.connect(investor).claimYield(1n, eph.address);
 
@@ -1267,7 +1271,9 @@ describe("Phase 8 — YieldSnapshot.claimYield split-grant (PHASE8_BLOCKER fix)"
     await snapshot.connect(issuer).snapshotBatch(1n, [investor.address]);
     await snapshot.connect(issuer).finalizeSnapshot(1n);
     const encYield = await encUint128(issuerClient, 50n * ONE_PUSDC);
-    await snapshot.connect(issuer).fundEpoch(1n, encYield);
+    // Phase 9.B / Option A — single-investor epoch (60 shares).
+    // ratePerShare = floor(50e6 / 60) = 833_333.
+    await snapshot.connect(issuer).fundEpoch(1n, encYield, (50n * ONE_PUSDC) / 60n);
 
     // The encShare128 ACL grant (per ADR-021) must still be present —
     // Phase 8 only changed the mhUSDC payout leg, not the share-handle
