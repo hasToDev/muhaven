@@ -15,8 +15,14 @@ export class PgUserRepository implements IUserRepository {
   }
 
   async findByWalletAddress(address: string): Promise<User | null> {
+    // Lowercase both sides — `wallet_address` column stores whatever
+    // case the SIWE / passkey flow handed back (frontend passes the
+    // address as-is from `walletStore.connect()`; ZeroDev returns
+    // checksummed but other paths may differ). Mirrors the bulk
+    // `findByWalletAddresses` posture below + the `lower()` lookups in
+    // `pg-rwa-token.repository.ts` and `pg-tax-event.repository.ts`.
     const row = await this.db.query.users.findFirst({
-      where: eq(users.walletAddress, address),
+      where: eq(sql`lower(${users.walletAddress})`, address.toLowerCase()),
     });
     return row ? this.toDomain(row) : null;
   }

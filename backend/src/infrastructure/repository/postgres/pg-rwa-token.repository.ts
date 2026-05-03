@@ -61,15 +61,26 @@ export class PgRwaTokenRepository implements IRwaTokenRepository {
   }
 
   async findByAddress(address: string): Promise<RwaToken | null> {
+    // Lowercase both sides — `address` column stores whatever case the
+    // inserter supplied (seed-tokens-v35 writes viem-checksummed,
+    // F2 wizard writes JWT-derived which may be either case). Mirrors
+    // the `lower()` posture in `updateIssuer` + `pg-tax-event.findByHolder`.
     const row = await this.db.query.rwaTokens.findFirst({
-      where: eq(rwaTokens.address, address),
+      where: eq(sql`lower(${rwaTokens.address})`, address.toLowerCase()),
     });
     return row ? this.toDomain(row) : null;
   }
 
   async findByIssuer(issuerAddress: string): Promise<RwaToken[]> {
+    // Lowercase both sides — see `findByAddress` rationale. The JWT's
+    // walletAddress (which `/v1/issuer/tokens` derives the issuer
+    // address from) is stored in `users.wallet_address` as-supplied
+    // by the frontend, while `rwa_tokens.issuer_address` is written
+    // checksummed by the F1 indexer / seed-tokens-v35 path. A case
+    // divergence between the two caused the issuer dashboard to
+    // render empty even when the row existed.
     const rows = await this.db.query.rwaTokens.findMany({
-      where: eq(rwaTokens.issuerAddress, issuerAddress),
+      where: eq(sql`lower(${rwaTokens.issuerAddress})`, issuerAddress.toLowerCase()),
     });
     return rows.map((r) => this.toDomain(r));
   }
@@ -109,16 +120,13 @@ export class PgRwaTokenRepository implements IRwaTokenRepository {
    * addresses, while the existing `seed-tokens-v35.ts` and
    * `sync-token-issuers.ts` paths also write checksummed (the upstream
    * `getRegisteredTokens` / `getConfig.issuer` reads return
-   * EIP-55-checksummed `Address`). Existing rows are therefore
-   * checksum-cased in the DB. This method matches the rotation-time
-   * indexer feed by lower-casing both sides of the WHERE clause (mirrors
-   * the `pg-tax-event.repository.ts:findByHolder` precedent), and writes
-   * the new issuer as-supplied so the column shape stays consistent with
-   * the seed/sync paths. A new value-cased issuer slots in cleanly next
-   * to existing rows; downstream `findByIssuer(addr)` is exact-match, so
-   * any caller of that method must already pass the checksummed form
-   * (the JWT-derived issuer addr from the `/v1/issuer/*` endpoints
-   * already does — see the issuer JWT issue + GetIssuerStatsUseCase).
+   * EIP-55-checksummed `Address`). The F2 wizard writes whatever case
+   * the JWT-derived `users.wallet_address` carries — which can diverge
+   * from the on-chain checksum form depending on the SIWE / passkey
+   * flow. This method (and every other `where` predicate on
+   * `issuer_address` / `address` in this repo) lower-cases both sides
+   * to immunize against that mismatch. Mirrors `findByHolder` in
+   * `pg-tax-event.repository.ts`.
    */
   async updateIssuer(tokenAddress: string, newIssuer: string): Promise<void> {
     await this.db
