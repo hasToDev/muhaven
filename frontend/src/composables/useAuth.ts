@@ -66,6 +66,31 @@ function tokenResponseToStored(res: TokenResponse, addr: string, role: UserRole)
 }
 
 /**
+ * Phase 9.A · Expansion (F2). Wipe every Pinia store that holds
+ * user-scoped data so the next sign-in (logout → login OR silent
+ * JWT-expiry → relogin-as-different-user) doesn't inherit the prior
+ * session's cached state. The latent bug pattern: pages that gate
+ * `onMounted` with `if (store.loaded) return` never re-fetch after a
+ * re-login, so the prior user's tokens / portfolio / activity rows
+ * render for the wrong wallet. Dynamic imports keep these out of the
+ * auth-only bundle path. Best-effort — a missing module (store never
+ * instantiated this session) is ignored.
+ */
+async function tearDownUserStores(): Promise<void> {
+  await Promise.allSettled([
+    import('@/stores/issuer-onboarding').then((m) => m.useIssuerOnboardingStore().tearDown()),
+    import('@/stores/issuer-tokens').then((m) => m.useIssuerTokensStore().reset()),
+    import('@/stores/issuer-investors').then((m) => m.useIssuerInvestorsStore().reset()),
+    import('@/stores/issuer-compliance').then((m) => m.useIssuerComplianceStore().reset()),
+    import('@/stores/issuer-distribution').then((m) => m.useIssuerDistributionStore().reset()),
+    import('@/stores/epochs').then((m) => m.useEpochsStore().reset()),
+    import('@/stores/portfolio').then((m) => m.usePortfolioStore().reset()),
+    import('@/stores/activity').then((m) => m.useActivityStore().reset()),
+    import('@/stores/marketplace').then((m) => m.useMarketplaceStore().reset()),
+  ])
+}
+
+/**
  * Decode the role claim from a JWT access token. The backend embeds
  * `role` in the payload (verify-wallet.use-case → JwtService.generateTokenPair).
  * Used on login when the client didn't pre-pick a role and needs to
@@ -156,6 +181,15 @@ export function useAuth() {
         throw verifyErr
       }
 
+      // Phase 9.A · Expansion (F2). Wipe user-scoped store caches
+      // BEFORE setting the new tokens — covers the silent-JWT-expiry
+      // path where `useAuth.logout()` never ran (no explicit signout)
+      // but the user is now authenticating as a different wallet. If
+      // we skipped this and just relied on the logout teardown, the
+      // first /tokens / /portfolio mount post-relogin would render
+      // the prior user's cached rows.
+      await tearDownUserStores()
+
       // Step 5: Store tokens and update state. On register the role we
       // sent is canonical; on login we read it back from the JWT
       // payload (server-side source of truth).
@@ -198,16 +232,7 @@ export function useAuth() {
         const { useFhe } = await import('@/composables/useFhe')
         useFhe().destroy()
       } catch { /* FHE may not have been initialized */ }
-      // Phase 9.A · Expansion (F2). Wipe the issuer-onboarding wizard
-      // state — sessionStorage persists across same-tab logout, and
-      // Pinia's in-memory store survives re-login as a different user.
-      // Without this teardown a fresh sign-in inherits the prior
-      // user's KYB draft + success card. Dynamic import keeps the
-      // wizard module out of the auth-only bundle path.
-      try {
-        const { useIssuerOnboardingStore } = await import('@/stores/issuer-onboarding')
-        useIssuerOnboardingStore().tearDown()
-      } catch { /* wizard store may not have been touched this session */ }
+      await tearDownUserStores()
       authStore.clearAuth()
       await walletStore.disconnect()
       router.push('/login')
