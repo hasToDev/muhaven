@@ -4,10 +4,12 @@ import { ApplicationHttpError } from '../../../core/errors.js';
 import { getLogger } from '../../../core/logger.js';
 import type { IUserRepository } from '../../../domain/auth/repository/user.repository.js';
 import type { IIssuerTokenDeployRepository } from '../../../domain/issuer-onboarding/repository/issuer-token-deploy.repository.js';
+import type { IRwaTokenRepository } from '../../../domain/token-registry/repository/rwa-token.repository.js';
 import {
   IssuerTokenDeploy,
   type DeployConfig,
 } from '../../../domain/issuer-onboarding/model/issuer-token-deploy.js';
+import { RwaToken } from '../../../domain/token-registry/model/rwa-token.js';
 import type {
   DeployTokenLibrary,
   DeployProgressEvent,
@@ -44,6 +46,7 @@ export class DeployTokenUseCase {
     private readonly userRepo: IUserRepository,
     private readonly deployRepo: IIssuerTokenDeployRepository,
     private readonly library: DeployTokenLibrary,
+    private readonly rwaTokenRepo: IRwaTokenRepository,
   ) {}
 
   async start(userId: string, dto: DeployTokenDto): Promise<DeployTokenAcceptedDto> {
@@ -136,6 +139,48 @@ export class DeployTokenUseCase {
         },
         onProgress,
       );
+
+      // Insert the rwa_tokens row immediately so /tokens reflects the
+      // just-deployed token without waiting for `pnpm seed:tokens:v35`
+      // to backfill from on-chain. Mirrors the seed-demo-issuers
+      // posture (same shape, same paused initial state — kernel /
+      // operator unpauses post-setNAV via `unpause-token.ts`).
+      //
+      // Defensive against a race where the row already exists (e.g.
+      // an operator ran `seed:tokens:v35` between `register_token`
+      // mining and this write); a lookup-then-skip is enough since
+      // the deploy can never produce two distinct rows for one
+      // token. Failures here are logged but do NOT regress the
+      // deploy's `succeeded` status — the on-chain work is committed
+      // and the catch-up script remains a working fallback.
+      try {
+        const existing = await this.rwaTokenRepo.findByAddress(result.tokenAddress);
+        if (!existing) {
+          const now = new Date();
+          await this.rwaTokenRepo.save(
+            new RwaToken({
+              id: randomUUID(),
+              address: result.tokenAddress,
+              name: config.name,
+              symbol: config.symbol,
+              issuerAddress: applicant,
+              yieldSchedule: config.yield_schedule,
+              kycTier: 0,
+              assetClass: config.asset_class,
+              minInvestment: config.min_investment,
+              status: 'paused',
+              createdAt: now,
+              updatedAt: now,
+              pausedAt: now,
+            }),
+          );
+        }
+      } catch (err) {
+        this.logger.warn(
+          { err, deployId, tokenAddress: result.tokenAddress },
+          'Failed to write rwa_tokens row post-deploy — operator can recover via `pnpm seed:tokens:v35`',
+        );
+      }
 
       await this.deployRepo.finalize(deployId, {
         status: 'succeeded',

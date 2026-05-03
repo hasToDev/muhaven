@@ -3,6 +3,8 @@
  *
  * Coverage:
  *   - happy path: row transitions running → succeeded with result address
+ *   - happy path: rwa_tokens row written as paused (closes /tokens-empty
+ *     gap; mirrors seed-demo-issuers shape)
  *   - failure path: row transitions to failed with errorMessage + lastStep
  *   - SYMBOL_TAKEN: pre-check rejects before any state change
  *   - non-approved issuer rejected with 403 NOT_APPROVED_ISSUER
@@ -17,6 +19,8 @@ import {
   type DeployStepKey,
 } from '../../../../domain/issuer-onboarding/model/issuer-token-deploy.js';
 import type { IIssuerTokenDeployRepository } from '../../../../domain/issuer-onboarding/repository/issuer-token-deploy.repository.js';
+import type { IRwaTokenRepository } from '../../../../domain/token-registry/repository/rwa-token.repository.js';
+import type { RwaToken, TokenStatus } from '../../../../domain/token-registry/model/rwa-token.js';
 import type {
   DeployTokenLibrary,
   DeployProgressCallback,
@@ -74,6 +78,41 @@ class StubDeployRepo implements IIssuerTokenDeployRepository {
   }
 }
 
+class StubRwaTokenRepo implements IRwaTokenRepository {
+  rows: RwaToken[] = [];
+  async save(t: RwaToken): Promise<void> {
+    this.rows.push(t);
+  }
+  async findById(id: string): Promise<RwaToken | null> {
+    return this.rows.find((r) => r.id === id) ?? null;
+  }
+  async findAll(): Promise<RwaToken[]> {
+    return [...this.rows];
+  }
+  async findByAddress(address: string): Promise<RwaToken | null> {
+    return this.rows.find((r) => r.address.toLowerCase() === address.toLowerCase()) ?? null;
+  }
+  async findByIssuer(issuerAddress: string): Promise<RwaToken[]> {
+    return this.rows.filter(
+      (r) => r.issuerAddress.toLowerCase() === issuerAddress.toLowerCase(),
+    );
+  }
+  async findByStatus(status: TokenStatus): Promise<RwaToken[]> {
+    return this.rows.filter((r) => r.status === status);
+  }
+  async update(t: RwaToken): Promise<void> {
+    const idx = this.rows.findIndex((r) => r.id === t.id);
+    if (idx >= 0) this.rows[idx] = t;
+  }
+  async updateIssuer(tokenAddress: string, newIssuer: string): Promise<void> {
+    const row = await this.findByAddress(tokenAddress);
+    if (row) {
+      // Stub mutates in place; the production repo issues a SQL UPDATE.
+      (row as { issuerAddress: string }).issuerAddress = newIssuer;
+    }
+  }
+}
+
 function makeStubLibrary(opts: {
   existingTokenForSymbol?: Address;
   failOnDeploy?: boolean;
@@ -123,6 +162,7 @@ const DTO = {
 describe('DeployTokenUseCase', () => {
   let userRepo: MemoryUserRepository;
   let deployRepo: StubDeployRepo;
+  let rwaTokenRepo: StubRwaTokenRepo;
 
   beforeEach(async () => {
     process.env.JWT_SECRET = 'test-secret-that-is-at-least-32-chars-long';
@@ -130,6 +170,7 @@ describe('DeployTokenUseCase', () => {
 
     userRepo = new MemoryUserRepository();
     deployRepo = new StubDeployRepo();
+    rwaTokenRepo = new StubRwaTokenRepo();
     await userRepo.save(
       new User({
         id: 'user-1',
@@ -147,6 +188,7 @@ describe('DeployTokenUseCase', () => {
       userRepo,
       deployRepo,
       makeStubLibrary({}),
+      rwaTokenRepo,
     );
     const events: DeployEvent[] = [];
     const tap = (e: DeployEvent) => events.push(e);
@@ -170,11 +212,96 @@ describe('DeployTokenUseCase', () => {
     expect(events.some((e) => e.step === 'deploy_token' && e.status === 'pending')).toBe(true);
   });
 
+  it('writes rwa_tokens row as paused on success so /tokens reflects the deploy immediately', async () => {
+    const useCase = new DeployTokenUseCase(
+      userRepo,
+      deployRepo,
+      makeStubLibrary({}),
+      rwaTokenRepo,
+    );
+
+    const result = await useCase.start('user-1', DTO);
+    await new Promise((r) => setTimeout(r, 50));
+
+    const written = await rwaTokenRepo.findByAddress(TOKEN_ADDR);
+    expect(written).not.toBeNull();
+    expect(written?.symbol).toBe(DTO.symbol);
+    expect(written?.name).toBe(DTO.name);
+    expect(written?.assetClass).toBe(DTO.asset_class);
+    expect(written?.minInvestment).toBe(DTO.min_investment);
+    expect(written?.yieldSchedule).toBe(DTO.yield_schedule);
+    expect(written?.status).toBe('paused');
+    expect(written?.kycTier).toBe(0);
+    expect(written?.issuerAddress.toLowerCase()).toBe(WALLET.toLowerCase());
+    expect(written?.pausedAt).toBeInstanceOf(Date);
+
+    // The deploy row still finalises succeeded — both rows are coherent.
+    const row = await deployRepo.findById(result.deploy_id);
+    expect(row?.status).toBe('succeeded');
+  });
+
+  it('skips rwa_tokens write when row already exists (race with seed:tokens:v35)', async () => {
+    // Pre-populate as if `pnpm seed:tokens:v35` ran between register_token
+    // mining and this branch — second insert would violate the address PK.
+    rwaTokenRepo.rows.push({
+      id: 'pre-seeded',
+      address: TOKEN_ADDR,
+      name: 'Pre-seeded',
+      symbol: DTO.symbol,
+      issuerAddress: WALLET,
+      kycTier: 0,
+      assetClass: 'treasury',
+      status: 'paused',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as RwaToken);
+
+    const useCase = new DeployTokenUseCase(
+      userRepo,
+      deployRepo,
+      makeStubLibrary({}),
+      rwaTokenRepo,
+    );
+    await useCase.start('user-1', DTO);
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Still exactly one row; the deploy did not append a second.
+    const matches = rwaTokenRepo.rows.filter(
+      (r) => r.address.toLowerCase() === TOKEN_ADDR.toLowerCase(),
+    );
+    expect(matches.length).toBe(1);
+    expect(matches[0]?.id).toBe('pre-seeded');
+  });
+
+  it('still finalises succeeded when rwa_tokens write throws (operator falls back to seed:tokens:v35)', async () => {
+    // Force the repo to throw so the catch branch covers the on-chain
+    // commit, deploy-row succeeded, rwa-row failed scenario.
+    const throwingRepo = {
+      ...rwaTokenRepo,
+      save: async () => { throw new Error('db boom'); },
+      findByAddress: async () => null,
+    } as unknown as IRwaTokenRepository;
+
+    const useCase = new DeployTokenUseCase(
+      userRepo,
+      deployRepo,
+      makeStubLibrary({}),
+      throwingRepo,
+    );
+    const result = await useCase.start('user-1', DTO);
+    await new Promise((r) => setTimeout(r, 50));
+
+    const row = await deployRepo.findById(result.deploy_id);
+    expect(row?.status).toBe('succeeded');
+    expect(row?.resultTokenAddress?.toLowerCase()).toBe(TOKEN_ADDR.toLowerCase());
+  });
+
   it('finalises to failed with error message when the library throws', async () => {
     const useCase = new DeployTokenUseCase(
       userRepo,
       deployRepo,
       makeStubLibrary({ failOnDeploy: true }),
+      rwaTokenRepo,
     );
     const result = await useCase.start('user-1', DTO);
     await new Promise((r) => setTimeout(r, 50));
@@ -182,6 +309,10 @@ describe('DeployTokenUseCase', () => {
     const row = await deployRepo.findById(result.deploy_id);
     expect(row?.status).toBe('failed');
     expect(row?.errorMessage).toContain('Fhenix coprocessor');
+
+    // Failed deploy must NOT leave a stray rwa_tokens row behind.
+    const stray = await rwaTokenRepo.findByAddress(TOKEN_ADDR);
+    expect(stray).toBeNull();
   });
 
   it('rejects with 409 SYMBOL_TAKEN when registry already has the symbol', async () => {
@@ -189,6 +320,7 @@ describe('DeployTokenUseCase', () => {
       userRepo,
       deployRepo,
       makeStubLibrary({ existingTokenForSymbol: '0xExisting' as Address }),
+      rwaTokenRepo,
     );
     await expect(useCase.start('user-1', DTO)).rejects.toMatchObject({
       statusCode: 409,
@@ -211,6 +343,7 @@ describe('DeployTokenUseCase', () => {
       userRepo,
       deployRepo,
       makeStubLibrary({}),
+      rwaTokenRepo,
     );
     await expect(useCase.start('user-1', DTO)).rejects.toBeInstanceOf(
       ApplicationHttpError,

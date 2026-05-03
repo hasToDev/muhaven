@@ -29,6 +29,7 @@ const handler = createHandler({
       container.userRepo,
       container.issuerTokenDeployRepo,
       library,
+      container.rwaTokenRepo,
     );
     const result = await useCase.start(authPayload!.userId, dto);
     return {
