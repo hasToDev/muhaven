@@ -5,6 +5,7 @@ import { toast } from 'vue-sonner'
 import type { Address } from 'viem'
 import { useIssuerTokensStore } from '@/stores/issuer-tokens'
 import { useIssuerDistributionStore } from '@/stores/issuer-distribution'
+import { usePortfolioStore } from '@/stores/portfolio'
 import { useWallet } from '@/composables/useWallet'
 import { useWalletStore } from '@/stores/wallet'
 import { useFhe } from '@/composables/useFhe'
@@ -38,6 +39,7 @@ import type { EpochView } from '@muhaven/sdk'
 
 const tokenStore = useIssuerTokensStore()
 const distributionStore = useIssuerDistributionStore()
+const portfolioStore = usePortfolioStore()
 const { address: walletAddress, connected } = useWallet()
 const walletStore = useWalletStore()
 const fhe = useFhe()
@@ -314,6 +316,36 @@ async function loadRecentEpochs() {
 
 // ── Distribution orchestration ─────────────────────────────────────────
 
+/**
+ * Mirror of TradePage's `refreshAfterTrade` for the issuer side. After a
+ * successful distribute, the issuer's mhUSDC handle on-chain mutated
+ * (transferFrom snapshot pulled from issuer's wrapper balance) but the
+ * global portfolio store's cached `pusdcConfidentialBalance` stays at
+ * whatever was last decrypted. Without this refresh, navigating from
+ * /distribute to /portfolio shows the pre-distribute mhUSDC value until
+ * the user manually clicks Refresh.
+ *
+ * Privacy rule preserved: only re-decrypt when the value was already
+ * revealed (no surprise session signature).
+ */
+async function refreshAfterDistribute() {
+  if (!walletAddress.value) return
+  const addr = walletAddress.value as Address
+  const wasRevealed = portfolioStore.pusdcConfidentialBalance !== null
+  try {
+    await portfolioStore.load(addr)
+  } catch (e) {
+    console.warn('[DistributePage] portfolio.load post-distribute failed', e)
+  }
+  if (wasRevealed) {
+    try {
+      await portfolioStore.decryptPusdc(addr)
+    } catch (e) {
+      console.warn('[DistributePage] mhUSDC re-decrypt post-distribute failed', e)
+    }
+  }
+}
+
 async function handleDistribute() {
   if (!canDistribute.value) return
   if (!connected.value || !walletAddress.value) {
@@ -428,10 +460,14 @@ async function handleDistribute() {
       toast.success('Distribution complete', {
         description: `Epoch #${distributionStore.epochId} funded — investors can pull-claim from /yields`,
       })
-      // Refresh side state.
+      // Refresh side state — local DistributePage tile + global
+      // portfolio store + recent epochs strip.
       mhUsdcBalance.value = null
-      await runPreflight()
-      await loadRecentEpochs()
+      await Promise.all([
+        runPreflight(),
+        loadRecentEpochs(),
+        refreshAfterDistribute(),
+      ])
     } else if (distributionStore.phase === 'error') {
       toast.error('Distribution failed', {
         description: distributionStore.errorMessage ?? 'Unknown error',
@@ -535,10 +571,14 @@ async function resumeDistribution() {
       description: `Epoch #${distributionStore.epochId} funded — investors can pull-claim from /yields`,
     })
     // Mirror handleDistribute's success-side state refresh — collapse the
-    // revealed mhUSDC, re-run preflight, reload Recent Epochs.
+    // revealed mhUSDC, re-run preflight, reload Recent Epochs, refresh
+    // the global portfolio store so /portfolio doesn't show stale mhUSDC.
     mhUsdcBalance.value = null
-    await runPreflight()
-    await loadRecentEpochs()
+    await Promise.all([
+      runPreflight(),
+      loadRecentEpochs(),
+      refreshAfterDistribute(),
+    ])
   } else if (distributionStore.phase === 'error') {
     toast.error('Distribution failed', {
       description: distributionStore.errorMessage ?? 'Unknown error',

@@ -4,6 +4,7 @@ import { toast } from 'vue-sonner'
 import type { Address } from 'viem'
 import { YieldSnapshotClient } from '@muhaven/sdk'
 import { useEpochsStore, type EpochEntry } from '@/stores/epochs'
+import { usePortfolioStore } from '@/stores/portfolio'
 import { useWallet } from '@/composables/useWallet'
 import { useFhe } from '@/composables/useFhe'
 import { useMarketplaceStore } from '@/stores/marketplace'
@@ -25,6 +26,7 @@ import {
 // can verify the underlying is tracking real-world data.
 
 const epochsStore = useEpochsStore()
+const portfolioStore = usePortfolioStore()
 const { address, connected } = useWallet()
 const { getEphemeralEOA } = useFhe()
 const marketplace = useMarketplaceStore()
@@ -105,7 +107,27 @@ async function claimEpoch(entry: EpochEntry) {
         onClick: () => window.open(arbiscanTx(hash), '_blank', 'noopener'),
       },
     })
-    if (address.value) await epochsStore.load(address.value as Address)
+    if (address.value) {
+      // Refresh both surfaces in parallel: epochsStore (this page —
+      // collapses the row to "claimed") and portfolioStore (so /portfolio
+      // doesn't show stale revealed mhUSDC after the claim crediting).
+      // Privacy rule preserved: portfolioStore.decryptPusdc only re-fires
+      // if mhUSDC was already revealed in this session.
+      const wasRevealed = portfolioStore.pusdcConfidentialBalance !== null
+      await Promise.all([
+        epochsStore.load(address.value as Address),
+        portfolioStore.load(address.value as `0x${string}`).catch((e) => {
+          console.warn('[YieldsPage] portfolio.load post-claim failed', e)
+        }),
+      ])
+      if (wasRevealed) {
+        try {
+          await portfolioStore.decryptPusdc(address.value as `0x${string}`)
+        } catch (e) {
+          console.warn('[YieldsPage] mhUSDC re-decrypt post-claim failed', e)
+        }
+      }
+    }
   } catch (e) {
     toast.error('Claim failed', {
       description: e instanceof Error ? e.message : String(e),
