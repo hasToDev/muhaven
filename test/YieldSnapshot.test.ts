@@ -823,6 +823,43 @@ describe("YieldSnapshot", () => {
       throw new Error("No YieldClaimed event in receipt");
     }
 
+    it("encRatio gains kernel + eph ACL grants post-claim (decoupled-decrypt path)", async () => {
+      // Phase 9.A audit-handle follow-up · decoupled-decrypt fix. The
+      // wrapper-scoped indexer issue rejects `encShare64` even at the
+      // documented "5-op" threshold; the working path is to decrypt
+      // `encRatio` + `snapshotBalance` separately and multiply locally.
+      // This test locks in the new ACL grants on `encRatio`.
+      const { snapshot, token, issuer, investor, alice, eph, issuerClient } =
+        await loadFixture(deploySnapshotFixture);
+      await fullEpochSetup(
+        snapshot,
+        token,
+        issuer,
+        [investor.address, alice.address],
+        1000n * ONE_PUSDC,
+        issuerClient,
+      );
+
+      await snapshot.connect(investor).claimYield(1n, eph.address);
+
+      // Read encRatio from the epoch view.
+      const epoch = await snapshot.getEpoch(1n);
+      const encRatio = epoch.encRatio;
+
+      const acl = await hre.cofhe.mocks.getMockACL();
+      // Investor kernel grant — durable across sessions, lets the
+      // investor (or anyone they delegate to) decrypt the ratio via
+      // the standard permit path.
+      expect(
+        await acl.isAllowed(BigInt(encRatio), investor.address),
+      ).to.equal(true);
+      // Claim-time ephemeralEOA grant — lets the originating session
+      // decrypt without a refresh tx.
+      expect(
+        await acl.isAllowed(BigInt(encRatio), eph.address),
+      ).to.equal(true);
+    });
+
     it("YieldClaimed carries the encrypted amount handle, kernel + eph have ACL post-claim", async () => {
       const { snapshot, token, issuer, investor, alice, eph, issuerClient } =
         await loadFixture(deploySnapshotFixture);

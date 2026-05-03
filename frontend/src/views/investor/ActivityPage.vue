@@ -4,6 +4,7 @@ import { useActivityStore } from '@/stores/activity'
 import { useMarketplaceStore } from '@/stores/marketplace'
 import { formatUSD, formatAddress } from '@/lib/utils'
 import { useFhe } from '@/composables/useFhe'
+import { useWallet } from '@/composables/useWallet'
 import * as SnapshotService from '@/services/v35/SnapshotService'
 import MButton from '@/components/ui/MButton.vue'
 import MPageLoader from '@/components/ui/MPageLoader.vue'
@@ -18,6 +19,7 @@ import {
 const activity = useActivityStore()
 const marketplace = useMarketplaceStore()
 const fhe = useFhe()
+const { address: walletAddress } = useWallet()
 
 // Phase 9.A · Option Z — `cash` collapses wrap+unwrap (per the open
 // decision in PHASE_9A_OPTION_Z_PLAN.md). Phase 9.A · Option Z follow-up
@@ -336,15 +338,24 @@ async function decryptAmount(item: ActivityItemDto) {
         item.token_address as `0x${string}`,
       )
     } else if (isYieldClaimType(item.type)) {
-      // Phase 9.A audit-handle follow-up — yield-claim rows decrypt
-      // against the YieldSnapshot proxy that hosts the token. Wave 3.5
-      // staging shares one snapshot proxy across multiple tokens; the
-      // audit handle ACL was stamped on that contract at claim time.
-      // SnapshotService.snapshotProxyFor falls back to the singleton
-      // VITE_YIELD_SNAPSHOT_ADDRESS for wizard-deployed tokens that
-      // aren't in the static per-token map.
+      // Yield-claim decoupled-decrypt path. The audit handle in
+      // YieldClaimed.amount (encShare64) is wrapper-touching — empirical
+      // testing on staging showed cofhe TN's wrapper-scoped indexer
+      // refuses it even at the documented "5-op" threshold. The
+      // working path: decrypt encRatio + snapshotBalance separately
+      // (both on non-wrapper contracts — YieldSnapshot + MuHavenToken)
+      // and multiply locally. Inputs:
+      //   - epochId (from item.reference_id, populated by the indexer
+      //     from YieldClaimed.epochId).
+      //   - snapshotAddr (resolved via SnapshotService — singleton
+      //     fallback for wizard-deployed tokens).
+      //   - investor address (= holder address; for activity rows the
+      //     authenticated user IS the holder).
       if (!item.token_address) {
         throw new Error('Yield-claim row missing token_address — cannot decrypt')
+      }
+      if (!item.reference_id) {
+        throw new Error('Yield-claim row missing epoch reference — re-index needed')
       }
       const snapshotAddr = SnapshotService.snapshotProxyFor(
         item.token_address as `0x${string}`,
@@ -355,7 +366,40 @@ async function decryptAmount(item: ActivityItemDto) {
           + 'set VITE_YIELD_SNAPSHOT_ADDRESS in frontend/.env.stage and rebuild.',
         )
       }
-      value = await fhe.decryptYieldClaimAuditHandleForView(handle, snapshotAddr)
+      if (!walletAddress.value) {
+        throw new Error('Wallet not connected — cannot resolve snapshot balance')
+      }
+      const { YieldSnapshotClient } = await import('@muhaven/sdk')
+      const { buildReadContext } = await import('@/services/v35/context')
+      const snapshotClient = new YieldSnapshotClient(buildReadContext(), snapshotAddr)
+      const epochId = BigInt(item.reference_id)
+
+      // Two parallel reads, two parallel decrypts.
+      const [epoch, snapshotBalanceHandle] = await Promise.all([
+        snapshotClient.getEpoch(epochId),
+        snapshotClient.getSnapshotBalance(epochId, walletAddress.value as `0x${string}`),
+      ])
+      const [ratio, snapshotBalance] = await Promise.all([
+        // encRatio: kernel + eph ACL granted by claimYield (post-2026-05-03
+        // contract upgrade). Decrypt via the standard uint128 path; the
+        // refresh fallback hits the legacy MuHavenToken refreshDecryptGrant
+        // path which is a no-op for snapshot-stored handles, but the
+        // initial decrypt should succeed if claim landed post-upgrade.
+        fhe.decryptUint128ForView(epoch.encRatio),
+        // Snapshot balance: same handle as MuHavenToken._balances at
+        // snapshot time. Investor has ACL via the original mint —
+        // decrypts via the per-RWA token path.
+        fhe.decryptUint128ForView(
+          snapshotBalanceHandle,
+          item.token_address as `0x${string}`,
+        ),
+      ])
+
+      // Compute claim amount in JS. ratio is in mhUSDC base units per
+      // share unit (totalYield/totalSupply, integer floor); balance is
+      // share count. Product is mhUSDC base units (uint64-bounded by
+      // construction — encShare64 cast in the contract).
+      value = snapshotBalance * ratio
     } else {
       throw new Error(`No decrypt path for type=${item.type}`)
     }

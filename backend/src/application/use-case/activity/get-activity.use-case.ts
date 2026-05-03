@@ -39,6 +39,14 @@ export interface ActivityItemDto {
   amount: string | null; // always null — values stay encrypted
   timestamp: string;
   tx_hash: string;
+  /**
+   * Event-specific reference id from the originating chain event. For
+   * yield rows this is the `epochId` — the frontend uses it to resolve
+   * the YieldSnapshot epoch for decoupled-decrypt (encRatio + snapshot
+   * balance). For redemption rows it's the queue request id. Null for
+   * events without a natural reference (wrap, transfer, fee).
+   */
+  reference_id: string | null;
   metadata?: Record<string, unknown> | null;
 }
 
@@ -86,6 +94,7 @@ function toActivityItem(e: TaxEvent): ActivityItemDto {
     amount: null,
     timestamp: e.blockTimestamp.toISOString(),
     tx_hash: e.txHash,
+    reference_id: e.referenceId,
     metadata: e.metadata ?? null,
   };
 }

@@ -289,6 +289,13 @@ export interface ActivityItemDto {
   timestamp: string
   /** On-chain tx hash. Always present post-Option-Z (every row is from tax_events). */
   tx_hash: string
+  /**
+   * Event-specific reference id. For yield rows = `epochId` (used by the
+   * decoupled-decrypt path on /activity to resolve YieldSnapshot.getEpoch
+   * + getSnapshotBalance). For redemption rows = queue request id. Null
+   * for wrap/transfer/fee.
+   */
+  reference_id?: string | null
   metadata?: ActivityItemMetadata | null
 }
 

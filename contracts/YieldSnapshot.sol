@@ -501,21 +501,39 @@ contract YieldSnapshot is Initializable, ReentrancyGuardTransient, IYieldSnapsho
         FHE.allowThis(encShare64);
         FHE.allow(encShare64, pusdc);
 
-        // Audit-handle grants: the post-claim `_balances[investor]` handle on
-        // the wrapper accumulates FHE op-chain depth across the kernel's
-        // mhUSDC ops (each wrap → buy → claim extends it via FHE.add). After
-        // 3-4 mutations the chain crosses cofhe TN's indexer threshold (~5-7
-        // ops, see `project_cofhe_tn_chain_length_cap` memory) and view-only
-        // decrypt fails with a 204-stream timeout. `encShare64` is a fresh
-        // handle whose chain is short (`mul → cast` = 2-3 ops) and reliably
-        // indexable. Granting kernel + ephemeralEOA here lets investors
-        // decrypt the per-claim amount via the audit handle in
-        // `YieldClaimed`'s `amount` field (Activity page surface), bypassing
-        // the cumulative-chain-depth issue on the live balance handle.
-        // Mirrors the Phase 9.A · Option Z pattern that added audit handles
-        // to MuHavenStable.Wrap/Unwrap and MuHavenToken.Transfer.
+        // Audit-handle grants on encShare64 (event arg). Stays in place
+        // for theoretical event-based audit, but empirical testing on
+        // staging post-deploy showed encShare64 is ALSO subject to the
+        // wrapper-scoped indexer issue — `cofhe TN refuses wrapper-
+        // touching handles even at the documented "5 works" threshold.
+        // Active demo verification uses the decoupled-decrypt path
+        // below (encRatio + snapshotBalance grants).
         FHE.allow(encShare64, msg.sender);
         FHE.allow(encShare64, ephemeralEOA);
+
+        // ── Decoupled-decrypt audit path (the one that actually works) ──
+        // Frontend computes `claimAmount = snapshotBalance × encRatio` in
+        // JS by decrypting each input separately. Both inputs live on
+        // non-wrapper contracts (MuHavenToken + YieldSnapshot) which
+        // don't hit the wrapper-scoped indexer issue: TBILL1 / MUSTB
+        // share-balance decrypts have always worked even at depths >5.
+        //   - snapshotBalance = `_snapshots[epochId][msg.sender]`, the
+        //     SAME handle as `MuHavenToken._balances[msg.sender]` at
+        //     snapshot time. Investor already has ACL via the original
+        //     mint/transfer — no extra grant needed here.
+        //   - encRatio = `e.encRatio`, kernel-only ACL pre-this-change.
+        //     Granting kernel + eph here lets the investor decrypt it
+        //     via the same permit flow used for share balances.
+        // Privacy trade-off: per-investor ratio is now decryptable. For
+        // single-investor epochs ratio == totalYield (so totalYield
+        // becomes inferrable). For multi-investor epochs ratio reveals
+        // only the per-share rate. Acceptable for the audit trail use
+        // case (claim verification); contract-mediated paths
+        // (sweepExpired, downstream computation) remain encrypted via
+        // YieldSnapshot's kernel-only ACL on the snapshot's mhUSDC
+        // float (`_encRemaining`).
+        FHE.allow(e.encRatio, msg.sender);
+        FHE.allow(e.encRatio, ephemeralEOA);
 
         // Decrement conservation counter BEFORE PUSDC transfer — a failed
         // transfer reverts the whole tx and restores state anyway, so
