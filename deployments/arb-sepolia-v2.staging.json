@@ -1,7 +1,7 @@
 {
   "network": "arb-sepolia",
   "env": "staging",
-  "timestamp": "2026-05-01T10:08:46.516Z",
+  "timestamp": "2026-05-03T17:06:59.188Z",
   "deployer": "0xe11E83398C33A37CaC02C01c43F14A7f95876986",
   "external": {
     "legacyPusdc": "0x6b6e6479b8b3237933c3ab9d8be969862d4ed89f",
@@ -45,7 +45,7 @@
     },
     "YieldSnapshot": {
       "proxy": "0x6d5C0E40f53c702CDc4923acccbdD6F45cBD3E29",
-      "implementation": "0xcDedcd509DaFE3FF20D8A3Bed97df69e567d0846"
+      "implementation": "0x18DD9E8aDF7Fe411dDF63B46e4d79b3c7659f062"
     },
     "IssuerControlledOracle": {
       "proxy": "0xdD945eAbc3f708d31bA00DD0b384B04F35c53D2A",
