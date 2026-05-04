@@ -42,7 +42,7 @@ export const LANDING_FAQ = [
   },
   {
     title: 'What tokens are supported?',
-    content: 'MuHaven supports any ERC-20 RWA token wrapped into fhERC-20 format via MuHavenVault, plus native issuance. Current demo tokens include Treasury Bond Fund (MHTB) and Money Market Fund (MHMM).',
+    content: 'MuHaven supports tokenized real-world assets across treasury, money market, private credit, real estate, and other asset classes. Issuers onboard their tokens via the self-serve issuer wizard, which deploys an encrypted fhERC-20 contract bound to a confidential payment rail (mhUSDC) and an oracle for NAV.',
   },
   {
     title: 'Can issuers see individual investor balances?',

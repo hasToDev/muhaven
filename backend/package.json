@@ -21,7 +21,6 @@
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
-    "seed:tokens": "tsx scripts/seed-tokens.ts",
     "seed:tokens:v35": "tsx scripts/seed-tokens-v35.ts",
     "seed:sync-issuers": "tsx scripts/sync-token-issuers.ts",
     "seed:demo-issuers": "tsx scripts/seed-demo-issuers.ts"
