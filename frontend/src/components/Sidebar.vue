@@ -6,6 +6,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useWalletStore } from '@/stores/wallet'
 import { useAuth } from '@/composables/useAuth'
 import { useHomeTarget } from '@/composables/useHomeTarget'
+import { useAppVersion } from '@/composables/useAppVersion'
 import { cn, formatAddress } from '@/lib/utils'
 import MDarkToggle from '@/components/ui/MDarkToggle.vue'
 import MSessionStatus from '@/components/ui/MSessionStatus.vue'
@@ -28,6 +29,7 @@ const authStore = useAuthStore()
 const walletStore = useWalletStore()
 const auth = useAuth()
 const homeTarget = useHomeTarget()
+const { fullLabel: versionLabel } = useAppVersion()
 
 // Phase 9.A · Expansion (F2). Surface the issuer-onboarding wizard
 // in the sidebar when the connected issuer hasn't finished KYB.
@@ -334,6 +336,20 @@ onBeforeUnmount(() => {
            override against 8px parent is a 2px delta, invisible).
            Renders nothing when devMode is off or unconfigured. -->
       <MDevModeBanner />
+
+      <!-- Build version — whisper-quiet final inscription. Lives on its
+           own line below MDevModeBanner so the just-tightened (Phase 9.C)
+           wallet-pill row stays uncluttered. The dev-mode banner above
+           is conditional, so this is always the last thing in the
+           bottom block, providing a stable home for the operator's
+           at-a-glance "which build is this?" check. -->
+      <div class="flex items-center justify-end px-1 pt-1">
+        <span
+          data-testid="nav-app-version"
+          class="font-mono text-[10px] text-cool/50 tabular-nums"
+          :title="`MuHaven ${versionLabel}`"
+        >{{ versionLabel }}</span>
+      </div>
     </div>
   </aside>
 </template>

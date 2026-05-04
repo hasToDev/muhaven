@@ -6,6 +6,7 @@ import { useGlassNav } from '@/composables/useGlassNav'
 import { useTypewriter } from '@/composables/useTypewriter'
 import { useCountUp } from '@/composables/useCountUp'
 import { cn } from '@/lib/utils'
+import { useAppVersion } from '@/composables/useAppVersion'
 
 import MButton from '@/components/ui/MButton.vue'
 import MBadge from '@/components/ui/MBadge.vue'
@@ -25,6 +26,7 @@ import {
 const router = useRouter()
 const store = useAppStore()
 const { isScrolled } = useGlassNav()
+const { fullLabel: versionLabel } = useAppVersion()
 
 const { displayed: heroLine1, isDone: line1Done, target: heroRef } = useTypewriter('Private', 50, 800)
 const heroLine2 = ref('')
@@ -749,6 +751,11 @@ function scaleIn(delay = 0) {
           <a class="label-text text-xs text-cool hover:text-compute dark:hover:text-signal transition-colors" href="#">Terms</a>
           <a class="label-text text-xs text-cool hover:text-compute dark:hover:text-signal transition-colors" href="#">Twitter</a>
           <a class="label-text text-xs text-cool hover:text-compute dark:hover:text-signal transition-colors" href="#">Github</a>
+          <span
+            data-testid="footer-app-version"
+            class="font-mono text-[11px] text-cool/70 dark:text-cool/60 tabular-nums"
+            :title="`MuHaven ${versionLabel}`"
+          >{{ versionLabel }}</span>
         </div>
       </div>
     </footer>

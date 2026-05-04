@@ -10,6 +10,9 @@ import { demoApi, type UserRole } from '@/services/api'
 import { IdentityRegistryClient } from '@muhaven/sdk'
 import { v35Addresses, isZeroAddress } from '@/contracts/addresses'
 import { buildReadContext } from '@/services/v35/context'
+import { useAppVersion } from '@/composables/useAppVersion'
+
+const { fullLabel: versionLabel } = useAppVersion()
 
 const router = useRouter()
 const route = useRoute()
@@ -532,6 +535,23 @@ function toggleMode() {
         <span class="text-[11px] font-sans text-cool/50">
           Secured by Fhenix FHE on Arbitrum
         </span>
+      </div>
+
+      <!-- Build version (whisper-quiet — pre-auth bug reports cite this
+           when the sidebar isn't reachable). Appears below the trust
+           indicator at lower opacity so it doesn't compete with the
+           trust signal but is always available for support. -->
+      <div
+        v-motion
+        :initial="{ opacity: 0 }"
+        :enter="{ opacity: 1, transition: { delay: 700, duration: 500 } }"
+        class="flex items-center justify-center mt-2"
+      >
+        <span
+          data-testid="login-app-version"
+          class="font-mono text-[10px] text-cool/40 tabular-nums"
+          :title="`MuHaven ${versionLabel}`"
+        >{{ versionLabel }}</span>
       </div>
     </div>
   </div>
