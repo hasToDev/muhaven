@@ -38,6 +38,12 @@
  *
  * Post-deploy wiring:
  *   - Subscription.setIdentityRegistry + setModularCompliance
+ *   - MuHavenStable.setTrustedPayer(YieldSnapshot, true) — Phase 8 Option B
+ *     / ADR-046 fast-path. Without this grant, `YieldSnapshot.claimYield`
+ *     reverts `NotTrustedPayer` on every claim. Folded into the deploy so
+ *     fresh stacks are claim-ready by construction; `scripts/grant-trusted-
+ *     payer.ts` remains for upgrade scenarios (post-`upgrade-stable.ts`
+ *     where the slot is freshly introduced and needs re-wiring).
  *   - InvestorRegistry.setAuthorizedCaller(...) is delegated to onboard-token.ts
  *   - Per-token oracle config + Token/Treasury/Queue stacks land in onboard-token.ts
  *
@@ -282,6 +288,21 @@ async function main() {
 
   await (await subscription.setModularCompliance(complianceAddr)).wait();
   console.log("   subscription.setModularCompliance ✓");
+
+  // MuHavenStable trusted-payer grant — Phase 8 Option B / ADR-046.
+  // YieldSnapshot.claimYield calls IMuHavenStable.trustedPayout(...),
+  // which reverts NotTrustedPayer (selector 0x3e9d3e1e) for any caller
+  // not in MuHavenStable._trustedPayer. Without this grant, every yield
+  // claim fails on prod with a non-obvious selector — the failure mode
+  // surfaced 2026-05-04 on the Phase 10 prod cutover when the standalone
+  // grant-trusted-payer.ts step was skipped. Deployer == wrapper owner
+  // here (line 174 inits the wrapper with `owner = deployer.address`),
+  // so the call lands inline at deploy time. Idempotent on re-run via
+  // the `isTrustedPayer` view — kept as an unconditional set since the
+  // happy path here is a fresh deploy where the slot is empty.
+  const yieldSnapshotAddr = await yieldSnapshot.getAddress();
+  await (await stable.setTrustedPayer(yieldSnapshotAddr, true)).wait();
+  console.log("   stable.setTrustedPayer(YieldSnapshot) ✓");
 
   // ── Persist deployments JSON ──────────────────────────────────────────
   // Capture external dependencies + Chainlink defaults so the onboarding

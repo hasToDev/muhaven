@@ -2,10 +2,23 @@
  * scripts/grant-trusted-payer.ts
  *
  * One-shot owner-gated tx that registers the YieldSnapshot proxy as a
- * trusted payer on the MuHavenStable wrapper. Required after upgrading
- * MuHavenStable to the Phase 8 Option B / ADR-046 implementation;
- * `YieldSnapshot.claimYield` calls `IMuHavenStable.trustedPayout(...)`
- * which loud-reverts `NotTrustedPayer` until this grant lands.
+ * trusted payer on the MuHavenStable wrapper. `YieldSnapshot.claimYield`
+ * calls `IMuHavenStable.trustedPayout(...)` which loud-reverts
+ * `NotTrustedPayer` (selector 0x3e9d3e1e) until this grant lands.
+ *
+ * Scope post-Phase-10 (2026-05-04):
+ *   - Fresh deploys via `scripts/deploy-v2.ts` already include this
+ *     grant as a final wiring step (MuHavenStable.setTrustedPayer(
+ *     YieldSnapshot, true) — see deploy-v2.ts post-deploy wiring block).
+ *     This standalone script is NOT required after a clean fresh deploy.
+ *   - Required after `scripts/upgrade-stable.ts` if the upgrade
+ *     introduces a new `_trustedPayer` storage slot or rotates the
+ *     YieldSnapshot proxy.
+ *   - Required as a recovery step if a prior fresh deploy bypassed
+ *     the inline grant (e.g. the wrapper owner was already a multisig
+ *     at deploy time, so the inline tx couldn't be signed by the
+ *     deployer EOA). Prod 2026-05-04 cutover hit this exact gap before
+ *     option 3 folded the grant into deploy-v2.
  *
  * Idempotent: if the snapshot proxy is already registered, the tx is
  * skipped (the script reads `isTrustedPayer` first). Re-runs are safe.
