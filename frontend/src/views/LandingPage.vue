@@ -1,8 +1,6 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { useAppStore } from '@/stores/app'
-import { useGlassNav } from '@/composables/useGlassNav'
 import { useTypewriter } from '@/composables/useTypewriter'
 import { useCountUp } from '@/composables/useCountUp'
 import { cn } from '@/lib/utils'
@@ -14,18 +12,16 @@ import MAccordion from '@/components/ui/MAccordion.vue'
 import MDarkToggle from '@/components/ui/MDarkToggle.vue'
 
 import {
-  Shield, TrendingUp, Sparkles, Lock,
+  Shield, TrendingUp, Zap, Lock,
   ArrowRight, Github, ExternalLink, Eye, EyeOff,
   ChevronDown, FileCode, ShieldCheck, Bot, Menu, X,
 } from 'lucide-vue-next'
 
 import {
-  LANDING_STATS, LANDING_FEATURES, LANDING_FAQ, LANDING_CODE_LINES,
+  LANDING_STATS, LANDING_FEATURES, LANDING_FAQ, LANDING_CODE_LINES, LANDING_AI_PREVIEW,
 } from '@/data/constants'
 
 const router = useRouter()
-const store = useAppStore()
-const { isScrolled } = useGlassNav()
 const { fullLabel: versionLabel } = useAppVersion()
 
 const { displayed: heroLine1, isDone: line1Done, target: heroRef } = useTypewriter('Private', 50, 800)
@@ -57,20 +53,36 @@ const stat2 = useCountUp(LANDING_STATS[2].value, 1800, 0)
 const stat3 = useCountUp(LANDING_STATS[3].value, 1200, 0)
 const statRefs = [stat0, stat1, stat2, stat3]
 const statIcons = [FileCode, ShieldCheck, Bot, EyeOff]
-const featureIcons = { Shield, TrendingUp, Sparkles } as Record<string, any>
-
-const heroLoaded = ref(false)
-onMounted(() => { requestAnimationFrame(() => { heroLoaded.value = true }) })
+const featureIcons = { Shield, TrendingUp, Zap } as Record<string, any>
 
 const mobileMenuOpen = ref(false)
+const mobileMenuFirstLink = ref<HTMLAnchorElement | null>(null)
 const showStickyCTA = ref(false)
 function onScroll() { showStickyCTA.value = window.scrollY > window.innerHeight * 0.9 }
-onMounted(() => window.addEventListener('scroll', onScroll, { passive: true }))
-onUnmounted(() => window.removeEventListener('scroll', onScroll))
+function onKeyDown(e: KeyboardEvent) {
+  if (mobileMenuOpen.value && e.key === 'Escape') {
+    mobileMenuOpen.value = false
+  }
+}
+watch(mobileMenuOpen, (open) => {
+  if (open) nextTick(() => mobileMenuFirstLink.value?.focus())
+})
+onMounted(() => {
+  window.addEventListener('scroll', onScroll, { passive: true })
+  window.addEventListener('keydown', onKeyDown)
+})
+onUnmounted(() => {
+  window.removeEventListener('scroll', onScroll)
+  window.removeEventListener('keydown', onKeyDown)
+})
 
 const featuresSection = ref<HTMLElement | null>(null)
 function scrollToFeatures() { featuresSection.value?.scrollIntoView({ behavior: 'smooth' }) }
 function scrollToTop() { window.scrollTo({ top: 0, behavior: 'smooth' }) }
+
+const ARBISCAN_SUBSCRIPTION_URL = 'https://sepolia.arbiscan.io/address/0x39D49B2614d24ba189B613bEAa903d829A73eA9e'
+function openArbiscan() { window.open(ARBISCAN_SUBSCRIPTION_URL, '_blank', 'noopener,noreferrer') }
+function goToIssuerOnboarding() { router.push('/apply-issuer') }
 
 const navLinks = [
   { name: 'Features', href: '#features' },
@@ -172,6 +184,7 @@ function scaleIn(delay = 0) {
         <a
           v-for="(link, i) in navLinks"
           :key="link.name"
+          :ref="(el) => { if (i === 0) mobileMenuFirstLink = el as HTMLAnchorElement }"
           :href="link.href"
           :class="cn(
             'text-4xl font-sans font-bold text-compute dark:text-signal transition-all duration-500',
@@ -225,34 +238,42 @@ function scaleIn(delay = 0) {
             v-motion
             :initial="{ opacity: 0, y: 20 }"
             :enter="{ opacity: 1, y: 0, transition: { delay: 300, duration: 600 } }"
-            class="mb-6"
+            class="mb-8"
           >
-            <div ref="heroRef">
-              <h1 class="font-sans font-extrabold leading-[1.08] tracking-tight text-midnight dark:text-[#e3e2e5]">
-                <span v-if="heroLine1" class="block text-5xl md:text-6xl xl:text-7xl">{{ heroLine1 }}<span v-if="!line1Done" class="inline-block w-[3px] h-[0.9em] align-[-0.05em] bg-compute dark:bg-signal ml-1" style="animation: typewriter-cursor 0.6s infinite" /></span>
-                <span v-if="line1Done" class="block text-5xl md:text-6xl xl:text-7xl">{{ heroLine2 }}<span v-if="!line2Done" class="inline-block w-[3px] h-[0.9em] align-[-0.05em] bg-compute dark:bg-signal ml-1" style="animation: typewriter-cursor 0.6s infinite" /></span>
-              </h1>
-              <h2 v-if="line2Done" class="text-4xl md:text-5xl xl:text-6xl font-sans font-extrabold leading-[1.2] tracking-tight mt-2 pb-1 text-transparent bg-clip-text bg-gradient-to-r from-compute to-gold dark:from-signal dark:to-gold">
-                {{ heroLine3 }}<span v-if="!line3Done" class="inline-block w-[3px] h-[0.9em] align-[-0.05em] bg-compute dark:bg-signal ml-1" style="animation: typewriter-cursor 0.6s infinite" />
-              </h2>
-            </div>
+            <!--
+              Each span is ALWAYS rendered with a `min-h` matching its
+              final rendered height — the H1 occupies its full 3-line
+              size from t=0, so the subtitle + CTAs don't get pushed
+              down as the typewriter writes each line in. Cursor v-ifs
+              gate on "this line is currently typing" so three cursors
+              don't blink on three empty lines before typing starts.
+              Line 3's min-h includes `pb-1` (0.25rem) because Tailwind
+              uses border-box — without the calc, the descender padding
+              tips the rendered height above the reserve and the box
+              grows once the gradient text appears.
+            -->
+            <h1 ref="heroRef" class="font-sans font-extrabold leading-[1.08] tracking-tight text-midnight dark:text-[#e3e2e5]">
+              <span class="block text-5xl md:text-6xl xl:text-7xl min-h-[1.08em]">{{ heroLine1 }}<span v-if="heroLine1 && !line1Done" class="inline-block w-[3px] h-[0.9em] align-[-0.05em] bg-compute dark:bg-signal ml-1" style="animation: typewriter-cursor 0.6s infinite" /></span>
+              <span class="block text-5xl md:text-6xl xl:text-7xl min-h-[1.08em]">{{ heroLine2 }}<span v-if="line1Done && !line2Done" class="inline-block w-[3px] h-[0.9em] align-[-0.05em] bg-compute dark:bg-signal ml-1" style="animation: typewriter-cursor 0.6s infinite" /></span>
+              <span class="block text-4xl md:text-5xl xl:text-6xl leading-[1.2] mt-2 pb-1 text-transparent bg-clip-text bg-gradient-to-r from-compute to-gold dark:from-signal dark:to-gold min-h-[calc(1.2em_+_0.25rem)]">{{ heroLine3 }}<span v-if="line2Done && !line3Done" class="inline-block w-[3px] h-[0.9em] align-[-0.05em] bg-compute dark:bg-signal ml-1" style="animation: typewriter-cursor 0.6s infinite" /></span>
+            </h1>
           </div>
 
           <p
-            :class="cn(
-              'font-body text-xl text-slate dark:text-[#d5c4ab] max-w-xl leading-relaxed mb-10 transition-all duration-700',
-              line3Done ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4',
-            )"
+            v-motion
+            :initial="{ opacity: 0, y: 16 }"
+            :enter="{ opacity: 1, y: 0, transition: { delay: 500, duration: 600 } }"
+            class="font-body text-xl text-slate dark:text-[#d5c4ab] max-w-xl leading-relaxed mb-10"
           >
-            Encrypted RWA management powered by Fhenix FHE. Deposit, earn yield, and let AI optimize
-            your portfolio — all without exposing a single balance.
+            Encrypted RWA portfolios on Fhenix CoFHE. Buy, hold, and earn yield without exposing
+            a single balance — with an AI copilot landing in Wave 4.
           </p>
 
           <div
-            :class="cn(
-              'flex flex-wrap gap-4 transition-all duration-700 delay-200',
-              line3Done ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4',
-            )"
+            v-motion
+            :initial="{ opacity: 0, y: 16 }"
+            :enter="{ opacity: 1, y: 0, transition: { delay: 700, duration: 600 } }"
+            class="flex flex-wrap gap-4"
           >
             <MButton size="lg" class="btn-shimmer rounded-xl" @click="router.push('/portfolio')">
               Launch App
@@ -266,11 +287,15 @@ function scaleIn(delay = 0) {
         </div>
 
         <!-- Right: Data Flow Visualization (desktop) -->
-        <div class="hidden lg:flex items-center justify-center relative h-[500px]">
+        <div
+          class="hidden lg:flex items-center justify-center relative h-[500px]"
+          role="img"
+          aria-label="Cleartext balances and yields are encrypted via Fhenix CoFHE into euint128 ciphertexts on-chain. Only the investor can decrypt via EIP-712 permit."
+        >
           <!-- Soft amber glow -->
-          <div class="absolute inset-0 bg-[radial-gradient(circle_at_50%_45%,var(--color-signal)_/_10%,transparent_60%)] pointer-events-none" />
+          <div class="absolute inset-0 bg-[radial-gradient(circle_at_50%_45%,var(--color-signal)_/_10%,transparent_60%)] pointer-events-none" aria-hidden="true" />
 
-          <div class="relative w-[380px] flex flex-col items-center gap-0">
+          <div class="relative w-[380px] flex flex-col items-center gap-0" aria-hidden="true">
             <!-- Stage 1: Cleartext input -->
             <div
               v-motion
@@ -313,7 +338,7 @@ function scaleIn(delay = 0) {
                   <div class="w-8 h-8 rounded-lg bg-gold/15 flex items-center justify-center">
                     <Lock :size="16" class="text-gold" />
                   </div>
-                  <span class="text-base font-sans font-semibold text-white">Fhenix FHE Encryption</span>
+                  <span class="text-base font-sans font-semibold text-white">Fhenix CoFHE Encryption</span>
                 </div>
                 <MBadge variant="fhe">CoFHE</MBadge>
               </div>
@@ -356,14 +381,14 @@ function scaleIn(delay = 0) {
               </div>
               <div class="flex items-center gap-2 mt-3">
                 <Shield :size="12" class="text-compute dark:text-signal" />
-                <span class="font-body text-sm text-cool">Only you can decrypt via EIP-712</span>
+                <span class="font-body text-sm text-cool">Only you can decrypt via EIP-712 permit</span>
               </div>
             </div>
           </div>
         </div>
 
-        <!-- Mobile hero cards -->
-        <div class="lg:hidden flex flex-col items-center gap-4">
+        <!-- Mobile hero cards (decorative — desktop viz already conveys the story to assistive tech) -->
+        <div class="lg:hidden flex flex-col items-center gap-4" aria-hidden="true">
           <div class="w-[85%] bg-white dark:bg-midnight-mid ghost-border rounded-2xl p-5 shadow-2xl relative">
             <div class="absolute -inset-8 bg-[radial-gradient(circle,var(--color-signal)_/_10%,transparent_60%)] pointer-events-none" />
             <p class="label-text text-xs text-cool mb-1">Total Portfolio</p>
@@ -395,7 +420,7 @@ function scaleIn(delay = 0) {
     <div class="w-full bg-mist/70 dark:bg-[#0d0e10] border-y border-haze/60 dark:border-[#514532]/25 py-6 overflow-hidden">
       <div class="max-w-7xl mx-auto px-6 flex flex-wrap justify-center lg:justify-between items-center gap-8 lg:gap-12 opacity-80 hover:opacity-100 transition-opacity duration-500">
         <span
-          v-for="(tech, i) in ['FHENIX', 'ARBITRUM', 'CoFHE', 'ERC-3643', 'ReineiraOS']"
+          v-for="(tech, i) in ['FHENIX', 'ARBITRUM', 'CoFHE', 'ERC-3643', 'CHAINLINK', 'ZeroDev']"
           :key="tech"
           v-motion
           :initial="{ opacity: 0, y: 10 }"
@@ -438,7 +463,7 @@ function scaleIn(delay = 0) {
             The Privacy Problem
           </h2>
           <p class="font-body text-center text-xl text-slate dark:text-[#d5c4ab] max-w-2xl mx-auto mt-2 mb-10 lg:mb-14">
-            Traditional RWA platforms expose everything. MuHaven encrypts everything.
+            Traditional RWA platforms expose balances and yields. MuHaven encrypts both.
           </p>
         </div>
 
@@ -488,7 +513,7 @@ function scaleIn(delay = 0) {
                 <EyeOff :size="20" class="text-compute dark:text-signal" />
               </div>
               <div>
-                <h3 class="font-sans font-bold text-xl text-midnight dark:text-[#e3e2e5]">MuHaven + Fhenix FHE</h3>
+                <h3 class="font-sans font-bold text-xl text-midnight dark:text-[#e3e2e5]">MuHaven + Fhenix CoFHE</h3>
                 <p class="text-sm text-cool">Encrypted by default</p>
               </div>
             </div>
@@ -496,8 +521,8 @@ function scaleIn(delay = 0) {
               <li
                 v-for="(item, i) in [
                   'Balances encrypted as euint128 on-chain',
-                  'Yield computed in ciphertext via FHE.div()',
-                  'AI agent operates on encrypted state only',
+                  'Pull-based yield — encrypted shares, mhUSDC payout',
+                  'Atomic single-tx purchase — no plaintext intermediate state',
                   'Only the investor can decrypt via EIP-712 permit',
                 ]"
                 :key="item"
@@ -553,6 +578,19 @@ function scaleIn(delay = 0) {
               {{ feat.code }}
             </div>
           </div>
+        </div>
+
+        <!-- Wave 4 preview teaser — agentic layer in active development -->
+        <div
+          v-motion
+          :initial="{ opacity: 0, y: 16 }"
+          :visible-once="{ opacity: 1, y: 0, transition: { delay: 200, duration: 500 } }"
+          class="mt-12 flex flex-col sm:flex-row items-center justify-center gap-3 text-center"
+        >
+          <MBadge variant="fhe">{{ LANDING_AI_PREVIEW.badge }}</MBadge>
+          <p class="font-body text-sm text-slate dark:text-[#d5c4ab] max-w-3xl">
+            {{ LANDING_AI_PREVIEW.text }}
+          </p>
         </div>
       </div>
     </section>
@@ -629,10 +667,10 @@ function scaleIn(delay = 0) {
             </div>
             <div class="space-y-4">
               <div v-for="(step, i) in [
-                'Deposit USDC via encrypted payment rails',
-                'AI agent recommends portfolio allocation',
-                'Buy fhERC-20 RWA tokens (encrypted balances)',
-                'Receive yield privately — only you can decrypt',
+                'Wrap USDC into mhUSDC (confidential settlement)',
+                'Buy fhERC-20 RWA tokens — atomic single-tx, encrypted balances',
+                'Pull yield per epoch — only you can decrypt',
+                'AI copilot for advice and policy-bound execution (Wave 4)',
               ]" :key="i" class="flex items-start gap-3">
                 <div class="w-7 h-7 rounded-full bg-compute/10 dark:bg-signal/10 text-compute dark:text-signal flex items-center justify-center text-sm font-bold shrink-0 mt-0.5">
                   {{ i + 1 }}
@@ -652,16 +690,22 @@ function scaleIn(delay = 0) {
             </div>
             <div class="space-y-4">
               <div v-for="(step, i) in [
-                'Create fhERC-20 RWA token or wrap existing ERC-20',
-                'Configure KYC requirements and jurisdiction rules',
-                'Deposit yield into YieldDistributor contract',
-                'Yield distributed proportionally via FHE math',
+                'Onboard fhERC-20 RWA token via the self-serve wizard',
+                'Bind compliance modules (jurisdiction, holders, lockup)',
+                'Open epoch → snapshot holders → fund mhUSDC',
+                'Investors pull their own share — issuer sees aggregates',
               ]" :key="i" class="flex items-start gap-3">
                 <div class="w-7 h-7 rounded-full bg-gold/10 text-gold flex items-center justify-center text-sm font-bold shrink-0 mt-0.5">
                   {{ i + 1 }}
                 </div>
                 <p class="font-body text-base text-slate dark:text-[#d5c4ab]">{{ step }}</p>
               </div>
+            </div>
+            <div class="mt-7 pt-5 border-t border-haze/40 dark:border-[#514532]/25">
+              <MButton variant="outline" size="md" class="rounded-xl w-full sm:w-auto" @click="goToIssuerOnboarding">
+                Onboard a Token
+                <ArrowRight :size="14" />
+              </MButton>
             </div>
           </div>
         </div>
@@ -704,7 +748,7 @@ function scaleIn(delay = 0) {
               Start Managing Your Portfolio <span class="text-transparent bg-clip-text bg-gradient-to-r from-signal to-gold">Privately</span>
             </h2>
             <p class="font-body text-xl text-[#d5c4ab] max-w-xl mx-auto mb-8">
-              Encrypted balances, private yields, AI-powered management. Nobody sees your strategy — not even the agent.
+              Encrypted balances, private yields, atomic encrypted purchase. AI copilot landing in Wave 4 — when it ships, even the agent can't see your strategy.
             </p>
             <div class="flex flex-wrap items-center justify-center gap-4 mb-6">
               <MButton size="lg" class="btn-shimmer rounded-xl" @click="router.push('/portfolio')">
@@ -715,12 +759,17 @@ function scaleIn(delay = 0) {
                 <Github :size="16" />
                 GitHub
               </MButton>
-              <MButton variant="outline" size="lg" class="rounded-xl border-[#d5c4ab]/20 text-white hover:border-signal hover:text-signal dark:border-[#d5c4ab]/20 dark:text-white dark:hover:border-signal dark:hover:text-signal">
+              <MButton
+                variant="outline"
+                size="lg"
+                class="rounded-xl border-[#d5c4ab]/20 text-white hover:border-signal hover:text-signal dark:border-[#d5c4ab]/20 dark:text-white dark:hover:border-signal dark:hover:text-signal"
+                @click="openArbiscan"
+              >
                 <ExternalLink :size="16" />
-                Etherscan
+                Arbiscan
               </MButton>
             </div>
-            <p class="label-text text-xs text-[#d5c4ab]/70">No KYC required &middot; Testnet live now</p>
+            <p class="label-text text-xs text-[#d5c4ab]/70">Testnet open access &middot; No real funds at risk</p>
           </div>
         </div>
       </div>
@@ -750,7 +799,7 @@ function scaleIn(delay = 0) {
           <a class="label-text text-xs text-cool hover:text-compute dark:hover:text-signal transition-colors" href="#">Privacy</a>
           <a class="label-text text-xs text-cool hover:text-compute dark:hover:text-signal transition-colors" href="#">Terms</a>
           <a class="label-text text-xs text-cool hover:text-compute dark:hover:text-signal transition-colors" href="#">Twitter</a>
-          <a class="label-text text-xs text-cool hover:text-compute dark:hover:text-signal transition-colors" href="#">Github</a>
+          <a class="label-text text-xs text-cool hover:text-compute dark:hover:text-signal transition-colors" href="#">GitHub</a>
           <span
             data-testid="footer-app-version"
             class="font-mono text-[11px] text-cool/70 dark:text-cool/60 tabular-nums"
@@ -774,3 +823,24 @@ function scaleIn(delay = 0) {
     </Transition>
   </div>
 </template>
+
+<style>
+/* Honor prefers-reduced-motion globally on this surface — kills the
+ * cursor blink, flow-down pulses, ambient drift, and any v-motion /
+ * Tailwind transition durations. The typewriter still ticks chars
+ * in via setInterval (JS, not CSS), but with the subtitle + CTA
+ * gating removed it's purely cosmetic — the page is usable from t=0.
+ * Unscoped because the rule must reach v-motion children + global
+ * keyframes (`flow-down`, `pulse-ring`, `drift`, `typewriter-cursor`).
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+</style>

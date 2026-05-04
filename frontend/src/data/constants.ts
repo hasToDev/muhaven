@@ -4,9 +4,9 @@
 // ── Landing Page Data ──
 
 export const LANDING_STATS = [
-  { label: 'Smart Contracts', value: 7, prefix: '', suffix: '' },
+  { label: 'Platform Contracts', value: 11, prefix: '', suffix: '' },
   { label: 'Balance Privacy', value: 100, prefix: '', suffix: '%' },
-  { label: 'AI Agents', value: 2, prefix: '', suffix: '' },
+  { label: 'Agentic Surfaces', value: 4, prefix: '', suffix: '' },
   { label: 'Balances Exposed', value: 0, prefix: '', suffix: '' },
 ]
 
@@ -19,17 +19,24 @@ export const LANDING_FEATURES = [
   },
   {
     title: 'Private Yield Distribution',
-    description: 'Yield is calculated and distributed using FHE math. Issuers see aggregates, never individual positions.',
+    description: 'Pull-based per-epoch yield. Each investor decrypts their own share; issuers see aggregates, never individual positions.',
     icon: 'TrendingUp',
-    code: 'FHE.div(totalYield, investorCount)',
+    code: 'FHE.mul(balance, ratePerShare)',
   },
   {
-    title: 'AI Portfolio Agent',
-    description: 'An AI agent manages your portfolio using function calls on encrypted state. It never sees your balances.',
-    icon: 'Sparkles',
-    code: 'agent.execute(encryptedState)',
+    title: 'Atomic Encrypted Purchase',
+    description: 'Single-tx KYC gate, oracle read, FHE.mul, mhUSDC pull, and fhERC-20 mint. No two-step exposure window, no plaintext intermediate state.',
+    icon: 'Zap',
+    code: 'Subscription.purchase(token, encAmount)',
   },
 ]
+
+// Wave 4 preview — surfaces in active development on a parallel branch.
+// Rendered below the three-card grid as a "Coming next" teaser.
+export const LANDING_AI_PREVIEW = {
+  badge: 'Coming next',
+  text: 'HavenBot in-dashboard copilot · @muhaven/mcp server · OpenClaw skill · hosted checkout at pay.muhaven.app — agentic layer in active development.',
+}
 
 export const LANDING_FAQ = [
   {
@@ -37,8 +44,8 @@ export const LANDING_FAQ = [
     content: 'Yes. Balances are stored as FHE-encrypted euint128 values on-chain. Only you can decrypt them using an EIP-712 permit signed by your wallet. Not even the smart contract owner, the AI agent, or Fhenix validators can see your balance.',
   },
   {
-    title: 'How does the AI agent work with encrypted data?',
-    content: 'The agent uses function calling to interact with smart contracts that operate on encrypted state. It can trigger deposits, rebalances, and yield claims without ever decrypting the underlying values. The FHE.select() pattern ensures the same gas cost whether an operation succeeds or fails.',
+    title: 'How will the AI agent work with encrypted data?',
+    content: 'The agent layer is in active development. It will use function calling against smart contracts that operate on encrypted state, triggering deposits, rebalances, and yield claims without decrypting the underlying values. The FHE.select() pattern keeps gas cost identical across success and failure paths.',
   },
   {
     title: 'What tokens are supported?',
@@ -49,8 +56,8 @@ export const LANDING_FAQ = [
     content: 'No. Issuers can only see aggregate metrics: total supply (if they enable public total supply), number of investors, and total yield distributed. Individual balances remain encrypted.',
   },
   {
-    title: 'What happens if the AI agent makes a bad trade?',
-    content: 'Risk guardrails are stored as encrypted parameters (euint64) on-chain — max drawdown, min yield threshold, drift tolerance, and max daily spend. The agent cannot exceed these bounds, and the FHE.select() pattern silently nullifies any operation that violates them.',
+    title: 'How will the AI agent stay within bounds?',
+    content: 'Tiered autonomy — investors choose Advisory, Confirm-per-action, or Policy-bound mode. Risk guardrails are stored as encrypted parameters (euint64) on-chain: max drawdown, min yield threshold, drift tolerance, max daily spend. The FHE.select() pattern silently nullifies any operation that violates them, and a single-tx /pause uninstalls the agent\'s session keys instantly.',
   },
 ]
 
