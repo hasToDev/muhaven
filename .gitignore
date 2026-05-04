@@ -12,6 +12,10 @@ deployment.json
 # Dependencies
 node_modules/
 bun.lockb
+# Root project uses pnpm — a stray `bun install` at root drops a `bun.lock`
+# that should never be committed. Frontend's `frontend/bun.lock` remains
+# tracked because the frontend package uses bun.
+/bun.lock
 
 # Hardhat artifacts
 artifacts/
