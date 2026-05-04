@@ -678,10 +678,40 @@ async function decryptSupplyFromChain() {
     }
     console.log('[decryptSupply] handle:', handle, '· epoch #', inflight.epochId.toString())
 
-    // L2 grant is on the issuer's kernel; permit-based decrypt
-    // resolves via the standard `decryptForView` path. Retry-and-
-    // backoff handles the common "cofhe service hasn't indexed the
-    // freshly-landed FHE.allow yet" race after a fresh finalize.
+    // Phase 9.C / L2 follow-up — stamp the issuer's L2 ACL grant onto
+    // the current ephemeral EOA. The L2 grant in finalizeSnapshot
+    // only reaches the kernel; cofhe's permit-based decrypt checks
+    // ACL against the permit's signer (eph, since kernels can't sign
+    // per ADR-009). Without this refresh, the decrypt 403s with
+    // "current session EOA has no ACL grant on this handle." Silent
+    // via session-key (`refreshSnapshotSupplyGrant` is in the issuer
+    // session bundle).
+    const eph = fhe.getEphemeralEOA() as Address
+    if (eph && eph !== '0x0000000000000000000000000000000000000000') {
+      const tRefresh = performance.now()
+      console.log('[decryptSupply] re-stamping L2 ACL grant onto eph', eph)
+      try {
+        const refreshTx = await SnapshotService.refreshSnapshotSupplyGrant(
+          snapAddr,
+          inflight.epochId,
+          eph,
+        )
+        console.log('[decryptSupply] refresh tx', refreshTx, '· landed in', Math.round(performance.now() - tRefresh), 'ms')
+      } catch (refreshErr) {
+        // Common case where refresh would fail: pre-Phase-9.C/L2-follow-up
+        // contract impl that doesn't have refreshSnapshotSupplyGrant.
+        // Surface as a console warning but proceed to attempt decrypt
+        // anyway — if the eph happens to have ACL via some other path,
+        // it'll succeed; otherwise the retry loop's classified error
+        // tells the issuer to fall back to manual entry.
+        console.warn('[decryptSupply] refresh failed (proceeding to decrypt anyway):', refreshErr)
+      }
+    } else {
+      console.warn('[decryptSupply] no ephemeralEOA available — skipping refresh; decrypt likely 403s')
+    }
+
+    // Retry-and-backoff handles cofhe propagation lag on the freshly-
+    // stamped grant.
     const result = await decryptSupplyWithRetry(handle, { attemptLabel: 'decryptSupply' })
     if (result.ok) {
       // Form input is whole tokens (the parser later × 1e6 for base units).
@@ -700,7 +730,7 @@ async function decryptSupplyFromChain() {
       })
     } else if (result.kind === '403') {
       toast.error('Decrypt failed — ACL not honored', {
-        description: `Tried ${result.attemptCount}× across a ${(result.attemptCount === 3 ? '5.5' : '1.5')}s window. If this is a freshly-finalized epoch, click Decrypt from chain manually in 10-15s. Otherwise type the supply from your off-chain ledger.`,
+        description: 'The ephemeral session signer has no ACL on this handle, even after a refresh attempt. Type the supply from your off-chain ledger.',
       })
     } else {
       toast.error('Decrypt failed', { description: result.raw })

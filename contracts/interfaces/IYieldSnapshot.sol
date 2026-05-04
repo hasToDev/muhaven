@@ -205,6 +205,16 @@ interface IYieldSnapshot {
     ///         `MuHavenStable.refreshAuditGrant` (ADR-042).
     function refreshAuditGrant(euint64 handle, address ephemeralEOA) external;
 
+    /// @notice Phase 9.C / L2 follow-up (2026-05-04) — re-stamp the
+    ///         issuer's kernel ACL grant on `e.encTotalSupply` onto a
+    ///         fresh `ephemeralEOA`. Required because the L2 grant in
+    ///         `finalizeSnapshot` only reaches the kernel — and kernels
+    ///         can't sign cofhe permits (ADR-009), so the actual decrypt
+    ///         needs the eph to have ACL too. Mirror of `MuHavenStable
+    ///         .refreshDecryptGrant` + `MuHavenToken.refreshDecryptGrant`.
+    ///         Issuer-only; reverts `OnlyIssuer` for any other caller.
+    function refreshSnapshotSupplyGrant(uint256 epochId, address ephemeralEOA) external;
+
     // ── Views ─────────────────────────────────────────────────────────────
 
     /// @notice Full epoch snapshot.

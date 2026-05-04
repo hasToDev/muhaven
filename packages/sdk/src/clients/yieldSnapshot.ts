@@ -351,6 +351,36 @@ export class YieldSnapshotClient {
     return hash
   }
 
+  /**
+   * Phase 9.C / L2 follow-up (2026-05-04) — re-stamp the issuer's
+   * kernel ACL grant on `e.encTotalSupply` onto a fresh ephemeralEOA.
+   *
+   * The L2 grant in `finalizeSnapshot` reaches only the kernel; the
+   * cofhe permit-based decrypt path checks ACL against the permit's
+   * signer (the ephemeralEOA, since kernels can't sign per ADR-009).
+   * This method is the bridge — call it before `decryptForView` on
+   * the encTotalSupply handle, every time the session rotates.
+   *
+   * Issuer-only (the contract gates on `_issuerOf(token) ==
+   * msg.sender`); reverts `OnlyIssuer` for any other caller.
+   */
+  async refreshSnapshotSupplyGrant(
+    epochId: bigint,
+    ephemeralEOA: Address,
+  ): Promise<Hash> {
+    requireEphemeralEOA(ephemeralEOA)
+    const { hash } = await writeAndWait({
+      publicClient: this.ctx.publicClient,
+      sender: this.ctx.sender,
+      address: this.address,
+      abi: yieldSnapshotAbi,
+      functionName: 'refreshSnapshotSupplyGrant',
+      args: [epochId, ephemeralEOA],
+      operation: 'YieldSnapshot.refreshSnapshotSupplyGrant',
+    })
+    return hash
+  }
+
   // ── Views ─────────────────────────────────────────────────────────────
 
   async getEpoch(epochId: bigint): Promise<EpochView> {

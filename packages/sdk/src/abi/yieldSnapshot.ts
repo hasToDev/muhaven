@@ -69,6 +69,20 @@ export const yieldSnapshotAbi = [
     ],
     outputs: [],
   },
+  // Phase 9.C / L2 follow-up — re-stamp the issuer's kernel ACL grant
+  // on encTotalSupply onto a fresh ephemeralEOA. Required because the
+  // L2 grant in finalizeSnapshot only reaches the kernel; permit-based
+  // decrypt needs the eph (ADR-009: kernels can't sign permits).
+  {
+    name: 'refreshSnapshotSupplyGrant',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'epochId', type: 'uint256' },
+      { name: 'ephemeralEOA', type: 'address' },
+    ],
+    outputs: [],
+  },
   // ── Views ─────────────────────────────────────────────────────────────
   {
     name: 'getEpoch',

@@ -230,6 +230,11 @@ const snapshotPermissions = nonZero(
     // MuHavenStable.refreshAuditGrant + MuHavenToken.refreshAuditGrant
     // entries elsewhere in this file.
     { target: snapAddr, functionName: 'refreshAuditGrant', abi: yieldSnapshotAbi, valueLimit: 0n },
+    // Phase 9.C / L2 follow-up — re-stamp issuer's L2 ACL grant on
+    // encTotalSupply onto a fresh ephemeralEOA. Frontend calls this
+    // before decrypt-from-chain to satisfy the cofhe permit's eph-
+    // signer ACL check (kernels can't sign permits per ADR-009).
+    { target: snapAddr, functionName: 'refreshSnapshotSupplyGrant', abi: yieldSnapshotAbi, valueLimit: 0n },
   ]),
 );
 

@@ -348,6 +348,29 @@ export async function getEpochTotalSupplyHandle(
   return epoch.encTotalSupply
 }
 
+/**
+ * Phase 9.C / L2 follow-up (2026-05-04) — re-stamp the issuer's
+ * kernel ACL grant on `e.encTotalSupply` onto a fresh ephemeralEOA.
+ *
+ * The L2 grant in `finalizeSnapshot` reaches only the kernel; the
+ * cofhe permit-based decrypt path checks ACL against the permit's
+ * signer (the eph, since kernels can't sign per ADR-009). Calling
+ * this before `decryptSnapshotSupplyForView` is the bridge.
+ *
+ * One UserOp; silent via session-key (the dashboard's session bundle
+ * grants `refreshSnapshotSupplyGrant` per Phase 9.C / L2 follow-up).
+ * Idempotent: re-stamping on the same eph is a no-op write.
+ */
+export async function refreshSnapshotSupplyGrant(
+  snapshotAddr: Address,
+  epochId: bigint,
+  ephemeralEOA: Address,
+): Promise<Hash> {
+  const ctx = await buildWriteContext()
+  const client = new YieldSnapshotClient(ctx, snapshotAddr)
+  return client.refreshSnapshotSupplyGrant(epochId, ephemeralEOA)
+}
+
 // ── Holder enumeration ─────────────────────────────────────────────────
 
 /**

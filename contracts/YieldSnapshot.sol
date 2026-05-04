@@ -300,6 +300,14 @@ contract YieldSnapshot is Initializable, ReentrancyGuardTransient, IYieldSnapsho
     event ClaimExpiryUpdated(address indexed token, uint256 newSeconds);
     event TokenRegistryUpdated(address indexed newRegistry);
     event PUSDCUpdated(address indexed newPUSDC);
+    /// @notice Phase 9.C / L2 follow-up — emitted when an issuer
+    ///         re-stamps the encTotalSupply ACL grant onto a fresh
+    ///         ephemeralEOA via `refreshSnapshotSupplyGrant`.
+    event SnapshotSupplyGrantRefreshed(
+        address indexed issuer,
+        address indexed ephemeralEOA,
+        uint256 indexed epochId
+    );
 
     // ── Modifiers ────────────────────────────────────────────────────────
 
@@ -804,6 +812,34 @@ contract YieldSnapshot is Initializable, ReentrancyGuardTransient, IYieldSnapsho
         if (!FHE.isAllowed(handle, msg.sender)) revert NotAuditHandleOwner();
         FHE.allow(handle, ephemeralEOA);
         emit AuditGrantRefreshed(msg.sender, ephemeralEOA, handle);
+    }
+
+    /// @notice Phase 9.C / L2 follow-up (2026-05-04) — re-stamp the
+    ///         issuer's kernel ACL grant on `e.encTotalSupply` onto a
+    ///         fresh `ephemeralEOA`. Mirror of `MuHavenStable
+    ///         .refreshDecryptGrant` + `MuHavenToken.refreshDecryptGrant`.
+    ///
+    /// @dev    The kernel can't sign permits (ADR-009), so the cofhe
+    ///         permit-based decrypt flow needs the ephemeralEOA — not
+    ///         the kernel — to have ACL on the handle. The L2 grant
+    ///         in `finalizeSnapshot` only stamps the kernel (issuer),
+    ///         which is durable but not directly decryptable via
+    ///         permit. This function lets the rightful issuer re-stamp
+    ///         the encTotalSupply handle to a new ephemeralEOA on
+    ///         demand, every time their session rotates.
+    ///
+    ///         Pure ACL-only mutation; no reentrancy concern. Idempotent:
+    ///         re-stamping on the same eph is a no-op write.
+    ///
+    ///         Auth: only the on-chain issuer for the epoch's token can
+    ///         re-stamp (matches the other issuer-only entry points'
+    ///         `onlyIssuerForEpoch` modifier).
+    function refreshSnapshotSupplyGrant(uint256 epochId, address ephemeralEOA) external onlyIssuerForEpoch(epochId) {
+        if (ephemeralEOA == address(0)) revert InvalidEphemeralEOA();
+        Epoch storage e = _epochs[epochId];
+        if (!Common.isInitialized(e.encTotalSupply)) revert EmptySnapshot();
+        FHE.allow(e.encTotalSupply, ephemeralEOA);
+        emit SnapshotSupplyGrantRefreshed(msg.sender, ephemeralEOA, epochId);
     }
 
     // ── Views ────────────────────────────────────────────────────────────

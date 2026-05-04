@@ -527,6 +527,65 @@ describe("YieldSnapshot", () => {
         "stranger must not receive encTotalSupply grant",
       ).to.equal(false);
     });
+
+    // ── Phase 9.C / L2 follow-up — refreshSnapshotSupplyGrant ──────────
+
+    it("Phase 9.C / L2 follow-up — refreshSnapshotSupplyGrant stamps eph ACL on existing handle", async () => {
+      // The L2 grant in finalizeSnapshot reaches the kernel only.
+      // Permit-based decrypt needs the eph to have ACL too — refresh
+      // bridges that gap (mirror of refreshDecryptGrant pattern).
+      const { snapshot, token, issuer, investor } =
+        await loadFixture(deploySnapshotFixture);
+      const eph = createEphemeralEOA();
+
+      await snapshot.connect(issuer).openEpoch(await token.getAddress());
+      await snapshot.connect(issuer).snapshotBatch(1n, [investor.address]);
+      await snapshot.connect(issuer).finalizeSnapshot(1n);
+
+      const e = await snapshot.getEpoch(1n);
+      const acl = await hre.cofhe.mocks.getMockACL();
+      // Pre-refresh: kernel has grant, eph does not.
+      expect(await acl.isAllowed(BigInt(e.encTotalSupply), issuer.address)).to.equal(true);
+      expect(await acl.isAllowed(BigInt(e.encTotalSupply), eph.address)).to.equal(false);
+
+      // Refresh — issuer re-stamps onto eph.
+      await snapshot.connect(issuer).refreshSnapshotSupplyGrant(1n, eph.address);
+
+      // Post-refresh: BOTH have grant.
+      expect(await acl.isAllowed(BigInt(e.encTotalSupply), issuer.address)).to.equal(true);
+      expect(await acl.isAllowed(BigInt(e.encTotalSupply), eph.address)).to.equal(true);
+    });
+
+    it("Phase 9.C / L2 follow-up — refreshSnapshotSupplyGrant rejects non-issuer", async () => {
+      const { snapshot, token, issuer, investor, stranger } =
+        await loadFixture(deploySnapshotFixture);
+      const eph = createEphemeralEOA();
+
+      await snapshot.connect(issuer).openEpoch(await token.getAddress());
+      await snapshot.connect(issuer).snapshotBatch(1n, [investor.address]);
+      await snapshot.connect(issuer).finalizeSnapshot(1n);
+
+      await expect(
+        snapshot.connect(stranger).refreshSnapshotSupplyGrant(1n, eph.address),
+      ).to.be.revertedWithCustomError(snapshot, "OnlyIssuer");
+    });
+
+    it("Phase 9.C / L2 follow-up — refreshSnapshotSupplyGrant rejects zero eph + zero epoch", async () => {
+      const { snapshot, token, issuer, investor } =
+        await loadFixture(deploySnapshotFixture);
+
+      await snapshot.connect(issuer).openEpoch(await token.getAddress());
+      await snapshot.connect(issuer).snapshotBatch(1n, [investor.address]);
+      await snapshot.connect(issuer).finalizeSnapshot(1n);
+
+      await expect(
+        snapshot.connect(issuer).refreshSnapshotSupplyGrant(1n, ZERO_ADDRESS),
+      ).to.be.revertedWithCustomError(snapshot, "InvalidEphemeralEOA");
+
+      await expect(
+        snapshot.connect(issuer).refreshSnapshotSupplyGrant(999n, createEphemeralEOA().address),
+      ).to.be.revertedWithCustomError(snapshot, "InvalidEpoch");
+    });
   });
 
   // ── fundEpoch ────────────────────────────────────────────────────────────
