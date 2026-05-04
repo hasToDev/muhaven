@@ -686,7 +686,16 @@ async function refreshAfterDistribute() {
  * those in afterward (with calculator help if they want).
  */
 async function handlePrepare() {
-  if (!canPrepare.value) return
+  if (!canPrepare.value) {
+    console.warn('[DistributePage.handlePrepare] gated by canPrepare; ignoring click', {
+      selectedToken: selectedToken.value,
+      holderTotal: holderTotal.value,
+      callerIsOnChainIssuer: callerIsOnChainIssuer.value,
+      isProcessing: distributionStore.isProcessing,
+      isAwaitingFund: distributionStore.isAwaitingFund,
+    })
+    return
+  }
   if (!connected.value || !walletAddress.value) {
     toast.error('Wallet not connected', {
       description: 'Sign in with your passkey to prepare an epoch',
@@ -703,15 +712,41 @@ async function handlePrepare() {
     return
   }
 
+  // Phase 9.C / L2 wizard split — structured console group lets the
+  // operator scroll through the entire Prepare lifecycle in dev tools
+  // when something goes wrong. Inputs / mid-step state / final phase
+  // all in one collapsible block. Times each sub-step.
+  const t0 = performance.now()
+  console.groupCollapsed(
+    `%c[DistributePage] Prepare epoch · ${selectedTokenInfo.value?.symbol ?? token.slice(0, 8)}`,
+    'color: #B8860B; font-weight: bold',
+  )
+  console.log('[Prepare] account:', account)
+  console.log('[Prepare] token:', token, '· symbol:', selectedTokenInfo.value?.symbol)
+  console.log('[Prepare] snapshotAddr:', snapshotAddr)
+  console.log('[Prepare] holderTotal (form):', holderTotal.value)
+
   preflightError.value = null
   distributionStore.markPreparing()
+  console.log('[Prepare] phase → preparing')
 
   try {
     if (!preflightStatus.value) {
+      console.log('[Prepare] no cached preflight; running runPreflight()')
       await runPreflight()
+    } else {
+      console.log('[Prepare] reusing cached preflight')
     }
     const p = preflightStatus.value
     if (!p) throw new Error('Preflight not ready')
+    console.log('[Prepare] preflight result:', {
+      holderCount: p.holderCount,
+      callerIsOnChainIssuer: p.callerIsOnChainIssuer,
+      onChainIssuer: p.onChainIssuer,
+      legacyToWrapperOperatorOk: p.legacyToWrapperOperatorOk,
+      wrapperToSnapshotOperatorOk: p.wrapperToSnapshotOperatorOk,
+      mhUsdcHandle: p.mhUsdcHandle,
+    })
     if (p.holderCount === 0) {
       throw new Error(
         `No holders for ${selectedTokenInfo.value?.symbol ?? 'this token'} yet — mint MuHavenToken to a KYC-approved address first`,
@@ -729,8 +764,13 @@ async function handlePrepare() {
     // strip + later wrap-need detection at Fund time). Skipping if
     // already revealed — no surprise session signature.
     if (mhUsdcBalance.value === null) {
+      const tDecrypt = performance.now()
+      console.log('[Prepare] auto-decrypting issuer mhUSDC (handle:', p.mhUsdcHandle, ')')
       await fhe.initialize()
       mhUsdcBalance.value = await fhe.decryptMhUsdcForView(p.mhUsdcHandle)
+      console.log('[Prepare] mhUSDC decrypted in', Math.round(performance.now() - tDecrypt), 'ms · balance:', mhUsdcBalance.value)
+    } else {
+      console.log('[Prepare] mhUSDC already revealed:', mhUsdcBalance.value)
     }
 
     // Kick off the Prepare stage. Yield amount + ratePerShare default
@@ -741,29 +781,41 @@ async function handlePrepare() {
       snapshotAddr,
       holderTotal: p.holderCount,
     })
+    console.log('[Prepare] store.start() — phase:', distributionStore.phase)
+
+    const tRun = performance.now()
+    console.log('[Prepare] store.runPrepare() — driving Open + Snapshot + Finalize')
     await distributionStore.runPrepare(account)
+    console.log(
+      '[Prepare] store.runPrepare() done in', Math.round(performance.now() - tRun),
+      'ms · phase:', distributionStore.phase,
+      '· epochId:', distributionStore.epochId?.toString(),
+      '· lastTxHash:', distributionStore.lastTxHash,
+    )
 
     if (distributionStore.phase === 'awaiting-fund') {
-      // Snapshot finalize landed → L2 grant on encTotalSupply is now
-      // active. Auto-decrypt the supply + pre-fill the input. The
-      // watcher on `phase === 'awaiting-fund'` (further down) drives
-      // this; calling here ensures it runs even when the watcher
-      // fires before the page mounts (e.g. handlePrepare returns,
-      // watcher sees the same value it already saw).
+      console.log('[Prepare] paused at awaiting-fund · triggering supply auto-decrypt')
       await refreshSupplyDecryptAvailability(token)
       void autoDecryptSupplyAfterPrepare()
     } else if (distributionStore.phase === 'error') {
+      console.error('[Prepare] store ended in error:', distributionStore.errorMessage)
       toast.error('Prepare failed', {
         description: distributionStore.errorMessage ?? 'Unknown error',
       })
+    } else {
+      console.warn('[Prepare] unexpected end phase:', distributionStore.phase)
     }
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'Prepare failed'
+    console.error('[Prepare] threw:', e)
     preflightError.value = msg
     if (walletAddress.value) {
       distributionStore.setError(walletAddress.value as Address, msg)
     }
     toast.error('Prepare failed', { description: msg })
+  } finally {
+    console.log('[Prepare] total elapsed:', Math.round(performance.now() - t0), 'ms')
+    console.groupEnd()
   }
 }
 
@@ -778,7 +830,15 @@ async function handlePrepare() {
  * snapshot operator grant (and legacy → wrapper if auto-wrap fires).
  */
 async function handleFund() {
-  if (!canFund.value) return
+  if (!canFund.value) {
+    console.warn('[DistributePage.handleFund] gated by canFund; ignoring click', {
+      isAwaitingFund: distributionStore.isAwaitingFund,
+      amountValid: amountValid.value,
+      totalSupplyValid: totalSupplyValid.value,
+      isProcessing: distributionStore.isProcessing,
+    })
+    return
+  }
   if (!connected.value || !walletAddress.value) {
     toast.error('Wallet not connected', {
       description: 'Sign in with your passkey to fund the epoch',
@@ -795,48 +855,83 @@ async function handleFund() {
     return
   }
 
+  const t0 = performance.now()
+  console.groupCollapsed(
+    `%c[DistributePage] Fund epoch · ${selectedTokenInfo.value?.symbol ?? token.slice(0, 8)} · ${formatUSD(Number(amountUnits.value) / 1e6)}`,
+    'color: #B8860B; font-weight: bold',
+  )
+  console.log('[Fund] account:', account)
+  console.log('[Fund] token:', token, '· symbol:', selectedTokenInfo.value?.symbol)
+  console.log('[Fund] snapshotAddr:', snapshotAddr)
+  console.log('[Fund] epochId:', distributionStore.epochId?.toString())
+  console.log('[Fund] amountUnits (form):', amountUnits.value, '·', formatUSD(Number(amountUnits.value) / 1e6))
+  console.log('[Fund] totalSupplyUnits (form):', totalSupplyUnits.value)
+  console.log('[Fund] ratePerShareUnits (computed, scaled):', ratePerShareUnits.value)
+
   preflightError.value = null
 
   try {
-    // Re-run preflight quickly — operator grants may have expired or
-    // never been granted; we'll grant on demand below.
-    if (!preflightStatus.value) await runPreflight()
+    if (!preflightStatus.value) {
+      console.log('[Fund] no cached preflight; running runPreflight()')
+      await runPreflight()
+    }
     const p = preflightStatus.value
     if (!p) throw new Error('Preflight not ready')
+    console.log('[Fund] preflight result:', {
+      legacyToWrapperOperatorOk: p.legacyToWrapperOperatorOk,
+      wrapperToSnapshotOperatorOk: p.wrapperToSnapshotOperatorOk,
+    })
 
-    // Make sure we have a ground-truth mhUSDC balance to decide whether
-    // to auto-wrap. Same silent-fail-zero footgun as the original
-    // single-shot path — closes the gap from `scripts/run-yield-epoch.ts`'s
-    // preflight-wrap commentary.
     if (mhUsdcBalance.value === null) {
+      const tDecrypt = performance.now()
+      console.log('[Fund] auto-decrypting issuer mhUSDC')
       await fhe.initialize()
       mhUsdcBalance.value = await fhe.decryptMhUsdcForView(p.mhUsdcHandle)
+      console.log('[Fund] mhUSDC decrypted in', Math.round(performance.now() - tDecrypt), 'ms · balance:', mhUsdcBalance.value)
     }
     const balance = mhUsdcBalance.value
     const needsWrap = balance < amountUnits.value
+    const shortfall = needsWrap ? amountUnits.value - balance : 0n
+    console.log(
+      '[Fund] mhUSDC balance:', balance,
+      '· needsWrap:', needsWrap,
+      '· shortfall:', shortfall,
+    )
+
     if (needsWrap && !p.legacyToWrapperOperatorOk) {
+      console.log('[Fund] granting legacyPusdc → mhUSDC operator (needed for auto-wrap)')
+      const tGrant = performance.now()
       await SnapshotService.grantLegacyToWrapperOperator()
+      console.log('[Fund] legacy→wrapper grant landed in', Math.round(performance.now() - tGrant), 'ms')
     }
     if (!p.wrapperToSnapshotOperatorOk) {
+      console.log('[Fund] granting mhUSDC → snapshot operator (needed for fundEpoch pull)')
+      const tGrant = performance.now()
       await SnapshotService.grantWrapperToSnapshotOperator(snapshotAddr)
+      console.log('[Fund] wrapper→snapshot grant landed in', Math.round(performance.now() - tGrant), 'ms')
     }
     if (needsWrap) {
       const eph = fhe.getEphemeralEOA() as Address
-      await SnapshotService.autoWrapForDistribution(
-        amountUnits.value - balance,
-        eph,
-      )
+      console.log('[Fund] auto-wrapping shortfall', shortfall, 'into mhUSDC (eph:', eph, ')')
+      const tWrap = performance.now()
+      await SnapshotService.autoWrapForDistribution(shortfall, eph)
+      console.log('[Fund] auto-wrap landed in', Math.round(performance.now() - tWrap), 'ms')
     }
 
-    // Push the form's amount + computed ratePerShare into the store
-    // (overrides the start-time placeholders, persists immediately so
-    // a reload mid-fund preserves the value).
     distributionStore.setFundInputs(account, {
       totalYieldUnits: amountUnits.value,
       ratePerShareUnits: ratePerShareUnits.value,
     })
+    console.log('[Fund] store.setFundInputs() — pushed amount + ratePerShare to store')
 
+    const tFund = performance.now()
+    console.log('[Fund] store.runFund() — sending fundEpoch UserOp')
     await distributionStore.runFund(account)
+    console.log(
+      '[Fund] store.runFund() done in', Math.round(performance.now() - tFund),
+      'ms · phase:', distributionStore.phase,
+      '· lastTxHash:', distributionStore.lastTxHash,
+    )
 
     if (distributionStore.phase === 'done' && distributionStore.epochId !== null) {
       const epoch = await SnapshotService.detectInFlight(token)
@@ -867,17 +962,24 @@ async function handleFund() {
         refreshSupplyDecryptAvailability(selectedToken.value as Address | ''),
       ])
     } else if (distributionStore.phase === 'error') {
+      console.error('[Fund] store ended in error:', distributionStore.errorMessage)
       toast.error('Fund failed', {
         description: distributionStore.errorMessage ?? 'Unknown error',
       })
+    } else {
+      console.warn('[Fund] unexpected end phase:', distributionStore.phase)
     }
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'Fund failed'
+    console.error('[Fund] threw:', e)
     preflightError.value = msg
     if (walletAddress.value) {
       distributionStore.setError(walletAddress.value as Address, msg)
     }
     toast.error('Fund failed', { description: msg })
+  } finally {
+    console.log('[Fund] total elapsed:', Math.round(performance.now() - t0), 'ms')
+    console.groupEnd()
   }
 }
 
@@ -1225,13 +1327,21 @@ function fmtClaimWindow(claimExpiry: bigint): string {
         <div class="flex items-center justify-between max-w-3xl mx-auto">
           <template v-for="(s, i) in STEPS" :key="s.label">
             <div class="flex flex-col items-center gap-1.5 min-w-[60px]">
+              <!-- Phase 9.C / L2 wizard split — paused-step treatment.
+                   When the wizard is at awaiting-fund (post-finalize,
+                   pre-fund), the active step gets a "filled ring + no
+                   pulse" treatment instead of "solid gold + pulse" so
+                   the issuer reads it as "stopped here, waiting for
+                   you" not "running." Idle step semantics unchanged. -->
               <div
                 :class="[
                   'h-7 w-7 rounded-full flex items-center justify-center transition-all duration-300',
                   i < distributionStore.stepperIndex
                     ? 'bg-gold/15 dark:bg-signal/15 border border-gold/40 dark:border-signal/40 text-compute dark:text-signal'
                     : i === distributionStore.stepperIndex
-                      ? 'bg-gold dark:bg-signal text-midnight shadow-[0_0_14px_rgba(255,186,32,0.45)] dark:shadow-[0_0_14px_rgba(255,220,161,0.4)]'
+                      ? distributionStore.isAwaitingFund
+                        ? 'bg-gold/15 dark:bg-signal/15 border-2 border-gold dark:border-signal text-compute dark:text-signal'
+                        : 'bg-gold dark:bg-signal text-midnight shadow-[0_0_14px_rgba(255,186,32,0.45)] dark:shadow-[0_0_14px_rgba(255,220,161,0.4)]'
                       : 'bg-white dark:bg-[#171717] border border-haze dark:border-white/15 text-cool',
                   i === distributionStore.stepperIndex && distributionStore.isProcessing && 'animate-pulse',
                 ]"
@@ -1431,7 +1541,12 @@ function fmtClaimWindow(claimExpiry: bigint): string {
                   Yield Epoch
                 </h3>
                 <p class="font-sans text-[10px] text-cool mt-0.5">
-                  Close the books on a period · pull-based per ADR-005
+                  <template v-if="distributionStore.isAwaitingFund">
+                    Snapshot frozen · review supply + size your payout
+                  </template>
+                  <template v-else>
+                    Close the books on a period · pull-based per ADR-005
+                  </template>
                 </p>
               </div>
               <div class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-haze dark:border-white/10 bg-white dark:bg-[#0e0e0e]">
@@ -1475,9 +1590,12 @@ function fmtClaimWindow(claimExpiry: bigint): string {
                   <button
                     type="button"
                     @click="tokenDropdownOpen = !tokenDropdownOpen"
-                    :disabled="distributionStore.isProcessing"
+                    :disabled="distributionStore.isProcessing || distributionStore.isAwaitingFund"
                     :aria-expanded="tokenDropdownOpen"
                     aria-haspopup="listbox"
+                    :title="distributionStore.isAwaitingFund
+                      ? 'Asset locked while an epoch is in flight — cancel from the Resume / Error panel to switch.'
+                      : undefined"
                     data-testid="distribute-token-select"
                     class="w-full flex items-center justify-between gap-3 rounded-lg px-4 py-3
                            bg-white dark:bg-[#0e0e0e]
@@ -1599,15 +1717,88 @@ function fmtClaimWindow(claimExpiry: bigint): string {
                 </div>
               </div>
 
+              <!-- Phase 9.C / L2 wizard split — Stage 1 explainer card.
+                   Replaces the empty-vertical-space that would otherwise
+                   sit between the asset selector and the Prepare CTA
+                   when Stage-2 inputs are gated out. Three-step list +
+                   time estimate + L2-narrative footer line so the issuer
+                   knows what Prepare commits to and what comes next. -->
+              <div
+                v-if="
+                  !distributionStore.isAwaitingFund
+                  && (!preflightStatus || preflightStatus.holderCount > 0)
+                  && (!preflightStatus || preflightStatus.callerIsOnChainIssuer)
+                "
+                v-motion
+                :initial="{ opacity: 0, y: 8 }"
+                :enter="{ opacity: 1, y: 0, transition: { duration: 320, delay: 60 } }"
+                data-testid="distribute-prepare-explainer"
+                class="rounded-xl p-6 border border-haze dark:border-white/5 bg-mist/30 dark:bg-white/[0.02] flex items-start gap-4"
+              >
+                <div class="w-12 h-12 rounded-full bg-gold/12 dark:bg-signal/12 flex items-center justify-center flex-shrink-0">
+                  <Receipt :size="20" :stroke-width="1.6" class="text-compute dark:text-signal" />
+                </div>
+                <div class="min-w-0 flex-1 flex flex-col gap-3">
+                  <p class="font-sans text-sm font-semibold text-midnight dark:text-white">
+                    Step 1 — Close the books on this period
+                  </p>
+                  <ol class="flex flex-col gap-2 font-sans text-[12px] text-cool">
+                    <li class="flex items-center gap-2">
+                      <span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-white dark:bg-[#0e0e0e] border border-haze dark:border-white/10 font-bold tabular-nums text-[10px] text-midnight dark:text-white">1</span>
+                      Open a new epoch on-chain
+                    </li>
+                    <li class="flex items-center gap-2">
+                      <span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-white dark:bg-[#0e0e0e] border border-haze dark:border-white/10 font-bold tabular-nums text-[10px] text-midnight dark:text-white">2</span>
+                      Snapshot
+                      <span class="font-medium text-midnight dark:text-white tabular-nums">
+                        {{ holderTotal === 1 ? '1 holder' : `all ${holderTotal} holders` }}
+                      </span>
+                      <template v-if="batchCountPreview > 1">
+                        in
+                        <span class="font-medium text-midnight dark:text-white tabular-nums">{{ batchCountPreview }} batches</span>
+                      </template>
+                    </li>
+                    <li class="flex items-center gap-2">
+                      <span class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-white dark:bg-[#0e0e0e] border border-haze dark:border-white/10 font-bold tabular-nums text-[10px] text-midnight dark:text-white">3</span>
+                      Finalize the snapshot · supply locks in
+                    </li>
+                  </ol>
+                  <p class="font-sans text-[11px] text-cool/80 leading-relaxed border-t border-haze/60 dark:border-white/5 pt-2.5 mt-1">
+                    <Clock :size="11" :stroke-width="1.8" class="inline-block align-text-bottom mr-1" />
+                    ~{{ batchCountPreview * 30 + 15 }}s on Arb Sepolia.
+                    Then you'll review the
+                    <span class="font-medium text-compute dark:text-signal">decrypted snapshot supply</span>
+                    and size your yield payout — no off-chain ledger lookup needed.
+                  </p>
+                </div>
+              </div>
+
+              <!-- Phase 9.C / L2 wizard split — Stage 2 inputs gated to
+                   awaiting-fund phase. Per UX agents: the Stage-1 issuer
+                   shouldn't see empty input fields above the Prepare
+                   CTA (reads as a precondition that doesn't exist).
+                   Slide-down v-motion mirrors the explainer's exit
+                   so the visual continuity is "explainer collapses,
+                   inputs drop into the same vertical slot."
+                   Wrapper-level gate (per UX Architect) keeps Vue
+                   reactivity tidy + makes the diff readable. -->
+              <div
+                v-if="
+                  distributionStore.isAwaitingFund
+                  && (!preflightStatus || preflightStatus.holderCount > 0)
+                  && (!preflightStatus || preflightStatus.callerIsOnChainIssuer)
+                "
+                v-motion
+                :initial="{ opacity: 0, y: -8 }"
+                :enter="{ opacity: 1, y: 0, transition: { duration: 320, delay: 80 } }"
+                data-testid="distribute-fund-fields"
+                class="flex flex-col gap-6"
+              >
               <!-- Encrypted amount input — hidden when blocked by the
                    issuer-mismatch panel above (no point letting the
                    user fill the form when the click is guaranteed to
                    reject). -->
               <div
-                v-if="
-                  (!preflightStatus || preflightStatus.holderCount > 0)
-                  && (!preflightStatus || preflightStatus.callerIsOnChainIssuer)
-                "
                 class="flex flex-col gap-2"
               >
                 <div class="flex items-center justify-between gap-2">
@@ -1835,16 +2026,22 @@ function fmtClaimWindow(claimExpiry: bigint): string {
                 "
                 class="flex flex-col gap-2"
               >
-                <!-- Phase 9.C / L3 — anchor row. Always-visible context
-                     hint about where supply comes from + holder count. -->
+                <!-- Phase 9.C / L3 + L2 — anchor row. Reflects three
+                     post-finalize states: supply decrypted (most common
+                     post-Phase 9.C/L2), decryptable but not yet read
+                     (transient or auto-decrypt failed), or encrypted-
+                     issuer-only (pre-L2 epoch fallback). -->
                 <p class="font-sans text-[11px] text-cool flex items-center gap-1.5">
                   <Users :size="12" :stroke-width="1.8" />
                   <span class="font-medium text-midnight dark:text-white tabular-nums">
                     {{ holderTotal === 1 ? '1 holder' : `${holderTotal} holders` }}
                   </span>
-                  on-chain ·
-                  <template v-if="supplyDecryptAvailable">
-                    decrypt the snapshot's exact supply with the button below
+                  snapshotted ·
+                  <template v-if="totalSupplyUnits > 0n && supplyDecryptAvailable">
+                    supply read from on-chain truth
+                  </template>
+                  <template v-else-if="supplyDecryptAvailable">
+                    click Decrypt to read the on-chain supply
                   </template>
                   <template v-else>
                     supply is encrypted (issuer-known only)
@@ -1909,6 +2106,25 @@ function fmtClaimWindow(claimExpiry: bigint): string {
                     class="font-mono text-sm text-cool flex-shrink-0 tabular-nums"
                   >{{ selectedTokenInfo.symbol }}</span>
                 </div>
+                <!-- Phase 9.C / L2 wizard split — "Decrypted from chain" pill.
+                     Shows when the supply was auto-populated by the L2
+                     post-finalize decrypt (totalSupplyUnits > 0n while
+                     supplyDecryptAvailable is true and the wizard is
+                     paused at awaiting-fund). Issuer can still edit the
+                     value if they want to override; the pill just signals
+                     "this came from on-chain truth, not your typing." -->
+                <p
+                  v-if="
+                    distributionStore.isAwaitingFund
+                    && supplyDecryptAvailable
+                    && totalSupplyUnits > 0n
+                  "
+                  data-testid="distribute-supply-decrypted-from-chain"
+                  class="inline-flex items-center gap-1.5 self-start font-sans text-[10px] uppercase tracking-[0.2em] text-positive font-semibold"
+                >
+                  <ShieldCheck :size="11" :stroke-width="2" />
+                  Decrypted from chain
+                </p>
                 <p class="font-sans text-[11px] text-cool flex items-center gap-1.5">
                   <span v-if="totalSupplyValid">
                     Per-share rate
@@ -1947,6 +2163,8 @@ function fmtClaimWindow(claimExpiry: bigint): string {
                   </span>
                 </p>
               </div>
+              </div>
+              <!-- /distribute-fund-fields wrapper close (Phase 9.C / L2) -->
             </div>
 
             <!-- Footer -->
