@@ -25,10 +25,21 @@
  *   6. Verify the plaintext matches the expected math
  *      `(input * fakeRate) / scale` and print [OK] / [STALL] / [FAIL].
  *
- * Verdict gate:
- *   [OK]    → L1 is safe to ship as planned. Proceed to L1.1.
- *   [STALL] → fall through to Plan C (defer L1; ship L2 + L3 only).
- *             Update PHASE9C_PLAN.md §3.4 with the empirical evidence.
+ * Verdict gate (exit codes):
+ *   [OK]                  exit 0  — L1 is safe to ship as planned.
+ *   [STALL]               exit 1  — true ancestry stall (timeout). Fall
+ *                                   through to Plan C (defer L1).
+ *   [SERVICE_UNAVAILABLE] exit 2  — cofhe sealOutput service is
+ *                                   transiently degraded. NOT an L1
+ *                                   design issue. Retry in 10-30 min.
+ *   [FAIL]                exit 3  — unexpected error (math wrong, RPC
+ *                                   blew up, etc). Triage individually.
+ *
+ * Distinguishing STALL vs SERVICE_UNAVAILABLE matters: STALL is a
+ * structural property of the op shape (the gate L1 is testing for),
+ * SERVICE_UNAVAILABLE is a transient infrastructure outage. A 503
+ * response in <90s is the latter; a true ancestry stall hits the
+ * timeout because the SDK polls indefinitely on 204s.
  *
  * Usage:
  *   pnpm hardhat run scripts/probe-trivial-div.ts --network arb-sepolia
@@ -147,15 +158,61 @@ async function main() {
     ]);
   } catch (err: any) {
     const elapsed = Date.now() - decryptStart;
-    console.log(`[5] decrypt failed after ${elapsed} ms: ${err.message ?? err}`);
+    const msg = String(err?.message ?? err);
+    console.log(`[5] decrypt failed after ${elapsed} ms: ${msg}`);
     console.log(`    last poll: attempt=${lastPoll.attemptIndex}, requestId=${lastPoll.requestId || "(none)"}`);
     console.log("");
-    console.log("[VERDICT] STALL — `FHE.div(handle, trivial)` did NOT resolve within budget.");
-    console.log("          L1 cannot ship the scaled-div math safely. Fall through to Plan C");
-    console.log("          (defer L1; ship L2 + L3 only). Update PHASE9C_PLAN.md §3.4 with");
-    console.log("          this evidence + the failing tx hash:");
-    console.log(`            ${receipt?.hash}`);
-    process.exit(1);
+
+    // Classify the failure. SDK error messages mirror the underlying
+    // sealOutput HTTP response — see decryption-lifecycle.mdx:
+    //   503 / "Service Unavailable" → cofhe service degraded (not L1).
+    //   timeout (≥ budget − 1s) with 204 polling → true ancestry stall.
+    //   404 after retry window → handle never registered (RPC / chain).
+    //   403 / "forbidden" / "ACL" → ACL grant missing (probe bug — we
+    //                                stamp it explicitly, so this would
+    //                                indicate a deeper SDK issue).
+    const isServiceUnavailable = /service unavailable|^503|http 503| 503 /i.test(msg);
+    const isAclDenied = /\b403\b|forbidden|acl/i.test(msg);
+    const isHandleUnknown = /\b404\b|not found|unknown/i.test(msg);
+    const hitTimeout = elapsed >= timeoutMs - 1500;
+
+    if (isServiceUnavailable) {
+      console.log("[VERDICT] SERVICE_UNAVAILABLE — cofhe sealOutput service is degraded.");
+      console.log("          This is transient infrastructure, NOT an L1 design issue.");
+      console.log("          The on-chain tx succeeded (gas accounted for); only the");
+      console.log("          off-chain decrypt path failed. Retry in 10-30 minutes; if");
+      console.log("          the failure persists, check Fhenix's status / support");
+      console.log(`          channels. Probe tx: ${receipt?.hash}`);
+      process.exit(2);
+    }
+
+    if (hitTimeout) {
+      console.log("[VERDICT] STALL — `FHE.div(handle, trivial)` did NOT resolve within budget.");
+      console.log("          L1 cannot ship the scaled-div math safely. Fall through to Plan C");
+      console.log("          (defer L1; ship L2 + L3 only). Update PHASE9C_PLAN.md §3.4 with");
+      console.log("          this evidence + the failing tx hash:");
+      console.log(`            ${receipt?.hash}`);
+      process.exit(1);
+    }
+
+    if (isAclDenied) {
+      console.log("[VERDICT] FAIL — 403 ACL denied. Probe contract grants ACL explicitly,");
+      console.log("          so this would indicate a deeper SDK / permit issue. Inspect");
+      console.log(`          tx ${receipt?.hash} TaskManager events for the result handle's grants.`);
+      process.exit(3);
+    }
+
+    if (isHandleUnknown) {
+      console.log("[VERDICT] FAIL — 404 handle unknown. Coprocessor hasn't observed the");
+      console.log("          ctHash within the SDK's 404-retry window. Either RPC lag or");
+      console.log("          a chain-environment mismatch (probe deployed on a different");
+      console.log(`          chain than the cofhe client targets). Probe tx: ${receipt?.hash}`);
+      process.exit(3);
+    }
+
+    console.log("[VERDICT] FAIL — unexpected error shape; classify manually.");
+    console.log(`          Probe tx: ${receipt?.hash}`);
+    process.exit(3);
   }
 
   const decryptElapsed = Date.now() - decryptStart;
