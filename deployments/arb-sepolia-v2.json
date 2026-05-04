@@ -1,7 +1,7 @@
 {
   "network": "arb-sepolia",
   "env": "prod",
-  "timestamp": "2026-05-04T06:42:16.279Z",
+  "timestamp": "2026-05-04T07:03:56.236Z",
   "deployer": "0xe11E83398C33A37CaC02C01c43F14A7f95876986",
   "external": {
     "legacyPusdc": "0x6b6e6479b8b3237933c3ab9d8be969862d4ed89f",
@@ -56,5 +56,54 @@
       "implementation": "0x732360067660fA99c16c9d10c8418bD594561900"
     }
   },
-  "tokens": {}
+  "tokens": {
+    "TBILL1": {
+      "symbol": "TBILL1",
+      "name": "MuHaven Treasury Bill Series 1",
+      "issuer": "0xe11E83398C33A37CaC02C01c43F14A7f95876986",
+      "oracleKind": "issuer",
+      "registeredOracle": "0xD30069114dFC83C714B04d6036dEfa64d2E9d583",
+      "initialNav": "1000000",
+      "treasurySeed": "0",
+      "contracts": {
+        "MuHavenToken": {
+          "proxy": "0x8D77cCf0a3a56c976a7DEAe59aF1D27f27407b0D",
+          "implementation": "0x2248d438a6fB374fA0E3ab6C17160922E75Ea3da"
+        },
+        "RedemptionQueue": {
+          "proxy": "0x435aF5AF238aBe80DD4dc571C38C167F407c4E9c",
+          "implementation": "0xce2Dc759159d22Aa112F5DcEDBE19a8aa52303CE"
+        },
+        "MuHavenTreasury": {
+          "proxy": "0xf423CE2d1fD856F89Ca75ec47c2791CeD91D62a3",
+          "implementation": "0x4decB7D835f84959C118A03bB7D037fF300fF5A6"
+        }
+      },
+      "registeredAt": "2026-05-04T07:01:55.025Z"
+    },
+    "GOLD1": {
+      "symbol": "GOLD1",
+      "name": "MuHaven Gold Series 1",
+      "issuer": "0xe11E83398C33A37CaC02C01c43F14A7f95876986",
+      "oracleKind": "issuer",
+      "registeredOracle": "0xD30069114dFC83C714B04d6036dEfa64d2E9d583",
+      "initialNav": "10000",
+      "treasurySeed": "0",
+      "contracts": {
+        "MuHavenToken": {
+          "proxy": "0x93e813e924A96441181A01171Cd1E20FaaC87AcF",
+          "implementation": "0x2248d438a6fB374fA0E3ab6C17160922E75Ea3da"
+        },
+        "RedemptionQueue": {
+          "proxy": "0x6f2D952c0350BB0d5F856df5F7f534dEAD6634A7",
+          "implementation": "0xce2Dc759159d22Aa112F5DcEDBE19a8aa52303CE"
+        },
+        "MuHavenTreasury": {
+          "proxy": "0x5057b445d7Ac1AFbd834122f63A9652DfCb78157",
+          "implementation": "0x4decB7D835f84959C118A03bB7D037fF300fF5A6"
+        }
+      },
+      "registeredAt": "2026-05-04T07:03:56.234Z"
+    }
+  }
 }
