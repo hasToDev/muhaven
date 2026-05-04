@@ -1322,13 +1322,13 @@ function fmtClaimWindow(claimExpiry: bigint): string {
                   <span v-if="totalSupplyValid">
                     Per-share rate
                     <span class="font-medium text-midnight dark:text-white tabular-nums">
-                      {{ formatUSD(Number(ratePerShareUnits) / 1e6) }}
+                      {{ formatUSD(Number(ratePerShareUnits)) }}
                     </span>
-                    per share — public on-chain (per-investor balances stay encrypted)
+                    per whole token — public on-chain (per-investor balances stay encrypted)
                   </span>
                   <span v-else-if="totalSupply.length > 0 && amountValid && totalSupplyUnits > 0n" class="text-gold">
                     <AlertTriangle :size="12" :stroke-width="1.8" />
-                    Per-share rate floors to zero — totalYield must be ≥ totalSupply
+                    Per-share rate floors to zero — yield amount must be ≥ outstanding supply (in whole-token units)
                   </span>
                   <span v-else>
                     Issuer's off-chain ledger value. Required for claim math.
