@@ -569,6 +569,93 @@ function applyCalculatorYield() {
   })
 }
 
+/**
+ * Phase 9.C / L2 — classify a `decryptSnapshotSupplyForView` failure
+ * shape so the toast / log gives the operator an actionable next step.
+ *
+ * Heuristics (cofhe SDK wraps responses as `sealOutput request failed:
+ * <reason>`):
+ *   - 503 / "Service Unavailable" → cofhe service degraded; retry later.
+ *   - 403 / "Forbidden" → ACL grant missing on this handle for this
+ *     permit. Common causes (in order of likelihood for the L2 path):
+ *       a) cofhe propagation lag right after finalize landed on-chain;
+ *       b) pre-L2 epoch (finalized before this L2 grant existed);
+ *       c) permit's `issuer` doesn't match the on-chain issuer of the
+ *          token (kernel mismatch).
+ *   - Other → surface raw.
+ *
+ * Note: matches `\bacl\b` not `acl` to avoid false-positive on
+ * substrings like "oracle".
+ */
+type SupplyDecryptFailureKind = '503' | '403' | 'other'
+function classifySupplyDecryptFailure(msg: string): SupplyDecryptFailureKind {
+  if (/\b503\b|service unavailable/i.test(msg)) return '503'
+  if (/\b403\b|forbidden|\bacl\b/i.test(msg)) return '403'
+  return 'other'
+}
+
+/**
+ * Phase 9.C / L2 — decrypt a finalized epoch's encTotalSupply with
+ * retry-and-backoff.
+ *
+ * `attemptDelaysMs` schedules retries after the first attempt. The
+ * specific values fix the common "fresh finalize race" failure mode:
+ * cofhe's coprocessor has to observe the L2 `FHE.allow` event from the
+ * finalize tx before it'll honor a decrypt request against the
+ * granted handle. The first attempt right after finalize lands often
+ * 403s because the indexer hasn't caught up; subsequent attempts
+ * after a few seconds succeed. If all attempts fail with the same
+ * 403 shape, we fall back to "type from your ledger." 503 short-
+ * circuits — service is genuinely down; retrying tighter doesn't help.
+ *
+ * Returns a one-of: { ok: true, supplyBaseUnits } or
+ * { ok: false, kind, raw }. Caller decides UI surface (toast vs
+ * silent fallback).
+ */
+async function decryptSupplyWithRetry(handle: `0x${string}`, opts?: {
+  attemptDelaysMs?: number[]
+  attemptLabel?: string
+}): Promise<
+  | { ok: true; supplyBaseUnits: bigint }
+  | { ok: false; kind: SupplyDecryptFailureKind; raw: string; attemptCount: number }
+> {
+  const delays = opts?.attemptDelaysMs ?? [1500, 4000]
+  const label = opts?.attemptLabel ?? 'decryptSupply'
+  let lastErr: unknown = null
+
+  // First attempt + (delays.length) retries = (1 + delays.length) total.
+  for (let attempt = 0; attempt < delays.length + 1; attempt++) {
+    if (attempt > 0) {
+      const wait = delays[attempt - 1]
+      console.log(`[${label}] attempt ${attempt + 1}/${delays.length + 1} after ${wait}ms backoff`)
+      await new Promise(r => setTimeout(r, wait))
+    } else {
+      console.log(`[${label}] attempt 1/${delays.length + 1}`)
+    }
+    try {
+      const supplyBaseUnits = await fhe.decryptSnapshotSupplyForView(handle)
+      console.log(`[${label}] success on attempt ${attempt + 1}: ${supplyBaseUnits}`)
+      return { ok: true, supplyBaseUnits }
+    } catch (e) {
+      lastErr = e
+      const msg = e instanceof Error ? e.message : String(e)
+      const kind = classifySupplyDecryptFailure(msg)
+      console.warn(`[${label}] attempt ${attempt + 1} failed (${kind}): ${msg}`)
+      // 503 short-circuits — service is degraded, rapid retry won't help.
+      if (kind === '503') {
+        return { ok: false, kind, raw: msg, attemptCount: attempt + 1 }
+      }
+    }
+  }
+  const raw = lastErr instanceof Error ? lastErr.message : String(lastErr)
+  return {
+    ok: false,
+    kind: classifySupplyDecryptFailure(raw),
+    raw,
+    attemptCount: delays.length + 1,
+  }
+}
+
 async function decryptSupplyFromChain() {
   if (!selectedToken.value || supplyDecrypting.value) return
   supplyDecrypting.value = true
@@ -589,28 +676,39 @@ async function decryptSupplyFromChain() {
     if (!handle) {
       throw new Error('Snapshot supply handle is uninitialized — finalize the snapshot first')
     }
+    console.log('[decryptSupply] handle:', handle, '· epoch #', inflight.epochId.toString())
+
     // L2 grant is on the issuer's kernel; permit-based decrypt
-    // resolves via the standard `decryptForView` path. The dedicated
-    // helper skips the MuHavenToken refresh fallback (irrelevant for
-    // YieldSnapshot aggregate handles).
-    const supplyBaseUnits = await fhe.decryptSnapshotSupplyForView(handle)
-    // Form input is whole tokens (the parser later × 1e6 for base units).
-    totalSupply.value = (Number(supplyBaseUnits) / 1_000_000).toString()
-    toast.success('Supply decrypted from chain', {
-      description: `Snapshot epoch #${inflight.epochId} → ${(Number(supplyBaseUnits) / 1_000_000).toLocaleString()} tokens outstanding`,
-    })
+    // resolves via the standard `decryptForView` path. Retry-and-
+    // backoff handles the common "cofhe service hasn't indexed the
+    // freshly-landed FHE.allow yet" race after a fresh finalize.
+    const result = await decryptSupplyWithRetry(handle, { attemptLabel: 'decryptSupply' })
+    if (result.ok) {
+      // Form input is whole tokens (the parser later × 1e6 for base units).
+      totalSupply.value = (Number(result.supplyBaseUnits) / 1_000_000).toString()
+      toast.success('Supply decrypted from chain', {
+        description: `Snapshot epoch #${inflight.epochId} → ${(Number(result.supplyBaseUnits) / 1_000_000).toLocaleString()} tokens outstanding`,
+      })
+      return
+    }
+
+    // All attempts failed — surface a kind-appropriate toast.
+    console.error('[decryptSupply] all attempts exhausted:', result)
+    if (result.kind === '503') {
+      toast.error('Decrypt failed — cofhe service degraded', {
+        description: 'The off-chain decrypt service is temporarily down. Wait a few minutes and try Decrypt from chain, or type the supply from your off-chain ledger.',
+      })
+    } else if (result.kind === '403') {
+      toast.error('Decrypt failed — ACL not honored', {
+        description: `Tried ${result.attemptCount}× across a ${(result.attemptCount === 3 ? '5.5' : '1.5')}s window. If this is a freshly-finalized epoch, click Decrypt from chain manually in 10-15s. Otherwise type the supply from your off-chain ledger.`,
+      })
+    } else {
+      toast.error('Decrypt failed', { description: result.raw })
+    }
   } catch (e) {
     const raw = e instanceof Error ? e.message : 'Unknown error'
-    // Frame a 403 as the most-likely cause: the epoch was finalized
-    // before the L2 ACL-grant upgrade landed (pre-9.C epochs don't
-    // carry the issuer ACL on encTotalSupply). The fallback is the
-    // same as no-L2: type the supply from the off-chain ledger.
-    const is403 = raw.includes('403') || raw.toLowerCase().includes('forbidden') || raw.toLowerCase().includes('acl')
-    toast.error('Decrypt failed', {
-      description: is403
-        ? 'This epoch was finalized before the supply-decrypt upgrade. Type the supply from your off-chain ledger.'
-        : raw,
-    })
+    console.error('[decryptSupply] threw outside the retry loop:', e)
+    toast.error('Decrypt failed', { description: raw })
   } finally {
     supplyDecrypting.value = false
   }
@@ -998,11 +1096,22 @@ async function handleFund() {
 async function autoDecryptSupplyAfterPrepare() {
   if (totalSupplyUnits.value > 0n) return  // issuer already typed it
   if (!selectedToken.value) return
-  // Defer one tick so the L2 grant tx has propagated to cofhe.
-  await new Promise(r => setTimeout(r, 250))
+  // Wait long enough for cofhe's coprocessor to observe the L2
+  // FHE.allow event from the just-landed finalize tx. Empirically
+  // ~3-8s on Arb Sepolia (varies with cofhe indexer load); we use a
+  // 2.5s warmup before the first attempt and let `decryptSupplyFromChain`
+  // handle further backoff via `decryptSupplyWithRetry`. A short
+  // warmup with retry is better than a long warmup because it
+  // optimises the common case (3-4s propagation) without penalising
+  // the lucky 2s case.
+  console.log('[autoDecryptSupply] phase entered awaiting-fund · waiting 2.5s for cofhe to observe L2 grant')
+  await new Promise(r => setTimeout(r, 2500))
   await refreshSupplyDecryptAvailability(selectedToken.value as Address)
   if (supplyDecryptAvailable.value) {
+    console.log('[autoDecryptSupply] running decryptSupplyFromChain')
     await decryptSupplyFromChain()
+  } else {
+    console.warn('[autoDecryptSupply] supplyDecryptAvailable is false — skipping')
   }
 }
 
