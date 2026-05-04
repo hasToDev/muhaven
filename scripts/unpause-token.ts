@@ -27,8 +27,15 @@
  *
  * Usage
  * ─────
+ *   # Staging (reads deployments/arb-sepolia-v2.staging.json):
  *   MUHAVEN_ENV=staging \
  *   MUHAVEN_TOKEN_SYMBOL=TBILL2 \
+ *   MUHAVEN_INITIAL_NAV=1000000 \
+ *   pnpm hardhat run scripts/unpause-token.ts --network arb-sepolia
+ *
+ *   # Production (reads deployments/arb-sepolia-v2.json):
+ *   MUHAVEN_ENV=prod \
+ *   MUHAVEN_TOKEN_SYMBOL=TBILL1 \
  *   MUHAVEN_INITIAL_NAV=1000000 \
  *   pnpm hardhat run scripts/unpause-token.ts --network arb-sepolia
  *
@@ -38,7 +45,10 @@
  *   pnpm hardhat run scripts/unpause-token.ts --network arb-sepolia
  *
  * Required env
- *   MUHAVEN_ENV          prod | staging
+ *   MUHAVEN_ENV          prod | staging — MUST be set explicitly. There
+ *                        is no default; an operator who forgets this
+ *                        while testing on staging would otherwise
+ *                        silently target prod (or vice versa).
  *
  * Optional env
  *   MUHAVEN_TOKEN_SYMBOL TBILL1 | GOLD1 | TBILL2 | … — single token
@@ -102,9 +112,16 @@ interface Job {
 }
 
 async function main() {
-  const env = (process.env.MUHAVEN_ENV ?? "prod").toLowerCase();
+  const rawEnv = process.env.MUHAVEN_ENV;
+  if (!rawEnv || rawEnv.trim() === "") {
+    throw new Error(
+      `MUHAVEN_ENV is required (must be "prod" or "staging"). ` +
+        `No default — set it explicitly so prod and staging can never be confused.`,
+    );
+  }
+  const env = rawEnv.toLowerCase();
   if (env !== "prod" && env !== "staging") {
-    throw new Error(`MUHAVEN_ENV must be "prod" or "staging", got "${env}"`);
+    throw new Error(`MUHAVEN_ENV must be "prod" or "staging", got "${rawEnv}"`);
   }
 
   const initialNav = BigInt(
@@ -224,20 +241,38 @@ async function main() {
       rotatedWriter = true;
     }
 
-    // 2) setNAV — required for the unpause to be safe (paused-with-zero-
-    //    NAV would let any subscription mint at NAV=0).
-    console.log(`         setNAV(${initialNav.toString()})`);
-    const txB = await oracle.setNAV(job.tokenAddr, initialNav);
-    const rcB = await txB.wait();
-    console.log(`           tx ${rcB.hash} (block ${rcB.blockNumber})`);
-
-    // 3) Restore the applicant kernel as the NAV writer so future NAV
-    //    updates remain issuer-driven.
-    if (rotatedWriter) {
-      console.log(`         restoring navWriter → ${originalWriter}`);
-      const txC = await oracle.setNavWriter(job.tokenAddr, originalWriter);
-      const rcC = await txC.wait();
-      console.log(`           tx ${rcC.hash} (block ${rcC.blockNumber})`);
+    // The setNAV call below can throw (RPC blip, deviation gate, cofhe TN
+    // stall). If it does, the writer is left rotated to the deployer and
+    // the applicant kernel permanently loses NAV-writer rights. Wrap so
+    // the restore always runs, even on failure.
+    try {
+      // 2) setNAV — required for the unpause to be safe (paused-with-
+      //    zero-NAV plus a follow-up unpause would let any subscription
+      //    mint at NAV=0 on the next tx).
+      console.log(`         setNAV(${initialNav.toString()})`);
+      const txB = await oracle.setNAV(job.tokenAddr, initialNav);
+      const rcB = await txB.wait();
+      console.log(`           tx ${rcB.hash} (block ${rcB.blockNumber})`);
+    } finally {
+      // 3) Restore the applicant kernel as the NAV writer so future NAV
+      //    updates remain issuer-driven. Best-effort: if restore itself
+      //    throws, surface a loud manual-recovery line — the operator
+      //    can then run a single setNavWriter tx by hand.
+      if (rotatedWriter) {
+        console.log(`         restoring navWriter → ${originalWriter}`);
+        try {
+          const txC = await oracle.setNavWriter(job.tokenAddr, originalWriter);
+          const rcC = await txC.wait();
+          console.log(`           tx ${rcC.hash} (block ${rcC.blockNumber})`);
+        } catch (restoreErr) {
+          console.error(
+            `         ⚠ FAILED to restore navWriter for ${job.symbol}.\n` +
+              `           Manual recovery (deployer key on the IssuerControlledOracle):\n` +
+              `             oracle.setNavWriter(${job.tokenAddr}, ${originalWriter})`,
+          );
+          throw restoreErr;
+        }
+      }
     }
 
     // 4) Unpause the token in the registry.
