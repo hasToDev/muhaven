@@ -13,12 +13,14 @@
 | [Architecture](./docs/ARCHITECTURE.md) | System layers, data flow diagrams, integration points |
 | [Smart Contracts](./docs/SMART_CONTRACTS.md) | Contract specs, interfaces, EIP compliance, Solidity code |
 | [MuHaven SDK](./docs/SDK.md) | TypeScript SDK — quickstart, API reference, integration guide |
-| [AI Agent Design](./docs/AGENT_DESIGN.md) | Agent architecture, tool definitions, staged rollout (chat UI shipped, execution loop Wave 4) |
+| [AI Agent Design](./docs/AGENT_DESIGN.md) | Agent architecture, tool definitions, four-surface rollout (chat scaffold shipped, full agentic layer in active Wave 4 development) |
 | [Issuer Model](./docs/ISSUER_MODEL.md) | Supply side: how RWA tokens enter MuHaven, yield flow, issuer experience |
 | [Token Lifecycle](./docs/TOKEN_LIFECYCLE.md) | Four-state lifecycle model: Active → Paused → Winding Down → Archived (post-hackathon spec) |
+| [Threat Model](./docs/THREAT_MODEL.md) | Privacy boundary, known leakage points, side-channel resistance, ZK/TEE/MPC comparison |
+| [Credit Protection Design](./docs/CREDIT_PROTECTION_DESIGN.md) | DefaultProtection + EncryptedGovernance + KYC attestation contract specs (Wave 4) |
 | [Competitive Analysis](./docs/COMPETITIVE_ANALYSIS.md) | Market positioning vs. Canton, Silent Data, DeFAI |
 | [Testnet Deployment](./docs/TESTNET_DEPLOY.md) | Step-by-step guide: env setup, deploy, verify, test |
-| [Backend Setup](./docs/BACKEND_SETUP.md) | Docker stack (postgres + backend + FHE worker + NAV worker), env vars, Cloudflare tunnel |
+| [Backend Setup](./docs/BACKEND_SETUP.md) | Docker stack (postgres + backend + FHE worker + NAV worker + NAV publisher), env vars, Cloudflare tunnel |
 
 ---
 
@@ -65,15 +67,15 @@ The DeFAI (DeFi + AI) market is exploding — AI agents that manage portfolios, 
 
 MuHaven is the first confidential, AI-powered RWA portfolio manager. It's a **two-sided platform**: issuers create and list RWA tokens, deposit yield, and manage distribution — while investors manage portfolios with AI-powered privacy. Nobody can see the strategy, the balances, or the yields. Not competitors, not MEV bots, not even the agent itself.
 
-> **Hackathon scope (Phase 20.H):** the full **confidential yield pipeline** is shipped and live on Arbitrum Sepolia — fhERC-20 balances, ZeroDev passkey auth, encrypted PUSDC settlement, MuHavenEscrow two-phase distribution, backend + FHE worker + NAV worker on a Cloudflare tunnel. Investors and issuers drive these flows directly from the Vue 3 dashboard today. The **AI agent chat surface is scaffolded**, with the execution loop landing in Wave 4 — see [AI Agent Design](./docs/AGENT_DESIGN.md).
+> **Status (production live · 2026-05-04):** the full **production-grade RWA flow** is deployed on Arbitrum Sepolia and serving traffic at [muhaven.hasto.dev](https://muhaven.hasto.dev) (frontend) backed by [nagreg.hasto.dev](https://nagreg.hasto.dev) (API). 11 platform contracts behind transparent proxies — atomic `MuHavenSubscription` for buy/redeem, per-token `MuHavenTreasury` custody, pluggable `IPriceOracle` with `IssuerControlledOracle` + `ChainlinkFunctionsOracle` reference impls, `RedemptionQueue` for overflow, pull-based `YieldSnapshot` per epoch, ERC-3643 modular compliance topology (`MuHavenIdentityRegistry` + `ModularCompliance` + module library), and the `MuHavenStable` confidential USDC wrapper (mhUSDC) replacing legacy PUSDC for MuHaven flows. fhERC-20 balances, ZeroDev passkey kernel + scoped session keys, backend + FHE worker + NAV worker + NAV publisher on a Cloudflare tunnel. TBILL1 + GOLD1 onboarded end-to-end. Investors and issuers drive every flow directly from the Vue 3 dashboard today; self-serve issuer onboarding wizard ships per-token contracts on-chain in one transaction batch. The **AI agent layer is in active development on a parallel branch** (HavenBot in-dashboard copilot, `@muhaven/mcp` MCPB server, OpenClaw skill, hosted checkout at `pay.muhaven.app`, tiered-autonomy engine) — see [AI Agent Design](./docs/AGENT_DESIGN.md).
 
 **How it works in 30 seconds:**
 
-1. An **issuer** creates or wraps a tokenized RWA on MuHaven and configures yield schedule, KYC requirements, and jurisdiction rules.
-2. An **investor** signs in with a passkey, deposits USDC (encrypted into PUSDC), and buys fhERC-20 RWA tokens — encrypted balances from the first mint.
-3. When the issuer distributes yield, the MuHaven SDK orchestrates `startDistribution` → `createYieldEscrows` → `fundEscrows`. Each investor gets an individual `MuHavenEscrow` with their share encrypted end-to-end. The issuer sees how many escrows were created, not individual shares.
-4. The investor claims yield from the dashboard — a gasless UserOp through their ZeroDev kernel. Silent-fail on bad conditions means an observer can't tell a failed claim from a real one.
-5. The Wave 4 AI agent will sit on top of this pipeline as a natural-language front-end, but the privacy guarantees live in the contracts and SDK — they don't depend on the agent being present.
+1. An **issuer** onboards a tokenized RWA through the self-serve wizard — a single transaction batch deploys per-token `MuHavenToken` (fhERC-20), `MuHavenTreasury`, and `RedemptionQueue` proxies, registers the token in `TokenRegistry`, and binds compliance modules (`CountryAllow`, `MaxHolders`, `Lockup`, …). NAV is set via `IssuerControlledOracle` (or Chainlink Functions for treasury/gold).
+2. An **investor** signs in with a passkey (ZeroDev kernel), wraps USDC into the confidential `MuHavenStable` wrapper (mhUSDC), and calls `MuHavenSubscription.purchase(token, encAmount, maxSharesHint, eph)` — atomic single-tx KYC gate → compliance modules → oracle read → `FHE.mul` → mhUSDC pull → mint → `FHE.allow` to the ephemeral session signer. Encrypted balances from the first share onward.
+3. When the issuer distributes yield, the SDK drives `YieldSnapshot.openEpoch` → `snapshotBatch` → `finalizeSnapshot` → `fundEpoch`. Per-investor share is computed once at fund time as a fixed-point `ratePerShare`; investors pull their own share on their own schedule via `claimYield(epochId, eph)`. The issuer sees aggregate epoch totals, not individual shares.
+4. The investor claims from the dashboard — a gasless UserOp through their ZeroDev kernel + scoped session key (most subsequent actions silent, no passkey prompt). Silent-fail on bad conditions means an observer can't tell a failed claim from a real one.
+5. The agent layer sits on top of this pipeline as a natural-language front-end (HavenBot chat, `@muhaven/mcp` MCP server, OpenClaw skill, hosted checkout) — but the privacy guarantees live in the contracts and SDK, so they don't depend on the agent being present.
 
 ### Three merged problems, one product
 
@@ -82,8 +84,9 @@ MuHaven solves three RWA issues simultaneously — because solving them separate
 | Issue | Why it's inseparable | How MuHaven solves it |
 |-------|---------------------|----------------------|
 | **Balance privacy** | The core problem — holdings visible to everyone | fhERC-20 tokens with FHE-encrypted balances via Fhenix CoFHE |
-| **Yield distribution privacy** | Yields leak balance info — breaks balance privacy | Encrypted escrow via ReineiraOS — yields computed and distributed in ciphertext |
-| **KYC-gated access** | Securities require investor verification before any transfer | Modular IKYCGate interface — ERC-3643/zkMe now, ReineiraOS compliance when ready |
+| **Yield distribution privacy** | Yields leak balance info — breaks balance privacy | Pull-based `YieldSnapshot` — encrypted per-investor share, fixed-point `ratePerShare` per epoch, payouts settled in mhUSDC ciphertext via `MuHavenStable.trustedPayout` fast-path |
+| **Encrypted settlement currency** | Cleartext USDC defeats balance privacy | `MuHavenStable` (mhUSDC) — own confidential USDC wrapper with `_silentFailBound` semantics, replaces legacy PUSDC for all MuHaven flows |
+| **KYC-gated access + jurisdictional rules** | Securities require investor verification + per-token rule sets | ERC-3643 topology: `MuHavenIdentityRegistry` (claim verification + dev-mode flag) + `ModularCompliance` + module library (`CountryAllow`, `CountryRestrict`, `MaxHolders`, `Lockup`, `MaxBalance`) |
 
 ### The AI agent: three hats, one conversation
 
@@ -95,7 +98,7 @@ The AI agent isn't a chatbot. It's three roles in one:
 - **Risk manager** — Converts investor preferences into on-chain guardrails (max drawdown, min yield threshold, drift tolerance) — all encrypted.
 - **Executor** — Deposits, allocates, claims yields, rebalances — all on encrypted state, within bounds the investor approved.
 
-The agent uses a dedicated agent wallet with limited funds (for the hackathon). The investor funds the agent wallet with a capped USDC balance — the agent can only spend what's in that wallet. Session keys (EIP-7702) with scoped, time-limited permissions are planned for production.
+The agent never holds a key. It reuses the investor's ZeroDev kernel through `@zerodev/permissions` validators (`CallPolicy` + `GasPolicy` + `RateLimitPolicy`) — per-target selector allowlist, value cap per call, total cap per epoch, validity ≤ chat session. A deterministic policy gate sits between the LLM and the signing path (CaMeL planner/action split) so prompt injection cannot reach permission-grant or tx-submission surfaces. Tiered-autonomy state machine lets the investor opt between Advisory, Confirm-per-action, and Policy-bound modes; `/pause` kill-switch uninstalls the active session validator in a single transaction.
 
 ---
 
@@ -108,141 +111,201 @@ The agent uses a dedicated agent wallet with limited funds (for the hackathon). 
 MuHaven is a **two-sided platform** — issuers create and manage RWA tokens on the supply side, investors purchase and manage portfolios on the demand side. Both sides share the same smart contracts.
 
 ```
-┌───────────────────────────────────────────────────────────────┐
-│  ISSUER SIDE (supply)                 INVESTOR SIDE (demand)  │
-│                                                               │
-│  ┌───────────────────┐                 ┌───────────────────┐  │
-│  │ Issuer Dashboard  │                 │ AI Agent + Chat   │  │
-│  │ - Create token    │                 │ - Advisory        │  │
-│  │ - Deposit yield   │                 │ - Portfolio mgmt  │  │
-│  │ - Manage investors│                 │ - Yield claiming  │  │
-│  └────────┬──────────┘                 └─────────┬─────────┘  │
-│           │                                      │            │
-│           ▼                                      ▼            │
-│  ┌──────────────────────────────────────────────────────────┐ │
-│  │                   MuHaven Contracts                      │ │
-│  │                                                          │ │
-│  │  MuHavenToken (fhERC-20)  ←──── shared ────→  IKYCGate   │ │
-│  │  MuHavenVault (wrap/unwrap)                    YieldGate │ │
-│  │  YieldDistributor (proportional escrow creation)         │ │
-│  └──────────────────────────────────────────────────────────┘ │
-│                              │                                │
-│                              ▼                                │
-│  ┌──────────────────────────────────────────────────────────┐ │
-│  │  ReineiraOS (PUSDC + escrow) + CoFHE (FHE)               │ │
-│  └──────────────────────────────────────────────────────────┘ │
-└───────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────┐
+│  ISSUER SIDE (supply)                    INVESTOR SIDE (demand)    │
+│                                                                    │
+│  ┌──────────────────────┐                 ┌────────────────────┐   │
+│  │ Issuer Dashboard     │                 │ Investor Dashboard │   │
+│  │ - Onboard token      │                 │ - Wrap → mhUSDC    │   │
+│  │   (self-serve wizard)│                 │ - Buy / Redeem     │   │
+│  │ - Set NAV (oracle)   │                 │ - Claim yield      │   │
+│  │ - Run yield epoch    │                 │ - Set risk policy  │   │
+│  │ - Manage compliance  │                 │ + HavenBot chat    │   │
+│  └──────────┬───────────┘                 └─────────┬──────────┘   │
+│             │                                       │              │
+│             ▼                                       ▼              │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │                   MuHaven Platform Contracts                 │  │
+│  │                                                              │  │
+│  │  MuHavenSubscription ──atomic──→ MuHavenToken (fhERC-20)     │  │
+│  │      │ purchase / redeem        ↑ mintFromSubscription       │  │
+│  │      ▼                          ↓ burnFromSubscription       │  │
+│  │  MuHavenTreasury (per-token mhUSDC custody)                  │  │
+│  │      ↑                                                       │  │
+│  │      │  IPriceOracle ──→ IssuerControlledOracle              │  │
+│  │      │                  + ChainlinkFunctionsOracle           │  │
+│  │      │                                                       │  │
+│  │  RedemptionQueue (overflow + epoch settlement)               │  │
+│  │  YieldSnapshot   (pull-based, ratePerShare per epoch)        │  │
+│  │                                                              │  │
+│  │  TokenRegistry · InvestorRegistry · MuHavenIdentityRegistry  │  │
+│  │  ModularCompliance ──→ CountryAllow / MaxHolders / Lockup …  │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                              │                                     │
+│                              ▼                                     │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │  MuHavenStable (mhUSDC, own confidential USDC wrapper)       │  │
+│  │  + Fhenix CoFHE (FHE) on Arbitrum Sepolia                    │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────────┘
 ```
 
 > See [ARCHITECTURE.md](./docs/ARCHITECTURE.md) for detailed technical architecture and data flow diagrams.
 
 ### Smart contracts
 
-| Contract | Purpose | Details |
-|----------|---------|---------|
-| `MuHavenToken.sol` | fhERC-20 RWA token | Encrypted balances (`euint128`), encrypted transfers, permit-based client decrypt, `onlyMinter` access control |
-| `MuHavenVault.sol` | Wrap/unwrap existing ERC-20 RWAs | Lock external ERC-20 (e.g., BUIDL), mint fhERC-20 wrapper; per-user locked balance tracking; burn to unwrap |
-| `InvestorRegistry.sol` | Investor address registry | Tracks all token holders; paginated reads; used by YieldDistributor + SDK for batch iteration |
-| `YieldDistributor.sol` | Proportional yield distribution state machine | Batched push model (`startDistribution` + `processBatch`); funds `MuHavenEscrow` per investor |
-| `MuHavenEscrow.sol` | Two-phase confidential yield escrow | Encrypted beneficiary + payout + redeemed flag; silent-fail redemption with gas-identical success/failure paths |
-| `interfaces/IKYCGate.sol` | Modular KYC interface | Swappable adapters — ERC-3643, zkMe, future ReineiraOS compliance |
-| `ERC3643KYCAdapter.sol` | KYC implementation | Whitelist + accredited investor tiers; structured for ONCHAINID swap |
-| `YieldGate.sol` | Condition resolver plugin | `IConditionResolver` — verifies investor KYC + token balance eligibility for yield release |
-| `RiskParams.sol` | Encrypted risk guardrails | Stores investor risk preferences (`euint64`) — max drawdown, min yield, drift tolerance, max daily spend |
+The production deploy ships **11 platform contracts** (singleton, behind transparent proxies) plus a **per-token contract triple** deployed by the issuer onboarding wizard for every listed RWA. Wave 3 contracts (`MuHavenVault` / `YieldDistributor` / `MuHavenEscrow` / `YieldGate` / `ERC3643KYCAdapter`) are retired into a read-only window and superseded by the contracts below.
 
-> See [SMART_CONTRACTS.md](./docs/SMART_CONTRACTS.md) for full contract specifications, EIP compliance mapping, and the `MuHavenEscrow` two-phase architecture.
+**Platform (singleton):**
 
-### Deployed contracts (Arbitrum Sepolia)
+| Contract | Purpose |
+|----------|---------|
+| `MuHavenStable.sol` | Confidential USDC wrapper (mhUSDC). Replaces legacy PUSDC for all MuHaven flows. `_silentFailBound` semantics, `trustedPayout` fast-path for known-conservation callers (escrow / snapshot / distributor) |
+| `MuHavenSubscription.sol` | **Atomic single-tx buy/redeem coordinator.** KYC gate → compliance modules → oracle read → `FHE.mul` → mhUSDC pull → mint (or burn → mhUSDC pay-out). Ephemeral-EOA `FHE.allow` per ADR-021 |
+| `TokenRegistry.sol` | Per-token configuration registry — issuer, oracle binding, treasury / queue / snapshot pointers, paused flag, schedule metadata |
+| `InvestorRegistry.sol` | Per-token holder enumeration; `addHolder` called by `MuHavenToken._transfer` on first transfer-in |
+| `MuHavenIdentityRegistry.sol` | ERC-3643 identity registry. `isVerified()` runs whitelist → claim verification (topics × trusted issuers × `validUntil`); `devMode` flag for migration; `disableDevModeForever()` irreversible latch |
+| `ClaimTopicsRegistry.sol`, `TrustedIssuersRegistry.sol` | ERC-3643 auxiliary registries |
+| `ModularCompliance.sol` | Per-token rule-modules registry. `canTransfer` AND-aggregates active modules with short-circuit; state hooks on mint / transfer / burn |
+| `IssuerControlledOracle.sol` | Pluggable `IPriceOracle` reference impl — issuer-write NAV with per-token `navWriter` rotation, configurable staleness window, deviation gate (per-token `maxDeviationBps`, pending state on gate failure), L2 sequencer-uptime check via Chainlink-shaped feed |
+| `ChainlinkFunctionsOracle.sol` | Functions-backed `IPriceOracle` — pulls FRED `DGS3MO` for treasury bills, FRED `GOLDPMGBD228NLBM` (or metals-api fallback) for gold; per-token `navRequester` hot key |
+| `RiskParams.sol` | Encrypted investor risk guardrails (`euint64`) — max drawdown, min yield, drift tolerance, max daily spend; branchless `FHE.select` hot path planned for the policy engine |
 
-All contracts are verified on [Arbiscan](https://sepolia.arbiscan.io). Proxied contracts use OpenZeppelin Transparent Proxy. Addresses mirror [`deployments/arb-sepolia.json`](./deployments/arb-sepolia.json) (authoritative — deployed 2026-04-18).
+**Per-token (deployed by the issuer onboarding wizard):**
+
+| Contract | Purpose |
+|----------|---------|
+| `MuHavenToken.sol` | fhERC-20 RWA token (`euint128`). Issuer no longer holds `MINTER_ROLE` — only `MuHavenSubscription` (via `SUBSCRIPTION_ROLE`) and `RedemptionQueue` (via `burnFromQueue`) can mutate supply. `transfer` / `transferFrom` call `InvestorRegistry.addHolder` on first-transfer-in |
+| `MuHavenTreasury.sol` | Per-token mhUSDC custody. Immutable operator approvals to Subscription + Queue at init; `minFloat` solvency floor enforced via silent-fail `FHE.select` |
+| `RedemptionQueue.sol` | Overflow redemption queue. `submit` captures `ephemeralEOA` + `maxSharesHint`; `processEpoch` settles requests at issuer-published NAV; `claim` pays from treasury; `cancelOnKYCRevocation` returns shares |
+| `YieldSnapshot.sol` | Pull-based per-epoch yield distribution (replaces push-based `YieldDistributor`). `openEpoch` → paginated `snapshotBatch` (idempotent, accumulates `encTotalSupply`) → `finalizeSnapshot` → `fundEpoch` (issuer pulls mhUSDC, stores cleartext fixed-point `ratePerShare`) → `claimYield(epochId, eph)` (pull-based, idempotent, `FHE.mul` × `RATE_SCALE` div for sub-1:1 yields, payout via `MuHavenStable.trustedPayout`) |
+
+**Compliance modules (pluggable via `ModularCompliance`):**
+
+| Module | Purpose |
+|---|---|
+| `CountryAllow`, `CountryRestrict` | Per-token ISO-3166 allow / block lists |
+| `MaxHolders` | Cap holder count via `InvestorRegistry`; separate accredited / non-accredited counters |
+| `Lockup` | Per-token default lockup window applied on mint + transfer-in; mint always allowed |
+| `MaxBalance` | Cleartext upper-bound tracker fed from `maxSharesHint` (loose by ADR-019) |
+
+> See [SMART_CONTRACTS.md](./docs/SMART_CONTRACTS.md) for full contract specifications, EIP compliance mapping, and ADR cross-references.
+
+### Deployed contracts (Arbitrum Sepolia · production)
+
+All contracts are verified on [Arbiscan](https://sepolia.arbiscan.io). Proxied contracts use OpenZeppelin Transparent Proxy. Addresses mirror [`deployments/arb-sepolia-v2.json`](./deployments/arb-sepolia-v2.json) (authoritative — fresh deploy 2026-05-04, deployer `0xe11E…6986`).
+
+**Platform (singleton):**
 
 | Contract | Address | Type |
 |----------|---------|------|
-| ERC3643KYCAdapter | [`0x0aF7003E645b3f8028dac59556aa0Cf0AeA21851`](https://sepolia.arbiscan.io/address/0x0aF7003E645b3f8028dac59556aa0Cf0AeA21851) | standalone |
-| InvestorRegistry | [`0x9e19cFC63661AF1624ba16392dc02134F91d36f6`](https://sepolia.arbiscan.io/address/0x9e19cFC63661AF1624ba16392dc02134F91d36f6) | proxy |
-| MuHavenToken | [`0xF95c9aA19e974e4cA0778AAdb76580423eEEeb03`](https://sepolia.arbiscan.io/address/0xF95c9aA19e974e4cA0778AAdb76580423eEEeb03) | proxy |
-| RiskParams | [`0x7F287982232De3C78c1958Aa11f3D9826B445604`](https://sepolia.arbiscan.io/address/0x7F287982232De3C78c1958Aa11f3D9826B445604) | proxy |
-| YieldGate | [`0x2cBAa54E5Ce4ED6D68722e35E18eba77B1c11964`](https://sepolia.arbiscan.io/address/0x2cBAa54E5Ce4ED6D68722e35E18eba77B1c11964) | standalone |
-| MuHavenEscrow | [`0xb18ca2122b31Df9Aaef8226f6218Bd93B852F40A`](https://sepolia.arbiscan.io/address/0xb18ca2122b31Df9Aaef8226f6218Bd93B852F40A) | proxy |
-| YieldDistributor | [`0xD403252436e41EFd81D76eB9223485cB66cb1638`](https://sepolia.arbiscan.io/address/0xD403252436e41EFd81D76eB9223485cB66cb1638) | proxy |
-| MuHavenVault | [`0xF445898f1af1DFde88E26c75C4d35c9025C5C631`](https://sepolia.arbiscan.io/address/0xF445898f1af1DFde88E26c75C4d35c9025C5C631) | proxy |
-| TestTreasury | [`0x580621f5FC5fF3d7912a570839AC1eb55F44a999`](https://sepolia.arbiscan.io/address/0x580621f5FC5fF3d7912a570839AC1eb55F44a999) | standalone (mock ERC-20 for vault wrapping — see `deployments/arb-sepolia.mocks.json`) |
+| MuHavenStable (mhUSDC) | [`0xF9bc25b67238C870255c33EC75fA37A09C00edE7`](https://sepolia.arbiscan.io/address/0xF9bc25b67238C870255c33EC75fA37A09C00edE7) | proxy |
+| MuHavenSubscription | [`0x39D49B2614d24ba189B613bEAa903d829A73eA9e`](https://sepolia.arbiscan.io/address/0x39D49B2614d24ba189B613bEAa903d829A73eA9e) | proxy |
+| TokenRegistry | [`0x4915E9Aa034244e299fb1609792D66b9fFAbf885`](https://sepolia.arbiscan.io/address/0x4915E9Aa034244e299fb1609792D66b9fFAbf885) | proxy |
+| InvestorRegistry | [`0xE7D4CB42EdB19e268e5e8a10d1A02f321Bfa50D0`](https://sepolia.arbiscan.io/address/0xE7D4CB42EdB19e268e5e8a10d1A02f321Bfa50D0) | proxy |
+| MuHavenIdentityRegistry | [`0xD9Ab61fdED044bcBeB9eF687C357A35B5E7E9fAD`](https://sepolia.arbiscan.io/address/0xD9Ab61fdED044bcBeB9eF687C357A35B5E7E9fAD) | proxy |
+| ClaimTopicsRegistry | [`0x56Cb047ddCd07aD8217BE54Dd7703D9125D704d4`](https://sepolia.arbiscan.io/address/0x56Cb047ddCd07aD8217BE54Dd7703D9125D704d4) | proxy |
+| TrustedIssuersRegistry | [`0x4587F75d0bCa84c8C944698b4e23Cb657E8D31B1`](https://sepolia.arbiscan.io/address/0x4587F75d0bCa84c8C944698b4e23Cb657E8D31B1) | proxy |
+| ModularCompliance | [`0x9A190A310C23FcF9Cd6c5Eab26Eb624B89e4D07a`](https://sepolia.arbiscan.io/address/0x9A190A310C23FcF9Cd6c5Eab26Eb624B89e4D07a) | proxy |
+| YieldSnapshot | [`0xaC4163f84db2C85333D5aF6f87848d7362A59887`](https://sepolia.arbiscan.io/address/0xaC4163f84db2C85333D5aF6f87848d7362A59887) | proxy |
+| IssuerControlledOracle | [`0xD30069114dFC83C714B04d6036dEfa64d2E9d583`](https://sepolia.arbiscan.io/address/0xD30069114dFC83C714B04d6036dEfa64d2E9d583) | proxy |
+| ChainlinkFunctionsOracle | [`0x6a480c6F7553098f7B9b0b285EcB7207a93feC43`](https://sepolia.arbiscan.io/address/0x6a480c6F7553098f7B9b0b285EcB7207a93feC43) | proxy |
 
-**External contracts (ReineiraOS on Arb Sepolia):**
+**Onboarded tokens (per-token contracts):**
+
+| Token | MuHavenToken | MuHavenTreasury | RedemptionQueue |
+|-------|--------------|------------------|-----------------|
+| TBILL1 (Treasury Bill Series 1) | [`0x8D77cCf0a3a56c976a7DEAe59aF1D27f27407b0D`](https://sepolia.arbiscan.io/address/0x8D77cCf0a3a56c976a7DEAe59aF1D27f27407b0D) | [`0xf423CE2d1fD856F89Ca75ec47c2791CeD91D62a3`](https://sepolia.arbiscan.io/address/0xf423CE2d1fD856F89Ca75ec47c2791CeD91D62a3) | [`0x435aF5AF238aBe80DD4dc571C38C167F407c4E9c`](https://sepolia.arbiscan.io/address/0x435aF5AF238aBe80DD4dc571C38C167F407c4E9c) |
+| GOLD1 (Gold Series 1) | [`0x93e813e924A96441181A01171Cd1E20FaaC87AcF`](https://sepolia.arbiscan.io/address/0x93e813e924A96441181A01171Cd1E20FaaC87AcF) | [`0x5057b445d7Ac1AFbd834122f63A9652DfCb78157`](https://sepolia.arbiscan.io/address/0x5057b445d7Ac1AFbd834122f63A9652DfCb78157) | [`0x6f2D952c0350BB0d5F856df5F7f534dEAD6634A7`](https://sepolia.arbiscan.io/address/0x6f2D952c0350BB0d5F856df5F7f534dEAD6634A7) |
+
+**External (Arb Sepolia):**
 
 | Contract | Address |
 |----------|---------|
 | Circle USDC | [`0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d`](https://sepolia.arbiscan.io/address/0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d) |
-| ConfidentialUSDC (PUSDC) | [`0x6b6e6479b8b3237933c3ab9d8be969862d4ed89f`](https://sepolia.arbiscan.io/address/0x6b6e6479b8b3237933c3ab9d8be969862d4ed89f) |
-| ConfidentialEscrow | [`0xC4333F84F5034D8691CB95f068def2e3B6DC60Fa`](https://sepolia.arbiscan.io/address/0xC4333F84F5034D8691CB95f068def2e3B6DC60Fa) |
-| SimpleCondition | [`0x9817DA50DB5CE4316D2f0fF6bb6DBfe252C29593`](https://sepolia.arbiscan.io/address/0x9817DA50DB5CE4316D2f0fF6bb6DBfe252C29593) |
+| Legacy ConfidentialUSDC (PUSDC, retired in MuHaven flows) | [`0x6b6e6479b8b3237933c3ab9d8be969862d4ed89f`](https://sepolia.arbiscan.io/address/0x6b6e6479b8b3237933c3ab9d8be969862d4ed89f) |
+| Chainlink Functions Router | [`0x234a5fb5Bd614a7AA2FfAB244D603abFA0Ac5C5C`](https://sepolia.arbiscan.io/address/0x234a5fb5Bd614a7AA2FfAB244D603abFA0Ac5C5C) |
 
-> Full deployment data: [`deployments/arb-sepolia.json`](./deployments/arb-sepolia.json)
+> Full deployment data: [`deployments/arb-sepolia-v2.json`](./deployments/arb-sepolia-v2.json) · Wave 3 read-only artifact: [`deployments/arb-sepolia.json`](./deployments/arb-sepolia.json)
 
 ### Backend services
 
-A 4-service Docker stack runs on a homelab behind a Cloudflare tunnel (`nagreg.hasto.dev`):
+A 5-service Docker stack runs on a homelab behind a Cloudflare tunnel. Production at `nagreg.hasto.dev` (master branch); staging at `nagreg-stage.hasto.dev` (develop branch) — both stacks isolated, side-by-side, never share Postgres.
 
 | Service | Role |
 |---------|------|
-| `postgres:16` | Drizzle schema store — users, sessions, escrows, yield_records, nav_history |
-| `backend` | REST API — SIWE + passkey auth, portfolio aggregation, yield queries, issuer tools, webhook ingest |
+| `postgres:16` | Drizzle schema store — users, sessions, RWA tokens, holdings, epochs, queue requests, NAV history, audit log |
+| `backend` | REST API — passkey auth (ZeroDev kernel link + JWT), portfolio aggregation, issuer onboarding, yield + redemption queries, NAV writer endpoints, webhook ingest, agent chat stub |
 | `fhe-worker` | Server-side CoFHE encryption via `@cofhe/sdk/node` (isolated from the API pod) |
-| `nav-worker` | Periodic NAV fetcher — FRED treasury yields, on-chain oracles, fallbacks |
+| `nav-worker` | Periodic NAV fetcher — FRED treasury yields, on-chain oracles, source-audit-trail with fallbacks |
+| `nav-publisher` | On-chain NAV writer — pulls fresh values from `nav-worker` and pushes to `IssuerControlledOracle` per token, gated by deviation + sequencer-uptime checks |
 
 Deploy is a single command from the dev machine:
 
 ```bash
-pnpm run deploy:homelab          # scp + docker compose up -d --build --no-deps
+pnpm run deploy:homelab          # prod  · master  → nagreg.hasto.dev
+pnpm run deploy:homelab:stage    # stage · develop → nagreg-stage.hasto.dev
 ```
+
+Both wrap `scripts/deploy-homelab.sh <env>`. Branch-guarded (master for prod, develop for stage) and always passes `-f` + `-p` so the two compose stacks (`docker-compose.yml` / `muhaven` vs `docker-compose.stage.yml` / `muhaven-stage`) stay physically isolated. Downtime is ~3–5s per restarted service; postgres is never touched.
 
 Setup details, env-var tables, Cloudflare tunnel config, and migration commands: [BACKEND_SETUP.md](./docs/BACKEND_SETUP.md).
 
 ### MuHaven SDK
 
-`@muhaven/sdk` (TypeScript, `packages/sdk/`) wraps the two-phase yield pipeline behind a single `MuHavenClient`:
+`@muhaven/sdk` (TypeScript, `packages/sdk/`) wraps the production pipeline behind a single `MuHavenClient` plus per-contract clients (`SubscriptionClient`, `TreasuryClient`, `RedemptionQueueClient`, `YieldSnapshotClient`, `OracleClient`):
 
 ```typescript
 const sdk = new MuHavenClient({ publicClient, sender, cofheClient, addresses });
-await sdk.distributeYield(50_000_000n, { onProgress });   // issuer
-await sdk.claimYield(escrowId);                            // investor
+
+// Investor — atomic buy / pull-based claim
+await sdk.subscription.purchase(token, encAmount, maxSharesHint, eph);
+await sdk.snapshot.claimYield(token, epochId, eph);
+
+// Issuer — pull-based yield epoch
+await sdk.snapshot.openEpoch(token);
+await sdk.snapshot.snapshotBatch(token, epochId, holders);
+await sdk.snapshot.finalizeSnapshot(token, epochId);
+await sdk.snapshot.fundEpoch(token, epochId, totalYield, ratePerShare);
 ```
 
-Pluggable sender pattern (`walletClientToSender` for EOA/scripts, `createZeroDevSender` for the browser kernel) means the same API drives both the Vue frontend and the backend distribution worker. 25 integration tests covering the full pipeline. Full API reference: [SDK.md](./docs/SDK.md).
+Pluggable sender pattern (`walletClientToSender` for EOA/scripts, `createZeroDevSender` for the browser kernel + session keys) means the same API drives both the Vue frontend and backend workers. 25 integration tests covering the full pipeline. Full API reference: [SDK.md](./docs/SDK.md).
 
 ### Token lifecycle
 
 Every RWA token on MuHaven moves through a four-state lifecycle — **Active → Paused → Winding Down → Archived** — governing minting, transfers, distributions, and investor redemption at each stage. The contract + backend hooks are in place in Wave 3; full implementation lands post-hackathon. Full spec: [TOKEN_LIFECYCLE.md](./docs/TOKEN_LIFECYCLE.md).
 
-### AI agent tools
+### AI agent layer (Wave 4 — in active development)
 
-> **Status:** the agent chat UI is scaffolded and the tool schemas are defined, but the LLM execution loop lands in Wave 4. Investors and issuers drive the same flows directly from the Vue dashboard today; the Wave 4 agent will invoke these tools through the MuHaven SDK using the user's authenticated ZeroDev session kernel.
+> **Status:** the chat scaffold and tool schemas shipped with the production cutover. The full agentic execution loop is in active development on a parallel branch (~203h of ~327h shipped: tiered-autonomy engine, MCPB server + broker daemon, OpenClaw skill + Telegram surface, hosted checkout, encrypted policy primitives, DefaultProtection + EncryptedGovernance + KYC attestation stubs). It awaits the production cutover settlement before it merges back to develop. Investors and issuers can drive every flow directly from the Vue dashboard today.
 
-**Investor-facing (portfolio agent):**
+**Four agentic surfaces** sit on the same MuHaven SDK + `@zerodev/permissions` policy gate:
 
-| Tool | What it does | Underlying | Status |
-|------|-------------|-----------|--------|
-| `deposit` | Encrypted stablecoin deposit (USDC → PUSDC) | ReineiraOS PUSDC | Wave 4 |
-| `buy_rwa` | Purchase fhERC-20 RWA tokens | MuHavenToken + Vault | Wave 4 |
-| `claim_yield` | Redeem yield from a MuHavenEscrow | MuHaven SDK | Wave 4 |
-| `view_portfolio` | Decrypt and display balances (permit-based, investor only) | CoFHE `decryptForView` | Wave 4 |
-| `get_yields` | Fetch current RWA yield rates | NAV worker + oracle | Wave 4 |
-| `set_risk_params` | Store encrypted risk guardrails | RiskParams contract | Wave 4 |
-| `withdraw` | Encrypted stablecoin withdrawal (PUSDC → USDC) | ReineiraOS PUSDC | Post-hackathon |
-| `sell_rwa` | Sell fhERC-20 RWA tokens | MuHavenToken | Post-hackathon |
-| `purchase_insurance` | Buy yield-delivery coverage | ReineiraOS Insurance | Post-hackathon |
+| Surface | Description | Status |
+|---|---|---|
+| **HavenBot** | In-dashboard streaming chat at `/agent`. Per-action confirm modals with FHE-decrypted preview. Onboarding flow targets <6 min passkey → KYC → first-buy | scaffold shipped (chat UI + stub); execution loop in Wave 4 P2 |
+| **`@muhaven/mcp` MCPB server** | Local MCP server with `manifest.json` declaring secrets `sensitive: true` → OS keychain. Companion `muhaven-broker` daemon over Unix socket holds session-key private half. Toolsets: `muhaven.read.*`, `muhaven.position.*`, `muhaven.policy.*` | shipped on parallel branch (Wave 4 P3) |
+| **OpenClaw skill** | `muhaven-rwa-skill` published to ClawHub via Sigstore + GitHub OIDC. Bundles a subset of the MCP toolset. Telegram surface with three confirmation tiers (inline ≤$200, Mini App + 6-digit OTP $200–$5K, deep-link passkey >$5K). A2A Agent Card for VibeKit / Google ADK discovery | shipped on parallel branch (Wave 4 P4) |
+| **Hosted checkout `pay.muhaven.app`** | Stripe-pattern hosted-checkout URL `pay.muhaven.app/c/<ulid>#k=<base64url(32B)>`. AES-256-GCM enc_payload with key in URL fragment (server cannot read alone). HMAC-SHA256 webhook signing, 5-min replay window. SSE realtime status. ZeroDev passkey ceremony for first-time buyers | shipped on parallel branch (Wave 4 P5) |
 
-**Issuer-facing (platform agent — post-hackathon):**
+**Tool catalog** (executed via the deterministic policy gate, never by the LLM directly):
 
 | Tool | What it does | Underlying |
 |------|-------------|-----------|
-| `create_token` | Deploy a new fhERC-20 RWA token with configuration | MuHavenToken factory |
-| `mint_tokens` | Mint tokens to eligible investor addresses via `mint()` (MINTER_ROLE) | MuHavenToken |
-| `deposit_yield` | Deposit yield and trigger proportional distribution | MuHaven SDK |
-| `get_issuer_stats` | View aggregate metrics (total supply, investor count, total yield distributed) | Backend + MuHavenToken |
-| `update_whitelist` | Add/remove investors from eligibility | IKYCGate |
+| `muhaven_portfolio_summary` | Encrypted balance preview + `ebool` signal flags (`isOverexposed`, `isUnderYield`) | CoFHE `decryptForView` + permit |
+| `muhaven_quote(asset, amount)` | Cleartext NAV × amount preview before purchase | `IPriceOracle.getNAV` |
+| `muhaven_propose_buy` | Atomic purchase via `MuHavenSubscription.purchase` | MuHaven SDK |
+| `muhaven_propose_redeem` | Instant redeem with auto-escalate on cap overflow | MuHavenSubscription + RedemptionQueue |
+| `muhaven_propose_claim` | Pull yield for a finalized epoch | YieldSnapshot |
+| `muhaven_set_policy(tier, params)` | Tiered-autonomy state machine (Advisory / Confirm / Policy-bound) | `@zerodev/permissions` validators + RiskParams |
+| `muhaven_pause` | Single-tx kill-switch; uninstalls active session validator | ZeroDev kernel |
+| `muhaven_unseal_position(handle, permit)` | Permit-based decrypt of a specific handle | CoFHE `decryptForView` |
+| `muhaven_check_protection_coverage` | Read public `reserveRateBps` from DefaultProtection | DefaultProtection (Wave 4 P11) |
+| `muhaven_propose_governance_vote`, `muhaven_cast_encrypted_vote` | Encrypted ballot via `FHE.select` + async tally | EncryptedGovernance (Wave 4 P11) |
 
-> See [AGENT_DESIGN.md](./docs/AGENT_DESIGN.md) for staged rollout, wallet model (passkey + session keys), and the full design spec.
+**Issuer-facing** tools cover token onboarding, NAV writes, snapshot + fund-epoch wizard, KYC whitelist, audit copilot — folded into the same agent surfaces.
+
+> See [AGENT_DESIGN.md](./docs/AGENT_DESIGN.md) for staged rollout, wallet model (kernel + scoped session keys, no separate agent wallet), tiered-autonomy state machine, threat model, and full design spec.
 
 ---
 
@@ -255,16 +318,17 @@ MuHaven's privacy guarantee is **balance and yield privacy** — not transaction
 | **Investor balances** | **Encrypted** (`euint128`) | Core privacy guarantee. Only the investor can decrypt via EIP-712 permit. |
 | **Transfer amounts** | **Encrypted** (`InEuint128`) | Client-encrypts before submission. Calldata contains ciphertext hash + ZK proof, never plaintext. |
 | **Yield per investor** | **Encrypted** (`euint128`) | Each investor's share is FHE-encrypted. Investors decrypt their own share via permits. |
-| **Total yield deposited** | **Encrypted** (`euint128`) | Encrypted in contract state. Yield is deposited via encrypted PUSDC `confidentialTransferFrom` — no cleartext amounts on-chain. |
-| **Risk parameters** | **Encrypted** (4x `euint64`) | Investor-encrypted client-side. AI agent decrypts via async decrypt with dynamic `FHE.allow`. |
+| **Total yield deposited per epoch** | **Encrypted** (`euint128`) | Yield is deposited via encrypted mhUSDC `transferFrom` — no cleartext amounts on-chain for the encrypted leg. |
+| **Risk parameters** | **Encrypted** (4× `euint64`) | Investor-encrypted client-side. Branchless `FHE.select` hot path; breach-only async decrypt preserves no-decrypt-timing privacy. |
 | **Total supply** | **Encrypted** (default) / **Public** (opt-in) | Issuer can toggle `setTotalSupplyPublic()` — one-way, uses `FHE.allowPublic`. Useful for regulated securities requiring public supply. |
-| **Aggregate yield distributed** | **Encrypted** (`euint128`) | Running total across all distributions. Owner can async-decrypt for reporting. |
+| **Aggregate yield distributed per epoch** | **Encrypted** (`euint128`) | Running total per epoch. Issuer can async-decrypt for reporting via permit-based grant. |
+| **Per-epoch `ratePerShare`** | **Cleartext (`uint128`)** | By design — for RWAs the per-share yield rate (TBILL APY, dividend rate) is conventionally published off-chain anyway. Per-investor balances and per-claim shares stay encrypted; this scalar is what made the cleartext rate architecture (Wave 3.5) escape the cofhe TN chain-length cap. Conservation enforced off-chain by the issuer. |
 | Investor addresses | Public | Stored in InvestorRegistry. Addresses are inherently public on EVM (visible in tx calldata). |
 | Transfer from/to addresses | Public | Emitted in `Transfer(from, to)` event. No new info leaked — addresses already visible in calldata. |
-| KYC eligibility | Public | Boolean per address. Revert on `isEligible()==false` is observable, but no private data leaks. |
+| KYC eligibility | Public | Boolean per address. Revert on `isVerified()==false` is observable, but no private data leaks. |
 | Transaction timing | Public | Block timestamps visible on-chain. |
-| Minter/issuer roles | Public | Role assignments emitted in events. |
-| Distribution progress | Public | `processedCount`, `escrowsCreated` are cleartext counters for batch progress tracking. |
+| Issuer / SUBSCRIPTION_ROLE / navWriter roles | Public | Role assignments emitted in events. |
+| Snapshot + redemption progress | Public | `epochId`, `holderCount`, `processedCount`, `requestId` are cleartext counters for batch progress tracking. |
 
 ### Side-channel resistance
 
@@ -275,26 +339,27 @@ All `FHE.select()` operations execute an **identical code path** regardless of t
 euint128 transferAmount = FHE.select(hasEnough, amount, zero);
 ```
 
-An observer watching gas costs or execution traces cannot distinguish a successful transfer from a failed (zero-amount) one. This is the "silent failure" pattern applied consistently across `MuHavenToken`, `YieldDistributor`, and `MuHavenVault`.
+An observer watching gas costs or execution traces cannot distinguish a successful transfer from a failed (zero-amount) one. This is the "silent failure" pattern applied consistently across `MuHavenToken`, `MuHavenStable`, `MuHavenSubscription`, `MuHavenTreasury`, `RedemptionQueue`, and `YieldSnapshot` — every contract that moves or transforms encrypted amounts on behalf of an investor returns a silent-fail-bounded handle (ADR-030 + ADR-036 conventions).
 
 ### FHE operations used
 
 | Operation | Where | Purpose |
 |-----------|-------|---------|
-| `FHE.asEuint128(InEuint128)` | Token, Vault | Convert client-encrypted input to on-chain ciphertext |
-| `FHE.asEuint128(uint256)` | Token, Vault, YieldDistributor | Trivial encrypt cleartext for on-chain computation |
-| `FHE.add` | Token, YieldDistributor | Balance increment, yield accumulation |
-| `FHE.sub` | Token | Balance decrement |
-| `FHE.div` | YieldDistributor | Per-investor yield = total / count |
-| `FHE.gte` | Token | Balance sufficiency check (returns `ebool`) |
-| `FHE.select` | Token | Silent failure — conditional zero on insufficient balance |
-| `FHE.allow(ct, address)` | Token, YieldDistributor, RiskParams | Grant permit-based `decryptForView` to specific address |
+| `FHE.asEuint128(InEuint128)` | Token, Subscription, Queue, Snapshot | Convert client-encrypted input to on-chain ciphertext |
+| `FHE.asEuint128(uint256)` | Token, Snapshot | Trivial encrypt cleartext for on-chain computation (e.g. `RATE_SCALE` for sub-1:1 yields) |
+| `FHE.add` | Token, Snapshot | Balance increment, snapshot supply accumulation |
+| `FHE.sub` | Token, Stable | Balance decrement |
+| `FHE.mul` | Subscription, Snapshot | NAV × amount on purchase / redeem; `balance × ratePerShare` on claim |
+| `FHE.div` | Snapshot | `RATE_SCALE` rescale on claim payout (sub-1:1 yields) |
+| `FHE.gte`, `FHE.lte` | Token, Stable, Treasury | Balance sufficiency / solvency-floor checks (returns `ebool`) |
+| `FHE.select` | Token, Stable, Subscription, Treasury, Queue | Silent failure — branchless conditional zero |
+| `FHE.allow(ct, address)` | Token, Subscription, Queue, Snapshot, RiskParams, Stable | Grant permit-based `decryptForView` to ephemeralEOA per ADR-021 |
 | `FHE.allowThis` | All contracts | Contract retains access to its own ciphertext handles |
 | `FHE.allowSender` | RiskParams | Investor retains read access to own risk params |
 | `FHE.allowPublic` | Token | Optional public total supply via threshold decryption |
-| `Common.isInitialized` | Token, YieldGate | Guard against FHE ops on uninitialized (zero-hash) ciphertext |
-| `ITaskManager.createDecryptTask` | Token, RiskParams, YieldDistributor | Async decrypt for on-chain result reading |
-| `FHE.getDecryptResultSafe` | Token, RiskParams, YieldDistributor | Read async-decrypted plaintext result |
+| `Common.isInitialized` | Token, Stable, Subscription | Guard against FHE ops on uninitialized (zero-hash) ciphertext |
+| `ITaskManager.createDecryptTask` | Token, RiskParams, Snapshot | Async decrypt for on-chain result reading |
+| `FHE.getDecryptResultSafe` | Token, RiskParams, Snapshot | Read async-decrypted plaintext result |
 
 > Full threat model: [THREAT_MODEL.md](./docs/THREAT_MODEL.md)
 
@@ -325,15 +390,12 @@ ZK proves things about data. FHE computes on data. RWAs need ongoing computation
 
 ### Why ReineiraOS?
 
-ReineiraOS is programmable infrastructure for stablecoins, built on Arbitrum and powered by Fhenix FHE. MuHaven uses ReineiraOS directly (not via Privara, which is ReineiraOS's consumer app layer) through the Platform Modules starter kit.
+ReineiraOS is programmable infrastructure for stablecoins, built on Arbitrum and powered by Fhenix FHE. MuHaven was scaffolded from the ReineiraOS Platform Modules starter and originally settled in ReineiraOS PUSDC + `ConfidentialEscrow`. The production pipeline now ships its own `MuHavenStable` (mhUSDC) wrapper after PUSDC's pre-v0.1.0 `euint64` selector mismatch surfaced; MuHaven flows still benefit from the wider ReineiraOS surface area and the shared CoFHE coprocessor.
 
-- **Confidential stablecoin (PUSDC)** — FHE-encrypted wrapper around USDC/USDT. Deposits and withdrawals don't expose amounts on-chain. Replaces cleartext ERC-20 transfers in the yield pipeline.
-- **Encrypted conditional escrow** — Holds yield in FHE-encrypted state, releases when cryptographic conditions are met.
-- **Gate plugin system** — MuHaven deploys an `IConditionResolver` (YieldGate) for yield eligibility checks.
-- **Insurance pools** — Encrypted risk scoring and coverage for yield delivery failures.
-- **Cross-chain settlement** — Circle CCTP V2 integration for native USDC transfers across chains.
-- **Platform Modules** — Plug-and-play backend (Clean Architecture, DB-agnostic) and app starter (ZeroDev smart accounts, passkey auth) for ventures building on ReineiraOS.
-- **Same CoFHE coprocessor** — Zero integration friction with MuHaven's token contracts.
+- **Platform Modules** — Plug-and-play backend (Clean Architecture, DB-agnostic) and app starter (ZeroDev smart accounts, passkey auth) — the substrate MuHaven's `backend/` is built on.
+- **`MuHavenStable` (mhUSDC)** — own FHE-encrypted USDC wrapper layered on top of legacy ReineiraOS PUSDC. Inherits PUSDC's confidential transfer semantics, adds `_silentFailBound` returns + `trustedPayout` fast-path for known-conservation callers (escrow / snapshot / distributor) — see [SMART_CONTRACTS.md](./docs/SMART_CONTRACTS.md).
+- **Cross-chain settlement** — Circle CCTP V2 integration is on the post-Wave-4 roadmap for fiat on-ramp surfaces.
+- **Same CoFHE coprocessor** — Zero integration friction between MuHaven's token contracts and any future ReineiraOS modules MuHaven re-adopts.
 
 ---
 
@@ -405,16 +467,27 @@ Every existing DeFAI agent operates on transparent state — strategies are visi
 
 ---
 
-### Post-hackathon roadmap
+### Roadmap
 
-- Advanced agent capabilities (rebalancing, auto-reinvest, insurance purchasing)
-- Agent-to-agent coordination (x402 payments, ERC-8004 identity) — hackathon uses direct SDK calls; agent-to-agent is a production enhancement
-- Native token issuance via issuer dashboard (production issuer model)
+**In active Wave 4 development (~203h of ~327h shipped on a parallel branch, awaits production cutover settlement before merge):**
+
+- Tiered-autonomy engine + audit log + `/pause` kill-switch (Advisory / Confirm-per-action / Policy-bound state machine)
+- HavenBot in-dashboard streaming chat with per-action confirm modals
+- `@muhaven/mcp` MCPB server + `muhaven-broker` daemon (OS-keychain credentials, Unix-socket signing)
+- OpenClaw skill `muhaven-rwa-skill` (Sigstore + GitHub OIDC trusted publishing) + Telegram surface with three confirmation tiers
+- Hosted checkout `pay.muhaven.app` (Stripe-pattern URL, AES-256-GCM enc_payload, HMAC-SHA256 webhooks, ZeroDev passkey ceremony for first-time buyers)
+- Encrypted policy primitives in `RiskParams` (branchless `FHE.select` hot path, breach-only async decrypt, investor-signed permit scoping)
+- DefaultProtection + EncryptedGovernance + KYC attestation stub contracts
+
+**Post-Wave 4:**
+
+- Native token issuance (without vault wrap) — research
+- Stealth addresses (ERC-5564 / ERC-6538) for deposit-side privacy
+- Cross-chain KYC full implementation (CCIP revocation broadcast)
 - Revenue model activation: wrapping fee (0.1%), issuance fee (0.2%), yield distribution fee (0.1%) — see [ISSUER_MODEL.md](./docs/ISSUER_MODEL.md)
-- ReineiraOS compliance integration (when OFAC/KYT features ship)
-- Multi-chain expansion beyond Arbitrum
+- Multi-chain expansion beyond Arbitrum (Base, Ethereum L1)
 - Production security audit
-- Mainnet deployment
+- Mainnet deployment (Arbitrum One)
 
 ---
 
@@ -424,20 +497,22 @@ Every existing DeFAI agent operates on transparent state — strategies are visi
 |-------|-----------|----------|
 | Blockchain | Arbitrum Sepolia (testnet) → Arbitrum One (production) | —        |
 | FHE contracts | `@fhenixprotocol/cofhe-contracts` | `v0.1.3` |
-| FHE client SDK | `@cofhe/sdk` + `@cofhe/hardhat-plugin` + `@cofhe/mock-contracts` | `v0.4.0` |
+| FHE client SDK | `@cofhe/sdk` + `@cofhe/hardhat-plugin` + `@cofhe/mock-contracts` | `v0.5.1` |
+| FHE runtime | `tfhe` (frontend) | `v1.5.3` |
 | Dev starter | `cofhe-hardhat-starter` (branch: `sdk-migration`) | —        |
-| Token standard | FHERC-20 (max type: `euint128`) | —        |
-| KYC framework | ERC-3643 / ONCHAINID (swappable via IKYCGate) | —        |
-| Payments + Escrow | ReineiraOS (PUSDC confidential stablecoin + escrow settlement) | v0.1     |
-| Backend | Platform Modules (Clean Architecture, ZeroDev, passkey auth) | v0.1     |
-| Cross-chain | Circle CCTP V2 (via ReineiraOS operators) | —        |
-| Frontend | Vue 3 + Vite + Tailwind CSS v4 + pnpm | —        |
-| AI agent | LLM (Claude/OpenAI) + function calling | —        |
+| Token standard | fhERC-20 (max type: `euint128`) | —        |
+| KYC / compliance | ERC-3643 — `MuHavenIdentityRegistry` + `ModularCompliance` topology with pluggable rule modules | —     |
+| Confidential settlement | `MuHavenStable` — own confidential USDC wrapper (mhUSDC) with `_silentFailBound` semantics | —     |
+| Smart account | ZeroDev Kernel (ERC-4337) + WebAuthn passkey + `@zerodev/permissions` session keys | —        |
+| Backend | Node 20 + tsx (Clean Architecture from ReineiraOS Platform Modules), Drizzle + Postgres, Docker Compose, Cloudflare tunnel | —     |
+| Cross-chain | Circle CCTP V2 (planned for fiat on-ramp surfaces) | —        |
+| Frontend | Vue 3 + Vite + Bun + Tailwind CSS v4 (in-progress Golden Hour Midnight revamp) | —        |
+| AI agent | Anthropic Claude Sonnet 4.5 via Vercel AI SDK (HavenBot); host-LLM-agnostic for MCP / OpenClaw | —     |
 | Package manager | pnpm (Fhenix recommended) | v9+      |
 
-> **SDK stability warning**: Fhenix `cofhe-contracts` is under active development. The team warns it "will be changing frequently." MuHaven contracts are built against `v0.1.3` with `@cofhe/sdk v0.4.0`. Check [compatibility docs](https://cofhe-docs.fhenix.zone/get-started/introduction/compatibility) before updating. See [SMART_CONTRACTS.md](./docs/SMART_CONTRACTS.md) for a checklist of what to verify if the SDK updates.
+> **SDK stability warning**: Fhenix `cofhe-contracts` is under active development. The team warns it "will be changing frequently." MuHaven contracts are built against `v0.1.3` with `@cofhe/sdk v0.5.1`. Check [compatibility docs](https://cofhe-docs.fhenix.zone/get-started/introduction/compatibility) before updating. See [SMART_CONTRACTS.md](./docs/SMART_CONTRACTS.md) for a checklist of what to verify if the SDK updates.
 >
-> **`euint64` type breaking change (v0.1.0)**: cofhe-contracts v0.1.0 changed `euint64` from `uint256` to `bytes32`. This changes the ABI selector for any function with `euint64` parameters (e.g., `confidentialTransferFrom(address,address,uint256)` became `confidentialTransferFrom(address,address,bytes32)`). The deployed ConfidentialUSDC on Arb Sepolia predates this change and uses `uint256` selectors. MuHaven's `YieldDistributor` handles this with a low-level call using the `uint256` selector. See `development/DEV_WAVE_3/PUSDC_TRANSFER_ISSUE.md` for full analysis.
+> **`euint64` type breaking change (cofhe-contracts v0.1.0)**: changed `euint64` from `uint256` to `bytes32`. The deployed legacy ConfidentialUSDC on Arb Sepolia predates this change and uses `uint256` selectors. The retired `YieldDistributor` and `MuHavenStable.confidentialTransferFrom` shim handle this with a low-level call using the `uint256` selector. New MuHaven flows use `MuHavenStable` (mhUSDC) directly — `confidentialTransferFrom` is preserved as a shim for legacy paths only. See `development/DEV_WAVE_3/PUSDC_TRANSFER_ISSUE.md` for full analysis.
 
 ---
 
@@ -477,9 +552,8 @@ ARB_SEPOLIA_RPC_URL=          # Arbitrum Sepolia RPC URL
 ETHERSCAN_API_KEY=            # For contract verification
 ARBISCAN_API_KEY=             # For contract verification
 
-ISSUER_ADDRESS=               # Address to grant minter + distribution rights (default: deployer)
-USDC_ADDRESS=                 # Stablecoin address passed to MuHavenToken (default: zero)
-UNDERLYING_TOKEN_ADDRESS=     # ERC-20 RWA for MuHavenVault (required on testnet)
+MUHAVEN_ENV=                  # 'prod' or 'staging' — selects deployments/arb-sepolia[-v2][.staging].json target
+ISSUER_ADDRESS=               # Address to grant SUBSCRIPTION_ROLE + distribution rights (default: deployer)
 ```
 
 Backend stack (separate `.env` files per service):
@@ -502,23 +576,28 @@ pnpm test test/MuHavenSdk.integration.test.ts     # SDK integration (25 cases)
 ### Deploy to testnet
 
 ```bash
-pnpm run deploy:testnet        # Deploys all 8 contracts + writes deployments/arb-sepolia.json
+pnpm run deploy:v2:testnet         # production stack — writes deployments/arb-sepolia-v2.json
+pnpm run deploy:v2:testnet:stage   # staging stack    — writes deployments/arb-sepolia-v2.staging.json
+bash scripts/onboard-token.sh tbill1   # onboard a token (TBILL1 preset)
+bash scripts/onboard-token.sh gold1    # onboard a token (GOLD1 preset)
 ```
 
-Full step-by-step guide with verification: [TESTNET_DEPLOY.md](./docs/TESTNET_DEPLOY.md).
+The legacy Wave 3 deploy (`pnpm run deploy:testnet`) writes `deployments/arb-sepolia.json` and is preserved for reference only — superseded by `deploy:v2`. Full step-by-step guide with verification: [TESTNET_DEPLOY.md](./docs/TESTNET_DEPLOY.md).
 
 ### Run the backend stack (optional, for full E2E)
 
 ```bash
-docker compose up -d --build                      # postgres + backend + fhe-worker + nav-worker
-DATABASE_URL=postgresql://muhaven:muhaven@localhost:5432/muhaven pnpm --filter backend db:push
+docker compose up -d --build                      # postgres + backend + fhe-worker + nav-worker + nav-publisher
+# `backend/` is NOT a pnpm workspace member — run db:push from inside the dir, not via --filter:
+cd backend && DATABASE_URL=postgresql://muhaven:muhaven@localhost:5432/muhaven pnpm db:push && cd -
 curl -s http://localhost:3000/health              # {"status":"ok",...}
 ```
 
 Homelab deploy shortcut once the stack is live on a target host:
 
 ```bash
-pnpm run deploy:homelab        # scp + rebuild changed services only
+pnpm run deploy:homelab          # prod  · master  → nagreg.hasto.dev
+pnpm run deploy:homelab:stage    # stage · develop → nagreg-stage.hasto.dev
 ```
 
 ### Run the frontend
@@ -526,10 +605,14 @@ pnpm run deploy:homelab        # scp + rebuild changed services only
 ```bash
 cd frontend
 bun install
-bun run dev                     # Dev server at http://localhost:7778
+bun run dev:stage               # Dev server at http://localhost:7778 (reads .env.stage — staging ZeroDev)
 ```
 
-The frontend defaults to the live homelab backend (`https://nagreg.hasto.dev`). Point it at a local backend by editing `VITE_API_BASE_URL` in `frontend/.env`.
+For local iteration, always use `bun run dev:stage`. `bun run dev` reads `.env` whose ZeroDev project is bound to RP ID `muhaven.hasto.dev`, so passkey login fails on `localhost:7778` with `"The RP ID is invalid for this domain"`. `dev:stage` reads `.env.stage` (staging ZeroDev + staging backend + staging contracts) which has `http://localhost:7778` in its allowed origins.
+
+Live deployments:
+- **Production:** [muhaven.hasto.dev](https://muhaven.hasto.dev) → backend [nagreg.hasto.dev](https://nagreg.hasto.dev)
+- **Staging:** `muhaven-stage.hasto.dev` → backend `nagreg-stage.hasto.dev`
 
 ---
 
@@ -553,52 +636,73 @@ muhaven/
 │   └── COMPETITIVE_ANALYSIS.md
 │
 ├── contracts/
-│   ├── MuHavenToken.sol         # fhERC-20 RWA token
-│   ├── MuHavenVault.sol         # Wrap/unwrap ERC-20 ↔ fhERC-20
-│   ├── InvestorRegistry.sol     # Holder enumeration
-│   ├── YieldDistributor.sol     # Proportional distribution state machine
-│   ├── MuHavenEscrow.sol        # Two-phase confidential yield escrow
-│   ├── YieldGate.sol            # IConditionResolver for escrow release
-│   ├── RiskParams.sol           # Encrypted investor risk guardrails
-│   ├── ERC3643KYCAdapter.sol    # ERC-3643 KYC adapter
-│   ├── interfaces/              # IKYCGate, IMuHavenToken, IInvestorRegistry, etc.
-│   └── mocks/                   # TestTreasury, MockPUSDC, ...
+│   ├── MuHavenStable.sol            # mhUSDC — confidential USDC wrapper
+│   ├── MuHavenSubscription.sol      # Atomic single-tx buy/redeem coordinator
+│   ├── MuHavenToken.sol             # fhERC-20 RWA token (per-token deploy)
+│   ├── MuHavenTreasury.sol          # Per-token mhUSDC custody
+│   ├── RedemptionQueue.sol          # Overflow redemption + epoch settlement
+│   ├── YieldSnapshot.sol            # Pull-based per-epoch yield distribution
+│   ├── TokenRegistry.sol            # Per-token configuration registry
+│   ├── InvestorRegistry.sol         # Per-token holder enumeration
+│   ├── identity/                    # ERC-3643 topology
+│   │   ├── MuHavenIdentityRegistry.sol
+│   │   ├── ClaimTopicsRegistry.sol
+│   │   └── TrustedIssuersRegistry.sol
+│   ├── compliance/                  # ModularCompliance + module library
+│   │   ├── ModularCompliance.sol
+│   │   └── modules/                 # CountryAllow, CountryRestrict, MaxHolders, Lockup, MaxBalance
+│   ├── oracles/
+│   │   ├── IssuerControlledOracle.sol
+│   │   └── ChainlinkFunctionsOracle.sol
+│   ├── RiskParams.sol               # Encrypted investor risk guardrails
+│   ├── interfaces/                  # IMuHavenSubscription, IPriceOracle, IRedemptionQueue, IYieldSnapshot, …
+│   └── mocks/                       # TestTreasury, MockPUSDC, MockPriceOracle, MockSequencerUptimeFeed, …
 │
 ├── packages/
-│   └── sdk/                     # @muhaven/sdk — TypeScript SDK
-│       ├── src/
+│   └── sdk/                         # @muhaven/sdk — TypeScript SDK with pluggable sender
+│       ├── src/clients/             # MuHavenClient + Subscription/Treasury/Queue/Snapshot/Oracle clients
 │       └── test/
 │
-├── test/                        # Hardhat / cofhe-mock tests (~180 cases)
+├── test/                            # Hardhat / cofhe-mock tests (786 cases)
 │
 ├── scripts/
-│   ├── deploy.ts                # Full 8-contract deployment
-│   ├── deploy-mocks.ts          # TestTreasury standalone
-│   └── deploy-homelab.sh        # Dev-machine → homelab sync
+│   ├── deploy.ts                    # Legacy Wave 3 deploy (read-only artifact)
+│   ├── deploy-v2.ts                 # Production platform deploy (folds setTrustedPayer)
+│   ├── onboard-token.ts             # Per-token deploy (Token + Treasury + Queue + register)
+│   ├── onboard-token.sh             # Token onboarding wrapper (preset env files)
+│   ├── upgrade-stable.ts            # MuHavenStable upgrade with ACL re-grant
+│   ├── upgrade-yield-snapshot.ts    # YieldSnapshot upgrade with pre-flight epoch enumeration
+│   ├── grant-trusted-payer.ts       # Post-upgrade re-wire / botched-deploy recovery
+│   ├── unpause-token.ts             # Operator helper — setNAV + setPaused with try/finally restore
+│   ├── run-yield-epoch.ts           # End-to-end epoch driver (open / batch / finalize / fund)
+│   └── deploy-homelab.sh            # Dev-machine → homelab sync (prod / stage)
 │
 ├── deployments/
-│   └── arb-sepolia.json         # Authoritative deployed addresses
+│   ├── arb-sepolia-v2.json          # Authoritative production addresses
+│   ├── arb-sepolia-v2.staging.json  # Staging addresses
+│   ├── arb-sepolia.json             # Wave 3 (read-only artifact)
+│   └── history/                     # Deployment snapshots
 │
-├── backend/                     # Node 20 + tsx, Clean Architecture
-│   ├── api/v1/                  # REST handlers
-│   ├── src/                     # core, domain, application, infrastructure, interface
-│   ├── drizzle/                 # schema + migrations
+├── backend/                         # Node 20 + tsx, Clean Architecture
+│   ├── api/v1/                      # REST handlers (auth, portfolio, issuer, agent stub)
+│   ├── src/                         # core, domain, application, infrastructure, interface
+│   ├── drizzle/                     # Drizzle schema (declarative push, not versioned migrations)
 │   └── Dockerfile
 │
-├── fhe-worker/                  # @cofhe/sdk/node wrapper, HTTP encrypt endpoint
-├── nav-worker/                  # NAV fetcher (FRED, on-chain, fallback)
+├── fhe-worker/                      # @cofhe/sdk/node wrapper, HTTP encrypt endpoint
+├── nav-worker/                      # NAV fetcher (FRED, on-chain, fallback) + source-audit-trail
+├── nav-publisher/                   # On-chain NAV writer with deviation + sequencer-uptime gates
 │
-├── frontend/                    # Vue 3 + Vite + Bun + Tailwind v4
-│   ├── src/
-│   │   ├── providers/zerodev/   # Passkey + kernel + session keys
-│   │   ├── services/            # Contract services (Token, Vault, Escrow, ...)
-│   │   ├── composables/         # useWallet, useAuth, useFhe
-│   │   └── views/
-│   │       ├── investor/
-│   │       └── issuer/
-│   └── ...
-│
-└── development/DEV_WAVE_3/      # Internal dev logs, plans, runbooks
+└── frontend/                        # Vue 3 + Vite + Bun + Tailwind v4
+    ├── src/
+    │   ├── providers/zerodev/       # Passkey + kernel + session keys (@zerodev/permissions)
+    │   ├── services/v35/            # SubscriptionService, SnapshotService, OracleService, …
+    │   ├── composables/             # useWallet, useAuth, useFhe (ephemeral-EOA permit signer)
+    │   ├── stores/                  # Pinia — auth, app, agent, issuer-distribution, …
+    │   └── views/
+    │       ├── investor/            # PortfolioPage, TradePage, YieldsPage, ActivityPage, CashPage
+    │       └── issuer/              # TokensPage, DistributePage, OnboardingWizard, InvestorsPage
+    └── ...
 ```
 
 ---
