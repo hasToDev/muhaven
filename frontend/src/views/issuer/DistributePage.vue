@@ -166,6 +166,32 @@ const calcRatePerShareDisplay = computed<string>(() => {
   return formatUSD(perWhole)
 })
 
+/**
+ * Diagnostic for the Apply-button disabled state. Tells the issuer
+ * exactly which input is missing instead of silently disabling.
+ * Returns `null` when calcTotalYieldUnits is computable.
+ */
+const calcDisabledReason = computed<string | null>(() => {
+  if (totalSupplyUnits.value === 0n) {
+    return 'Enter outstanding supply above to compute yield.'
+  }
+  if (calcNAVUnits.value === null) {
+    return calcNAVLoading.value
+      ? 'Loading NAV from on-chain oracle…'
+      : 'NAV unavailable for this token. Set NAV via the oracle, or type the yield amount manually.'
+  }
+  if (!Number.isFinite(calcAPY.value) || calcAPY.value <= 0) {
+    return 'Enter a positive APY %.'
+  }
+  if (calcTotalYieldUnits.value === null) {
+    return 'Calculator inputs incomplete.'
+  }
+  if (calcTotalYieldUnits.value <= 0n) {
+    return 'Computed yield rounds to zero — increase APY, period, or supply.'
+  }
+  return null
+})
+
 // ── Recent epochs strip ────────────────────────────────────────────────
 
 interface RecentEpochRow {
@@ -1629,10 +1655,38 @@ function fmtClaimWindow(claimExpiry: bigint): string {
                     </div>
                   </div>
 
+                  <!-- Disabled-reason diagnostic — surfaces *why* Apply
+                       is disabled so the issuer can act (vs silent grey
+                       button). -->
+                  <p
+                    v-if="calcDisabledReason"
+                    data-testid="distribute-calc-disabled-reason"
+                    class="font-sans text-[11px] text-cool flex items-center gap-1.5"
+                  >
+                    <AlertTriangle
+                      v-if="calcNAVUnits === null && !calcNAVLoading"
+                      :size="11"
+                      :stroke-width="1.8"
+                      class="text-gold"
+                    />
+                    <Loader2 v-else-if="calcNAVLoading" :size="11" class="animate-spin" />
+                    <Info v-else :size="11" :stroke-width="1.8" />
+                    <span>{{ calcDisabledReason }}</span>
+                    <button
+                      v-if="calcNAVUnits === null && !calcNAVLoading && selectedToken"
+                      type="button"
+                      @click="loadCalcNAV(selectedToken as Address)"
+                      class="ml-1 underline decoration-dotted underline-offset-2 hover:text-compute dark:hover:text-signal cursor-pointer"
+                    >
+                      Retry NAV →
+                    </button>
+                  </p>
+
                   <button
                     type="button"
                     @click="applyCalculatorYield"
                     :disabled="calcTotalYieldUnits === null || calcTotalYieldUnits <= 0n"
+                    :title="calcDisabledReason ?? 'Apply computed yield to amount input'"
                     data-testid="distribute-calc-apply"
                     class="self-end inline-flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.18em] font-semibold
                            text-white dark:text-[#412d00]
