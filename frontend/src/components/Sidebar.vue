@@ -231,17 +231,34 @@ onBeforeUnmount(() => {
     </nav>
 
     <!-- Bottom: dark + wallet + logout (role toggle removed — role is
-         chosen at login and can't be switched post-login). -->
-    <div class="px-5 pt-5 pb-6 border-t border-haze/70 dark:border-white/5 space-y-3">
-      <!-- Dark toggle row -->
-      <div class="flex items-center justify-between px-1">
-        <span class="text-[10px] uppercase tracking-[0.18em] text-cool font-sans font-medium">
-          Appearance
-        </span>
+         chosen at login and can't be switched post-login).
+         Phase 9.C cosmetic (2026-05-04, UX triad): bottom block is now
+         a "status strip" — `space-y-2` parent gap (was `space-y-3`)
+         binds the rows visually as one compact info layer, matching
+         the macOS-menu-bar / VS-Code-status-bar pattern. -->
+    <div class="px-5 pt-5 pb-6 border-t border-haze/70 dark:border-white/5 space-y-2">
+      <!-- Status strip: session pill (when active) on the left, theme
+           toggle on the right. Replaces the prior "Appearance | Toggle"
+           row — the standalone label was redundant against the toggle's
+           sun/moon glyph, and the session pill (formerly a centered
+           row of its own) now lives here as the row's natural left
+           anchor. `min-h-[28px]` prevents a 1-frame collapse on first
+           mount before MSessionStatus's internal `v-if="visible"`
+           resolves. When the session expires (or there's no wallet),
+           the toggle right-aligns alone via `justify-end` — no empty-
+           label fallback (the toggle is self-explanatory). -->
+      <div data-testid="nav-status-strip" class="flex items-center justify-end gap-2 px-1 min-h-[28px]">
+        <MSessionStatus
+          v-if="authStore.walletAddress"
+          data-testid="session-status"
+          class="mr-auto"
+        />
         <MDarkToggle data-testid="nav-dark-toggle" />
       </div>
 
-      <!-- Wallet pill / sign in -->
+      <!-- Wallet pill / sign in. `py-2` (was `py-2.5`) per UX triad —
+           tightens the row to ~36px so the bottom block reads as a
+           dense status layer rather than three loose fragments. -->
       <div
         v-if="authStore.walletAddress"
         class="flex items-center gap-1 bg-mist dark:bg-midnight-mid/70 rounded-lg border border-haze dark:border-white/8"
@@ -253,7 +270,7 @@ onBeforeUnmount(() => {
           :data-full-address="authStore.walletAddress"
           :title="copied ? 'Copied!' : `Copy ${authStore.walletAddress}`"
           :aria-label="copied ? 'Address copied to clipboard' : `Copy smart account address ${authStore.walletAddress}`"
-          class="flex-1 min-w-0 flex items-center gap-2 px-3 py-2.5 cursor-pointer hover:bg-haze/60 dark:hover:bg-white/5 transition-colors rounded-l-lg"
+          class="flex-1 min-w-0 flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-haze/60 dark:hover:bg-white/5 transition-colors rounded-l-lg"
         >
           <span v-if="connectionStatus === 'connecting'" class="flex items-center flex-shrink-0">
             <Loader2 :size="12" class="animate-spin text-compute dark:text-signal" />
@@ -281,7 +298,7 @@ onBeforeUnmount(() => {
         <button
           v-if="connectionStatus === 'degraded'"
           @click="handleSignIn"
-          class="flex items-center justify-center gap-1.5 px-2.5 py-2.5 border-l border-haze dark:border-white/8 text-compute dark:text-signal hover:text-compute/70 dark:hover:text-signal-hover transition-colors duration-200 cursor-pointer rounded-r-lg"
+          class="flex items-center justify-center gap-1.5 px-2.5 py-2 border-l border-haze dark:border-white/8 text-compute dark:text-signal hover:text-compute/70 dark:hover:text-signal-hover transition-colors duration-200 cursor-pointer rounded-r-lg"
           title="Session expired — sign in again"
         >
           <LogIn :size="13" />
@@ -291,7 +308,7 @@ onBeforeUnmount(() => {
           v-else
           @click="handleLogout"
           data-testid="nav-wallet-logout"
-          class="flex items-center justify-center px-2.5 py-2.5 border-l border-haze dark:border-white/8 text-cool hover:text-negative transition-colors duration-200 cursor-pointer rounded-r-lg"
+          class="flex items-center justify-center px-2.5 py-2 border-l border-haze dark:border-white/8 text-cool hover:text-negative transition-colors duration-200 cursor-pointer rounded-r-lg"
           title="Sign out"
         >
           <LogOut :size="13" />
@@ -303,23 +320,20 @@ onBeforeUnmount(() => {
         v-else
         @click="handleSignIn"
         data-testid="nav-wallet-signin"
-        class="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-sans font-semibold text-white dark:text-[#412d00] bg-compute dark:bg-signal hover:bg-compute-hover dark:hover:bg-signal-hover rounded-lg transition-colors duration-200 cursor-pointer shadow-[0_4px_14px_rgba(184,134,11,0.22)] dark:shadow-[0_4px_14px_rgba(255,220,161,0.2)]"
+        class="w-full flex items-center justify-center gap-2 px-4 py-2 text-sm font-sans font-semibold text-white dark:text-[#412d00] bg-compute dark:bg-signal hover:bg-compute-hover dark:hover:bg-signal-hover rounded-lg transition-colors duration-200 cursor-pointer shadow-[0_4px_14px_rgba(184,134,11,0.22)] dark:shadow-[0_4px_14px_rgba(255,220,161,0.2)]"
       >
         <LogIn :size="14" />
         Sign In
       </button>
 
-      <!-- Session status (below wallet) -->
-      <div v-if="authStore.walletAddress" class="flex items-center justify-center pt-1">
-        <MSessionStatus data-testid="session-status" />
-      </div>
-
       <!-- ADR-023 dev-mode pill — bottom of the sidebar so it's always
-           visible without dominating the chrome. Tighter top spacing
-           (`!mt-1.5` overrides the parent's `space-y-3` gap) keeps the
-           pill visually attached to the wallet section above. Renders
-           nothing when devMode is off or unconfigured. -->
-      <MDevModeBanner class="!mt-1.5" />
+           visible without dominating the chrome. Inherits the parent's
+           `space-y-2` gap (the pre-9.C `!mt-1.5` override was undone
+           because the parent gap dropped from 12px → 8px and the
+           override's "tighter spacing" intent no longer applies — 6px
+           override against 8px parent is a 2px delta, invisible).
+           Renders nothing when devMode is off or unconfigured. -->
+      <MDevModeBanner />
     </div>
   </aside>
 </template>
