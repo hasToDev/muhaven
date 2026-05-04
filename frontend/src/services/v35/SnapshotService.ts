@@ -46,6 +46,14 @@ export type DistributionPhase =
   | 'opening'        // openEpoch tx in flight
   | 'snapshotting'   // batched; carries (current, total) progress
   | 'finalizing'
+  | 'awaiting-fund'  // Phase 9.C / L2 wizard split (2026-05-04) — pause
+                     // point between Prepare (Open + Snapshot + Finalize)
+                     // and Fund. The L2 grant on encTotalSupply is now
+                     // active for this epoch, so the issuer can decrypt
+                     // the snapshot's exact supply, fill the yield amount
+                     // (with calculator help), and click Fund as a
+                     // separate UserOp. Eliminates the "what's my supply?"
+                     // guessing game on brand-new epochs.
   | 'funding'        // encrypt amount + fundEpoch
   | 'done'
   | 'error'
@@ -103,7 +111,7 @@ export interface InFlightSnapshot {
   snapshotAddress: Address
   epochId: bigint
   epoch: EpochView
-  phase: Extract<DistributionPhase, 'snapshotting' | 'finalizing' | 'funding' | 'done'>
+  phase: Extract<DistributionPhase, 'snapshotting' | 'finalizing' | 'awaiting-fund' | 'done'>
 }
 
 // ── Resolution helpers ─────────────────────────────────────────────────
@@ -411,7 +419,7 @@ export async function detectInFlight(
   const phase: InFlightSnapshot['phase'] = epoch.funded
     ? 'done'
     : epoch.finalized
-      ? 'funding'
+      ? 'awaiting-fund'
       : 'snapshotting'
 
   return {

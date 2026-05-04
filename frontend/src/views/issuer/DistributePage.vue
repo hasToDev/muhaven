@@ -306,14 +306,33 @@ const callerIsOnChainIssuer = computed(() =>
   preflightStatus.value === null ? true : preflightStatus.value.callerIsOnChainIssuer,
 )
 
-const canDistribute = computed(() =>
+/**
+ * Phase 9.C / L2 wizard split — "Prepare epoch" gate. Doesn't depend
+ * on the yield amount or supply input; those land at Fund time. The
+ * issuer can click Prepare with just a token selected.
+ */
+const canPrepare = computed(() =>
   selectedToken.value
-    && amountValid.value
-    && totalSupplyValid.value
     && holderTotal.value > 0
     && callerIsOnChainIssuer.value
+    && !distributionStore.isProcessing
+    && !distributionStore.isAwaitingFund,
+)
+
+/**
+ * Phase 9.C / L2 wizard split — "Fund $X" gate. Active once Prepare
+ * has finalized the snapshot (`isAwaitingFund`) and the issuer has
+ * filled in valid yield amount + supply.
+ */
+const canFund = computed(() =>
+  distributionStore.isAwaitingFund
+    && amountValid.value
+    && totalSupplyValid.value
     && !distributionStore.isProcessing,
 )
+
+/** Legacy gate kept for any pre-split callers. Drives nothing on the page. */
+const canDistribute = computed(() => canPrepare.value && amountValid.value && totalSupplyValid.value)
 
 // ── Mount + reactivity ─────────────────────────────────────────────────
 
@@ -656,11 +675,21 @@ async function refreshAfterDistribute() {
   }
 }
 
-async function handleDistribute() {
-  if (!canDistribute.value) return
+/**
+ * Phase 9.C / L2 wizard split — Stage 1: Prepare. Drives Open +
+ * Snapshot + Finalize and stops at `awaiting-fund`. After finalize
+ * lands, the L2 ACL grant on `encTotalSupply` activates for this
+ * epoch, and the page auto-decrypts the snapshot's exact supply via
+ * a watcher that fires when phase enters `awaiting-fund`.
+ *
+ * Doesn't need the yield amount or supply input — the issuer fills
+ * those in afterward (with calculator help if they want).
+ */
+async function handlePrepare() {
+  if (!canPrepare.value) return
   if (!connected.value || !walletAddress.value) {
     toast.error('Wallet not connected', {
-      description: 'Sign in with your passkey to distribute yield',
+      description: 'Sign in with your passkey to prepare an epoch',
     })
     return
   }
@@ -675,17 +704,9 @@ async function handleDistribute() {
   }
 
   preflightError.value = null
-
-  // Flip phase to 'preparing' immediately so the CTA + form pick up
-  // the in-progress visual state within 100ms of the click. Without
-  // this, the silent pre-phase work (preflight refresh, mhUSDC decrypt,
-  // operator grants, auto-wrap) leaves the button at "Distribute · $X"
-  // for 3-10s — past the threshold where users start re-clicking or
-  // blaming the system.
   distributionStore.markPreparing()
 
   try {
-    // Phase 1: preflight grants + auto-wrap.
     if (!preflightStatus.value) {
       await runPreflight()
     }
@@ -696,11 +717,6 @@ async function handleDistribute() {
         `No holders for ${selectedTokenInfo.value?.symbol ?? 'this token'} yet — mint MuHavenToken to a KYC-approved address first`,
       )
     }
-    // OnlyIssuer guardrail. Every YieldSnapshot write checks
-    // `msg.sender == TokenRegistry.getConfig(token).issuer` and reverts
-    // with `OnlyIssuer()` (selector 0x55b51ef1) on mismatch. Block the
-    // submission before we waste a passkey + bundler roundtrip on a
-    // guaranteed-failing UserOp.
     if (!p.callerIsOnChainIssuer) {
       const onChain = p.onChainIssuer
       const sym = selectedTokenInfo.value?.symbol ?? 'this token'
@@ -709,20 +725,93 @@ async function handleDistribute() {
       )
     }
 
-    // Auto-decrypt mhUSDC if the user hasn't revealed it yet. We need a
-    // ground-truth balance to know whether to auto-wrap — without this,
-    // an unrevealed under-funded issuer would hit fundEpoch's silent-fail
-    // path (`_silentFailBound` returns zero) and every claim would
-    // silent-fail to zero too. Per the blocker note in
-    // `scripts/run-yield-epoch.ts` (Phase 8 / ADR-041 preflight wrap).
+    // Auto-decrypt mhUSDC for issuer context (the Available mhUSDC
+    // strip + later wrap-need detection at Fund time). Skipping if
+    // already revealed — no surprise session signature.
     if (mhUsdcBalance.value === null) {
       await fhe.initialize()
       mhUsdcBalance.value = await fhe.decryptMhUsdcForView(p.mhUsdcHandle)
     }
 
-    // Operator approvals — silent via session key (added this phase).
-    // legacy → wrapper grant: only needed for the auto-wrap step. Grant
-    // when we KNOW we'll wrap; otherwise skip.
+    // Kick off the Prepare stage. Yield amount + ratePerShare default
+    // to 0n; the page sets them via `setFundInputs` before clicking
+    // Fund (post-decryption of the snapshot's supply).
+    distributionStore.start({
+      token,
+      snapshotAddr,
+      holderTotal: p.holderCount,
+    })
+    await distributionStore.runPrepare(account)
+
+    if (distributionStore.phase === 'awaiting-fund') {
+      // Snapshot finalize landed → L2 grant on encTotalSupply is now
+      // active. Auto-decrypt the supply + pre-fill the input. The
+      // watcher on `phase === 'awaiting-fund'` (further down) drives
+      // this; calling here ensures it runs even when the watcher
+      // fires before the page mounts (e.g. handlePrepare returns,
+      // watcher sees the same value it already saw).
+      await refreshSupplyDecryptAvailability(token)
+      void autoDecryptSupplyAfterPrepare()
+    } else if (distributionStore.phase === 'error') {
+      toast.error('Prepare failed', {
+        description: distributionStore.errorMessage ?? 'Unknown error',
+      })
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'Prepare failed'
+    preflightError.value = msg
+    if (walletAddress.value) {
+      distributionStore.setError(walletAddress.value as Address, msg)
+    }
+    toast.error('Prepare failed', { description: msg })
+  }
+}
+
+/**
+ * Phase 9.C / L2 wizard split — Stage 2: Fund. Validates amount +
+ * supply, ensures operator grants, auto-wraps if mhUSDC float is
+ * short, then sends the fundEpoch tx via the store.
+ *
+ * Pre-stage operator grants land at THIS step (not at Prepare time):
+ * Prepare's Open / Snapshot / Finalize calls only need the OnlyIssuer
+ * modifier check, no operator approvals. Fund needs the wrapper →
+ * snapshot operator grant (and legacy → wrapper if auto-wrap fires).
+ */
+async function handleFund() {
+  if (!canFund.value) return
+  if (!connected.value || !walletAddress.value) {
+    toast.error('Wallet not connected', {
+      description: 'Sign in with your passkey to fund the epoch',
+    })
+    return
+  }
+  const account = walletAddress.value as Address
+  const token = distributionStore.tokenAddress
+  const snapshotAddr = distributionStore.snapshotAddress
+  if (!token || !snapshotAddr) {
+    toast.error('Fund state missing', {
+      description: 'Re-run Prepare to set up the epoch first',
+    })
+    return
+  }
+
+  preflightError.value = null
+
+  try {
+    // Re-run preflight quickly — operator grants may have expired or
+    // never been granted; we'll grant on demand below.
+    if (!preflightStatus.value) await runPreflight()
+    const p = preflightStatus.value
+    if (!p) throw new Error('Preflight not ready')
+
+    // Make sure we have a ground-truth mhUSDC balance to decide whether
+    // to auto-wrap. Same silent-fail-zero footgun as the original
+    // single-shot path — closes the gap from `scripts/run-yield-epoch.ts`'s
+    // preflight-wrap commentary.
+    if (mhUsdcBalance.value === null) {
+      await fhe.initialize()
+      mhUsdcBalance.value = await fhe.decryptMhUsdcForView(p.mhUsdcHandle)
+    }
     const balance = mhUsdcBalance.value
     const needsWrap = balance < amountUnits.value
     if (needsWrap && !p.legacyToWrapperOperatorOk) {
@@ -739,22 +828,15 @@ async function handleDistribute() {
       )
     }
 
-    // Phase 2: kick off the wizard.
-    distributionStore.start({
-      token,
-      snapshotAddr,
+    // Push the form's amount + computed ratePerShare into the store
+    // (overrides the start-time placeholders, persists immediately so
+    // a reload mid-fund preserves the value).
+    distributionStore.setFundInputs(account, {
       totalYieldUnits: amountUnits.value,
-      // Phase 9.B / Option A — issuer-supplied ratePerShare for the
-      // cleartext-rate claim path. Computed from the form's
-      // `totalSupply` field (issuer's off-chain ledger value).
       ratePerShareUnits: ratePerShareUnits.value,
-      holderTotal: p.holderCount,
     })
 
-    // Phase 3: drive the lifecycle. Each phase persists to sessionStorage
-    // before the next; a reload during snapshotting picks up where it
-    // left off.
-    await distributionStore.runDistribution(account)
+    await distributionStore.runFund(account)
 
     if (distributionStore.phase === 'done' && distributionStore.epochId !== null) {
       const epoch = await SnapshotService.detectInFlight(token)
@@ -762,7 +844,7 @@ async function handleDistribute() {
         token: selectedTokenInfo.value?.symbol ?? '',
         amount: amount.value,
         epochId: distributionStore.epochId.toString(),
-        holders: p.holderCount,
+        holders: distributionStore.holderTotal,
         claimExpiry: epoch
           ? new Date(Number(epoch.epoch.claimExpiry) * 1000).toLocaleDateString('en-US', {
             month: 'short', day: 'numeric', year: 'numeric',
@@ -774,16 +856,7 @@ async function handleDistribute() {
       toast.success('Distribution complete', {
         description: `Epoch #${distributionStore.epochId} funded — investors can pull-claim from /yields`,
       })
-      // Refresh side state — local DistributePage tile + global
-      // portfolio store + recent epochs strip. The local-page refreshes
-      // (runPreflight, loadRecentEpochs) are awaited so the visible
-      // page state under the receipt updates synchronously. The global
-      // portfolio re-decrypt is fire-and-forget — cofhe TN sealOutput
-      // can lag for tens of seconds on post-distribute handles
-      // (`project_cofhe_tn_chain_length_cap`), and awaiting it would
-      // pin `pusdcDecrypting === true` on the shared portfolio store
-      // for the whole duration, making /cash + /portfolio mhUSDC tiles
-      // show forever-spinners on first navigation post-distribute.
+      // Side-state refresh — same shape as the pre-split handler.
       mhUsdcBalance.value = null
       void refreshAfterDistribute().catch((e) => {
         console.warn('[DistributePage] background portfolio refresh failed', e)
@@ -791,48 +864,72 @@ async function handleDistribute() {
       await Promise.all([
         runPreflight(),
         loadRecentEpochs(),
+        refreshSupplyDecryptAvailability(selectedToken.value as Address | ''),
       ])
     } else if (distributionStore.phase === 'error') {
-      toast.error('Distribution failed', {
+      toast.error('Fund failed', {
         description: distributionStore.errorMessage ?? 'Unknown error',
       })
     }
   } catch (e) {
-    const msg = e instanceof Error ? e.message : 'Distribution failed'
+    const msg = e instanceof Error ? e.message : 'Fund failed'
     preflightError.value = msg
-    // Flip phase from 'preparing' (or wherever the throw landed) to
-    // 'error' so the wizard's error panel renders with its actionable
-    // retry CTA — without this the wizard would freeze at "Preparing…"
-    // forever on a pre-phase failure (e.g. OnlyIssuer guardrail trip).
     if (walletAddress.value) {
       distributionStore.setError(walletAddress.value as Address, msg)
     }
-    toast.error('Distribution failed', { description: msg })
+    toast.error('Fund failed', { description: msg })
   }
 }
+
+/**
+ * Phase 9.C / L2 wizard split — auto-decrypt the snapshot's
+ * encTotalSupply when the wizard enters `awaiting-fund` (post-
+ * finalize). Pre-fills the supply input so the issuer can use the
+ * Calculator widget against on-chain truth without typing.
+ *
+ * Best-effort: silently skips if the supply input already has a
+ * non-zero value (issuer typed it manually before finalize landed)
+ * or if the decrypt fails (toast surfaced; manual entry stays
+ * available). Triggered by `handlePrepare` directly + a watcher on
+ * `phase === 'awaiting-fund'` for the resume-from-sessionStorage path.
+ */
+async function autoDecryptSupplyAfterPrepare() {
+  if (totalSupplyUnits.value > 0n) return  // issuer already typed it
+  if (!selectedToken.value) return
+  // Defer one tick so the L2 grant tx has propagated to cofhe.
+  await new Promise(r => setTimeout(r, 250))
+  await refreshSupplyDecryptAvailability(selectedToken.value as Address)
+  if (supplyDecryptAvailable.value) {
+    await decryptSupplyFromChain()
+  }
+}
+
+// Watcher: when phase transitions into awaiting-fund (e.g. from a
+// hydrate-from-sessionStorage on page mount), auto-decrypt the supply.
+watch(() => distributionStore.phase, (next, prev) => {
+  if (next === 'awaiting-fund' && prev !== 'awaiting-fund') {
+    void autoDecryptSupplyAfterPrepare()
+  }
+})
+
+/** Compatibility shim — old callsites still reference handleDistribute. */
+const handleDistribute = handlePrepare
 
 async function resumeDistribution() {
   if (!walletAddress.value) return
   preflightError.value = null
 
   // Capture the resume-from phase BEFORE markPreparing flips it. The
-  // store's runDistribution gates each on-chain step on the current
-  // phase, so we need to restore it after the pre-phase work resolves
-  // — otherwise runDistribution would no-op (no phase matches its
-  // 'preflight'/'snapshotting'/'finalizing'/'funding' branches).
+  // store's run* actions gate each on-chain step on the current phase,
+  // so we need to restore it after the pre-phase work resolves —
+  // otherwise the run actions would no-op.
   const resumeFromPhase = distributionStore.phase
 
-  // Same click-to-feedback fix as handleDistribute: flip to 'preparing'
+  // Same click-to-feedback fix as handlePrepare: flip to 'preparing'
   // so the resume CTA's spinner + label update within one tick of click.
   distributionStore.markPreparing()
 
   try {
-    // Re-run preflight + re-grant operator approvals before retrying the
-    // on-chain lifecycle. Most resumes happen seconds after the original
-    // failure (RPC blip, bundler hiccup) so grants are still good — but
-    // a session-expired wrapper→snapshot grant would re-trip the same
-    // PaymentTransferFailed at runFund. Cheap to re-check; expensive to
-    // re-fail.
     const tokenAddr = distributionStore.tokenAddress
     const snapAddr = distributionStore.snapshotAddress
     if (tokenAddr && snapAddr) {
@@ -841,31 +938,53 @@ async function resumeDistribution() {
         tokenAddr,
       )
       preflightStatus.value = fresh
-      if (!fresh.wrapperToSnapshotOperatorOk) {
+      // Wrapper→snapshot grant is only needed at fund time; grant if
+      // we're about to drive that step.
+      if (!fresh.wrapperToSnapshotOperatorOk
+          && (resumeFromPhase === 'awaiting-fund' || resumeFromPhase === 'funding')) {
         await SnapshotService.grantWrapperToSnapshotOperator(snapAddr)
       }
     }
 
-    // Restore the resume-from phase so runDistribution's phase-gated
-    // branches pick up at the right step. On a pre-phase failure
-    // (epochId === null) we restart from 'preflight' (runOpenEpoch).
-    // On a mid-flow failure we re-derive phase from on-chain truth via
-    // detectInFlight — finalized + funded is no-op (already 'done'),
-    // finalized + not-funded → 'funding', otherwise → 'snapshotting'.
+    // Restore the resume-from phase. On a pre-phase failure (epochId
+    // === null) restart from 'preflight' (runOpenEpoch). On a mid-flow
+    // error, derive phase from on-chain truth via detectInFlight:
+    // funded → done, finalized + not-funded → awaiting-fund (Phase
+    // 9.C / L2 wizard split landing point), else → snapshotting.
     if (distributionStore.epochId === null) {
       distributionStore.phase = 'preflight'
     } else if (resumeFromPhase === 'error' && tokenAddr) {
       const inflight = await SnapshotService.detectInFlight(tokenAddr)
       distributionStore.phase = inflight?.phase === 'done'
         ? 'done'
-        : inflight?.phase === 'funding'
-          ? 'funding'
+        : inflight?.phase === 'awaiting-fund'
+          ? 'awaiting-fund'
           : 'snapshotting'
     } else {
       distributionStore.phase = resumeFromPhase
     }
 
-    await distributionStore.runDistribution(walletAddress.value as Address)
+    // Phase 9.C / L2 wizard split — branch on the resumed phase.
+    // Pre-finalize phases drive Prepare; awaiting-fund means the
+    // issuer needs to click Fund themselves (different UserOp), so
+    // resume just lands them on the form ready to click.
+    if (
+      distributionStore.phase === 'preflight'
+      || distributionStore.phase === 'snapshotting'
+      || distributionStore.phase === 'finalizing'
+    ) {
+      await distributionStore.runPrepare(walletAddress.value as Address)
+      // After runPrepare lands at awaiting-fund, the watcher
+      // auto-decrypts supply.
+    } else if (distributionStore.phase === 'funding') {
+      // Funding mid-tx interrupted (rare — e.g. RPC blip during the
+      // fundEpoch UserOp). Re-run runFund directly.
+      await distributionStore.runFund(walletAddress.value as Address)
+    } else if (distributionStore.phase === 'awaiting-fund') {
+      // Already paused at the review step. Trigger supply auto-decrypt
+      // (idempotent if already done) and let the user click Fund.
+      void autoDecryptSupplyAfterPrepare()
+    }
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'Resume failed'
     preflightError.value = msg
@@ -917,16 +1036,15 @@ async function resumeDistribution() {
 /**
  * Single retry CTA for the error panel. Branches on epochId:
  *   - epochId === null → pre-phase failure (e.g., OnlyIssuer guardrail
- *     trip, holder count zero, auto-wrap reverted). No epoch was opened
- *     on-chain, so resumeDistribution would no-op. Re-run the full
- *     handleDistribute flow from scratch.
+ *     trip, holder count zero). No epoch was opened on-chain, so
+ *     resumeDistribution would no-op. Re-run handlePrepare from scratch.
  *   - epochId !== null → mid-flow failure (snapshot batch dropped, fund
  *     reverted). resumeDistribution re-runs preflight + grants and
  *     picks up the on-chain lifecycle from where it stopped.
  */
 function handleErrorRetry() {
   if (distributionStore.epochId === null) {
-    void handleDistribute()
+    void handlePrepare()
   } else {
     void resumeDistribution()
   }
@@ -1096,7 +1214,7 @@ function fmtClaimWindow(claimExpiry: bigint): string {
            and create visual conflict in the receipt frame). The 200ms
            opacity exit motion prevents single-frame collapse. -->
       <section
-        v-if="distributionStore.isProcessing || distributionStore.phase === 'error'"
+        v-if="distributionStore.isProcessing || distributionStore.isAwaitingFund || distributionStore.phase === 'error'"
         v-motion
         :initial="{ opacity: 0, y: 16 }"
         :enter="{ opacity: 1, y: 0, transition: { duration: 360 } }"
@@ -1844,11 +1962,25 @@ function fmtClaimWindow(claimExpiry: bigint): string {
                 class="font-sans text-[12px] text-negative"
                 data-testid="distribute-preflight-error"
               >{{ preflightError }}</p>
+              <!-- Phase 9.C / L2 wizard split — CTA swaps based on phase.
+                   Stage 1 ("Prepare epoch"): visible from idle through
+                     finalize. Doesn't need yield amount or supply input
+                     — opens the epoch, snapshots holders, finalizes.
+                   Stage 2 ("Fund $X"): visible at awaiting-fund. Issuer
+                     reviews the auto-decrypted supply, types yield
+                     amount (or uses Calculator), clicks Fund.
+                   The two-stage shape exists so L2's encTotalSupply ACL
+                   grant becomes useful for brand-new epochs (the grant
+                   activates at finalize time; pre-9.C wizard ran finalize
+                   + fund as one click, so the issuer never had a chance
+                   to read the on-chain supply before fundEpoch).
+              -->
               <div class="flex justify-end">
                 <button
+                  v-if="!distributionStore.isAwaitingFund"
                   type="button"
-                  @click="handleDistribute"
-                  :disabled="!canDistribute"
+                  @click="handlePrepare"
+                  :disabled="!canPrepare"
                   data-testid="distribute-cta"
                   class="btn-gold-sweep px-6 py-2.5 rounded-lg font-sans font-bold text-[12px] tracking-[0.18em] uppercase
                          flex items-center gap-2 cursor-pointer
@@ -1859,13 +1991,36 @@ function fmtClaimWindow(claimExpiry: bigint): string {
                   <Coins v-else :size="13" :stroke-width="2" />
                   <span>{{ distributionStore.phase === 'preparing'
                     ? 'Preparing…'
-                    : distributionStore.isProcessing
-                      ? 'Distributing…'
-                      : amountValid
-                        ? `Distribute · ${formatUSD(Number(amountUnits) / 1e6)}`
-                        : 'Distribute'
+                    : distributionStore.phase === 'opening'
+                      ? 'Opening…'
+                      : distributionStore.phase === 'snapshotting'
+                        ? 'Snapshotting…'
+                        : distributionStore.phase === 'finalizing'
+                          ? 'Finalizing…'
+                          : 'Prepare epoch'
                   }}</span>
                   <ArrowRight v-if="!distributionStore.isProcessing" :size="13" :stroke-width="2" />
+                </button>
+                <button
+                  v-else
+                  type="button"
+                  @click="handleFund"
+                  :disabled="!canFund"
+                  data-testid="distribute-fund-cta"
+                  class="btn-gold-sweep px-6 py-2.5 rounded-lg font-sans font-bold text-[12px] tracking-[0.18em] uppercase
+                         flex items-center gap-2 cursor-pointer
+                         transition-all duration-300 hover:-translate-y-0.5 active:scale-[0.99]
+                         disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0"
+                >
+                  <Loader2 v-if="distributionStore.phase === 'funding'" :size="14" class="animate-spin" />
+                  <Coins v-else :size="13" :stroke-width="2" />
+                  <span>{{ distributionStore.phase === 'funding'
+                    ? 'Funding…'
+                    : amountValid
+                      ? `Fund · ${formatUSD(Number(amountUnits) / 1e6)}`
+                      : 'Fund — enter amount'
+                  }}</span>
+                  <ArrowRight v-if="distributionStore.phase !== 'funding'" :size="13" :stroke-width="2" />
                 </button>
               </div>
             </div>

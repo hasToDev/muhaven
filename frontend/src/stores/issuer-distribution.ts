@@ -142,8 +142,16 @@ export const useIssuerDistributionStore = defineStore('issuer-distribution', () 
 
   // ── Derived ──────────────────────────────────────────────────────────
 
+  // Phase 9.C / L2 wizard split — `awaiting-fund` is a deliberate pause
+  // point between Prepare and Fund, so the issuer can decrypt the
+  // snapshot's supply via L2 grant + review the yield amount before
+  // committing the Fund tx. Treated as NOT processing (no spinner)
+  // even though the wizard is mid-flow.
   const isProcessing = computed(() =>
-    phase.value !== 'idle' && phase.value !== 'done' && phase.value !== 'error',
+    phase.value !== 'idle'
+    && phase.value !== 'done'
+    && phase.value !== 'error'
+    && phase.value !== 'awaiting-fund',
   )
 
   const stepperIndex = computed(() => {
@@ -151,11 +159,20 @@ export const useIssuerDistributionStore = defineStore('issuer-distribution', () 
       case 'opening': return 0
       case 'snapshotting': return 1
       case 'finalizing': return 2
-      case 'funding': return 3
+      case 'awaiting-fund': return 3   // Same column as funding — visually
+      case 'funding': return 3         //   the same step (just paused vs running).
       case 'done': return 4
       default: return -1
     }
   })
+
+  /**
+   * Phase 9.C / L2 — true iff the wizard is paused at the
+   * post-finalize review point, awaiting issuer Fund click. Drives
+   * the page's CTA swap (Prepare → Fund) and the supply auto-decrypt
+   * trigger.
+   */
+  const isAwaitingFund = computed(() => phase.value === 'awaiting-fund')
 
   const snapshotProgress = computed(() => ({
     processed: holderProcessed.value,
@@ -264,8 +281,12 @@ export const useIssuerDistributionStore = defineStore('issuer-distribution', () 
       // If on-chain says we're behind sessionStorage, prefer on-chain
       // (e.g. the epoch was finalized on another tab).
       epochId.value = onChain.epochId
-      if (onChain.phase === 'funding' && phase.value === 'snapshotting') {
-        phase.value = 'finalizing'  // ready for finalize tx if not yet sent
+      // Phase 9.C / L2 — on-chain finalize maps to 'awaiting-fund'
+      // (was 'funding' pre-9.C); reconcile if sessionStorage still
+      // claims a pre-finalize phase.
+      if (onChain.phase === 'awaiting-fund'
+          && (phase.value === 'snapshotting' || phase.value === 'finalizing')) {
+        phase.value = 'awaiting-fund'
       }
       // Refresh holderProcessed from epoch.holderCount — the contract is
       // the source of truth.
@@ -279,25 +300,36 @@ export const useIssuerDistributionStore = defineStore('issuer-distribution', () 
 
   // ── Lifecycle ────────────────────────────────────────────────────────
 
-  /** Initialise a fresh distribution. Idempotent — no on-chain side effects. */
+  /**
+   * Initialise a fresh distribution. Idempotent — no on-chain side effects.
+   *
+   * Phase 9.C / L2 wizard split — `totalYieldUnits` and
+   * `ratePerShareUnits` are now optional (default `0n`). The Prepare
+   * stage doesn't need them — it runs Open + Snapshot + Finalize
+   * against the holders alone. The page sets them on the store
+   * before clicking Fund (via `setFundInputs`), so the Fund tx uses
+   * the post-prepare values (which can incorporate the just-decrypted
+   * snapshot supply).
+   */
   function start(input: {
     token: Address
     snapshotAddr: Address
-    totalYieldUnits: bigint
+    totalYieldUnits?: bigint
     /**
      * Phase 9.B / Option A — issuer's pre-computed cleartext per-share
-     * yield rate (`floor(totalYield / totalSupply)`). Required;
-     * `runFund` will refuse to call `fundEpoch` when this is zero.
+     * yield rate (`floor(totalYield × RATE_SCALE / totalSupply)`).
+     * Optional at start; required by the time `runFund` is called
+     * (the store guards on > 0 before sending the tx).
      */
-    ratePerShareUnits: bigint
+    ratePerShareUnits?: bigint
     holderTotal: number
   }) {
     tokenAddress.value = input.token
     snapshotAddress.value = input.snapshotAddr
     epochId.value = null
     phase.value = 'preflight'
-    totalYieldUnits.value = input.totalYieldUnits
-    ratePerShareUnits.value = input.ratePerShareUnits
+    totalYieldUnits.value = input.totalYieldUnits ?? 0n
+    ratePerShareUnits.value = input.ratePerShareUnits ?? 0n
     holderTotal.value = input.holderTotal
     holderProcessed.value = 0
     batchIndex.value = 0
@@ -305,6 +337,22 @@ export const useIssuerDistributionStore = defineStore('issuer-distribution', () 
     lastTxHash.value = null
     errorMessage.value = null
     cachedHolders.value = []
+  }
+
+  /**
+   * Phase 9.C / L2 wizard split — page-level setter for the Fund-stage
+   * inputs. Call before `runFund` (or pass the same values as
+   * `runFund` overrides). Persists immediately so a reload after the
+   * issuer typed an amount but before clicking Fund preserves the
+   * value across the reload.
+   */
+  function setFundInputs(account: Address, input: {
+    totalYieldUnits: bigint
+    ratePerShareUnits: bigint
+  }) {
+    totalYieldUnits.value = input.totalYieldUnits
+    ratePerShareUnits.value = input.ratePerShareUnits
+    persistIfActive(account)
   }
 
   /** Wipe all state. Use after success or on user-cancel. */
@@ -408,26 +456,51 @@ export const useIssuerDistributionStore = defineStore('issuer-distribution', () 
         epochId.value,
       )
       lastTxHash.value = txHash
-      phase.value = 'funding'
+      // Phase 9.C / L2 wizard split — pause at awaiting-fund (was
+      // 'funding'). The Fund tx now requires a separate Fund click
+      // from the page after the issuer reviews the (auto-decrypted)
+      // supply + the yield amount.
+      phase.value = 'awaiting-fund'
       persistIfActive(account)
     } catch (e) {
       setError(account, e instanceof Error ? e.message : 'finalizeSnapshot failed')
     }
   }
 
-  async function runFund(account: Address) {
+  /**
+   * Phase 9.C / L2 wizard split — issuer-driven Fund step. Updates the
+   * per-share rate + yield amount immediately before sending the
+   * fundEpoch tx, since the issuer may have changed them after the
+   * supply auto-decrypted at finalize time. The store's persisted
+   * `ratePerShareUnits` / `totalYieldUnits` are the authoritative
+   * inputs to this step.
+   */
+  async function runFund(
+    account: Address,
+    overrides?: { totalYieldUnits?: bigint; ratePerShareUnits?: bigint },
+  ) {
     if (!snapshotAddress.value || epochId.value === null) {
       setError(account, 'Fund pre-state missing')
       return
     }
+    if (overrides?.totalYieldUnits !== undefined) {
+      totalYieldUnits.value = overrides.totalYieldUnits
+    }
+    if (overrides?.ratePerShareUnits !== undefined) {
+      ratePerShareUnits.value = overrides.ratePerShareUnits
+    }
+    if (totalYieldUnits.value <= 0n) {
+      setError(account, 'Yield amount must be > 0.')
+      return
+    }
     if (ratePerShareUnits.value <= 0n) {
-      // Phase 9.B / Option A — guardrail. Zero rate would silent-fail
-      // every claim; prefer to error out at the wizard layer with an
-      // actionable message instead of letting `InvalidRatePerShare`
-      // bubble up from the contract.
+      // Phase 9.B / Option A + Phase 9.C / L1 — guardrail. Zero rate
+      // would silent-fail every claim; prefer to error out at the
+      // wizard layer with an actionable message instead of letting
+      // `InvalidRatePerShare` bubble up from the contract.
       setError(
         account,
-        'Per-share rate is zero — totalYield must be ≥ totalSupply for claims to land.',
+        'Per-share rate rounds to zero on-chain. Increase the yield amount or reduce supply.',
       )
       return
     }
@@ -448,8 +521,17 @@ export const useIssuerDistributionStore = defineStore('issuer-distribution', () 
     }
   }
 
-  /** Drive the post-preflight pipeline end-to-end. */
-  async function runDistribution(account: Address) {
+  /**
+   * Phase 9.C / L2 wizard split (2026-05-04) — Stage 1: Prepare.
+   * Drives Open + Snapshot + Finalize and PAUSES at awaiting-fund.
+   * Replaces `runDistribution` for the brand-new-epoch path; the
+   * separate `runFund` call is the Stage 2 trigger.
+   *
+   * Resume-aware: same phase-gated branches as `runDistribution`. A
+   * resume from sessionStorage that's already past finalize will
+   * no-op cleanly into awaiting-fund.
+   */
+  async function runPrepare(account: Address) {
     if (phase.value === 'preflight') {
       await runOpenEpoch(account)
     }
@@ -459,7 +541,19 @@ export const useIssuerDistributionStore = defineStore('issuer-distribution', () 
     if (phase.value === 'finalizing') {
       await runFinalize(account)
     }
-    if (phase.value === 'funding') {
+    // After runFinalize, phase === 'awaiting-fund'. The page handles
+    // the pause UX (auto-decrypt supply via L2, swap CTA to Fund).
+  }
+
+  /**
+   * Drive the post-preflight pipeline end-to-end. Pre-9.C/L2 entry
+   * point; preserved for any caller that wants the legacy single-shot
+   * behaviour. New /distribute UX uses `runPrepare` + `runFund` so the
+   * issuer can review the supply between stages.
+   */
+  async function runDistribution(account: Address) {
+    await runPrepare(account)
+    if (phase.value === 'awaiting-fund' || phase.value === 'funding') {
       await runFund(account)
     }
   }
@@ -478,6 +572,7 @@ export const useIssuerDistributionStore = defineStore('issuer-distribution', () 
     lastTxHash,
     errorMessage,
     isProcessing,
+    isAwaitingFund,
     stepperIndex,
     snapshotProgress,
     snapshot,
@@ -485,11 +580,13 @@ export const useIssuerDistributionStore = defineStore('issuer-distribution', () 
     markPreparing,
     setError,
     start,
+    setFundInputs,
     reset,
     runOpenEpoch,
     runSnapshotBatches,
     runFinalize,
     runFund,
+    runPrepare,
     runDistribution,
   }
 })
