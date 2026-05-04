@@ -1,48 +1,43 @@
 # MuHaven — Smart Contract Specifications
 
-> Contract interfaces, encrypted types, and deployment details.
+> Contract surfaces, encrypted types, deployment topology, and the conventions every MuHaven contract follows.
+
+> **Canonical source for current signatures: `contracts/`.** This document is a navigation guide; the Solidity files are authoritative when they disagree.
 
 ---
 
 ## SDK compatibility
 
-> **WARNING**: The Fhenix CoFHE SDK (`cofhe-contracts`) is under active development and changes frequently. Pin your contracts to a specific version.
+Fhenix CoFHE is under active development. MuHaven contracts are pinned:
 
-| Component | Pinned version                                                                                | Package |
-|-----------|-----------------------------------------------------------------------------------------------|---------|
-| cofhe-contracts | [`v0.1.3`](https://github.com/FhenixProtocol/cofhe-contracts)                                 | `@fhenixprotocol/cofhe-contracts` |
-| @cofhe/sdk (client SDK) | [`v0.4.0`](https://github.com/FhenixProtocol/cofhesdk)                                    | `@cofhe/sdk`, `@cofhe/hardhat-plugin`, `@cofhe/mock-contracts` |
-| cofhe-hardhat-starter | [`sdk-migration`](https://github.com/FhenixProtocol/cofhe-hardhat-starter/tree/sdk-migration) | Clone + `pnpm install` |
+| Component | Pinned version | Package |
+|---|---|---|
+| cofhe-contracts | [`v0.1.3`](https://github.com/FhenixProtocol/cofhe-contracts) | `@fhenixprotocol/cofhe-contracts` |
+| @cofhe/sdk (client) | [`v0.5.1`](https://github.com/FhenixProtocol/cofhesdk) | `@cofhe/sdk`, `@cofhe/hardhat-plugin`, `@cofhe/mock-contracts` |
+| TFHE runtime (frontend) | `v1.5.3` | `tfhe` |
+| cofhe-hardhat-starter | [`sdk-migration`](https://github.com/FhenixProtocol/cofhe-hardhat-starter/tree/sdk-migration) | branch base for the MuHaven repo |
 
-**Development setup**: Clone `cofhe-hardhat-starter` (branch `sdk-migration`) as your starting point. It bundles the Hardhat config, mock contracts, and deployment tasks — replacing the older `cofhe-hardhat-plugin`.
+**Setup.** The MuHaven repo is a fork of `cofhe-hardhat-starter` (branch `sdk-migration`) — no separate clone needed. `pnpm install` from the repo root.
 
-**If the SDK updates during the hackathon**, check:
-1. Encrypted type names — verify max size is still `euint128` (no `euint256` exists in v0.1.1)
-2. Input type names (`InEuint8`...`InEuint128`, `InEaddress`, `InEbool`)
-3. Access control (`FHE.allowThis()`, `FHE.allowSender()`) — may be renamed
-4. Decryption pattern (currently async via `IAsyncFHEReceiver`)
-5. Client SDK encryption (`Encryptable.uint64()`) — check for API changes
-6. Permit system (`PermissionedV2`, `SealedUint`, `FHE.sealoutputTyped()`)
+**Always check.** [cofhe-docs.fhenix.zone/get-started/introduction/compatibility](https://cofhe-docs.fhenix.zone/get-started/introduction/compatibility) before any SDK update.
 
-Always check: [cofhe-docs.fhenix.zone/get-started/introduction/compatibility](https://cofhe-docs.fhenix.zone/get-started/introduction/compatibility)
-
-> **`euint64` underlying type breaking change (v0.1.0):** cofhe-contracts v0.1.0 changed `type euint64` from wrapping `uint256` to wrapping `bytes32` (same for all encrypted types). This changes ABI function selectors for any function with `euint64` parameters — e.g., `confidentialTransferFrom(address,address,uint256)` became `confidentialTransferFrom(address,address,bytes32)`. The 32-byte handle values are identical; only the 4-byte selector differs.
+> **`euint64` underlying-type breaking change (cofhe-contracts v0.1.0).** The change moved `type euint64` from `uint256` to `bytes32` (same for all encrypted types). This changes ABI selectors for any function with `euint64` parameters — e.g., `confidentialTransferFrom(address,address,uint256)` became `confidentialTransferFrom(address,address,bytes32)`. The 32-byte handle values are identical; only the 4-byte selector differs.
 >
-> **Impact:** If you call an FHERC20 contract deployed with pre-v0.1.0 cofhe-contracts from code compiled with v0.1.0+, the call will revert with empty data (`0x`) because no matching function exists. MuHaven encountered this with the deployed ConfidentialUSDC on Arb Sepolia. Fix: use a low-level call with the correct selector, or deploy your own FHERC20. See `development/DEV_WAVE_3/PUSDC_TRANSFER_ISSUE.md` for the full diagnosis and resolution.
+> **Impact in MuHaven.** The deployed legacy ConfidentialUSDC on Arb Sepolia predates v0.1.0 and uses `uint256` selectors. MuHaven contracts compile against the post-v0.1.0 `bytes32` ABI. **Resolution.** `MuHavenStable` (mhUSDC) is MuHaven's own confidential USDC wrapper that exposes a clean post-v0.1.0 surface to MuHaven flows and shims the legacy selector internally when forwarding to PUSDC. New code should never touch PUSDC directly. Full diagnosis: [`development/DEV_WAVE_3/PUSDC_TRANSFER_ISSUE.md`](../development/DEV_WAVE_3/PUSDC_TRANSFER_ISSUE.md).
 
 ---
 
-## Encrypted type reference (CoFHE v0.1.1)
+## Encrypted type reference
 
 | Type | Description | Max value | Use in MuHaven |
-|------|------------|-----------|----------------|
-| `ebool` | Encrypted boolean | true/false | KYC flags, condition results |
-| `euint8` | Encrypted 8-bit | 255 | Risk tier levels |
+|---|---|---|---|
+| `ebool` | Encrypted boolean | true/false | KYC flags, condition results, signal flags |
+| `euint8` | Encrypted 8-bit | 255 | Risk-tier levels |
 | `euint16` | Encrypted 16-bit | 65,535 | Basis points (10000 = 100%) |
 | `euint32` | Encrypted 32-bit | ~4.2B | Small counters |
-| `euint64` | Encrypted 64-bit | ~18.4×10¹⁸ | USDC amounts (6 decimals: max ~18.4T) |
-| `euint128` | Encrypted 128-bit | ~3.4×10³⁸ | Token balances, large amounts |
-| `eaddress` | Encrypted address | — | Beneficiary addresses |
+| `euint64` | Encrypted 64-bit | ~18.4×10¹⁸ | mhUSDC amounts (6 decimals: max ~18.4T USDC) |
+| `euint128` | Encrypted 128-bit | ~3.4×10³⁸ | Token balances, share counts, large amounts |
+| `eaddress` | Encrypted address | — | Reserved (ephEOA permits use cleartext addresses) |
 
 **`euint256` does NOT exist in CoFHE.** The maximum encrypted integer is `euint128`.
 
@@ -50,27 +45,51 @@ Always check: [cofhe-docs.fhenix.zone/get-started/introduction/compatibility](ht
 
 ## Contract overview
 
+The production deploy ships **11 platform-singleton contracts** plus a **per-token contract triple** deployed by the issuer onboarding wizard for every listed RWA. The Wave 3 contract set (`MuHavenVault`, `YieldDistributor`, `MuHavenEscrow`, `YieldGate`, `ERC3643KYCAdapter`) is retired and superseded by the contracts below — see `deployments/arb-sepolia.json` for the read-only Wave 3 artifact.
+
+### Platform singletons
+
 | Contract | Purpose | Key FHE types |
-|----------|---------|---------------|
-| `MuHavenToken.sol` | FHERC-20 RWA token with encrypted balances, issuer minting, yield deposit | `euint128`, `eaddress` |
-| `MuHavenVault.sol` | Wrap/unwrap existing ERC-20 RWA tokens into fhERC-20 equivalents | `euint128` |
-| `InvestorRegistry.sol` | Paginated registry of all MuHavenToken holders, used by `YieldDistributor` for batch iteration | — |
-| `YieldDistributor.sol` | Proportional yield distribution state machine — drives `MuHavenEscrow` creation + funding | `euint64`, `euint128` |
-| `MuHavenEscrow.sol` | Two-phase confidential escrow for per-investor yield settlement (replaces ReineiraOS `ConfidentialEscrow` for MuHaven flows) | `eaddress`, `euint64`, `ebool` |
-| `IKYCGate.sol` | Modular KYC verification interface | — |
-| `ERC3643KYCAdapter.sol` | ERC-3643 ONCHAINID adapter for IKYCGate | — |
-| `YieldGate.sol` | ReineiraOS-style `IConditionResolver` — verifies investor KYC + token balance eligibility for yield release | `euint128`, `ebool` |
-| `RiskParams.sol` | Encrypted investor risk parameters | `euint64` |
+|---|---|---|
+| `MuHavenStable.sol` | Confidential USDC wrapper (mhUSDC). Settlement currency for every MuHaven flow. | `euint64` |
+| `MuHavenSubscription.sol` | Atomic single-tx buy/redeem coordinator. Auto-escalates to queue on cap overflow. | `euint128`, `euint64` |
+| `TokenRegistry.sol` | Per-token configuration registry — issuer, oracle binding, treasury / queue / snapshot pointers, paused flag, schedule metadata. | — |
+| `InvestorRegistry.sol` | Per-token holder enumeration. `addHolder` called by `MuHavenToken._transfer` on first transfer-in. | — |
+| `MuHavenIdentityRegistry.sol` | ERC-3643 identity registry. Whitelist + claim verification + `devMode`. | — |
+| `ClaimTopicsRegistry.sol` | ERC-3643 claim-topics catalog. | — |
+| `TrustedIssuersRegistry.sol` | ERC-3643 trusted-issuers list. | — |
+| `ModularCompliance.sol` | Per-token rule-modules registry. AND-aggregates `canTransfer` checks. | — |
+| `YieldSnapshot.sol` | Pull-based per-epoch yield distribution. | `euint128`, `euint64`, `ebool` |
+| `IssuerControlledOracle.sol` | Pluggable `IPriceOracle` reference impl — issuer-write NAV with deviation + sequencer-uptime gates. | — |
+| `ChainlinkFunctionsOracle.sol` | Functions-backed `IPriceOracle` — FRED `DGS3MO`, `GOLDPMGBD228NLBM`, metals-api fallback. | — |
+| `RiskParams.sol` | Encrypted investor risk guardrails (4× `euint64`). | `euint64`, `ebool` |
+
+### Per-token contract triple (deployed by the wizard)
+
+| Contract | Purpose | Key FHE types |
+|---|---|---|
+| `MuHavenToken.sol` | fhERC-20 RWA token. `SUBSCRIPTION_ROLE` only mint authority. | `euint128` |
+| `MuHavenTreasury.sol` | Per-token mhUSDC custody. Immutable operator approvals to Subscription + Queue. | `euint64` |
+| `RedemptionQueue.sol` | Overflow redemption queue with epoch settlement. | `euint128`, `euint64` |
+
+### Compliance modules (pluggable via `ModularCompliance`)
+
+| Module | Purpose |
+|---|---|
+| `CountryAllow`, `CountryRestrict` | Per-token ISO-3166 numeric allow / block lists. Permissive default when no entries. |
+| `MaxHolders` | Cap holder count via `InvestorRegistry`; separate accredited / non-accredited counters. |
+| `Lockup` | Per-token default lockup window applied on mint + transfer-in (no shortening). Mint always allowed. |
+| `MaxBalance` | Cleartext upper-bound tracker fed from `maxSharesHint` (loose by ADR-019). |
 
 ---
 
 ## Critical CoFHE patterns
 
-Every MuHaven contract follows these patterns. Breaking any of them will cause silent failures or information leaks.
+Every MuHaven contract follows these. Breaking any of them causes silent failures or information leaks.
 
-### Pattern 1: Access control after every FHE operation
+### Pattern 1 — Access control after every FHE op
 
-Every new handle returned from an `FHE.*` call — `add`, `sub`, `select`, `asEuint*`, `asEaddress`, etc. — must be authorized before the transaction ends. Otherwise, the handle is inaccessible from any subsequent call.
+Every new handle from `FHE.add` / `FHE.sub` / `FHE.select` / `FHE.asEuint*` / `FHE.asEaddress` must be authorized before the transaction ends. Otherwise the handle is inaccessible from any subsequent call.
 
 ```solidity
 // WRONG — result is inaccessible
@@ -78,58 +97,84 @@ euint128 result = FHE.add(a, b);
 
 // CORRECT — grant access to contract and value owner
 euint128 result = FHE.add(a, b);
-FHE.allowThis(result);              // contract can reuse the handle later
-FHE.allow(result, ownerAddress);    // ownerAddress can decryptForView via permit
+FHE.allowThis(result);                         // contract reuses the handle later
+FHE.allow(result, ownerEphemeralEOA);          // ownerEph can decryptForView via permit
 ```
 
-Use `FHE.allowSender(h)` as a shortcut when the value owner is `msg.sender`. Use `FHE.allowPublic(h)` only for truly public aggregates (e.g., optional public total supply) — the call is irreversible.
+`FHE.allowSender(h)` is the shortcut when the value owner is `msg.sender`. `FHE.allowPublic(h)` only for truly public aggregates (e.g. optional public total supply) — irreversible.
 
-### Pattern 2: Permit-based client decryption (UI)
+**ADR-021 — ephemeral-EOA permit signer.** Every mutation that produces investor-decryptable state grants `FHE.allow(handle, ephemeralEOA)` to the user's per-session signer (random EOA generated in-memory at first-write-op). The user signs decrypt permits with the same eph. Replaces kernel-signed permits which broke under ERC-1271 verification timing post-deploy.
 
-`sealOutput` / `sealoutputTyped` are **not available in cofhe-contracts v0.1.3**. Some older code fragments in this document still reference that pattern — the deployed contracts do not. Client UI reads use permit-based `decryptForView` instead:
+**ADR-044 — split-grant `transferFrom`.** Wrappers/snapshots that move encrypted amounts on behalf of investors expose a 5-arg overload `(from, to, encAmount, fromEph, toEph)`. Pass `address(0)` for the leg that should NOT receive the counterparty `FHE.allow` grant (e.g. `Subscription.purchase` passes `(investor_eph, address(0))` so only the investor gets a decrypt permit on the post-pull mhUSDC handle, not the treasury).
+
+### Pattern 2 — Permit-based client decrypt
+
+`sealOutput` / `sealoutputTyped` was removed in cofhe-contracts v0.1.3. Client UI reads use permit-based `decryptForView` instead:
 
 ```solidity
 // Contract: grant the value owner permit access to the current ciphertext handle
-function mint(address to, InEuint128 calldata encryptedAmount) external onlyMinter {
-    euint128 amount = FHE.asEuint128(encryptedAmount);
-    _balances[to] = FHE.add(_balances[to], amount);
+function mintFromSubscription(address to, euint128 encShares, address eph) external {
+    _balances[to] = FHE.add(_balances[to], encShares);
     FHE.allowThis(_balances[to]);
-    FHE.allow(_balances[to], to);        // critical — permit for new handle
+    FHE.allow(_balances[to], eph);          // critical — permit for new handle
 }
 ```
 
 ```typescript
-// Client: decrypt the ciphertext using the user's permit — no task, no polling
-const plaintext = await cofheClient
-  .decryptForView(ctHash)
+// Client: decrypt via permit — no on-chain task, no polling
+const balance = await cofheClient
+  .decryptForView(handle)
+  .forType(FheTypes.Uint128)
   .withPermit()
   .execute();
 ```
 
-Because every `FHE.add` / `FHE.sub` / `FHE.select` produces a new handle, `FHE.allow` must be re-granted on the new handle after every mutation.
+Because every `FHE.add` / `FHE.sub` / `FHE.select` produces a new handle, `FHE.allow` must be re-granted on the new handle after every mutation. `MuHavenToken.snapshotBalance` (read by `YieldSnapshot.snapshotBatch`) re-grants the issuer's ACL on the snapshot handle to support ADR-049's "Decrypt from chain" issuer UX.
 
-### Pattern 3: Silent failure with FHE.select
+### Pattern 3 — Silent failure with `FHE.select`
 
 ```solidity
-// WRONG — reveals whether transfer succeeded or failed
-function transfer(euint128 amount) {
-    require(FHE.decrypt(FHE.gte(balance, amount)), "Insufficient"); // LEAKS INFO
-}
+// WRONG — reveals whether the operation succeeded
+require(FHE.decrypt(FHE.gte(balance, amount)), "Insufficient");   // LEAKS
 
-// CORRECT — transfer zero on failure, no information leakage
+// CORRECT — branchless conditional zero, identical gas on success and failure
 euint128 transferAmount = FHE.select(
-    FHE.gte(balance, amount),  // condition
-    amount,                     // if true: use amount
-    FHE.asEuint128(0)           // if false: use zero
+    FHE.gte(balance, amount),     // condition
+    amount,                       // if true:  use amount
+    FHE.asEuint128(0)             // if false: use zero
 );
 FHE.allowThis(transferAmount);
 ```
 
-Side-channel property: a valid and a silently-nullified operation take identical gas, so gas observers cannot distinguish success from failure. `MuHavenToken`, `YieldDistributor`, and `MuHavenEscrow` all apply this pattern consistently.
+Side-channel property: a valid and a silently-nullified operation take identical gas, so gas observers cannot distinguish success from failure. Applied consistently across `MuHavenToken`, `MuHavenStable`, `MuHavenSubscription`, `MuHavenTreasury`, `RedemptionQueue`, `YieldSnapshot`.
 
-### Pattern 4: Guarding against uninitialized handles
+### Pattern 4 — Silent-fail-bounded conservation primitives
 
-FHE operations on the zero handle (e.g., a `mapping`-default `euint128`) revert. Contracts that may read storage before first write must guard:
+Operations that move encrypted amounts on behalf of an investor (escrow / snapshot / distributor payouts) **must return the silent-fail-bounded actual handle**, never the requested amount, so downstream contracts can't be spoofed into spending more than was conserved on the input leg. Locked in ADR-030 + ADR-036:
+
+```solidity
+// MuHavenToken.burnFromSubscription returns the actual silent-fail-bounded amount,
+// not the requested amount. Subscription mirrors that handle into FHE.mul so the
+// payout cannot exceed shares the investor actually held.
+function burnFromSubscription(address from, euint128 requested, address eph)
+    external
+    returns (euint128 actualBurned)
+{
+    ebool ok = FHE.gte(_balances[from], requested);
+    actualBurned = FHE.select(ok, requested, FHE.asEuint128(0));
+    _balances[from] = FHE.sub(_balances[from], actualBurned);
+    FHE.allowThis(actualBurned);
+    FHE.allowThis(_balances[from]);
+    FHE.allow(_balances[from], eph);
+    return actualBurned;
+}
+```
+
+Sweep checklist for new encrypted-math surfaces (Wave 4 P11): `DefaultProtection.triggerPayout`, `EncryptedGovernance.tally`, `KYCAttestationRegistry.prepareAttestation`. Reuse the `CostOverflowsPUSDCWidth` cleartext guard shape on any path that narrows `euint128` into PUSDC's `euint64` width.
+
+### Pattern 5 — Guarded uninitialized handles
+
+FHE operations on the zero handle (e.g. a `mapping`-default `euint128`) revert. Contracts that may read storage before first write must guard:
 
 ```solidity
 import "@fhenixprotocol/cofhe-contracts/Common.sol";
@@ -140,896 +185,638 @@ if (Common.isInitialized(_balances[to])) {
     _balances[to] = amount;
 }
 FHE.allowThis(_balances[to]);
-FHE.allow(_balances[to], to);
+FHE.allow(_balances[to], eph);
 ```
 
-`MuHavenToken`, `YieldGate`, and `MuHavenEscrow.fundFrom` all use this guard.
+### Pattern 6 — On-chain async decrypt (only when plaintext must reach the EVM)
 
-### Pattern 5: On-chain async decrypt (only when plaintext must reach the EVM)
-
-When contract logic genuinely needs a plaintext — not a UI read — use the async decrypt flow:
+When contract logic genuinely needs a plaintext (not a UI read), use the async decrypt flow:
 
 ```solidity
 ITaskManager(taskManager).createDecryptTask(handle);
-// ... coprocessor delay (~seconds on mainnet; simulate with `time.increase(11)` in tests) ...
+// ... coprocessor delay (~seconds on testnet) ...
 (uint256 value, bool ready) = FHE.getDecryptResultSafe(handle);
 require(ready, "Decrypt not ready");
 ```
 
-Prefer pushing a plaintext result on-chain via `decryptForTx` + `publishDecryptResult` rather than polling `createDecryptTask` where possible. Never return raw `euint` handles from external functions to untrusted callers.
+Prefer `decryptForTx` + `publishDecryptResult` over polling. `RiskParams.settleBreachDecrypt` is the canonical breach-decrypt path. **Never return raw `euint` handles from external functions to untrusted callers.**
+
+### Pattern 7 — Trusted-payer fast-path
+
+`MuHavenStable.trustedPayout(to, encAmount, eph)` bypasses `_silentFailBound` for known-conservation callers (escrow / snapshot / distributor). Restricted via `_trustedPayer` mapping (owner-only setter). Per-epoch conservation in `YieldSnapshot` guarantees the snapshot's float covers every legitimate claim, so skipping `_silentFailBound` on this leg is structurally safe and cuts the wrapper-side FHE chain from 5 → 2 ops (closing the cofhe TN chain-length blocker that bit Phase 8). ADR-046.
+
+**Operational note.** `scripts/deploy-v2.ts` folds `stable.setTrustedPayer(yieldSnapshot, true)` into the platform deploy as of Phase 10 — fresh deploys are claim-ready by construction. Recovery for botched deploys: `scripts/grant-trusted-payer.ts` (idempotent — reads `isTrustedPayer` first).
 
 ---
 
-## 1. MuHavenToken.sol
+## 1. MuHavenStable.sol (mhUSDC)
 
-### Full interface
+MuHaven's own confidential USDC wrapper. Layered over the legacy ReineiraOS PUSDC ABI to bridge the pre-v0.1.0 / post-v0.1.0 selector mismatch (see top of this doc). Adds `_silentFailBound` semantics, the 5-arg `transferFrom` overload (ADR-044), and `trustedPayout` (ADR-046).
+
+### Surface
 
 ```solidity
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+// Wrap / unwrap
+function wrap(uint256 amount) external;
+function unwrap(uint256 amount, address eph) external;
+function getBalanceHandle(address account) external view returns (euint64);
 
-import "@fhenixprotocol/cofhe-contracts/FHE.sol";
+// 4-arg transferFrom — both legs receive FHE.allow grants (P2P / direct)
+function transferFrom(address from, address to, euint64 encAmount, address eph)
+    external returns (bool);
 
-contract MuHavenToken {
+// 5-arg transferFrom (ADR-044) — pass address(0) for the leg that should NOT
+// receive the counterparty FHE.allow grant. Used by Subscription / Queue / Snapshot.
+function transferFrom(address from, address to, euint64 encAmount, address fromEph, address toEph)
+    external returns (bool);
 
-    string public name;
-    string public symbol;
-    uint8 public constant decimals = 6;
+// Trusted-payout fast-path (ADR-046) — bypasses _silentFailBound. Caller MUST be
+// in _trustedPayer mapping (snapshot / queue / future distributor).
+function trustedPayout(address to, euint64 encAmount, address toEph)
+    external returns (bool);
 
-    mapping(address => euint128) private _balances;
-    mapping(address => mapping(address => euint128)) private _allowances;
-    euint128 private _encryptedTotalSupply;
+// Owner-only
+function setTrustedPayer(address payer, bool authorized) external;
+function isTrustedPayer(address payer) external view returns (bool);
 
-    // Investor registry (addresses are cleartext; balances are not)
-    address[] private _investors;
-    mapping(address => bool) private _isInvestor;
-
-    // Cleartext aggregate metrics (visible to issuer)
-    uint256 private _investorCount;
-    uint256 private _totalYieldDistributed;
-
-    // External contract references
-    address public usdcAddress;
-    address public yieldDistributor;
-
-    IKYCGate public kycGate;
-    address public owner;
-    address public issuer;
-
-    // Role-based minting: both issuer and vault (and future minters) can mint
-    mapping(address => bool) public minters;
-
-    modifier onlyOwner() {
-        require(msg.sender == owner, "Only owner");
-        _;
-    }
-
-    modifier onlyIssuer() {
-        require(msg.sender == issuer, "Only issuer");
-        _;
-    }
-
-    modifier onlyMinter() {
-        require(minters[msg.sender], "Only minter");
-        _;
-    }
-
-    event Transfer(address indexed from, address indexed to);
-    event Approval(address indexed owner, address indexed spender);
-    event KYCGateUpdated(address indexed newGate);
-    event IssuerUpdated(address indexed newIssuer);
-    event MinterGranted(address indexed minter);
-    event MinterRevoked(address indexed minter);
-    event YieldDeposited(uint256 totalYield, uint256 investorCount);
-
-    function initialize(
-        string memory _name,
-        string memory _symbol,
-        address _kycGate,
-        address _issuer,
-        address _usdcAddress,
-        address _yieldDistributor
-    ) external;
-
-    // --- Minter role management (owner only) ---
-
-    function grantMinter(address minter) external onlyOwner;
-    function revokeMinter(address minter) external onlyOwner;
-
-    // --- Token operations ---
-
-    function mint(address to, InEuint128 calldata encryptedAmount) external onlyMinter;
-    function transfer(address to, InEuint128 calldata encryptedAmount) external returns (bool);
-    function approve(address spender, InEuint128 calldata encryptedAmount) external returns (bool);
-    function transferFrom(address from, address to, InEuint128 calldata encryptedAmount) external returns (bool);
-    function balanceOfSealed(PermissionedV2 memory permission) public view withPermission(permission) returns (SealedUint memory);
-    function encryptedBalanceOf(address account) external view returns (euint128);
-    function encryptedTotalSupply() external view returns (euint128);
-    function getInvestors() external view returns (address[] memory);
-    function setKYCGate(address newGate) external;
-
-    // --- Issuer functions (issuer address only) ---
-
-    /// @notice Deposit yield for distribution (issuer only)
-    /// @param totalYield Total USDC to distribute across all holders
-    /// @dev Transfers USDC, then calls YieldDistributor to create escrows
-    function depositYield(uint256 totalYield) external onlyIssuer;
-
-    /// @notice Get aggregate statistics (cleartext, not per-investor)
-    function totalSupplyDecrypted() external view onlyIssuer returns (uint256);
-    function investorCount() external view returns (uint256);
-    function totalYieldDistributed() external view returns (uint256);
-
-    /// @notice Update token parameters
-    function setYieldSchedule(uint256 intervalSeconds) external onlyIssuer;
-    function setMinInvestment(uint256 minUsdc) external onlyIssuer;
-}
+// Legacy PUSDC-shape selectors preserved for any path still touching PUSDC directly
+function confidentialTransfer(address to, uint256 encAmountHandle) external;
+function confidentialTransferFrom(address from, address to, uint256 encAmountHandle) external;
 ```
 
-**Role model:**
-
-| Role | Who holds it | What it can do |
-|------|-------------|---------------|
-| `owner` | Deployer | Grant/revoke minters, update KYC gate, admin functions |
-| `issuer` | RWA issuer address | Deposit yield, set yield schedule, set min investment, view aggregate stats |
-| `minter` (MINTER_ROLE) | Issuer + MuHavenVault (+ future minters) | Mint fhERC-20 tokens to eligible investors |
-
-The `onlyMinter` modifier replaces the old `onlyIssuer` check on `mint()`. This allows both the issuer (direct minting via dashboard) and the vault (wrapping ERC-20 → fhERC-20) to mint tokens. The `onlyIssuer` modifier remains for yield management and configuration functions that should be restricted to the RWA issuer.
-
-### Transfer implementation
+### Storage
 
 ```solidity
-function _transfer(address from, address to, euint128 amount) internal {
-    require(kycGate.isEligible(to), "KYC: not eligible");
-
-    ebool hasEnough = FHE.gte(_balances[from], amount);
-    FHE.allowThis(hasEnough);
-
-    euint128 transferAmount = FHE.select(hasEnough, amount, FHE.asEuint128(0));
-    FHE.allowThis(transferAmount);
-
-    _balances[from] = FHE.sub(_balances[from], transferAmount);
-    FHE.allowThis(_balances[from]);
-
-    _balances[to] = FHE.add(_balances[to], transferAmount);
-    FHE.allowThis(_balances[to]);
-
-    emit Transfer(from, to);
-}
+mapping(address => euint64) private _balances;
+mapping(address => bool) private _trustedPayer;
+address public owner;
+address public legacyPusdc;          // shim target
+uint256[41] private __gap;           // upgrade gap (was 42 before _trustedPayer slot, ADR-046)
 ```
 
-### Mint implementation
+### Conservation invariant
 
-With `MINTER_ROLE`, there is a single `mint()` function used by both the issuer and the vault. The old `issuerMint()` is removed — both callers use `mint()` gated by `onlyMinter`.
+For any direct `transferFrom` call (4-arg or 5-arg, non-trusted), the `_silentFailBound` runs `FHE.gte(balance[from], encAmount)` and silent-fails on insufficiency. `trustedPayout` skips that check — see Pattern 7 for why this is safe.
+
+---
+
+## 2. MuHavenSubscription.sol
+
+Atomic single-tx buy/redeem coordinator. The flagship Wave 3 ship — replaces the Wave 3 demo's investor-as-minter shortcut and the "no purchase primitive" gap.
+
+### Surface
 
 ```solidity
-function mint(address to, InEuint128 calldata encryptedAmount) external onlyMinter {
-    require(kycGate.isEligible(to), "KYC: not eligible");
+// Atomic purchase: KYC → compliance → oracle → FHE.mul → mhUSDC pull → mint
+function purchase(
+    address token,
+    InEuint128 calldata encAmount,        // mhUSDC amount, encrypted client-side
+    uint128 maxSharesHint,                // cleartext upper bound for silent-fail gate
+    address ephemeralEOA                  // session signer for FHE.allow grants
+) external;
 
-    euint128 amount = FHE.asEuint128(encryptedAmount);
+// Instant redeem with auto-escalate to RedemptionQueue on cap overflow
+function redeem(
+    address token,
+    InEuint128 calldata encShares,
+    uint128 maxSharesHint,
+    address ephemeralEOA
+) external returns (bool escalated, uint256 requestId);
+
+// Cleartext per-epoch redemption cap state (Subscription owns the counter)
+function getCapInfo(address token) external view returns (
+    uint128 currentEpochCap,
+    uint128 currentEpochUsed,
+    uint64  epochStartTs
+);
+
+// Configuration (owner-only)
+function setIdentityRegistry(address registry) external;
+function setModularCompliance(address compliance) external;
+function setRedemptionCap(address token, uint128 capPerEpoch) external;
+```
+
+### Purchase flow
+
+```solidity
+function purchase(address token, InEuint128 calldata encAmount, uint128 maxSharesHint, address eph) external {
+    // Phase 3 wiring — IdentityRegistry first, kycGate fallback
+    require(identityRegistry.isVerified(msg.sender), "KYC: not verified");
+    _requireCompliance(token, address(0), msg.sender);  // mint convention
+
+    // Oracle freshness + deviation + sequencer
+    (uint128 nav, ) = IPriceOracle(_oracleFor(token)).getNAV(token);
+    require(IPriceOracle(_oracleFor(token)).isFresh(token), "Stale NAV");
+
+    euint128 amount = FHE.asEuint128(encAmount);
     FHE.allowThis(amount);
 
-    _balances[to] = FHE.add(_balances[to], amount);
-    FHE.allowThis(_balances[to]);
+    // Cleartext guard on mhUSDC width before narrow (Wave 3.5 review-pass fix, ADR-031)
+    if (uint256(maxSharesHint) * uint256(nav) > type(uint64).max) revert CostOverflowsPUSDCWidth();
 
-    _encryptedTotalSupply = FHE.add(_encryptedTotalSupply, amount);
-    FHE.allowThis(_encryptedTotalSupply);
+    euint128 encShares = FHE.mul(amount, FHE.asEuint128(uint256(nav)));
+    encShares = FHE.select(FHE.lte(encShares, FHE.asEuint128(maxSharesHint)), encShares, FHE.asEuint128(0));
+    FHE.allowThis(encShares);
 
-    // Track investor in registry (addresses are cleartext; balances are not)
-    if (!_isInvestor[to]) {
-        _investors.push(to);
-        _isInvestor[to] = true;
-        _investorCount++;
-    }
+    // mhUSDC pull — 5-arg overload, only investor leg gets FHE.allow on post-pull handle
+    euint64 encCost64 = FHE.asEuint64(amount);
+    IMuHavenStable(pusdc).transferFrom(msg.sender, _treasuryFor(token), encCost64, eph, address(0));
 
-    emit Transfer(address(0), to);
-}
+    // Mint shares — Subscription holds SUBSCRIPTION_ROLE on each token
+    IMuHavenToken(token).mintFromSubscription(msg.sender, encShares, eph);
 
-function grantMinter(address minter) external onlyOwner {
-    minters[minter] = true;
-    emit MinterGranted(minter);
-}
-
-function revokeMinter(address minter) external onlyOwner {
-    minters[minter] = false;
-    emit MinterRevoked(minter);
-}
-
-function getInvestors() external view returns (address[] memory) {
-    return _investors;
-}
-
-function encryptedTotalSupply() external view returns (euint128) {
-    return _encryptedTotalSupply;
+    // Compliance state hook
+    _notifyCreated(token, msg.sender);
+    emit Purchased(token, msg.sender, maxSharesHint, eph, ...);
 }
 ```
 
-### Yield deposit implementation
+### Redemption flow
 
-```solidity
-/// @notice Issuer deposits total yield for distribution via YieldDistributor
-function depositYield(uint256 totalYield) external onlyIssuer {
-    // Transfer USDC from issuer to this contract
-    IERC20(usdcAddress).transferFrom(msg.sender, address(this), totalYield);
+`redeem()` mirrors `purchase()` — burn shares via `MuHavenToken.burnFromSubscription` (returns silent-fail-bounded `actualBurned`, ADR-030), pay out mhUSDC via `MuHavenStable.transferFrom`. Cap tracking via cleartext `maxSharesHint * nav` per ADR-004; counter increments only on the instant-success branch. Cap-exceeded silently emits `Redeemed(escalated=true)` and forwards to `RedemptionQueue.submitFor` (ADR-035).
 
-    // Approve YieldDistributor to pull USDC
-    IERC20(usdcAddress).approve(yieldDistributor, totalYield);
+### Tests
 
-    // Trigger proportional distribution
-    IYieldDistributor(yieldDistributor).distributeYield(address(this), totalYield);
-
-    _totalYieldDistributed += totalYield;
-
-    emit YieldDeposited(totalYield, _investorCount);
-}
-
-/// @notice Aggregate metrics — visible to issuer, not per-investor
-function investorCount() external view returns (uint256) {
-    return _investorCount;
-}
-
-function totalYieldDistributed() external view returns (uint256) {
-    return _totalYieldDistributed;
-}
-```
-
-### Reading balance (client-side with @cofhe/sdk)
-
-MuHavenToken uses the **permit-based client decryption** pattern: every balance mutation grants `FHE.allow(newHandle, ownerAddress)`, and the client decrypts the current ciphertext handle through its permit — no on-chain task, no polling.
-
-```typescript
-import { createPublicClient, createWalletClient, http } from 'viem';
-import { privateKeyToAccount } from 'viem/accounts';
-import { arbitrumSepolia } from 'viem/chains';
-import { createCofheClient, createCofheConfig, Encryptable, FheTypes } from '@cofhe/sdk/node';
-import { arbSepolia } from '@cofhe/sdk/chains';
-
-const account = privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`);
-const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(process.env.RPC_URL) });
-const walletClient = createWalletClient({ account, chain: arbitrumSepolia, transport: http(process.env.RPC_URL) });
-
-const cofheClient = createCofheClient(createCofheConfig({ supportedChains: [arbSepolia] }));
-await cofheClient.connect(publicClient, walletClient);
-await cofheClient.permits.createSelf({ issuer: account.address });
-
-// Read: fetch the current ciphertext handle, then decrypt via permit
-const ctHash = await muhavenToken.read.encryptedBalanceOf([account.address]);
-const balance = await cofheClient
-    .decryptForView(ctHash)
-    .forType(FheTypes.Uint128)
-    .withPermit()
-    .execute();
-
-// Write: encrypt the input, submit the transfer
-const [encAmount] = await cofheClient
-    .encryptInputs([Encryptable.uint128(1000n * 10n ** 6n)])   // USDC has 6 decimals
-    .execute();
-await walletClient.writeContract({
-    address: muhavenToken.address,
-    abi: muhavenTokenAbi,
-    functionName: 'transfer',
-    args: [recipientAddress, encAmount],
-});
-```
-
-`MuHavenToken` still exposes `requestBalanceDecrypt` / `getBalanceDecryptResult` helpers for backwards compatibility with earlier integrations, but new clients should use the permit-based `decryptForView` flow above. The `sealOutput` / `sealoutputTyped` pattern referenced in older drafts was removed in cofhe-contracts v0.1.3.
+29 unit cases covering KYC + compliance gates, oracle freshness, FHE-mul precision, silent-fail boundaries, cap tracker, escalate path. 5 integration cases with real `IssuerControlledOracle` (deviation gate exercised end-to-end). See `test/MuHavenSubscriptionPurchase.test.ts`, `test/MuHavenSubscriptionRedeem.test.ts`, `test/MuHavenSubscription.integration.test.ts`.
 
 ---
 
-## 2. IKYCGate.sol
+## 3. MuHavenToken.sol (per-token, fhERC-20)
 
-Unchanged — returns `bool`, not encrypted types.
+fhERC-20 RWA token. Deployed once per RWA by the issuer onboarding wizard (`scripts/onboard-token.ts`). Issuer no longer holds `MINTER_ROLE` — only `MuHavenSubscription` (via `SUBSCRIPTION_ROLE`) and `RedemptionQueue` (via `BURN_ROLE` for queue-held shares) can mutate supply.
+
+### Surface (Wave 3.5 delta from Wave 3)
 
 ```solidity
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+// Replaced — only Subscription / Queue mint or burn now
+function mintFromSubscription(address to, euint128 encShares, address eph)
+    external onlySubscription;
 
-interface IKYCGate {
-    function isEligible(address account) external view returns (bool);
-    function isEligibleForTier(address account, uint256 tier) external view returns (bool);
-    function providerName() external view returns (string memory);
-}
+function burnFromSubscription(address from, euint128 requested, address eph)
+    external onlySubscription
+    returns (euint128 actualBurned);          // silent-fail-bounded per ADR-030
+
+function burnFromQueue(address from, euint128 requested)
+    external onlyQueue
+    returns (euint128 actualBurned);
+
+function returnToInvestor(address to, euint128 encShares)
+    external onlyQueue;                       // KYC-revocation refund path (ADR-027)
+
+// Transfer + transferFrom call InvestorRegistry.addHolder(token, recipient)
+// on first-transfer-in per ADR-022. Handled in _transfer / _mintInternal.
+function transfer(address to, InEuint128 calldata encAmount, address eph) external returns (bool);
+function transferFrom(address from, address to, InEuint128 calldata encAmount, address eph) external returns (bool);
+
+// Snapshot read for YieldSnapshot.snapshotBatch — re-grants ACL on the snapshot
+// handle to the issuer per ADR-049 ("Decrypt from chain" issuer UX)
+function snapshotBalance(address holder) external returns (euint128);
+
+// Read surface
+function encryptedBalanceOf(address account) external view returns (euint128);
+function encryptedTotalSupply() external view returns (euint128);
+
+// Optional public total supply (irreversible — uses FHE.allowPublic)
+function setTotalSupplyPublic() external onlyOwner;
+
+// Wave 4 reserve — `authorizedReaders` mapping for governance balance access
+mapping(address => bool) public authorizedReaders;
+function setAuthorizedReader(address reader, bool authorized) external onlyOwner;
+function getBalanceForGovernance(address holder) external view returns (euint128);
+function getTotalSupplyForGovernance() external view returns (euint128);
 ```
+
+### What's gone
+
+- `mint()` open to any minter — replaced by `mintFromSubscription` (only Subscription) + `burnFromQueue` (only Queue). Issuer can no longer conjure shares. Blast-radius reduction.
+- `depositYield()` — yield distribution is now pull-based via `YieldSnapshot.fundEpoch`.
+- `getInvestors()` — moved to per-token `InvestorRegistry`; `MuHavenToken._transfer` calls `InvestorRegistry.addHolder` on first transfer-in.
+- `balanceOfSealed` / `PermissionedV2` / `SealedUint` — removed in cofhe-contracts v0.1.3. Use permit-based `decryptForView` (Pattern 2).
+
+### Tests
+
+22 new unit cases for the Wave 3.5 delta — `mintFromSubscription` happy path, KYC gate, ACL grants, `burnFromSubscription` silent-fail-bounded return, ephemeralEOA permit lifecycle. See `test/MuHavenTokenV2Delta.test.ts`.
 
 ---
 
-## 3. ERC3643KYCAdapter.sol
+## 4. MuHavenTreasury.sol (per-token)
+
+Per-token mhUSDC custody. Immutable operator approvals to `MuHavenSubscription` + `RedemptionQueue` granted at `initialize()` and never revoked (ADR-002).
+
+### Surface
 
 ```solidity
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+function initialize(
+    address _token,
+    address _subscription,
+    address _queue,
+    address _pusdc,                 // MuHavenStable for new tokens; legacy for migration
+    uint64  _minFloat
+) external initializer;
 
-import "./IKYCGate.sol";
+// Operator approvals are immutable — granted in initialize()
+// Subscription pulls mhUSDC on purchase; Queue pulls on processEpoch settlement.
 
-/// @title ERC3643KYCAdapter — ERC-3643 ONCHAINID adapter for IKYCGate
-contract ERC3643KYCAdapter is IKYCGate {
+function getMinFloat(address token) external view returns (uint64);
+function setMinFloat(uint64 newMin) external onlyIssuer;
 
-    address public identityRegistry;
-    address[] public trustedIssuers;
+// Withdraw with solvency-floor silent-fail (FHE.select, ADR-029)
+function withdraw(address recipient, euint64 encAmount, address eph)
+    external onlyIssuer;
 
-    uint256 public constant CLAIM_TOPIC_KYC = 1;
-    uint256 public constant CLAIM_TOPIC_ACCREDITED = 7;
-
-    // Tier → required claim topics
-    // Tier 1 (retail): only KYC required
-    // Tier 2 (accredited): KYC + accredited investor claim
-    mapping(uint256 => uint256[]) public tierRequiredClaims;
-
-    constructor(address _identityRegistry, address[] memory _trustedIssuers) {
-        identityRegistry = _identityRegistry;
-        trustedIssuers = _trustedIssuers;
-
-        // Default tier requirements
-        tierRequiredClaims[1] = new uint256[](1);
-        tierRequiredClaims[1][0] = CLAIM_TOPIC_KYC;
-
-        tierRequiredClaims[2] = new uint256[](2);
-        tierRequiredClaims[2][0] = CLAIM_TOPIC_KYC;
-        tierRequiredClaims[2][1] = CLAIM_TOPIC_ACCREDITED;
-    }
-
-    function isEligible(address account) external view override returns (bool) {
-        return _hasValidClaim(account, CLAIM_TOPIC_KYC);
-    }
-
-    function isEligibleForTier(address account, uint256 tier) external view override returns (bool) {
-        uint256[] memory required = tierRequiredClaims[tier];
-        for (uint i = 0; i < required.length; i++) {
-            if (!_hasValidClaim(account, required[i])) return false;
-        }
-        return true;
-    }
-
-    function providerName() external pure override returns (string memory) {
-        return "ERC-3643 ONCHAINID";
-    }
-
-    /// @dev Check if account has a valid claim from a trusted issuer
-    /// NOTE: For hackathon, this can be simplified to a whitelist mapping.
-    /// Full ONCHAINID integration uses IIdentity and IClaimIssuer interfaces.
-    function _hasValidClaim(address account, uint256 topic) internal view returns (bool) {
-        // Hackathon simplified version: check a whitelist
-        // Production version: query ONCHAINID identity registry
-        //   1. Get the identity contract for `account` from the registry
-        //   2. Check if any trusted issuer has issued a claim for `topic`
-        //   3. Verify the claim signature and expiry
-        return _whitelist[account];
-    }
-
-    // Hackathon shortcut: simple whitelist (replace with ONCHAINID in production)
-    mapping(address => bool) private _whitelist;
-    address public admin;
-
-    function addToWhitelist(address account) external {
-        require(msg.sender == admin || msg.sender == address(this), "Not authorized");
-        _whitelist[account] = true;
-    }
-
-    function removeFromWhitelist(address account) external {
-        require(msg.sender == admin, "Not authorized");
-        _whitelist[account] = false;
-    }
-}
+// getFloat returns 0 in Wave 3.5 — async-decrypt cache deferred (ADR-029)
+function getFloat() external view returns (uint64);
 ```
 
-**Hackathon note:** The `_hasValidClaim` function uses a simple whitelist for the hackathon. In production, it would query the ONCHAINID identity registry to verify claims from trusted issuers. The interface remains the same — only the internal implementation changes.
+### Solvency-floor pattern
+
+Empty-treasury short-circuit on PUSDC transfer (avoids `NoBalance` revert from PUSDC `_doTransfer`). Withdraw passes through `FHE.select(balance - encAmount >= minFloat, encAmount, 0)`. Same gas cost on success and failure paths.
+
+### Tests
+
+24 unit cases including init / immutable approvals / `minFloat` boundary / empty-treasury / withdraw silent-fail. See `test/MuHavenTreasury.test.ts`.
 
 ---
 
-## 4. YieldGate.sol
+## 5. RedemptionQueue.sol (per-token)
 
-Implements `IConditionResolver` for `MuHavenEscrow`. The resolver returns an **encrypted** boolean (`ebool`) that MuHavenEscrow folds into its silent-failure AND chain. Cleartext booleans are checked (KYC + balance-initialized) and the combined result is trivially encrypted.
+Overflow redemption queue. `MuHavenSubscription.redeem` auto-escalates here when the per-epoch cleartext cap is exceeded. Settlement is issuer-driven, paginated.
+
+### Surface
 
 ```solidity
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
-
-contract YieldGate is IConditionResolver, ERC165 {
-    IMuHavenToken public immutable muhavenToken;
-    IKYCGate       public immutable kycGate;
-    address public owner;
-    address public authorizedEscrow;                     // only caller of onConditionSet
-    mapping(uint256 => address) private _escrowBeneficiary;
-
-    event ConditionSet(uint256 indexed escrowId);        // beneficiary NOT emitted
-    event AuthorizedEscrowUpdated(address indexed newEscrow);
-    event OwnershipTransferred(address indexed prev, address indexed next);
-
-    function onConditionSet(uint256 escrowId, bytes calldata data) external {
-        require(msg.sender == authorizedEscrow, "only escrow");
-        require(_escrowBeneficiary[escrowId] == address(0), "already set");
-        address beneficiary = abi.decode(data, (address));
-        _escrowBeneficiary[escrowId] = beneficiary;
-        emit ConditionSet(escrowId);
-    }
-
-    function canRedeem(uint256 escrowId) external returns (ebool allowed) {
-        address beneficiary = _escrowBeneficiary[escrowId];
-        require(beneficiary != address(0), "unknown escrow");
-
-        bool kycOk = kycGate.isEligible(beneficiary);
-        euint128 encBalance = muhavenToken.encryptedBalanceOf(beneficiary);
-        bool hasBalance = Common.isInitialized(encBalance);                  // hackathon proxy
-
-        allowed = FHE.asEbool(kycOk && hasBalance);
-        FHE.allowThis(allowed);
-        FHE.allow(allowed, msg.sender);                                      // MuHavenEscrow can fold
-    }
-
-    function setAuthorizedEscrow(address newEscrow) external onlyOwner;
-    function transferOwnership(address newOwner) external onlyOwner;
-    // supportsInterface(type(IConditionResolver).interfaceId)
+struct QueueRequest {
+    address investor;
+    euint128 encShares;             // burned at submission
+    uint128  maxSharesHint;         // cleartext for cap tracker
+    address  ephemeralEOA;          // captured at submission per ADR-035
+    uint64   submittedAtEpoch;
+    bool     settled;
+    bool     claimed;
+    bool     cancelled;
 }
+
+// Direct submission (rare — usually called via Subscription.redeem cap-overflow)
+function submit(InEuint128 calldata encShares, uint128 maxSharesHint, address eph)
+    external returns (uint256 requestId);
+
+// Trusted-caller variant for Subscription auto-escalate (ADR-035)
+function submitFor(address investor, euint128 encShares, uint128 hint, address eph)
+    external onlySubscription returns (uint256 requestId);
+
+// Issuer-driven settlement at NAV; idempotent per (epoch, request)
+function processEpoch(uint64 epochId, uint128 navAtSettlement)
+    external onlyIssuer;
+
+// Phase 7.6 atomic-settlement — flips settled=claimed=true atomically
+// (investor claim() always reverts AlreadyClaimed)
+function claim(uint256 requestId) external view returns (bool);
+
+// Issuer-only KYC-revocation refund per ADR-027
+function cancelOnKYCRevocation(uint256 requestId) external onlyIssuer;
+
+function getRequest(uint256 requestId) external view returns (QueueRequest memory);
 ```
 
-**Privacy caveat:** `_escrowBeneficiary` stores plaintext beneficiaries because the KYC check is cleartext. The mapping is `private` with no public getter, but storage slots are readable via `eth_getStorageAt`. This is an acknowledged residual leak of the `eaddress`-owner privacy goal — fully closing it requires an FHE-based KYC gate. See [THREAT_MODEL.md](./THREAT_MODEL.md).
+### Conservation guard
 
-**Production upgrade path:** Replace the `Common.isInitialized` check with `FHE.gt(balance, FHE.asEuint128(0))` + async decrypt for a definitive balance-greater-than-zero verdict. The current proxy is sufficient because tokens are only minted to KYC-verified investors.
+`processEpoch` re-runs the `CostOverflowsPUSDCWidth` guard per-request (ADR-031 lock-in) and burns queue-held shares via `MuHavenToken.burnFromQueue` to keep `encryptedTotalSupply` consistent. Pulls mhUSDC from treasury via the 5-arg `transferFrom` overload (`from = treasury, to = queue, fromEph = address(0), toEph = investor_eph`). `actualPulled` via the new Token primitives per ADR-036 prevents the free-money exploit at claim time.
+
+### Tests
+
+41 unit cases (submit / submitFor / processEpoch / claim / admin + 2 review-pass lockdowns) + 5 integration cases. See `test/RedemptionQueue.test.ts`, `test/RedemptionQueue.integration.test.ts`.
 
 ---
 
-## 5. RiskParams.sol
+## 6. YieldSnapshot.sol
+
+Pull-based per-epoch yield distribution. Replaces Wave 3's push-model `YieldDistributor` + per-investor `MuHavenEscrow`.
+
+### Surface
 
 ```solidity
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+struct Epoch {
+    address  token;
+    uint64   snapshotStartTs;
+    uint64   funded;                // 0 / 1 / 2 — phase enum
+    uint128  totalYield;
+    uint128  ratePerShare;          // cleartext, scaled by RATE_SCALE (ADR-048)
+    euint128 encTotalSupply;        // running sum during snapshotBatch (ADR-038)
+    uint64   holderCount;
+    uint64   claimWindowEnd;
+    bool     swept;
+}
 
-import "@fhenixprotocol/cofhe-contracts/FHE.sol";
+uint128 public constant RATE_SCALE = 1_000_000;
 
-contract RiskParams {
-    struct InvestorRisk {
-        euint64 maxDrawdownBps;
-        euint64 minYieldBps;
-        euint64 driftToleranceBps;
-        euint64 maxDailySpend;
-        uint256 lastUpdated;
-    }
+function openEpoch(address token) external onlyIssuer returns (uint64 epochId);
 
-    mapping(address => InvestorRisk) private _riskParams;
+// Idempotent per (epoch, investor); skips zero-address entries
+function snapshotBatch(uint64 epochId, address[] calldata investors) external onlyIssuer;
 
-    function setRiskParams(
-        InEuint64 calldata maxDrawdown,
-        InEuint64 calldata minYield,
-        InEuint64 calldata driftTolerance,
-        InEuint64 calldata maxDailySpend
-    ) external {
-        euint64 _md = FHE.asEuint64(maxDrawdown);
-        FHE.allowThis(_md); FHE.allowSender(_md);
+// Locks the phase; reverts EmptySnapshot when holderCount == 0
+function finalizeSnapshot(uint64 epochId) external onlyIssuer;
 
-        euint64 _my = FHE.asEuint64(minYield);
-        FHE.allowThis(_my); FHE.allowSender(_my);
+// Pulls totalYield mhUSDC; stores cleartext ratePerShare
+function fundEpoch(uint64 epochId, uint128 totalYield, uint128 ratePerShare)
+    external onlyIssuer;
 
-        euint64 _dt = FHE.asEuint64(driftTolerance);
-        FHE.allowThis(_dt); FHE.allowSender(_dt);
+// Investor-pull. Idempotent (AlreadyClaimed on re-claim). Pay-out via trustedPayout.
+function claimYield(address token, uint64 epochId, address eph) external;
 
-        euint64 _ms = FHE.asEuint64(maxDailySpend);
-        FHE.allowThis(_ms); FHE.allowSender(_ms);
+// Returns unclaimed yield to issuer after claimWindowEnd
+function sweepExpired(uint64 epochId) external onlyIssuer;
 
-        _riskParams[msg.sender] = InvestorRisk(_md, _my, _dt, _ms, block.timestamp);
-    }
+// Issuer "Decrypt from chain" UX (ADR-049) — encTotalSupply ACL granted at finalize
+function getEpochTotalSupplyHandle(uint64 epochId) external view returns (euint128);
 
-    function getRiskParamsSealed(
-        PermissionedV2 memory permission
-    ) public view withPermission(permission) returns (
-        SealedUint memory, SealedUint memory, SealedUint memory, SealedUint memory
-    ) {
-        InvestorRisk memory p = _riskParams[permission.issuer];
-        return (
-            FHE.sealoutputTyped(p.maxDrawdownBps, permission.sealingKey),
-            FHE.sealoutputTyped(p.minYieldBps, permission.sealingKey),
-            FHE.sealoutputTyped(p.driftToleranceBps, permission.sealingKey),
-            FHE.sealoutputTyped(p.maxDailySpend, permission.sealingKey)
-        );
-    }
+// Re-grants encTotalSupply ACL to a fresh ephemeralEOA (ADR-050 — cross-session safety)
+function refreshSnapshotSupplyGrant(uint64 epochId, address eph) external;
+```
+
+### claimYield internals
+
+```solidity
+function claimYield(address token, uint64 epochId, address eph) external {
+    Epoch storage e = _epochs[epochId];
+    require(e.funded == 2, "Not funded");
+    require(e.token == token, "Wrong token");
+    require(!_claimed[epochId][msg.sender], "AlreadyClaimed");
+    _claimed[epochId][msg.sender] = true;
+
+    euint128 snapshotBal = _snapshotBalance[epochId][msg.sender];
+    require(Common.isInitialized(snapshotBal), "No snapshot");
+
+    // Cleartext rate path (Phase 9.B Option A) — sidesteps cofhe TN chain-length cap
+    euint128 encShare128 = FHE.mul(snapshotBal, FHE.asEuint128(uint256(e.ratePerShare)));
+    FHE.allowThis(encShare128);
+
+    // Sub-1:1 yield rescale (ADR-048)
+    euint128 rescaled128 = FHE.div(encShare128, FHE.asEuint128(uint256(RATE_SCALE)));
+    FHE.allowThis(rescaled128);
+
+    // Narrow to euint64 width with cleartext guard
+    if (e.totalYield > type(uint64).max) revert CostOverflowsPUSDCWidth();
+    euint64 encShare64 = FHE.asEuint64(rescaled128);
+    FHE.allowThis(encShare64);
+    FHE.allow(encShare64, eph);
+
+    // Trusted-payout fast-path (ADR-046) — bypass _silentFailBound
+    IMuHavenStable(pusdc).trustedPayout(msg.sender, encShare64, eph);
+
+    emit EpochClaimed(epochId, msg.sender);
 }
 ```
+
+### Backward-compat
+
+Pre-Option-A epochs (`ratePerShare == 0` in storage) fall through to the legacy `encRatio` path in claimYield for any in-flight epoch from before Phase 9.B — covered by `scripts/upgrade-yield-snapshot.ts` pre-flight enumeration.
+
+### Tests
+
+719 baseline + Phase 9.B/9.C deltas. See `test/YieldSnapshot.test.ts`.
 
 ---
 
-## 6. MuHavenVault.sol (new — wrapping model)
+## 7. TokenRegistry.sol
 
-Locks external ERC-20 RWA tokens (e.g., BUIDL, OUSG) and mints equivalent fhERC-20 encrypted versions. Investors can unwrap at any time by burning the fhERC-20 to release the original ERC-20.
-
-```solidity
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
-
-import "@fhenixprotocol/cofhe-contracts/FHE.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-
-contract MuHavenVault {
-    IERC20 public underlyingToken;       // The ERC-20 RWA token being wrapped (e.g., BUIDL)
-    address public muhavenToken;          // The fhERC-20 wrapper token
-    uint256 public totalLocked;           // Total underlying tokens locked in vault
-
-    event Wrapped(address indexed investor, uint256 amount);
-    event Unwrapped(address indexed investor, uint256 amount);
-
-    constructor(address _underlyingToken, address _muhavenToken) {
-        underlyingToken = IERC20(_underlyingToken);
-        muhavenToken = _muhavenToken;
-    }
-
-    /// @notice Lock ERC-20 tokens and mint equivalent fhERC-20 tokens
-    /// @param amount Cleartext amount of ERC-20 to lock (visible, since original is public)
-    /// @dev MuHavenVault must be granted MINTER_ROLE on MuHavenToken at deploy time
-    function wrap(uint256 amount) external {
-        require(amount > 0, "Zero amount");
-
-        // Transfer ERC-20 from investor to vault
-        underlyingToken.transferFrom(msg.sender, address(this), amount);
-        totalLocked += amount;
-
-        // Mint equivalent fhERC-20 (encrypted from this point forward)
-        // NOTE: Amount transitions from cleartext ERC-20 to encrypted fhERC-20 here
-        // Vault calls mint() via MINTER_ROLE — same function the issuer uses
-        IMuHavenToken(muhavenToken).mint(
-            msg.sender,
-            _encryptAmount(amount)
-        );
-
-        emit Wrapped(msg.sender, amount);
-    }
-
-    /// @notice Burn fhERC-20 tokens and release original ERC-20 tokens
-    /// @param amount Cleartext amount to unwrap
-    /// @dev Investor must approve MuHavenToken to burn their encrypted balance first
-    function unwrap(uint256 amount) external {
-        require(amount > 0, "Zero amount");
-        require(totalLocked >= amount, "Insufficient vault balance");
-
-        // Burn the fhERC-20 tokens (encrypted balance reduced)
-        IMuHavenToken(muhavenToken).burnFrom(msg.sender, _encryptAmount(amount));
-
-        // Release original ERC-20
-        totalLocked -= amount;
-        underlyingToken.transfer(msg.sender, amount);
-
-        emit Unwrapped(msg.sender, amount);
-    }
-
-    /// @dev Helper: encrypt a cleartext uint256 into InEuint128 format
-    function _encryptAmount(uint256 amount) internal pure returns (InEuint128 memory) {
-        // Implementation depends on cofhe-contracts input encoding
-        // See cofhejs Encryptable.uint128() for client-side equivalent
-    }
-}
-```
-
-**Hackathon note:** For the demo, deploy a mock "TestTreasury" ERC-20 token that simulates an existing RWA. The vault wrapping flow demonstrates the concept without needing real BUIDL tokens on testnet.
-
----
-
-## 7. YieldDistributor.sol (new — proportional escrow creation)
-
-Reads all holder balances from MuHavenToken and creates proportional ReineiraOS escrows for yield distribution. Called by `MuHavenToken.depositYield()`.
+Per-token configuration registry.
 
 ```solidity
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
-
-import "@fhenixprotocol/cofhe-contracts/FHE.sol";
-
-contract YieldDistributor {
-    address public muhavenToken;
-    address public reineiraEscrow;      // ReineiraOS escrow contract
-    address public yieldGate;           // YieldGate condition resolver
-
-    event YieldDistributed(address indexed token, uint256 totalYield, uint256 escrowCount);
-
-    constructor(address _muhavenToken, address _reineiraEscrow, address _yieldGate) {
-        muhavenToken = _muhavenToken;
-        reineiraEscrow = _reineiraEscrow;
-        yieldGate = _yieldGate;
-    }
-
-    /// @notice Distribute yield proportionally across all token holders
-    /// @param token The MuHavenToken whose holders receive yield
-    /// @param totalYield Total USDC to distribute
-    /// @dev Creates one ReineiraOS escrow per eligible investor
-    ///
-    /// PRODUCTION APPROACH (future):
-    ///   Amount per investor = (their encrypted balance / total supply) * totalYield
-    ///   All proportional math would be done in FHE — individual amounts stay encrypted.
-    ///   However, FHE division is not available in CoFHE v0.1.1 (no FHE.div()).
-    ///
-    /// HACKATHON SIMPLIFICATION:
-    ///   Equal distribution: totalYield / investorCount (cleartext division).
-    ///   Each investor receives the same yield amount regardless of position size.
-    ///   This demonstrates the privacy-preserving escrow pipeline end-to-end
-    ///   without requiring FHE division. The individual yield amounts are still
-    ///   encrypted in the escrow — the simplification is only in how the amount
-    ///   is calculated, not in how it's distributed.
-    ///
-    /// PRODUCTION ALTERNATIVES (when FHE.div() or workarounds are available):
-    ///   1. FHE.div() — if Fhenix adds division to CoFHE
-    ///   2. Off-chain pre-computation — compute shares off-chain, submit encrypted
-    ///      amounts with a ZK proof that they sum to totalYield
-    ///   3. Fixed-point FHE multiplication — multiply balance by (totalYield * SCALE)
-    ///      then shift, avoiding division entirely
-    function distributeYield(address token, uint256 totalYield) external {
-        require(msg.sender == muhavenToken, "Only token contract");
-
-        // Get list of investors (addresses are cleartext, balances are not)
-        address[] memory investors = IMuHavenToken(token).getInvestors();
-        uint256 count = investors.length;
-        require(count > 0, "No investors");
-
-        // Hackathon: equal distribution (cleartext division, encrypted escrow)
-        uint256 yieldPerInvestor = totalYield / count;
-
-        uint256 escrowCount = 0;
-
-        for (uint256 i = 0; i < count; i++) {
-            address investor = investors[i];
-
-            // Encrypt the per-investor yield amount
-            // From this point forward, individual amounts are encrypted
-            euint128 encryptedYield = FHE.asEuint128(yieldPerInvestor);
-            FHE.allowThis(encryptedYield);
-
-            // Create ReineiraOS escrow with encrypted amount, gated by YieldGate
-            IReineiraEscrow(reineiraEscrow).create(
-                investor,           // beneficiary
-                encryptedYield,     // encrypted yield amount
-                yieldGate           // condition resolver
-            );
-
-            escrowCount++;
-        }
-
-        emit YieldDistributed(token, totalYield, escrowCount);
-    }
+struct TokenConfig {
+    address issuer;
+    address oracle;                 // IssuerControlledOracle or ChainlinkFunctionsOracle
+    address treasury;
+    address queue;
+    address snapshot;
+    bool    paused;
+    uint64  yieldScheduleSeconds;   // metadata only — actual cadence is operator-driven
 }
+
+function register(address token, TokenConfig calldata config) external onlyAuthorized;
+function getConfig(address token) external view returns (TokenConfig memory);
+function setOracle(address token, address oracle) external onlyIssuer;
+function setPaused(address token, bool paused) external onlyIssuer;
+function getRegisteredTokens(uint256 offset, uint256 limit) external view returns (address[] memory);
 ```
 
-**Critical privacy property:** Even with the hackathon's equal-distribution simplification, individual yield amounts are encrypted in the escrow. The issuer calls `depositYield(totalAmount)` with a cleartext total, the contract divides equally (cleartext), then encrypts each share before creating the escrow. The issuer sees how many investors received yield (cleartext) but not individual claim status or balances. In production, proportional distribution using FHE math will replace the equal split — see the alternatives documented in `distributeYield()` above.
-
-**Hackathon limitation:** Equal distribution means an investor holding 80% of supply gets the same yield as one holding 1%. This is acceptable for the demo because it still demonstrates the full privacy pipeline (encrypted escrow creation → YieldGate verification → investor auto-claim). Proportional distribution is a math problem, not an architecture problem.
+25 unit cases. See `test/TokenRegistry.test.ts`.
 
 ---
 
 ## 8. InvestorRegistry.sol
 
-Paginated registry of MuHavenToken holders. Addresses are public (they're always visible in transfer calldata); balances are not. `YieldDistributor` iterates the registry in batches to drive `MuHavenEscrow.batchCreate`, and the SDK uses it to enumerate investors before encrypting them for escrow creation.
+Per-token holder enumeration. `addHolder` called by `MuHavenToken._transfer` on first-transfer-in. Used by `YieldSnapshot.snapshotBatch` and `MaxHolders` compliance module.
 
 ```solidity
-contract InvestorRegistry {
-    address public owner;
-    address public tokenContract;  // MuHavenToken — only authorized caller
-
-    address[] private _investors;
-    mapping(address => bool) private _isInvestor;
-
-    event InvestorAdded(address indexed investor);
-
-    function initialize(address _owner, address _tokenContract) external;
-
-    /// @dev Called by MuHavenToken on first mint() to a new address
-    function addInvestor(address investor) external onlyTokenContract;
-
-    function count() external view returns (uint256);
-    function isInvestor(address account) external view returns (bool);
-    function getInvestors(uint256 offset, uint256 limit)
-        external view returns (address[] memory);
-}
+function addHolder(address token, address holder) external onlyAuthorizedToken;
+function isHolder(address token, address holder) external view returns (bool);
+function count(address token) external view returns (uint256);
+function getInvestors(address token, uint256 offset, uint256 limit)
+    external view returns (address[] memory);
 ```
 
-**Access control:** Only `tokenContract` (MuHavenToken) may call `addInvestor`. `getInvestors` is public.
-
-**Pagination:** Callers pass `(offset, limit)`. The SDK's `fetchAllInvestors` utility calls in pages of 200 and concatenates.
+Add-only semantics per ADR-026 — even when an investor's balance returns to zero, they remain in the registry. The `MaxHolders` module reconciles by comparing `InvestorRegistry.count` against its cap (upper-bound semantics, ADR-022).
 
 ---
 
-## 9. MuHavenEscrow.sol
+## 9. ERC-3643 topology
 
-Two-phase confidential escrow for per-investor yield settlement. Replaces ReineiraOS's `ConfidentialEscrow` for MuHaven flows after the PUSDC selector-mismatch workaround made the upstream contract unusable (see `development/DEV_WAVE_3/PUSDC_TRANSFER_ISSUE.md`). Each escrow stores an encrypted beneficiary address, an encrypted running payout, and an encrypted redeemed flag.
+### MuHavenIdentityRegistry.sol
 
-**Deployed (Arb Sepolia):** proxy `0xb18ca2122b31Df9Aaef8226f6218Bd93B852F40A`.
-
-### Storage
+`isVerified(addr)` runs whitelist → claim verification (topics × trusted issuers × `validUntil`); `devMode` flag for migration; `disableDevModeForever()` is an irreversible latch (ADR-023).
 
 ```solidity
-struct Escrow {
-    eaddress owner;        // ZK-validated investor address (encrypted)
-    euint64  paidAmount;   // running sum of deposits (encrypted)
-    ebool    isRedeemed;   // encrypted redemption flag
-    address  resolver;     // plaintext IConditionResolver (YieldGate)
-    bool     exists;       // plaintext existence flag
-}
+function isVerified(address account) external view returns (bool);
+function addToWhitelist(address account) external onlyOperator;
+function removeFromWhitelist(address account) external onlyOperator;
 
-mapping(uint256 => Escrow) private _escrows;   // id => escrow (ids start at 1)
-uint256 public escrowCount;
-address public paymentToken;                   // PUSDC (IFHERC20)
-address public contractOwner;
-mapping(address => bool) public authorizedCallers;  // batchCreate / fundFrom gate
-uint256[50] private __gap;                     // proxy upgrade gap
+// Per-account compliance metadata (ADR-033)
+function setCountryOf(address account, uint16 isoCountryCode) external;
+function getCountryOf(address account) external view returns (uint16);
+function setAccredited(address account, bool accredited) external;
+function isAccredited(address account) external view returns (bool);
+
+// Dev-mode (ADR-011, ADR-023)
+bool public devMode;
+function disableDevModeForever() external onlyOwner;
+event DevModeToggled(bool newValue);
 ```
 
-### Initializer
+30 unit cases + 14 across `ClaimTopicsRegistry` + `TrustedIssuersRegistry`. See `test/MuHavenIdentityRegistry.test.ts`, `test/ClaimAndIssuerRegistries.test.ts`.
+
+### ModularCompliance.sol
+
+Per-token rule-modules registry. AND-aggregates active modules with short-circuit; state hooks fire on mint / transfer / burn (ADR-032 — per-token authorized-caller gate).
 
 ```solidity
-function initialize(address _owner, address _paymentToken) external initializer;
+function bindModule(address token, address module) external onlyOperator;
+function unbindModule(address token, address module) external onlyOperator;
+function getModules(address token) external view returns (address[] memory);
+
+function canTransfer(address token, address from, address to)
+    external returns (bool);
+
+// State hooks — fan-out to bound modules
+function created(address token, address to) external onlyAuthorized;
+function transferred(address token, address from, address to) external onlyAuthorized;
+function destroyed(address token, address from) external onlyAuthorized;
+
+uint256 public constant MAX_MODULES_PER_TOKEN = 8;   // swap-and-pop cap
 ```
 
-`_paymentToken` may be zero at deploy — set later via `setPaymentToken`.
+20 unit cases. See `test/ModularCompliance.test.ts`.
 
-### Events
+### Modules
 
-```solidity
-event EscrowCreated(uint256 indexed escrowId, address indexed resolver);
-event EscrowFunded(uint256 indexed escrowId);
-event EscrowRedeemed(uint256 indexed escrowId);      // emitted unconditionally — see silent-fail note
-event AuthorizedCallerUpdated(address indexed caller, bool authorized);
-event PaymentTokenUpdated(address indexed newToken);
-event OwnershipTransferred(address indexed previous, address indexed newOwner);
-```
+| Module | Purpose | Tests |
+|---|---|---|
+| `CountryAllow.sol` | ISO-3166 numeric allow-list per token. Permissive default when no entries. | 6 |
+| `CountryRestrict.sol` | ISO-3166 numeric block-list. Zero-address (mint `from` / burn `to`) skipped. | 6 |
+| `MaxHolders.sol` | Cap holder count via `InvestorRegistry.count`. Separate accredited / non-accredited counters. | 6 |
+| `Lockup.sol` | Per-token default lockup window. Mint always allowed; transfer-out blocked during lockup. Owner override for migration. | 5 |
+| `MaxBalance.sol` | Cleartext upper-bound tracker fed from `maxSharesHint`. Loose by ADR-019 + ADR-034. | 8 |
 
-### Two-phase architecture
-
-Privacy hinges on splitting the ZK-validation step (client) from handle storage (contract):
-
-```
-Client (SDK)                              Contract
-────────────                              ────────
-encryptInputs([addr1, addr2, ...])  ──→   one shared ZK proof
-                                    ←──   InEaddress[] tuples
-
-batchCreate(inputs, resolver, data) ──→   FHE.asEaddress(each)   // ZK verified
-                                          FHE.allowThis(eaddress)
-                                          resolver.onConditionSet(id, data)
-                                          emit EscrowCreated(id, resolver)
-                                    ←──   sequential IDs via event logs
-```
-
-The plaintext beneficiary is encoded into `resolverData` so `YieldGate.onConditionSet` can cache the escrow-id → investor mapping off-chain. Observers reading calldata can link `escrowId ↔ investor` at creation, but events and state emit only `escrowId` — passive log analysis cannot reconstruct the mapping from on-chain data alone.
-
-### Core API
-
-```solidity
-/// @notice Create many escrows in one tx; IDs assigned sequentially.
-function batchCreate(
-    InEaddress[] calldata owners,
-    address resolver,
-    bytes[]   calldata resolverData
-) external onlyAuthorized returns (uint256[] memory ids);
-
-/// @notice Add encrypted PUSDC to an escrow. Multiple calls accumulate.
-function fundFrom(uint256 id, euint64 amount) external onlyAuthorized;
-
-/// @notice Investor-initiated claim. Silent-fail on wrong caller /
-///         already-redeemed / resolver denial.
-function redeem(uint256 id) external;
-
-/// @notice Batch version. Skips non-existent IDs, aggregates payouts,
-///         one PUSDC transfer if total non-zero.
-function redeemMultiple(uint256[] calldata ids) external;
-
-// View helpers
-function exists(uint256 id) external view returns (bool);
-function getOwner(uint256 id) external view returns (eaddress);
-function getPaidAmount(uint256 id) external view returns (euint64);
-function getIsRedeemed(uint256 id) external view returns (ebool);
-function getResolver(uint256 id) external view returns (address);
-function total() external view returns (uint256);
-
-// Admin
-function setAuthorizedCaller(address caller, bool authorized) external onlyContractOwner;
-function setPaymentToken(address token) external onlyContractOwner;
-function transferOwnership(address newOwner) external onlyContractOwner;
-```
-
-### Redemption internals — silent-fail in detail
-
-```solidity
-function _computePayout(uint256 id)
-    internal
-    returns (euint64 payout, ebool canRedeem)
-{
-    Escrow storage e = _escrows[id];
-    if (!e.exists) revert EscrowDoesNotExist();
-
-    // Trivially-encrypt the plaintext caller so we can compare to the encrypted owner
-    eaddress callerEa = FHE.asEaddress(msg.sender);
-    FHE.allowThis(callerEa);
-
-    ebool ownerOk = FHE.eq(e.owner, callerEa);                              // (1) owner == msg.sender
-    ebool notRedeemed = Common.isInitialized(e.isRedeemed)                 // (2) NOT isRedeemed
-        ? FHE.not(e.isRedeemed)
-        : FHE.asEbool(true);
-    ebool resolverOk  = IConditionResolver(e.resolver).canRedeem(id);      // (3) resolver gate
-
-    canRedeem = FHE.and(FHE.and(ownerOk, notRedeemed), resolverOk);
-    FHE.allowThis(canRedeem);
-
-    euint64 zero64 = FHE.asEuint64(uint256(0));
-    euint64 funded = Common.isInitialized(e.paidAmount) ? e.paidAmount : zero64;
-    payout = FHE.select(canRedeem, funded, zero64);
-    FHE.allowThis(payout);
-}
-
-function _markRedeemed(uint256 id, ebool canRedeem) internal {
-    Escrow storage e = _escrows[id];
-    ebool prior = Common.isInitialized(e.isRedeemed) ? e.isRedeemed : FHE.asEbool(false);
-    ebool trueE = FHE.asEbool(true);
-    e.isRedeemed = FHE.select(canRedeem, trueE, prior);
-    FHE.allowThis(e.isRedeemed);
-}
-```
-
-All three conditions (owner match, not-already-redeemed, resolver-approves) are AND'd in FHE. `FHE.select` nullifies the payout to zero if any condition fails. `isRedeemed` only flips when the full AND is encrypted-true. A failed redemption costs the same gas as a successful one and emits the same event — observers cannot tell them apart on-chain.
-
-### PUSDC payout
-
-PUSDC's deployed `ConfidentialUSDC` uses the pre-v0.1.0 `euint64 = uint256` selector, while this contract is compiled against `euint64 = bytes32`. The contract pre-computes the legacy selector once and calls it via low-level `call`:
-
-```solidity
-// MuHavenEscrow.sol:81
-bytes4 private constant _TRANSFER_UINT256 =
-    bytes4(keccak256("confidentialTransfer(address,uint256)"));
-
-// paymentToken.call(abi.encodeWithSelector(_TRANSFER_UINT256, recipient, payoutHandle))
-// Payload is built at the call site; failure reverts with a named error.
-```
-
-Context: `development/DEV_WAVE_3/PUSDC_TRANSFER_ISSUE.md`.
-
-### Silent-fail event caveat
-
-`EscrowRedeemed` is emitted on every call to `redeem` / `redeemMultiple`, even when the payout is zero because of a failed condition. Off-chain pollers **must** verify the corresponding PUSDC `ConfidentialTransfer` event (or the backend's yield-record status) before marking a yield as claimed. The block poller in `backend/src/infrastructure/event-poller` already does this — SDK consumers watching raw events should do the same.
-
-### Gas (not benchmarked on testnet)
-
-Approximate budgets from implementation inspection + test traces:
-
-| Operation | Cost per escrow | Practical ceiling per tx (Arb Sepolia, 30M block) |
-|-----------|-----------------|---------------------------------------------------|
-| `batchCreate` | ~300–500k (ZK validation + resolver callback) | ~50 |
-| `fundFrom` | ~60–120k | — (single escrow call) |
-| `redeemMultiple` | ~1M (owner eq + resolver read + two AND + select) | ~20–30 |
-
-The SDK defaults to `DEFAULT_BATCH_SIZE = 50` for `batchCreate` and recommends ≤ 30 for `redeemMultiple`.
+All test cases in `test/ComplianceModules.test.ts` + `test/ComplianceIntegration.test.ts`.
 
 ---
 
-## 10. EIP Standards Compliance
+## 10. Oracles
 
-This section maps MuHaven's contracts and planned features to Ethereum standards, with rationale for deviations.
+### IssuerControlledOracle.sol
+
+Pluggable `IPriceOracle` reference impl — issuer-write NAV with rotation, configurable staleness, deviation gate, sequencer-uptime check.
+
+```solidity
+function getNAV(address token) external view returns (uint128 value, uint64 updatedAt);
+function isFresh(address token) external view returns (bool);
+
+// Per-token navWriter rotation (hot key separate from owner multisig)
+function setNavWriter(address token, address writer) external onlyOwner;
+function getNavWriter(address token) external view returns (address);
+
+// Issuer-only NAV write, gated by deviation
+function setNAV(address token, uint128 value) external;
+
+// Per-token deviation gate — over-threshold writes park in pending state
+function setMaxDeviationBps(address token, uint16 bps) external onlyOwner;  // hard-cap 5000 bps
+function acceptPendingNAV(address token) external onlyOwner;
+function rejectPendingNAV(address token) external onlyOwner;
+
+// Per-token staleness window (default 36h)
+function setStalenessSeconds(address token, uint64 seconds_) external onlyOwner;
+
+// L2 sequencer uptime feed (Chainlink-shaped AggregatorV3Interface)
+function setSequencerUptimeFeed(address feed) external onlyOwner;
+function setSequencerGracePeriod(uint64 seconds_) external onlyOwner;  // hard-cap 24h
+```
+
+Fails closed on a misconfigured (EOA) feed via low-level staticcall. 33 base + 10 deviation-gate + 6 sequencer-uptime cases. See `test/IssuerControlledOracle.test.ts`.
+
+### ChainlinkFunctionsOracle.sol
+
+Functions consumer pulling FRED + metals-api fallbacks. Per-token CBOR request body + per-token `navRequester` hot key.
+
+```solidity
+function setTokenConfig(address token, bytes calldata cborRequest, uint32 gasLimit, ...)
+    external onlyOwner;
+function setNavRequester(address token, address requester) external onlyOwner;
+
+// Triggers the off-chain Functions request; callback writes through to setNAV
+function requestNAV(address token) external;
+
+// Functions router callback
+function fulfillRequest(bytes32 requestId, bytes memory response, bytes memory err)
+    external onlyRouter;
+```
+
+32 unit cases. See `test/ChainlinkFunctionsOracle.test.ts`. Mock Functions router + client in `contracts/mocks/`.
+
+---
+
+## 11. RiskParams.sol
+
+Encrypted investor risk guardrails (4× `euint64`).
+
+```solidity
+struct InvestorRisk {
+    euint64 maxDrawdownBps;
+    euint64 minYieldBps;
+    euint64 driftToleranceBps;
+    euint64 maxDailySpend;
+    uint256 lastUpdated;
+}
+
+function setRiskParams(
+    InEuint64 calldata maxDrawdown,
+    InEuint64 calldata minYield,
+    InEuint64 calldata driftTolerance,
+    InEuint64 calldata maxDailySpend
+) external;
+
+function hasRiskParams(address user) external view returns (bool);
+function getEncryptedParams(address user) external view returns (
+    euint64 maxDrawdown, euint64 minYield, euint64 drift, euint64 maxDailySpend
+);
+```
+
+Wave 4 P6 adds:
+
+```solidity
+// Branchless FHE.select hot path — no decryption (ADR for Wave 4 to be appended)
+function checkAndExecute(address user, euint64 eAmount, uint8 action)
+    external returns (euint64 chargedAmount);
+
+// Breach-only async decrypt
+function settleBreachDecrypt(bytes32 handle, uint256 cleartext, bytes calldata signature)
+    external;
+function publishDecryptResult(bytes32 handle, uint256 cleartext) external;
+event RiskBreach(address indexed user, uint8 action, uint256 timestamp);
+
+// Encrypted signal flags returned as ebools to muhaven_portfolio_summary
+function computeSignalFlags(address user)
+    external view returns (ebool isOverexposed, ebool isUnderYield);
+```
+
+Latency bench: `decryptForTx` p50 = 1.22s / p99 = 1.25s; end-to-end breach commit ~2.5–3s on Arb Sepolia. See `development/DEV_WAVE_4/LATENCY_BENCH_REPORT.md`.
+
+---
+
+## EIP standards compliance
 
 ### Implemented
 
 | EIP | Where | Notes |
-|-----|-------|-------|
-| **EIP-165** (introspection) | All proxy-backed contracts via `ERC165Upgradeable` | Used by the SDK to sanity-check addresses at construction time. |
-| **EIP-1967 / EIP-1822** (transparent proxies) | `MuHavenToken`, `MuHavenVault`, `InvestorRegistry`, `YieldDistributor`, `RiskParams`, `MuHavenEscrow` | OpenZeppelin Transparent Upgradeable Proxy. Proxy + implementation addresses recorded in `deployments/arb-sepolia.json`. |
-| **EIP-712** (typed signed data) | Auth flow (SIWE-style nonce/verify), permit-based FHE decryption (`FHE.allow` + `decryptForView`) | Frontend signs EIP-712 payloads via ZeroDev passkey kernel. |
-| **EIP-4337** (account abstraction) | Frontend — ZeroDev kernel smart accounts | All user writes are UserOps, not EOA transactions. See `development/DEV_WAVE_3/HOMELAB_DEPLOY.md` for bundler/paymaster config. |
+|---|---|---|
+| **EIP-165** | All proxy-backed contracts via `ERC165Upgradeable` | SDK uses for sanity-checks at construction |
+| **EIP-1967 / EIP-1822** (transparent proxies) | All upgradeable contracts | OZ Transparent Upgradeable Proxy. Proxy + impl addresses recorded in `deployments/arb-sepolia-v2.json` |
+| **EIP-712** (typed signed data) | Permit-based FHE decryption (`FHE.allow` + `decryptForView`); auth flow nonce/verify; ephemeralEOA permit signing per ADR-021 | Frontend signs EIP-712 via ZeroDev passkey kernel |
+| **EIP-4337** (account abstraction) | Frontend — ZeroDev kernel smart accounts | All user writes are UserOps; `@zerodev/permissions` validators install `CallPolicy` / `GasPolicy` / `RateLimitPolicy` session keys |
+| **ERC-3643** (T-REX, regulated securities) | `MuHavenIdentityRegistry` + `ModularCompliance` + `CountryAllow` / `CountryRestrict` / `MaxHolders` / `Lockup` / `MaxBalance` | Full topology shipped. Production cutover invokes `disableDevModeForever()` to close the migration KYC bypass. |
 
 ### Partial / scoped
 
 | EIP | Status | What's there | What's planned |
-|-----|--------|--------------|----------------|
-| **ERC-3643** (T-REX, regulated securities) | Partial | `ERC3643KYCAdapter` implements the `IKYCGate` surface that `MuHavenToken._beforeTokenTransfer` consults. Tier 1 (retail) + tier 2 (accredited) claim topics modeled. | Full ONCHAINID integration — read claims directly from `IIdentity` / `IClaimIssuer`, verify claim signatures + expiries. Hackathon uses a simple whitelist inside the adapter. |
+|---|---|---|---|
+| **ERC-3643 — claim verification path** | Partial | Whitelist + claim-topics scaffolding (`ClaimTopicsRegistry` + `TrustedIssuersRegistry`); `validUntil` claim expiry; `MuHavenIdentityRegistry.isVerified` runs whitelist → claim path | Full ONCHAINID integration on production cutover. Hackathon runs `devMode=true` (permissive). |
 
-### Planned / aspirational (not yet shipped)
+### Planned (not yet shipped)
 
 | EIP | Target | Rationale |
-|-----|--------|-----------|
-| **ERC-4626** (tokenized vault standard) | `MuHavenVault` | Would make the vault composable with DeFi aggregators. Not prioritized because the vault currently wraps a single underlying per deployment. |
-| **ERC-7540** (async deposit/redeem) | `MuHavenVault`, `MuHavenEscrow` | Matches FHE's inherent async nature (coprocessor delay, batch settlement). A natural upgrade path once CoFHE proves stable under sustained load. |
-| **EIP-7702** (scoped session keys) | Frontend (currently ZeroDev `@zerodev/permissions`-based session keys) | 7702 lands EOA-native session keys; moving off ZeroDev's kernel-specific permission system would simplify the provider layer. Blocked on 7702 finalization + wallet support. |
-| **ERC-8004** (agent identity) | Future AI-agent integration | Combines with x402 agent-to-agent payments — both are post-hackathon. |
+|---|---|---|
+| **ERC-4626** (tokenized vault) | `MuHavenTreasury` re-skin | Composability with DeFi aggregators. Not prioritized — current treasury is per-token mhUSDC custody, not a yield-bearing vault |
+| **ERC-7540** (async deposit/redeem) | `MuHavenSubscription`, `RedemptionQueue` | Matches FHE's inherent async nature (coprocessor delay, queue settlement). Natural upgrade once CoFHE proves stable under sustained load |
+| **EIP-7702** (scoped session keys) | Frontend (currently `@zerodev/permissions`) | Native EOA session keys would simplify the provider layer. Blocked on 7702 finalization + wallet support |
+| **ERC-7710 / ERC-7715** (delegated permissions) | Frontend | Both still Draft as of mid-2026. MuHaven wires through `@zerodev/permissions` abstractions, not raw 7715 RPC, until Last Call |
+| **ERC-8004** (agent identity) | Wave 4 + agent-to-agent (post-hackathon) | Combines with x402; A2A Agent Cards already used for discovery in Wave 4 P4 |
 
 ### Deliberate deviations
 
-**fhERC-20 vs ERC-20 vs [ERC-7984](https://eips.ethereum.org/EIPS/eip-7984) (confidential ERC-20 draft).**
-MuHavenToken is an fhERC-20 — balances are `euint128`, transfers take `InEuint128` encrypted inputs, all state mutations go through `FHE.add` / `FHE.sub` / `FHE.select`. This deviates from plain ERC-20 in the obvious ways (no plaintext `balanceOf`, no plaintext `Transfer(from, to, amount)` event) and also differs from the early ERC-7984 draft in type choice (`euint128` vs `euint64`) and in using permit-based client decryption rather than sealed outputs. As ERC-7984 stabilizes we'll re-evaluate — the type difference is driven by USDC accounting room (euint128 accommodates aggregate RWA positions comfortably; euint64 is tight at ~18.4T with 6 decimals).
+**fhERC-20 vs ERC-20 vs ERC-7984 (confidential ERC-20 draft).** `MuHavenToken` is an fhERC-20 — balances are `euint128`, transfers take `InEuint128` encrypted inputs, all state mutations go through `FHE.add` / `FHE.sub` / `FHE.select`. Deviates from plain ERC-20 in the obvious ways (no plaintext `balanceOf`, no plaintext `Transfer(from,to,amount)` event). Differs from the early ERC-7984 draft in type choice (`euint128` vs `euint64`) and in using permit-based `decryptForView` rather than sealed outputs. Type difference is driven by USDC accounting room — `euint128` accommodates aggregate RWA positions comfortably; `euint64` is tight at ~18.4T with 6 decimals.
 
-**Push yield distribution vs [EIP-2222](https://eips.ethereum.org/EIPS/eip-2222) (pull-based dividends).**
-EIP-2222 computes `dividendOf(account)` from a running per-share accumulator — investors pull their share on demand, gas-efficient at scale. MuHaven instead *pushes* a `MuHavenEscrow` per investor per distribution. Rationale: pull-based math leaks balance information via the accumulator interaction (`balanceOf * (accumulated - last)`), which defeats the privacy guarantee. The per-investor escrow keeps each share encrypted end-to-end, at the cost of O(N) escrows per distribution. Batch size tuning + the two-phase create / fund split keeps this tractable in practice.
+**Pull-based per-epoch yield vs ERC-2222 dividends.** ERC-2222 computes `dividendOf(account)` from a running per-share accumulator, which leaks balance information via the accumulator interaction. MuHaven's `YieldSnapshot` keeps each holder's snapshot balance encrypted and computes the share at claim time via cleartext `ratePerShare`. The cleartext rate is by-design (RWA per-share rates are conventionally published off-chain) and was the architectural break that escaped the cofhe TN chain-length cap on the original `FHE.div(encYield, encTotalSupply)` model.
 
-**Silent-fail events vs traditional revert-on-error.**
-Standard EVM contracts revert on authorization failures. MuHavenEscrow intentionally emits `EscrowRedeemed` unconditionally, so that a wrong-caller redemption attempt is indistinguishable on-chain from a correct one. Integrators must verify PUSDC movement — the trade-off is documented in every consumer (SDK caveats, backend poller, this doc).
+**Silent-fail events vs traditional revert-on-error.** Standard EVM contracts revert on authorization failures. MuHaven contracts intentionally emit success events (`Purchased`, `Redeemed`, `EpochClaimed`) unconditionally so a wrong-caller / cap-exceeded / insufficient-balance attempt is indistinguishable on-chain from a successful one. Integrators must verify mhUSDC movement via `ConfidentialTransfer` events — documented in every consumer (SDK caveats, backend poller, this doc).
 
 ---
 
@@ -1040,41 +827,82 @@ Standard EVM contracts revert on authorization failures. MuHavenEscrow intention
 ```bash
 npm install -g pnpm
 pnpm install
+pnpm compile
 ```
 
-The repo is forked from `cofhe-hardhat-starter` (branch `sdk-migration`) — no separate clone needed.
+### Deploy scripts
 
-### Deploy script
-
-The canonical deploy lives at `scripts/deploy.ts` and handles all 8 contracts in dependency order. Use the pnpm wrappers:
+The platform deploy ships 11 singleton contracts; the per-token wizard scripts ship the token triple (`MuHavenToken` + `MuHavenTreasury` + `RedemptionQueue`) + register + bind compliance modules.
 
 ```bash
-pnpm run deploy:local            # Hardhat in-process network (auto-deploys mocks)
-pnpm run deploy:testnet          # Arbitrum Sepolia — reads .env for issuer / USDC / underlying
-pnpm run deploy:mocks:testnet    # Deploy TestTreasury standalone for vault testing
+# Platform deploy (writes deployments/arb-sepolia-v2.json)
+pnpm run deploy:v2:testnet                           # MUHAVEN_ENV=prod
+pnpm run deploy:v2:testnet:stage                     # MUHAVEN_ENV=staging
+pnpm run deploy:v2:local                             # local Hardhat
+
+# Per-token onboarding (preset env files at scripts/env/<symbol>.env)
+bash scripts/onboard-token.sh tbill1
+bash scripts/onboard-token.sh gold1
+
+# Operator helpers
+MUHAVEN_ENV=prod \
+MUHAVEN_TOKEN_SYMBOL=TBILL1 \
+MUHAVEN_INITIAL_NAV=1000000 \
+pnpm hardhat run scripts/unpause-token.ts --network arb-sepolia
+
+# End-to-end yield epoch driver
+MUHAVEN_ENV=prod \
+MUHAVEN_TOKEN_SYMBOL=TBILL1 \
+MUHAVEN_TOTAL_YIELD=50000000 \
+MUHAVEN_RATE_PER_SHARE=200000 \
+pnpm hardhat run scripts/run-yield-epoch.ts --network arb-sepolia
+
+# Upgrades (transparent-proxy admin)
+MUHAVEN_ENV=prod pnpm hardhat run scripts/upgrade-stable.ts --network arb-sepolia
+MUHAVEN_ENV=prod pnpm hardhat run scripts/upgrade-yield-snapshot.ts --network arb-sepolia
+MUHAVEN_ENV=prod pnpm hardhat run scripts/grant-trusted-payer.ts --network arb-sepolia
+
+# Wave 3 legacy (read-only artifact)
+pnpm run deploy:testnet                              # writes deployments/arb-sepolia.json
 ```
 
-Deploy order (from `scripts/deploy.ts`):
+### Deploy order (Wave 3.5 platform deploy — `scripts/deploy-v2.ts`)
 
-1. **ERC3643KYCAdapter** (standalone)
-2. **InvestorRegistry** (proxy) — initialized later with `tokenContract`
-3. **MuHavenToken** (proxy) — depends on KYC adapter + InvestorRegistry
-4. **RiskParams** (proxy)
-5. **YieldGate** (standalone) — depends on MuHavenToken + KYC adapter
-6. **MuHavenEscrow** (proxy) — initialized with deployer + PUSDC
-7. **YieldDistributor** (proxy) — depends on MuHavenToken + MuHavenEscrow + YieldGate + InvestorRegistry
-8. **MuHavenVault** (proxy) — depends on underlying ERC-20 + MuHavenToken, granted `MINTER_ROLE`
+1. `MuHavenStable` (proxy)
+2. `ClaimTopicsRegistry`, `TrustedIssuersRegistry`, `MuHavenIdentityRegistry` (proxies)
+3. `ModularCompliance` (proxy)
+4. `TokenRegistry` (proxy)
+5. `InvestorRegistry` (proxy)
+6. `MuHavenSubscription` (proxy) + `setIdentityRegistry` + `setModularCompliance`
+7. `YieldSnapshot` (proxy)
+8. `IssuerControlledOracle` (proxy)
+9. `ChainlinkFunctionsOracle` (proxy)
+10. **Wiring**: `stable.setTrustedPayer(yieldSnapshot, true)` (Phase 10 fold — fresh deploys are claim-ready by construction)
+11. Write `deployments/arb-sepolia-v2.json`
 
-Post-deploy, the script wires `YieldDistributor` as an authorized caller on `MuHavenEscrow`, grants minter roles, and writes proxy + implementation addresses to `deployments/arb-sepolia.json`.
+### Deployed addresses (Arb Sepolia · production)
 
-### Deployed addresses (Arb Sepolia)
-
-See [`deployments/arb-sepolia.json`](../deployments/arb-sepolia.json) for the authoritative list. All proxies + implementations are verified on Arbiscan. The README mirrors this table in the project overview.
+See [`deployments/arb-sepolia-v2.json`](../deployments/arb-sepolia-v2.json) for the authoritative list. Fresh deploy 2026-05-04, deployer `0xe11E…6986`. All proxies + implementations verified on Arbiscan. The README mirrors the platform + per-token tables.
 
 ### Testing
 
 ```bash
-pnpm test                                   # All tests (~180, mock FHE environment)
-pnpm test test/MuHavenEscrow.test.ts        # Single test file
-pnpm test test/MuHavenSdk.integration.test.ts   # SDK integration suite (25 cases)
+pnpm test                                              # All tests (~786 cases, mock FHE)
+pnpm test test/MuHavenSubscriptionPurchase.test.ts     # Single test file
+pnpm test test/MuHavenSdkV2.integration.test.ts        # SDK integration suite
 ```
+
+786 Hardhat cases as of Phase 9.C close (719 baseline + Phase 9.B/9.C deltas + Wave-4 carry-over additions). 490 backend vitest cases. 25 SDK integration cases. Full breakdown: `development/DEV_WAVE_3_5/PROGRESS.md`.
+
+---
+
+## References
+
+- [ARCHITECTURE.md](./ARCHITECTURE.md) — system layers, contract topology, data flows, integration points
+- [SDK.md](./SDK.md) — `@muhaven/sdk` API reference for the contracts above
+- [AGENT_DESIGN.md](./AGENT_DESIGN.md) — Wave 4 four-surface agentic layer + tiered autonomy + threat model
+- [THREAT_MODEL.md](./THREAT_MODEL.md) — privacy boundary, side-channel resistance, ZK/TEE/MPC comparison
+- [ISSUER_MODEL.md](./ISSUER_MODEL.md) — supply-side mechanics: token onboarding wizard, yield epoch lifecycle
+- [TOKEN_LIFECYCLE.md](./TOKEN_LIFECYCLE.md) — four-state lifecycle (Active / Paused / Winding Down / Archived), post-hackathon spec
+- [`development/DEV_WAVE_3_5/ADR_LOG.md`](../development/DEV_WAVE_3_5/ADR_LOG.md) — full ADR catalog (D1–D9 + ADR-010 through ADR-050)
+- [`deployments/arb-sepolia-v2.json`](../deployments/arb-sepolia-v2.json) — authoritative deployed addresses

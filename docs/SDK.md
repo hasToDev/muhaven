@@ -1,25 +1,25 @@
 # MuHaven SDK
 
-> TypeScript SDK for orchestrating two-phase yield distribution on top of MuHavenEscrow + YieldDistributor.
+> TypeScript SDK for the MuHaven contract pipeline — atomic Subscription, per-token Treasury, pluggable Oracle, RedemptionQueue, pull-based YieldSnapshot, ERC-3643 modular compliance, and the MuHavenStable confidential USDC wrapper.
 
 ---
 
 ## Overview
 
-The MuHaven SDK (`@muhaven/sdk`) wraps the on-chain yield pipeline behind a single `MuHavenClient` class. It handles:
+`@muhaven/sdk` (`packages/sdk/`) wraps the on-chain pipeline behind a small set of typed clients. Each client owns one contract surface; the consumer composes them as needed. The package ships:
 
-- **Batch FHE encryption** of investor addresses via `@cofhe/sdk` (one ZK proof per batch)
-- **Paginated reads** of the `InvestorRegistry` on-chain
-- **Two-phase escrow creation** — client-side ciphertext generation + contract-side handle storage
-- **Distribution orchestration** — `startDistribution` → `createYieldEscrows` → `fundEscrows` → investor `redeem`
-- **Pluggable sender pattern** — same API for EOA wallets (viem WalletClient) and smart accounts (ZeroDev kernel via UserOps)
-- **Progress callbacks** for UI wiring
+- **Per-contract clients** — `SubscriptionClient`, `TreasuryClient`, `RedemptionQueueClient`, `YieldSnapshotClient`, `OracleClient`, `IdentityRegistryClient`, `StableClient`.
+- **Pluggable sender pattern** — same API for EOA wallets (viem `WalletClient`) and ZeroDev kernel smart accounts (UserOps via `@zerodev/permissions` session keys).
+- **Batch FHE encryption** via `@cofhe/sdk` — one ZK proof per call where the underlying contract accepts batched encrypted inputs.
+- **Progress callbacks** for UI wiring.
+- **Wave 3 legacy classes** preserved for the read-only Wave 3 deploy (`deployments/arb-sepolia.json`) — `MuHavenClient`, `DistributionStatus`, `fetchAllInvestors`. New code should target the per-contract clients above.
 
 The SDK is consumed by:
-- `frontend/src/services/` — issuer and investor flows in the Vue 3 app
-- `backend/src/infrastructure/` — server-side distribution worker
+- `frontend/src/services/v35/` — investor + issuer flows in the Vue 3 dashboard.
+- `backend/src/infrastructure/` — server-side workers (NAV publisher, scripts).
+- `scripts/` — root Hardhat scripts (`run-yield-epoch.ts`, `wrap-test-usdc.ts`, etc.).
 
-**Package:** `@muhaven/sdk` · **Location:** `packages/sdk/` · **Version:** `0.1.0`
+**Package.** `@muhaven/sdk` · **Location.** `packages/sdk/` · **CoFHE.** `@cofhe/sdk` v0.5.1 (TFHE v1.5.3 in browser).
 
 ---
 
@@ -31,103 +31,148 @@ The SDK is consumed by:
 pnpm add @muhaven/sdk viem
 ```
 
-`@cofhe/sdk` is bundled as a regular dependency of `@muhaven/sdk` (pinned to `^0.4.0`). `viem` is a **peer dependency** — consumers bring their own version (`^2.47.0` or compatible) so the wallet client / public client shared with the SDK is the same instance used elsewhere in the app.
+`@cofhe/sdk` ships as a regular dependency of `@muhaven/sdk` (pinned to `^0.5.1`). `viem` is a peer dependency — consumers bring their own version (`^2.47.0` or compatible) so the public client + wallet client shared with the SDK is the same instance the rest of the app uses.
 
-### Distribute yield (issuer)
+### Investor — atomic purchase
 
 ```typescript
 import { createPublicClient, createWalletClient, http } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { arbitrumSepolia } from 'viem/chains';
-import { createCofheClient, createCofheConfig } from '@cofhe/sdk/node';
+import { createCofheClient, createCofheConfig, Encryptable } from '@cofhe/sdk/node';
 import { arbSepolia } from '@cofhe/sdk/chains';
-import { MuHavenClient, walletClientToSender } from '@muhaven/sdk';
+import { SubscriptionClient, walletClientToSender } from '@muhaven/sdk';
 
 const account = privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`);
+const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(process.env.RPC_URL) });
+const walletClient = createWalletClient({ account, chain: arbitrumSepolia, transport: http(process.env.RPC_URL) });
 
-const publicClient = createPublicClient({
-  chain: arbitrumSepolia,
-  transport: http(process.env.RPC_URL),
-});
-
-const walletClient = createWalletClient({
-  account,
-  chain: arbitrumSepolia,
-  transport: http(process.env.RPC_URL),
-});
-
-const cofheClient = createCofheClient(
-  createCofheConfig({ supportedChains: [arbSepolia] })
-);
+const cofheClient = createCofheClient(createCofheConfig({ supportedChains: [arbSepolia] }));
 await cofheClient.connect(publicClient, walletClient);
 await cofheClient.permits.createSelf({ issuer: account.address });
 
-const sdk = new MuHavenClient({
+const subscription = new SubscriptionClient({
   publicClient,
   sender: walletClientToSender(walletClient),
   cofheClient,
-  addresses: {
-    muhavenEscrow:     '0xb18ca2122b31Df9Aaef8226f6218Bd93B852F40A',
-    yieldDistributor:  '0xD403252436e41EFd81D76eB9223485cB66cb1638',
-    investorRegistry:  '0x9e19cFC63661AF1624ba16392dc02134F91d36f6',
-    yieldGate:         '0x2cBAa54E5Ce4ED6D68722e35E18eba77B1c11964',
-  },
+  address: '0x39D49B2614d24ba189B613bEAa903d829A73eA9e',  // MuHavenSubscription proxy (prod)
   expectedChainId: 421614,
 });
 
-await sdk.validateNetwork();
-
-// End-to-end distribution: start + batchCreate + fund
-const result = await sdk.distributeYield(50_000_000n, {  // 50 PUSDC (6 decimals)
-  batchSize: 50,
-  onProgress: (ev) => console.log(ev.stage, ev.current, '/', ev.total),
+// Atomic purchase: KYC → compliance → oracle → FHE.mul → mhUSDC pull → mint
+const txHash = await subscription.purchase({
+  token: TBILL1_TOKEN_ADDRESS,
+  amount: 100_000_000n,           // 100 mhUSDC (6 decimals) — encrypted by the SDK
+  maxSharesHint: 100n * 10n**18n, // cleartext upper bound for silent-fail gate
+  ephemeralEOA: ephAccount.address, // session signer that gets FHE.allow on minted handles
 });
-
-console.log('distributionId:', result.distributionId);
-console.log('escrowIds:',      result.escrowIds);
 ```
 
-### Claim yield (investor)
+### Investor — claim yield (pull-based)
 
 ```typescript
-const txHash = await sdk.claimYield(escrowId, {
-  onProgress: (ev) => console.log(ev.stage, ev.txHash),
+import { YieldSnapshotClient } from '@muhaven/sdk';
+
+const snapshot = new YieldSnapshotClient({
+  publicClient,
+  sender: walletClientToSender(walletClient),
+  cofheClient,
+  address: '0xaC4163f84db2C85333D5aF6f87848d7362A59887',  // YieldSnapshot proxy (prod)
+});
+
+// Pull this investor's share for an epoch they held tokens at snapshot time.
+// Idempotent — re-running on a claimed epoch reverts AlreadyClaimed.
+const txHash = await snapshot.claimYield({
+  token: TBILL1_TOKEN_ADDRESS,
+  epochId: 3n,
+  ephemeralEOA: ephAccount.address,
 });
 ```
 
-Investor flows in the Vue frontend run the SDK through a ZeroDev smart-account sender so claims are gasless UserOps. See [Integration guide](#integration-guide) below.
+### Issuer — yield epoch (open → snapshot → finalize → fund)
+
+```typescript
+import { YieldSnapshotClient, RATE_SCALE } from '@muhaven/sdk';
+
+const snapshot = new YieldSnapshotClient(...);
+
+// 1. Open a new epoch
+const { epochId } = await snapshot.openEpoch({ token: TBILL1_TOKEN_ADDRESS });
+
+// 2. Paginated snapshot — captures balance + accumulates encTotalSupply
+const holders = await fetchAllHoldersForToken(TBILL1_TOKEN_ADDRESS);
+for (const batch of chunked(holders, 50)) {
+  await snapshot.snapshotBatch({ epochId, investors: batch });
+}
+
+// 3. Lock the phase
+await snapshot.finalizeSnapshot({ epochId });
+
+// 4. Fund the epoch with mhUSDC + cleartext per-share rate
+//    ratePerShare is fixed-point at RATE_SCALE = 1_000_000 (sub-1:1 yield support, ADR-048)
+//    Conservation enforced off-chain: ratePerShare ≤ floor(totalYield / totalSupply)
+const totalYield   = 50_000_000n;     // 50 mhUSDC
+const ratePerShare = 200_000n;        // 0.0002 mhUSDC per share × RATE_SCALE
+await snapshot.fundEpoch({ epochId, totalYield, ratePerShare });
+```
+
+For a complete end-to-end driver including auto-batching, see `scripts/run-yield-epoch.ts`.
 
 ---
 
 ## Architecture
 
-### Two-phase escrow creation
+### Atomic single-tx purchase
 
-MuHavenEscrow's privacy model relies on client/contract collaboration:
+The Subscription contract folds the entire buy flow into one tx — no two-step exposure window, no plaintext intermediate state:
 
 ```
-Client (SDK)                              Contract (MuHavenEscrow)
-────────────                              ────────────────────────
-fetchAllInvestors()  ──── InvestorRegistry.getAll() ───→
-                         ←──── address[] ─────────────────
-
-encryptInputs([addr1, addr2, ...])  ──→ @cofhe/sdk: one shared ZK proof
-                                        returns InEaddress[] tuples
-
-batchCreate(inputs, resolver, data)  ──→ FHE.asEaddress (validates ZK)
-                                         FHE.allowThis  (grants contract ACL)
-                                         resolver.onConditionSet (plaintext cache)
-                                         emit EscrowCreated(id, resolver)
-                                    ←─── receipt with sequential IDs
-
-parse logs → escrowIds[] aligned to investor order
+Investor → Subscription.purchase(token, encAmount, maxSharesHint, ephEOA)
+              │
+              ├─ MuHavenIdentityRegistry.isVerified(msg.sender)
+              ├─ ModularCompliance.canTransfer(token, mint convention)
+              │     └─ AND-aggregate: CountryAllow / MaxHolders / Lockup / MaxBalance / ...
+              ├─ IPriceOracle.getNAV(token)  (deviation gate, sequencer uptime, freshness)
+              ├─ FHE.mul(encAmount, NAV)  →  encShares128
+              │     └─ silent-fail bound by FHE.select(encShares ≤ maxSharesHint, encShares, 0)
+              ├─ MuHavenStable.transferFrom(investor, treasury, encAmount, ephEOA, addr0)
+              │     └─ uses 5-arg overload (ADR-044) so only investor leg gets FHE.allow
+              ├─ MuHavenToken.mintFromSubscription(investor, encShares, ephEOA)
+              │     └─ FHE.allow(_balances[investor], ephEOA)  // permit grant
+              ├─ ModularCompliance state hooks (created)
+              └─ emit Purchased(token, investor, maxSharesHint, ephEOA, ...)
 ```
 
-The plaintext beneficiary is encoded into `resolverData` so the YieldGate (the condition resolver) can cache the mapping off-chain. This is a deliberate trade-off: calldata observers can link escrowId → investor at creation time, but events and state emit only escrowId — passive log analysis cannot reconstruct the mapping from on-chain data alone. See [THREAT_MODEL.md](./THREAT_MODEL.md) for the full boundary.
+Silent-fail by design — observers cannot tell from gas / events whether the buy actually moved funds (e.g. insufficient mhUSDC, share-cap overflow, KYC revoked mid-flight).
+
+### Pull-based per-epoch yield
+
+Replaces Wave 3's push-model O(N) escrow creation with an O(1) issuer-side pipeline + investor-pull payout. Per-investor share is computed once at fund time via cleartext fixed-point `ratePerShare`, sidestepping the cofhe TN chain-length cap that bit the original `FHE.div(encYield, encTotalSupply)` model (see `docs/COFHE_TN_INDEXER_CHAIN_LENGTH_REPORT.md`).
+
+```
+Issuer
+  ├─ openEpoch(token)                                   →  epochId, snapshotStartTs
+  ├─ snapshotBatch(epochId, investors[]) (paginated)    →  per-holder snapshotBalance handle
+  │   └─ accumulates encTotalSupply running sum         →  ADR-038 closes mid-snapshot drain vector
+  ├─ finalizeSnapshot(epochId)                          →  locks the phase
+  └─ fundEpoch(epochId, totalYield, ratePerShare)       →  mhUSDC pulled from issuer
+                                                            ratePerShare stored cleartext (ADR-048)
+
+Investor
+  └─ claimYield(epochId, ephEOA)
+      ├─ encShare128 = FHE.mul(snapshotBalance, FHE.asEuint128(ratePerShare))
+      ├─ encShare64  = FHE.div(encShare128, FHE.asEuint128(RATE_SCALE))   // sub-1:1 yield rescale
+      ├─ MuHavenStable.trustedPayout(snapshot, investor, encShare64, ephEOA)
+      │   └─ ADR-046 fast-path — bypasses _silentFailBound (per-epoch conservation
+      │       guarantees the snapshot's float covers every legitimate claim)
+      └─ marks (epochId, investor) claimed (idempotent, AlreadyClaimed on re-claim)
+```
+
+The issuer sees aggregate epoch totals, not individual claims. `encTotalSupply` is grantable to the issuer (ADR-049) so they can see the SUM but not per-investor balances.
 
 ### Pluggable sender
 
-`MuHavenClient` does not bind to any specific wallet library. Writes go through a `MuHavenSender`:
+Each client takes a `MuHavenSender`:
 
 ```typescript
 export interface MuHavenSender {
@@ -145,151 +190,120 @@ export interface MuHavenSender {
 Two built-in adapters:
 
 | Adapter | Use case | Implementation |
-|---------|----------|----------------|
-| `walletClientToSender(walletClient)` | Node CLI, tests, EOA-backed flows | Wraps `viem` WalletClient.writeContract |
-| `createZeroDevSender(kernelClient)` (in `frontend/src/providers/`) | Browser + smart-account + passkey | Submits UserOps through the ZeroDev bundler |
+|---|---|---|
+| `walletClientToSender(walletClient)` | Node CLI, scripts, EOA-backed flows | viem `WalletClient.writeContract` |
+| `createZeroDevSender(kernelClient)` (in `frontend/src/providers/zerodev/`) | Browser + smart account + passkey | UserOps through the ZeroDev bundler |
 
-Both return a `MuHavenSender`. The same `MuHavenClient` drives both. This is what lets the issuer's distribute flow and the investor's claim flow share the SDK despite running in very different contexts.
-
-### Distribution pipeline
-
-Issuer-side orchestration (called by `distributeYield()` or composable piecewise):
-
-```
-startDistribution(totalYield)
-  ├─ encrypt totalYield as InEuint64
-  ├─ YieldDistributor.startDistribution(encryptedTotal)
-  ├─ YieldDistributor pulls PUSDC from issuer (confidentialTransferFrom)
-  └─ returns distributionId
-
-createYieldEscrows({ batchSize })
-  ├─ fetchAllInvestors() via InvestorRegistry pagination
-  ├─ for each batch of batchSize addresses:
-  │    ├─ encryptAddresses(batch)        (shared ZK proof)
-  │    ├─ MuHavenEscrow.batchCreate(...) (one tx per batch)
-  │    └─ parse EscrowCreated logs to extract sequential escrowIds
-  ├─ YieldDistributor.setEscrowIds(distributionId, allIds)
-  └─ returns escrowIds[]
-
-fundEscrows(distributionId, escrowIds, { batchSize })
-  └─ YieldDistributor.processBatch(distributionId, offset, count) in a loop
-     └─ each call: computes per-investor share in FHE, fundFrom()s each escrow
-```
-
-Investor-side claim:
-
-```
-claimYield(escrowId)       → MuHavenEscrow.redeem(escrowId)
-claimYieldBatch(escrowIds) → MuHavenEscrow.redeemMultiple(escrowIds)
-```
-
-Silent-fail note: `EscrowRedeemed` is emitted whether or not funds actually move. The backend block poller observes both the event and the PUSDC `ConfidentialTransfer` before marking the yield record as claimed. See [SMART_CONTRACTS.md § MuHavenEscrow](./SMART_CONTRACTS.md#muhavenescrow) for the silent-fail rationale.
+Both return a `MuHavenSender`. Every SDK client accepts the same shape — the same `SubscriptionClient` instance works in scripts and in the browser; the only swap point is the sender. Frontend writes are gasless UserOps signed by the active session key (no passkey prompt within the session).
 
 ---
 
 ## API reference
 
-### `class MuHavenClient`
+> Full source: [`packages/sdk/src/clients/`](../packages/sdk/src/clients/). The signatures below are the public surface; refer to the source for parameter defaults and progress-event types.
 
-```typescript
-constructor(config: MuHavenClientConfig)
-```
+### `SubscriptionClient`
 
-**Config:**
-
-```typescript
-interface MuHavenClientConfig {
-  publicClient: PublicClient;       // viem
-  sender: MuHavenSender;            // pluggable
-  cofheClient: CofheLikeClient;     // @cofhe/sdk client, already connected
-  addresses: MuHavenAddresses;
-  expectedChainId?: number;         // default: none
-  defaultBatchSize?: number;        // default: 50
-}
-
-interface MuHavenAddresses {
-  muhavenEscrow:     Address;
-  yieldDistributor:  Address;
-  investorRegistry:  Address;
-  yieldGate:         Address;
-}
-```
-
-All four addresses are required. Passing a non-contract address will cause reverts on first call — validate with `sdk.validateNetwork()` immediately after construction.
-
-### Core methods
+The atomic buy/redeem coordinator.
 
 | Method | Purpose |
-|--------|---------|
-| `getAccount(): Address` | Returns the sender's address. |
-| `validateNetwork(): Promise<void>` | Throws `NetworkError` if `publicClient.chainId` or `sender.getChainId()` don't match `expectedChainId`. |
-| `startDistribution(totalYield, opts?)` | Encrypt totalYield, submit to YieldDistributor, pull PUSDC. Returns `{ distributionId, txHash }`. |
-| `createYieldEscrows(opts?)` | Full batchCreate pipeline: fetch investors, encrypt, batch. Returns `{ escrowIds, txHashes }`. |
-| `fundEscrows(distributionId, escrowIds, opts?)` | Loop processBatch until all escrows funded. Returns `{ txHashes }`. |
-| `distributeYield(totalYield, opts?)` | Convenience: startDistribution → createYieldEscrows → fundEscrows in sequence. |
-| `claimYield(escrowId, opts?)` | Investor calls `MuHavenEscrow.redeem`. Returns `Hash`. |
-| `claimYieldBatch(escrowIds, opts?)` | Investor calls `MuHavenEscrow.redeemMultiple`. Returns `Hash`. |
-| `grantAdminDecrypt(distributionId, viewer, opts?)` | Grants `viewer` permit-based `decryptForView` access to the distribution's encrypted totals. |
+|---|---|
+| `purchase({ token, amount, maxSharesHint, ephemeralEOA, onProgress? })` | Atomic single-tx purchase. Encrypts `amount` as `InEuint128` mhUSDC; computes shares via `FHE.mul`; silent-fails on `encShares > maxSharesHint`. Returns the tx hash. |
+| `redeem({ token, encShares, maxSharesHint, ephemeralEOA, onProgress? })` | Instant redeem with auto-escalate to `RedemptionQueue` on per-epoch cleartext-cap overflow. Burns shares via `MuHavenToken.burnFromSubscription`, pays out mhUSDC via `MuHavenStable.transferFrom`. |
+| `getCapInfo(token)` | Reads the current cleartext redemption cap remaining for the active epoch. |
 
-All write methods accept `opts?: { onProgress?: ProgressCallback; batchSize?: number }`.
+### `YieldSnapshotClient`
 
-### Types
+Pull-based per-epoch yield distribution.
 
-```typescript
-export type ProgressStage =
-  | 'encrypt' | 'batchCreate' | 'setEscrowIds' | 'processBatch'
-  | 'startDistribution' | 'redeem' | 'grantAdminDecrypt';
+| Method | Purpose |
+|---|---|
+| `openEpoch({ token })` | Allocates a sequential `epochId` for `token`. Issuer-only. |
+| `snapshotBatch({ epochId, investors, onProgress? })` | Idempotent per `(epochId, investor)`. Captures `MuHavenToken.snapshotBalance(holder)` and accumulates `encTotalSupply`. Skips zero-address entries. |
+| `finalizeSnapshot({ epochId })` | Locks the snapshot phase. Reverts `EmptySnapshot` when `holderCount == 0`. |
+| `fundEpoch({ epochId, totalYield, ratePerShare })` | Pulls `totalYield` mhUSDC from the issuer; stores cleartext `ratePerShare` (fixed-point at `RATE_SCALE`). Issuer-only. |
+| `claimYield({ token, epochId, ephemeralEOA, onProgress? })` | Investor-pull. Idempotent (`AlreadyClaimed` revert on re-claim). Pay-out via `MuHavenStable.trustedPayout`. |
+| `sweepExpired({ epochId })` | Returns unclaimed yield to the issuer after the epoch's `claimWindowEnd`. |
+| `getEpochTotalSupplyHandle({ epochId })` | Returns `encTotalSupply` ciphertext handle (for issuer "Decrypt from chain" UX, ADR-049). |
+| `refreshSnapshotSupplyGrant({ epochId, eph })` | Re-grants ACL on `encTotalSupply` to a freshly-rotated ephemeral EOA. ADR-050 (cross-session safety + ADR-009 pattern alignment). |
+| `getEpoch({ epochId })` | Returns the epoch view (`EpochView` type) — `token`, `holderCount`, `totalYield`, `ratePerShare`, `funded`, `swept`, etc. |
 
-export interface ProgressEvent {
-  stage: ProgressStage;
-  current: number;
-  total: number;
-  message?: string;
-  txHash?: `0x${string}`;
-}
+### `RedemptionQueueClient`
 
-export type ProgressCallback = (event: ProgressEvent) => void;
-```
+Overflow redemption queue — Subscription auto-escalates here when the per-epoch cleartext cap is exceeded.
+
+| Method | Purpose |
+|---|---|
+| `submit({ token, encShares, maxSharesHint, ephemeralEOA })` | Direct submission (rare — usually called via `Subscription.redeem` cap-overflow branch). |
+| `processEpoch({ token, epochId, navAtSettlement })` | Issuer-driven settlement at the published NAV. Burns queue-held shares via `burnFromQueue`. |
+| `claim({ requestId })` | Investor-pull post-settlement. Pay-out from treasury. |
+| `cancelOnKYCRevocation({ requestId })` | Issuer-only. Returns shares when the investor's KYC is revoked mid-queue (ADR-027). |
+| `getRequest({ requestId })` | Returns a `QueueRequest` view. |
+
+### `OracleClient`
+
+Pluggable price oracle wrapper. Reads work against any `IPriceOracle` impl; writes target the configured oracle (issuer-controlled or Chainlink-backed) per-token.
+
+| Method | Purpose |
+|---|---|
+| `getNAV({ token })` | Reads the current NAV. Reverts `StaleNAV` if past staleness window or `SequencerDown` if the L2 sequencer feed reports down. |
+| `isFresh({ token })` | Boolean predicate — true if NAV is fresh AND sequencer is up + outside grace window. |
+| `setNAV({ token, value })` | Writes a new NAV. Issuer-only, gated by per-token `maxDeviationBps` deviation gate; over-threshold writes park in pending state. |
+| `acceptPendingNAV({ token })`, `rejectPendingNAV({ token })` | Owner-only resolution of a parked NAV. |
+
+### `TreasuryClient`
+
+Per-token mhUSDC custody. Operator approvals to Subscription + Queue are immutable (granted at init).
+
+| Method | Purpose |
+|---|---|
+| `getMinFloat({ token })` | Reads cleartext solvency-floor target. |
+| `setMinFloat({ token, value })` | Issuer-only update. |
+| `withdraw({ token, encAmount, recipient })` | Silent-fail on solvency-floor breach via `FHE.select` (ADR-029). |
+
+### `IdentityRegistryClient`
+
+ERC-3643 identity registry surface for off-chain checks (the Subscription contract reads on-chain directly).
+
+| Method | Purpose |
+|---|---|
+| `isVerified({ account })` | Boolean — runs whitelist → claim verification (topics × trusted issuers × `validUntil`). |
+| `addToWhitelist({ account })`, `removeFromWhitelist({ account })` | Issuer-only convenience. |
+| `getDevMode()` | Boolean — true while migration mode is active; flipping to false is irreversible. |
+
+### `StableClient`
+
+mhUSDC wrapper.
+
+| Method | Purpose |
+|---|---|
+| `wrap({ amount })` | USDC → mhUSDC (cleartext in, encrypted out). |
+| `unwrap({ encAmount, ephemeralEOA })` | mhUSDC → USDC. |
+| `confidentialTransferFrom({ from, to, encAmount, fromEph, toEph })` | 5-arg overload (ADR-044). Pass `address(0)` for the leg that should NOT receive the counterparty `FHE.allow` grant. |
+| `getBalanceHandle({ account })` | Returns ciphertext handle for `decryptForView`. |
 
 ### Constants
 
 | Constant | Value | Notes |
-|----------|-------|-------|
-| `DEFAULT_BATCH_SIZE` | `50` | Balance between ZK proof cost and tx gas |
-| `MAX_BATCH_SIZE` | `200` | Hard cap. Practical ceiling on Arb Sepolia is lower — see [caveats](#caveats) |
-
-### ABIs
-
-Re-exported for convenience:
-
-```typescript
-import { muhavenEscrowAbi, yieldDistributorAbi, investorRegistryAbi } from '@muhaven/sdk';
-```
-
-### Utilities
-
-```typescript
-fetchAllInvestors(publicClient, registryAddress, pageSize?): Promise<Address[]>
-```
-
-Paginated read of `InvestorRegistry.getInvestors(offset, limit)`. Default page size 200. Used internally by `createYieldEscrows` but exported for custom pipelines.
+|---|---|---|
+| `RATE_SCALE` | `1_000_000n` | Fixed-point scale on `Epoch.ratePerShare` (ADR-048 sub-1:1 yield support). |
+| `DEFAULT_BATCH_SIZE` | `50` | Wave 3 legacy `MuHavenClient` default batch size. |
+| `MAX_BATCH_SIZE` | `200` | Hard cap on Wave 3 legacy batches; practical Arb Sepolia ceiling is lower (gas). |
 
 ### Errors
 
 All SDK errors extend `MuHavenError`:
 
 | Class | Thrown when |
-|-------|-------------|
+|---|---|
 | `ConfigError` | Missing or invalid constructor config |
-| `NetworkError` | `validateNetwork()` detects chainId mismatch |
-| `EncryptionError` | `@cofhe/sdk` returns unexpected shape |
-| `BatchSizeExceededError` | Caller passes `batchSize > MAX_BATCH_SIZE` |
-| `EscrowNotFoundError` | On-chain read for escrow returns `exists == false` |
-| `DistributionNotStartedError` | `fundEscrows` called before `startDistribution` |
-| `DistributionAlreadyCompleteError` | `fundEscrows` called after all escrows processed |
-| `EscrowIdsAlreadySetError` | `createYieldEscrows` re-entrance on a completed distribution |
-| `TxFailedError` | Receipt status is `reverted` |
+| `NetworkError` | Chain-id mismatch — call `client.getChainId()` after construction |
+| `EncryptionError` | `@cofhe/sdk` returns unexpected shape from `encryptInputs` |
+| `BatchSizeExceededError` | Caller exceeds `MAX_BATCH_SIZE` (Wave 3 legacy) |
+| `TxFailedError` | Receipt status `reverted` |
 | `InvariantError` | Internal invariant broken — file an issue |
+
+Plus contract-revert names surfaced verbatim in the tx receipt: `AlreadyClaimed`, `EmptySnapshot`, `StaleNAV`, `SequencerDown`, `BelowMinInvestment`, `CostOverflowsPUSDCWidth`, `NotTrustedPayer`, `BelowMinFloat`, etc.
 
 ---
 
@@ -297,95 +311,110 @@ All SDK errors extend `MuHavenError`:
 
 ### Frontend (Vue 3 + ZeroDev)
 
-The frontend builds the SDK behind a singleton `getSdk()` in `frontend/src/services/sdk.ts`. The sender is the ZeroDev kernel client, so all writes are gasless UserOps authenticated by a WebAuthn passkey:
+The frontend builds clients behind singletons in `frontend/src/services/v35/`. The sender is the ZeroDev kernel client, so all writes are gasless UserOps authenticated by a WebAuthn passkey + scoped session key:
 
 ```typescript
-// frontend/src/services/sdk.ts (simplified)
-import { MuHavenClient } from '@muhaven/sdk';
+// frontend/src/services/v35/SubscriptionService.ts (simplified)
+import { SubscriptionClient } from '@muhaven/sdk';
 import { createZeroDevSender } from '@/providers/zerodev/sender';
 
-export async function getSdk() {
+export async function getSubscription() {
   const kernelClient = await walletStore.ensureConnected();
   const cofheClient  = await fheStore.ensureReady();
-  return new MuHavenClient({
+  return new SubscriptionClient({
     publicClient,
     sender: createZeroDevSender(kernelClient),
     cofheClient,
-    addresses,
+    address: addresses.muhavenSubscription,
     expectedChainId: 421614,
   });
 }
 ```
 
-Session keys (installed in `ZeroDevProvider.installSessionKey()`) let the kernel sign subsequent UserOps without a passkey prompt for the session duration — the SDK is unaware of this; it just calls `sender.write`.
+After the first passkey sign-in, `frontend/src/providers/zerodev/session-key.ts` installs a `@zerodev/permissions` validator scoped to the MuHaven contract set — subsequent SDK writes are signed locally with no passkey prompt for the session duration.
 
-### Node.js agent / backend
+The ephemeral-EOA pattern (ADR-021) is wired in `frontend/src/composables/useFhe.ts` — the `eph` is generated in-memory at first-write-op and threaded into every contract call that produces investor-decryptable state.
 
-The backend distribution worker uses an EOA sender:
+### Backend / Node scripts
+
+The backend NAV publisher and root Hardhat scripts use an EOA sender:
 
 ```typescript
-import { walletClientToSender } from '@muhaven/sdk';
+import { walletClientToSender, OracleClient } from '@muhaven/sdk';
 
-const sdk = new MuHavenClient({
+const oracle = new OracleClient({
   publicClient,
   sender: walletClientToSender(walletClient),
   cofheClient,
-  addresses,
-  expectedChainId: Number(process.env.CHAIN_ID),
+  address: addresses.issuerControlledOracle,
 });
+
+await oracle.setNAV({ token: TBILL1, value: navFromFRED });
 ```
 
 All other calls are identical to the frontend — the sender is the only swap point.
 
 ### Piecewise vs end-to-end
 
-`distributeYield()` is a convenience wrapper. For long-running issuer jobs where you want resumability, call the three stages separately and persist `distributionId` + `escrowIds` between stages:
+Yield epochs are intentionally piecewise — each phase persists state on-chain so a crashed snapshot cron can be safely re-run. The reference driver `scripts/run-yield-epoch.ts` shows the full sequence with idempotent retries:
 
 ```typescript
-const { distributionId, txHash: startTx } = await sdk.startDistribution(totalYield);
-await db.distributions.update(distributionId, { status: 'started', startTx });
+const { epochId } = await snapshot.openEpoch({ token });
+await db.epochs.create({ epochId, status: 'opened' });
 
-const { escrowIds } = await sdk.createYieldEscrows({ onProgress: logProgress });
-await db.distributions.update(distributionId, { status: 'created', escrowIds });
+for (const batch of chunked(holders, 50)) {
+  await snapshot.snapshotBatch({ epochId, investors: batch });   // idempotent per (epoch, investor)
+}
+await db.epochs.update(epochId, { status: 'snapshotted' });
 
-await sdk.fundEscrows(distributionId, escrowIds, { onProgress: logProgress });
-await db.distributions.update(distributionId, { status: 'funded' });
+await snapshot.finalizeSnapshot({ epochId });
+await snapshot.fundEpoch({ epochId, totalYield, ratePerShare });
+await db.epochs.update(epochId, { status: 'funded' });
 ```
 
-If `fundEscrows` crashes mid-loop it can be safely re-run — `processBatch` tracks progress on-chain and skips already-funded escrows.
+Investors then pull `claimYield(epochId, eph)` on their own schedule.
 
 ---
 
 ## Caveats
 
-1. **Calldata linkage.** `batchCreate` embeds plaintext beneficiaries in `resolverData`. Observers reading calldata can link escrowId ↔ investor at creation time. Events and state emit only escrowId. This is a deliberate trade-off — the alternative (pure FHE beneficiary resolution) would require the YieldGate to decrypt on every claim, breaking gas-identical silent-fail.
+1. **Cleartext `ratePerShare`.** Stored on-chain in the clear. By design — RWA per-share rates are conventionally published off-chain (TBILL APY, dividend rate). Per-investor balances + per-claim shares stay encrypted. Conservation must be enforced off-chain by the issuer (`ratePerShare ≤ floor(totalYield / totalSupply)`). A dishonest issuer can short-pay the snapshot, but the next claim transaction reverts on insufficient mhUSDC float — observable to investors.
 
-2. **Silent-fail events.** `EscrowRedeemed` fires unconditionally on `redeem` / `redeemMultiple`, even when the encrypted owner check fails, the escrow is already redeemed, or the resolver denies. Pollers must verify actual PUSDC movement (or backend yield-record status) before trusting success.
+2. **`maxSharesHint` is cleartext.** The investor-supplied upper bound on shares is used by the silent-fail gate (`FHE.select(encShares ≤ hint, encShares, 0)`) and as the cap-tracker tick (ADR-019). It leaks one bit per purchase about the order-size band. Documented trade-off.
 
-3. **Batch size tuning.** `DEFAULT_BATCH_SIZE` is 50. Practical gas ceilings on Arb Sepolia (~30M block limit): ~50 for `batchCreate` (ZK validation ≈ 300–500k/escrow), ~20–30 for `redeemMultiple` (≈ 1M+/escrow with three FHE ops and a select). Callers exceeding ~100 will OOG before hitting the SDK's `BatchSizeExceededError`.
+3. **Silent-fail events.** `Purchased` / `Redeemed` / `EpochClaimed` / `EscrowRedeemed` (legacy) all emit unconditionally. Off-chain pollers must verify the corresponding mhUSDC `ConfidentialTransfer` event (or the backend's record status) before treating success as confirmed. The block poller in `backend/src/infrastructure/event-poller` already does this.
 
-4. **Chain-id validation.** `validateNetwork()` is cheap and should run immediately after construction. Missing this and the SDK will happily send txs to the wrong chain.
+4. **Sub-1:1 yields require `RATE_SCALE` rescale.** When per-share yield is less than 1 mhUSDC unit (e.g. 4% APY on $25 supply → $1 yield), `ratePerShare` must be supplied as `floor(yieldPerShare × RATE_SCALE)`. The contract's `claimYield` does the matching `FHE.div` rescale. If you stored a pre-RATE_SCALE epoch on-chain, `scripts/upgrade-yield-snapshot.ts` enumerates every funded-not-swept epoch and aborts if any has unscaled `0 < ratePerShare < RATE_SCALE` — operator override `MUHAVEN_ALLOW_PRE_L1_INFLIGHT=1`.
 
-5. **PUSDC euint64 selector mismatch.** MuHavenEscrow and YieldDistributor work around a `cofhe-contracts` v0.1.0 breaking change by using a low-level call with the legacy `uint256` selector when invoking PUSDC. This is transparent to SDK consumers but documented in `development/DEV_WAVE_3/PUSDC_TRANSFER_ISSUE.md` for reference.
+5. **Ephemeral-EOA permit lifecycle.** Every mutation that produces investor-decryptable state needs `FHE.allow(handle, ephEOA)`. Re-running `claimYield` for an already-claimed epoch reverts `AlreadyClaimed` — but if the investor's session ephEOA rotated mid-flight, the old snapshot's `encTotalSupply` ACL grants stale. `YieldSnapshotClient.refreshSnapshotSupplyGrant` (ADR-050) is the recovery path; the frontend already wires this in the issuer's `/distribute` decrypt button.
+
+6. **PUSDC selector shim.** `MuHavenStable` shims the legacy ReineiraOS PUSDC `confidentialTransferFrom(address,address,uint256)` selector for any path that touches PUSDC directly (rare in current code — most flows go through mhUSDC). Documented at `development/DEV_WAVE_3/PUSDC_TRANSFER_ISSUE.md`.
+
+7. **`MuHavenStable._trustedPayer` mapping.** `YieldSnapshot.claimYield` calls `MuHavenStable.trustedPayout(...)` (ADR-046 fast-path). The snapshot proxy must be in the wrapper's `_trustedPayer` mapping or every claim reverts `NotTrustedPayer` (`0x3e9d3e1e`). `scripts/deploy-v2.ts` folds this grant into the platform deploy as of Phase 10 (DEV_LOG 2026-05-04). Recovery: `scripts/grant-trusted-payer.ts` (idempotent).
 
 ---
 
 ## Testing
 
-The SDK integration suite lives at the repo root and is driven by the main Hardhat config so it can share fixtures with the contract tests:
+The SDK integration suite lives at the repo root and shares Hardhat fixtures with the contract tests:
 
 ```bash
-pnpm test test/MuHavenSdk.integration.test.ts
+pnpm test test/MuHavenSdk.integration.test.ts          # 25 cases — Wave 3 legacy pipeline
+pnpm test test/MuHavenSdkV2.integration.test.ts        # Wave 3.5 atomic Subscription + pull yield
+pnpm test test/MuHavenStable.integration.test.ts       # mhUSDC wrap / unwrap / trustedPayout
 ```
 
-`packages/sdk/` itself only ships `build` / `dev` / `clean` / `typecheck` scripts — there is no `pnpm test` inside the package; all SDK tests run from the root.
+`packages/sdk/` itself only ships `build` / `dev` / `clean` / `typecheck` scripts — there is no `pnpm test` inside the package. All SDK tests run from the root.
 
-25 test cases cover:
-- Constructor + network validation
-- Full `createYieldEscrows` pipeline including event log parsing
-- `fundEscrows` batching + resume semantics
-- Single + batch claim
-- Distribution state machine (NOT_STARTED → IN_PROGRESS → COMPLETE)
-- Admin decrypt grant
+Coverage spans:
+
+- Constructor + chain-id validation per client
+- Atomic `purchase` happy path + KYC-revoked / cap-overflow / stale-NAV silent-fail branches
+- Pull-based yield: `openEpoch` → `snapshotBatch` (idempotent) → `finalizeSnapshot` → `fundEpoch` → `claimYield` (idempotent)
+- Cleartext-`ratePerShare` × `RATE_SCALE` sub-1:1 yield rescale (ADR-048)
+- Issuer ACL grant on `encTotalSupply` + `refreshSnapshotSupplyGrant` cross-session refresh (ADR-049, ADR-050)
+- Auto-escalate to RedemptionQueue on cap overflow + queue settlement + `cancelOnKYCRevocation`
+- mhUSDC `trustedPayout` ACL + `_trustedPayer` mapping enforcement
+- Oracle deviation gate (within / over / accept / reject) + sequencer-uptime feed (down / grace window / unconfigured passthrough)
 
 Tests run against the CoFHE mock environment (`@cofhe/mock-contracts`) — no live testnet needed.
