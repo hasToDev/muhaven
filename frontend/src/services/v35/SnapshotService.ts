@@ -308,6 +308,38 @@ export async function fundEpoch(
   return client.fundEpoch(epochId, totalYield, ratePerShare)
 }
 
+/**
+ * Phase 9.C / L2 (2026-05-04) — fetch the encrypted total-supply handle
+ * for a finalized epoch. Returns `null` for an unknown / unfinalized
+ * epoch so callers can branch cleanly.
+ *
+ * Pairs with `useFhe().decryptSnapshotSupplyForView()` to drive the
+ * /distribute "Decrypt from chain" affordance: the contract grants the
+ * issuer ACL on `encTotalSupply` at finalize time (per ADR-049's
+ * issuer-trust-model), so the issuer dashboard can read + decrypt the
+ * snapshot's exact aggregate without maintaining their own off-chain
+ * ledger. Per-investor balances stay encrypted; only the SUM is
+ * disclosed to the issuer (who already owns the cap table off-chain).
+ *
+ * Returns the raw ctHash; the caller materialises plaintext via the
+ * cofhe permit-based `decryptForView` flow (no refresh fallback — the
+ * L2 grant is durable on the historical aggregate handle).
+ */
+export async function getEpochTotalSupplyHandle(
+  snapshotAddr: Address,
+  epochId: bigint,
+): Promise<`0x${string}` | null> {
+  const ctx = buildReadContext()
+  const client = new YieldSnapshotClient(ctx, snapshotAddr)
+  const epoch = await client.getEpoch(epochId)
+  if (!epoch.finalized) return null
+  // Zero-handle (32 bytes of zero) means the slot was never written —
+  // shouldn't happen for a finalized epoch in practice, but guard the
+  // caller against a 404 / 403 from cofhe TN on a never-encrypted handle.
+  if (BigInt(epoch.encTotalSupply) === 0n) return null
+  return epoch.encTotalSupply
+}
+
 // ── Holder enumeration ─────────────────────────────────────────────────
 
 /**

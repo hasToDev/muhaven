@@ -37,12 +37,16 @@
  *                          (Phase 9.B / Option A — issuer's off-chain ledger
  *                           value; on-chain encryptedTotalSupply is unreadable
  *                           from a script). e.g. "100000000" = 100 tokens at
- *                           6 decimals. ratePerShare =
- *                           floor(MUHAVEN_TOTAL_YIELD / MUHAVEN_TOTAL_SUPPLY).
- *                           Must be > 0 and produce a non-zero ratePerShare;
- *                           tiny yields below totalSupply silently round to
- *                           zero — same precision constraint as the
- *                           pre-Option-A encRatio path.
+ *                           6 decimals. Phase 9.C / L1 (2026-05-04):
+ *                           ratePerShare =
+ *                           floor(MUHAVEN_TOTAL_YIELD × RATE_SCALE /
+ *                                 MUHAVEN_TOTAL_SUPPLY) where RATE_SCALE =
+ *                           1_000_000. The contract divides claim payouts by
+ *                           RATE_SCALE so the issuer can fund sub-1:1 yields
+ *                           (e.g. 4% APY on $25 supply → $1 yield → rate
+ *                           40_000). Must produce ratePerShare > 0; the floor
+ *                           is now six orders of magnitude smaller than the
+ *                           pre-L1 `yield ≥ supply` constraint.
  *
  * Usage:
  *   MUHAVEN_ENV=staging \
@@ -57,6 +61,7 @@ import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { createCofheClient } from "../tasks/utils";
 import { Encryptable } from "@cofhe/sdk";
+import { RATE_SCALE } from "@muhaven/sdk";
 import hre from "hardhat";
 
 const SNAPSHOT_BATCH_SIZE = 50; // contract loops are ~200-investor budget; 50 is safe per tx.
@@ -116,12 +121,23 @@ async function main() {
   if (totalYield <= 0n) throw new Error("MUHAVEN_TOTAL_YIELD must be > 0");
   const totalSupply = BigInt(envOrDie("MUHAVEN_TOTAL_SUPPLY"));
   if (totalSupply <= 0n) throw new Error("MUHAVEN_TOTAL_SUPPLY must be > 0");
-  const ratePerShare = totalYield / totalSupply;
+  // Phase 9.C / L1 (2026-05-04) — multiply totalYield by RATE_SCALE
+  // BEFORE the floor-divide so the contract's per-claim share math
+  // (`balance × ratePerShare / RATE_SCALE`) recovers the un-scaled
+  // share value with six fractional decimals of precision. Pre-L1
+  // this was a plain `totalYield / totalSupply` — the L1 contract
+  // divides by RATE_SCALE during claim, so an unscaled rate would
+  // underclaim by a factor of 1e6.
+  const ratePerShare = (totalYield * RATE_SCALE) / totalSupply;
   if (ratePerShare <= 0n) {
     throw new Error(
-      `MUHAVEN_TOTAL_YIELD (${totalYield}) / MUHAVEN_TOTAL_SUPPLY (${totalSupply}) ` +
-      `floors to 0 — every claim would silent-fail to zero. ` +
-      `Phase 9.B / Option A requires ratePerShare > 0; size totalYield ≥ totalSupply.`,
+      `MUHAVEN_TOTAL_YIELD (${totalYield}) × RATE_SCALE (${RATE_SCALE}) / ` +
+      `MUHAVEN_TOTAL_SUPPLY (${totalSupply}) floors to 0 — every claim ` +
+      `would silent-fail to zero. The L1 floor is six orders of magnitude ` +
+      `smaller than the pre-L1 floor; if you're hitting it, your supply is ` +
+      `> 1e6 × your yield, which is unrealistic for any RWA. Verify the ` +
+      `MUHAVEN_TOTAL_SUPPLY value (must be in token base units, not whole ` +
+      `tokens — e.g. 100_000_000 for 100 MUSTB at 6 decimals).`,
     );
   }
   if (ratePerShare > 2n ** 128n - 1n) {
@@ -160,7 +176,7 @@ async function main() {
   console.log(`PusdcSrc    : ${pusdcAddr} (YieldSnapshot.pusdc — pull target)`);
   console.log(`TotalYield  : ${totalYield.toString()} (PUSDC base units)`);
   console.log(`TotalSupply : ${totalSupply.toString()} (token base units, off-chain ledger)`);
-  console.log(`RatePerShare: ${ratePerShare.toString()} (PUSDC base units per token base unit, floor div)`);
+  console.log(`RatePerShare: ${ratePerShare.toString()} (scaled by RATE_SCALE=${RATE_SCALE}; floor div)`);
   console.log(`Signer      : ${signer.address}\n`);
 
   const registry = new ethers.Contract(investorRegistryAddr, REGISTRY_ABI, signer);

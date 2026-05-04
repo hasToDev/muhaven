@@ -42,6 +42,7 @@ import {
   IdentityRegistryClient,
   ConfigError,
   walletClientToSender,
+  RATE_SCALE,
   type MuHavenClientContext,
 } from "@muhaven/sdk";
 import {
@@ -769,9 +770,12 @@ describe("MuHaven SDK Wave 3.5 clients (integration)", function () {
       const snapshotFinalized = await ysClient.getEpoch(epochId);
       expect(snapshotFinalized.finalized).to.equal(true);
 
-      // Fund with 1000 PUSDC. ratePerShare = 1000e6 / 100 = 10e6 per share.
+      // Fund with 1000 PUSDC. Phase 9.C / L1 — ratePerShare scaled by
+      // RATE_SCALE: floor(1000e6 × 1e6 / 100) = 10e6 × 1e6. Per-claim
+      // share = balance × rate / RATE_SCALE recovers the un-scaled
+      // "10 PUSDC per share" semantics (60 shares × 10e6 = 600 PUSDC).
       const totalYield = 1000n * ONE_PUSDC;
-      await ysClient.fundEpoch(epochId, totalYield, totalYield / 100n);
+      await ysClient.fundEpoch(epochId, totalYield, (totalYield * RATE_SCALE) / 100n);
       const funded = await ysClient.getEpoch(epochId);
       expect(funded.funded).to.equal(true);
 
@@ -849,8 +853,9 @@ describe("MuHaven SDK Wave 3.5 clients (integration)", function () {
       const { epochId } = await ysClient.openEpoch(tokenAddr);
       await ysClient.snapshotBatch(epochId, [alice.address as Address]);
       await ysClient.finalizeSnapshot(epochId);
-      // Single-investor 50 shares: ratePerShare = 100e6/50 = 2e6.
-      await ysClient.fundEpoch(epochId, 100n * ONE_PUSDC, 2n * ONE_PUSDC);
+      // Single-investor 50 shares. Phase 9.C / L1 — ratePerShare
+      // scaled by RATE_SCALE: floor(100e6 × 1e6 / 50) = 2e6 × 1e6.
+      await ysClient.fundEpoch(epochId, 100n * ONE_PUSDC, 2n * ONE_PUSDC * RATE_SCALE);
 
       // Fast-forward past claimExpiry (default 365d).
       await time.increase(400 * 24 * 60 * 60);

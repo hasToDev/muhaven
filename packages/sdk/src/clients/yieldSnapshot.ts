@@ -25,11 +25,17 @@ export interface EpochView {
   claimExpiry: bigint
   holderCount: bigint
   /**
-   * Phase 9.B / Option A — issuer-provided cleartext per-share yield
-   * rate. `floor(totalYield / totalSupply)` in PUSDC-base-units per
-   * share-base-unit. Zero for legacy pre-Option-A epochs (claimYield
-   * falls back to the encRatio path for those). Public on-chain by
-   * design; per-investor balances and shares stay encrypted.
+   * Phase 9.B / Option A + Phase 9.C / L1 — issuer-provided cleartext
+   * per-share yield rate, scaled by `RATE_SCALE = 1_000_000`. Stored
+   * as `realRate × RATE_SCALE` so the issuer can fund sub-1:1 yields
+   * without precision loss (e.g. 4% APY on $25 supply → realRate
+   * $0.04 / whole token → `ratePerShare = 40_000`). claimYield
+   * divides by `RATE_SCALE` after the per-share mul to recover
+   * unscaled mhUSDC base units.
+   *
+   * Zero for legacy pre-Option-A epochs (claimYield falls back to the
+   * encRatio path for those). Public on-chain by design; per-investor
+   * balances and shares stay encrypted.
    */
   ratePerShare: bigint
 }
@@ -193,7 +199,14 @@ export class YieldSnapshotClient {
    * is stored cleartext on-chain and used in `claimYield` via a
    * depth-1 trivial encryption — sidestepping the deep `encRatio`
    * ancestry that empirically stalled cofhe TN's resolution path.
-   * See `PHASE9A_CHAIN_LENGTH_BLOCKER.md > Option A`. MUST be > 0.
+   * See `PHASE9A_CHAIN_LENGTH_BLOCKER.md > Option A`.
+   *
+   * Phase 9.C / L1 (2026-05-04): `ratePerShare` is now scaled by
+   * `RATE_SCALE = 1_000_000` (six fractional decimals), so issuers
+   * can fund sub-1:1 yields without precision loss. Compute as
+   * `floor(totalYieldBaseUnits × RATE_SCALE / totalSupplyBaseUnits)`.
+   * MUST be > 0 — the floor still exists, just six orders of
+   * magnitude smaller than the pre-L1 `yield ≥ supply` constraint.
    *
    * Privacy boundary: per-share rate is publicly readable on-chain.
    * Per-investor balances and per-claim shares stay encrypted.

@@ -18,9 +18,11 @@ import MPageLoader from '@/components/ui/MPageLoader.vue'
 import {
   CheckCircle2, AlertTriangle, Eye, Loader2, RefreshCw, ChevronDown, Check,
   Users, Landmark, Lock, ArrowRight, Coins, ChevronRight, ShieldCheck,
-  KeyRound, TrendingUp, Receipt, Clock,
+  KeyRound, TrendingUp, Receipt, Clock, Info, Calculator, X,
 } from 'lucide-vue-next'
-import type { EpochView } from '@muhaven/sdk'
+import { RATE_SCALE, OracleClient, type EpochView } from '@muhaven/sdk'
+import { v35Addresses, isZeroAddress } from '@/contracts/addresses'
+import { buildReadContext } from '@/services/v35/context'
 
 // DistributePage — Wave 3.5 (Phase 9.A · /distribute rewrite). Wraps the
 // `YieldSnapshot` lifecycle: open → snapshot (paginated) → finalize →
@@ -88,6 +90,82 @@ const mhUsdcBalance = ref<bigint | null>(null)
 const mhUsdcDecrypting = ref(false)
 const mhUsdcLoading = ref(false)
 
+// ── Phase 9.C / L2 — snapshot supply decrypt state ─────────────────────
+
+// True iff the selected token has a finalized-but-not-funded epoch the
+// issuer can decrypt the supply from. Drives the "Decrypt from chain"
+// button visibility.
+const supplyDecryptAvailable = ref(false)
+const supplyDecrypting = ref(false)
+
+// ── Phase 9.C / L3 — Yield Calculator state ────────────────────────────
+
+const calculatorOpen = ref(false)
+const calculatorPanelRef = useTemplateRef<HTMLDivElement>('calculatorPanelRef')
+onClickOutside(calculatorPanelRef, () => { calculatorOpen.value = false })
+
+// Default APY 5% — generic industry-mid placeholder per PHASE9C_PLAN.md
+// §10 question 3. Editable per epoch; not persisted across sessions.
+const calcAPY = ref<number>(5.00)
+type CalcPeriod = 'monthly' | 'quarterly' | 'annual'
+const calcPeriod = ref<CalcPeriod>('quarterly')
+
+// NAV pulled from `IssuerControlledOracle.getNAV(token)` — required so
+// the calculator works correctly for non-$1-NAV tokens (real estate,
+// gold). $1-NAV tokens (the demo MUSTB shape) collapse the math but
+// the read path is the same.
+const calcNAVUnits = ref<bigint | null>(null)
+const calcNAVLoading = ref(false)
+
+const PERIOD_FRACTION: Record<CalcPeriod, number> = {
+  monthly: 1 / 12,
+  quarterly: 0.25,
+  annual: 1,
+}
+
+/**
+ * Calculator output. Returns `null` when inputs are insufficient
+ * (NAV unread, supply zero, APY invalid). Math:
+ *   yield_USD = supply_whole × NAV_USD × APY × periodFraction
+ * with both supply + NAV in 6-decimal base units → result in mhUSDC
+ * base units (× 1e6 for $).
+ */
+const calcTotalYieldUnits = computed<bigint | null>(() => {
+  if (calcNAVUnits.value === null) return null
+  if (totalSupplyUnits.value === 0n) return null
+  if (!Number.isFinite(calcAPY.value) || calcAPY.value < 0) return null
+  // Use number arithmetic for the % × periodFraction (small-domain
+  // floats), then bigint for the supply × NAV product (large-domain
+  // exact). NAV is per-share-base-unit, supply is in token base units,
+  // so supply × NAV is in mhUSDC base units squared (since NAV's units
+  // are mhUSDC-base/share-base, × share-base = mhUSDC-base × share-base
+  // — confusing).
+  //
+  // Simpler model: NAV is "PUSDC base units per WHOLE share unit" per
+  // the existing `MockPriceOracle.setNAV` convention (see
+  // test/YieldSnapshot.test.ts line 39 — `DEFAULT_NAV = ONE_PUSDC` for
+  // $1/share). So per-whole-token USD = NAV / 1e6, and:
+  //   yield_USD = (supply_whole × NAV_USD) × (APY/100) × periodFraction
+  // In base units (multiplying both supply and yield by 1e6):
+  //   yield_baseUnits = (supply_baseUnits × NAV_baseUnits / 1e6) × factor
+  const factor = (calcAPY.value / 100) * PERIOD_FRACTION[calcPeriod.value]
+  if (factor <= 0) return null
+  const supplyXnavBaseUnits = (totalSupplyUnits.value * calcNAVUnits.value) / 1_000_000n
+  // Use Number for the factor multiply (small-decimal precision is fine
+  // for human-display; the issuer can override if they need precision).
+  const yieldUnits = BigInt(Math.floor(Number(supplyXnavBaseUnits) * factor))
+  return yieldUnits
+})
+
+const calcRatePerShareDisplay = computed<string>(() => {
+  if (calcTotalYieldUnits.value === null) return '—'
+  if (totalSupplyUnits.value === 0n) return '—'
+  // (yield_baseUnits × RATE_SCALE) / supply_baseUnits, formatted as USD/whole-token.
+  const scaledRate = (calcTotalYieldUnits.value * RATE_SCALE) / totalSupplyUnits.value
+  const perWhole = Number(scaledRate) / Number(RATE_SCALE)
+  return formatUSD(perWhole)
+})
+
 // ── Recent epochs strip ────────────────────────────────────────────────
 
 interface RecentEpochRow {
@@ -150,12 +228,19 @@ const totalSupplyUnits = computed<bigint>(() => {
   return wholeBI * 1_000_000n + fracBI
 })
 
-// ratePerShare = floor(totalYield / totalSupply). Must be > 0 — zero
-// would silent-fail every claim. The wizard surfaces a friendly error
-// when the issuer enters values that floor to zero.
+// ratePerShare = floor(totalYield × RATE_SCALE / totalSupply). Must be
+// > 0 — zero would silent-fail every claim. The wizard surfaces a
+// friendly error when the issuer enters values that floor to zero.
+//
+// Phase 9.C / L1 (2026-05-04) — multiplying by RATE_SCALE before the
+// floor-divide gives six fractional decimals of precision on the
+// per-share rate. Pre-L1 this was a plain `amount / supply` divide,
+// floor-blocking sub-1:1 yields (e.g. 4% APY on $25 supply was
+// impossible). The contract now divides by RATE_SCALE during claim,
+// so an unscaled rate would underclaim by a factor of 1e6.
 const ratePerShareUnits = computed<bigint>(() => {
   if (totalSupplyUnits.value === 0n) return 0n
-  return amountUnits.value / totalSupplyUnits.value
+  return (amountUnits.value * RATE_SCALE) / totalSupplyUnits.value
 })
 
 const totalSupplyValid = computed(
@@ -227,22 +312,46 @@ onMounted(async () => {
       // Phase 9.B / Option A — restore totalSupply input from
       // ratePerShare so a wizard resume mid-flight doesn't ask the
       // issuer to re-enter the supply value. We don't persist supply
-      // directly; we derive: totalSupply = totalYield / ratePerShare.
+      // directly; we derive it from the persisted scaled rate and
+      // yield. Phase 9.C / L1: ratePerShare is now scaled by
+      // RATE_SCALE, so the inverse becomes
+      // `supply_baseUnits = (yield_baseUnits × RATE_SCALE) /
+      // ratePerShare`. The form's totalSupply input is in WHOLE
+      // tokens (the parser later multiplies by 1e6 to recover base
+      // units), so divide by 1_000_000 before stringifying.
+      //
+      // Precision drift caveat: ratePerShare is stored after a
+      // floor-divide; recovery floors again. For fractional supply
+      // (e.g. 25.5 MUSTB) the round-trip recovers `25.500955` instead
+      // of `25.5` — sub-millishare drift, irrelevant for the resume's
+      // "remind me what I typed" intent. Persisting `totalSupplyUnits`
+      // directly would eliminate the drift but adds a second field to
+      // the persisted-store schema; deferred until it matters.
       const r = distributionStore.ratePerShareUnits
       const y = distributionStore.totalYieldUnits
       if (r > 0n && y > 0n) {
-        totalSupply.value = (Number(y / r)).toString()
+        const supplyBaseUnits = (y * RATE_SCALE) / r
+        totalSupply.value = (Number(supplyBaseUnits) / 1_000_000).toString()
       }
     }
   }
   // Recent epochs strip
   loadRecentEpochs()
+  // Phase 9.C / L2 — initial probe of the "Decrypt from chain" availability.
+  void refreshSupplyDecryptAvailability(selectedToken.value)
+  // Phase 9.C / L3 — initial NAV read for the calculator.
+  void loadCalcNAV(selectedToken.value)
 })
 
 watch(selectedToken, async (next) => {
   preflightStatus.value = null
   mhUsdcBalance.value = null
   preflightError.value = null
+  // Phase 9.C / L2 — refresh the "Decrypt from chain" affordance
+  // whenever the selected token changes.
+  void refreshSupplyDecryptAvailability(next as Address | '')
+  // Phase 9.C / L3 — load NAV for the calculator's per-whole-token math.
+  void loadCalcNAV(next as Address | '')
   if (next && walletAddress.value) await runPreflight()
 })
 
@@ -325,6 +434,140 @@ async function refreshMhUsdcAndPreflight() {
     mhUsdcBalance.value = null
   } finally {
     mhUsdcLoading.value = false
+  }
+}
+
+// ── Phase 9.C / L2 — snapshot supply decrypt ───────────────────────────
+
+/**
+ * Probe whether the selected token has a finalized-but-not-funded epoch
+ * the issuer can decrypt the supply from. Drives the
+ * `supplyDecryptAvailable` ref, which gates the "Decrypt from chain"
+ * button visibility. Cheap on-chain read; runs on token / wallet change.
+ *
+ * Conservative: returns false on any read error (button stays hidden;
+ * issuer types the supply manually). Surfacing a "Decrypt failed" toast
+ * here would be noisy — the form is still usable without the affordance.
+ */
+async function refreshSupplyDecryptAvailability(token: Address | '') {
+  if (!token) {
+    supplyDecryptAvailable.value = false
+    return
+  }
+  try {
+    const inflight = await SnapshotService.detectInFlight(token)
+    // Only finalized-AND-not-funded epochs have a supply the issuer can
+    // pre-fill. Pre-finalize: snapshot accumulator hasn't sealed.
+    // Post-funded: epoch is closed; the supply field on the form is
+    // moot (no fundEpoch coming).
+    supplyDecryptAvailable.value =
+      inflight !== null && inflight.epoch.finalized && !inflight.epoch.funded
+  } catch {
+    supplyDecryptAvailable.value = false
+  }
+}
+
+// ── Phase 9.C / L3 — Yield Calculator helpers ──────────────────────────
+
+/**
+ * Pull the per-share NAV from `IssuerControlledOracle.getNAV(token)`.
+ * Required so the calculator can compute yield correctly for non-$1-NAV
+ * tokens (real estate, gold, etc) — for $1-NAV demo tokens (MUSTB) the
+ * math collapses but the read path is the same.
+ *
+ * Defensive: silent-fails to `null` (calculator falls back to "—" output)
+ * when the oracle isn't configured or the read errors. Never throws into
+ * the wizard flow.
+ */
+async function loadCalcNAV(token: Address | '') {
+  if (!token) {
+    calcNAVUnits.value = null
+    return
+  }
+  if (isZeroAddress(v35Addresses.oracle)) {
+    calcNAVUnits.value = null
+    return
+  }
+  calcNAVLoading.value = true
+  try {
+    const ctx = buildReadContext()
+    const oracle = new OracleClient(ctx, v35Addresses.oracle)
+    const { nav, updatedAt } = await oracle.getNAV(token as `0x${string}`)
+    // updatedAt = 0 means the oracle has never published a NAV for this
+    // token (some contract impls return zero-defaults instead of
+    // throwing). Treat as unread — the calculator's "—" output is more
+    // honest than computing a $0-yield against a phantom NAV.
+    calcNAVUnits.value = updatedAt === 0n ? null : nav
+  } catch (e) {
+    console.warn('[DistributePage] calculator NAV read failed:', e)
+    calcNAVUnits.value = null
+  } finally {
+    calcNAVLoading.value = false
+  }
+}
+
+function openCalculator() {
+  // Snap supply suggestion: if the issuer hasn't typed a supply yet but
+  // the L2 affordance is available, the calculator is more useful with
+  // a value pre-filled. We don't auto-decrypt (that requires a click —
+  // session permit), but we do hint it.
+  calculatorOpen.value = true
+}
+
+function applyCalculatorYield() {
+  if (calcTotalYieldUnits.value === null) return
+  const yieldUSD = Number(calcTotalYieldUnits.value) / 1_000_000
+  amount.value = yieldUSD.toFixed(6).replace(/\.?0+$/, '')
+  calculatorOpen.value = false
+  toast.success('Yield amount applied', {
+    description: `Calculator → ${formatUSD(yieldUSD)} (${calcAPY.value}% APY · ${calcPeriod.value})`,
+  })
+}
+
+async function decryptSupplyFromChain() {
+  if (!selectedToken.value || supplyDecrypting.value) return
+  supplyDecrypting.value = true
+  try {
+    await fhe.initialize()
+    const snapAddr = SnapshotService.snapshotProxyFor(selectedToken.value as Address)
+    if (!snapAddr) {
+      throw new Error('Snapshot proxy not configured for this token')
+    }
+    const inflight = await SnapshotService.detectInFlight(selectedToken.value as Address)
+    if (!inflight || !inflight.epoch.finalized || inflight.epoch.funded) {
+      throw new Error('No finalized-pending-fund epoch to decrypt supply from')
+    }
+    const handle = await SnapshotService.getEpochTotalSupplyHandle(
+      snapAddr,
+      inflight.epochId,
+    )
+    if (!handle) {
+      throw new Error('Snapshot supply handle is uninitialized — finalize the snapshot first')
+    }
+    // L2 grant is on the issuer's kernel; permit-based decrypt
+    // resolves via the standard `decryptForView` path. The dedicated
+    // helper skips the MuHavenToken refresh fallback (irrelevant for
+    // YieldSnapshot aggregate handles).
+    const supplyBaseUnits = await fhe.decryptSnapshotSupplyForView(handle)
+    // Form input is whole tokens (the parser later × 1e6 for base units).
+    totalSupply.value = (Number(supplyBaseUnits) / 1_000_000).toString()
+    toast.success('Supply decrypted from chain', {
+      description: `Snapshot epoch #${inflight.epochId} → ${(Number(supplyBaseUnits) / 1_000_000).toLocaleString()} tokens outstanding`,
+    })
+  } catch (e) {
+    const raw = e instanceof Error ? e.message : 'Unknown error'
+    // Frame a 403 as the most-likely cause: the epoch was finalized
+    // before the L2 ACL-grant upgrade landed (pre-9.C epochs don't
+    // carry the issuer ACL on encTotalSupply). The fallback is the
+    // same as no-L2: type the supply from the off-chain ledger.
+    const is403 = raw.includes('403') || raw.toLowerCase().includes('forbidden') || raw.toLowerCase().includes('acl')
+    toast.error('Decrypt failed', {
+      description: is403
+        ? 'This epoch was finalized before the supply-decrypt upgrade. Type the supply from your off-chain ledger.'
+        : raw,
+    })
+  } finally {
+    supplyDecrypting.value = false
   }
 }
 
@@ -1223,13 +1466,31 @@ function fmtClaimWindow(claimExpiry: bigint): string {
                 "
                 class="flex flex-col gap-2"
               >
-                <label
-                  for="distribute-amount-input"
-                  class="font-sans text-[10px] uppercase tracking-[0.22em] text-compute dark:text-signal font-semibold flex items-center gap-1.5"
-                >
-                  <Lock :size="10" :stroke-width="2" aria-hidden="true" />
-                  Encrypted total amount
-                </label>
+                <div class="flex items-center justify-between gap-2">
+                  <label
+                    for="distribute-amount-input"
+                    class="font-sans text-[10px] uppercase tracking-[0.22em] text-compute dark:text-signal font-semibold flex items-center gap-1.5"
+                  >
+                    <Lock :size="10" :stroke-width="2" aria-hidden="true" />
+                    Encrypted total amount
+                  </label>
+                  <!-- Phase 9.C / L3 — Yield Calculator trigger. Opens
+                       an inline panel with APY % + period + auto-pop
+                       supply + auto-read NAV. Apply writes back to the
+                       amount input. -->
+                  <button
+                    type="button"
+                    @click="openCalculator"
+                    data-testid="distribute-calc-toggle"
+                    class="inline-flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.18em] font-semibold
+                           text-cool hover:text-compute dark:hover:text-signal
+                           transition-colors cursor-pointer"
+                    title="Open yield calculator (APY × period × supply × NAV)"
+                  >
+                    <Calculator :size="11" :stroke-width="2" />
+                    Calculator
+                  </button>
+                </div>
                 <div class="relative bg-white dark:bg-[#0e0e0e] border-b border-compute/30 dark:border-signal/30 px-4 pb-2 pt-2 transition-colors focus-within:border-compute/70 dark:focus-within:border-signal/70">
                   <span aria-hidden="true" class="absolute left-4 bottom-2 font-accent italic text-2xl text-cool">$</span>
                   <input
@@ -1276,14 +1537,123 @@ function fmtClaimWindow(claimExpiry: bigint): string {
                     Short {{ formatUSD(Number(mhUsdcShortfall) / 1e6) }} — auto-wraps before fund
                   </span>
                 </div>
+
+                <!-- Phase 9.C / L3 — Yield Calculator panel. Inline
+                     popover under the amount input. Auto-fills supply
+                     from the form's typed value (or decrypt-from-chain
+                     output) and NAV from the on-chain oracle. Apply
+                     button writes back to amount. -->
+                <div
+                  v-if="calculatorOpen"
+                  ref="calculatorPanelRef"
+                  data-testid="distribute-calc-panel"
+                  class="mt-2 rounded-xl border border-compute/30 dark:border-signal/30
+                         bg-mist/40 dark:bg-[#1c1b1b]/70 backdrop-blur-md p-4 flex flex-col gap-3"
+                >
+                  <div class="flex items-center justify-between">
+                    <p class="font-sans text-[10px] uppercase tracking-[0.22em] text-compute dark:text-signal font-semibold flex items-center gap-1.5">
+                      <Calculator :size="11" :stroke-width="2" />
+                      Yield Calculator
+                    </p>
+                    <button
+                      type="button"
+                      @click="calculatorOpen = false"
+                      class="text-cool hover:text-midnight dark:hover:text-white p-1 -m-1 cursor-pointer"
+                      aria-label="Close calculator"
+                    >
+                      <X :size="14" :stroke-width="2" />
+                    </button>
+                  </div>
+
+                  <div class="grid grid-cols-2 gap-3">
+                    <label class="flex flex-col gap-1">
+                      <span class="font-sans text-[10px] uppercase tracking-[0.18em] text-cool font-semibold">APY %</span>
+                      <input
+                        v-model.number="calcAPY"
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        max="1000"
+                        data-testid="distribute-calc-apy"
+                        class="bg-white dark:bg-[#0e0e0e] border border-haze dark:border-white/10 rounded-md px-2 py-1.5
+                               font-mono text-sm text-midnight dark:text-white tabular-nums
+                               focus:outline-none focus:border-compute dark:focus:border-signal transition-colors"
+                      />
+                    </label>
+                    <label class="flex flex-col gap-1">
+                      <span class="font-sans text-[10px] uppercase tracking-[0.18em] text-cool font-semibold">Period</span>
+                      <select
+                        v-model="calcPeriod"
+                        data-testid="distribute-calc-period"
+                        class="bg-white dark:bg-[#0e0e0e] border border-haze dark:border-white/10 rounded-md px-2 py-1.5
+                               font-sans text-sm text-midnight dark:text-white
+                               focus:outline-none focus:border-compute dark:focus:border-signal transition-colors cursor-pointer"
+                      >
+                        <option value="monthly">Monthly</option>
+                        <option value="quarterly">Quarterly</option>
+                        <option value="annual">Annual</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  <div class="grid grid-cols-2 gap-3 text-[11px] font-sans text-cool">
+                    <div class="flex justify-between">
+                      <span>Supply</span>
+                      <span class="text-midnight dark:text-white tabular-nums font-medium">
+                        {{ totalSupplyUnits > 0n
+                          ? `${(Number(totalSupplyUnits) / 1_000_000).toLocaleString()} ${selectedTokenInfo?.symbol ?? ''}`
+                          : '— enter above' }}
+                      </span>
+                    </div>
+                    <div class="flex justify-between">
+                      <span>NAV</span>
+                      <span class="text-midnight dark:text-white tabular-nums font-medium">
+                        <Loader2 v-if="calcNAVLoading" :size="11" class="inline-block animate-spin" />
+                        <template v-else-if="calcNAVUnits !== null">
+                          {{ formatUSD(Number(calcNAVUnits) / 1_000_000) }}/share
+                        </template>
+                        <template v-else>—</template>
+                      </span>
+                    </div>
+                    <div class="flex justify-between">
+                      <span>Per-share</span>
+                      <span class="text-midnight dark:text-white tabular-nums font-medium">{{ calcRatePerShareDisplay }}</span>
+                    </div>
+                    <div class="flex justify-between">
+                      <span>Total yield</span>
+                      <span class="text-compute dark:text-signal tabular-nums font-bold">
+                        {{ calcTotalYieldUnits !== null
+                          ? formatUSD(Number(calcTotalYieldUnits) / 1_000_000)
+                          : '—' }}
+                      </span>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    @click="applyCalculatorYield"
+                    :disabled="calcTotalYieldUnits === null || calcTotalYieldUnits <= 0n"
+                    data-testid="distribute-calc-apply"
+                    class="self-end inline-flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.18em] font-semibold
+                           text-white dark:text-[#412d00]
+                           bg-compute dark:bg-signal
+                           hover:opacity-90
+                           px-3 py-1.5 rounded transition-all duration-200 cursor-pointer
+                           disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <ArrowRight :size="11" :stroke-width="2" />
+                    Apply to yield amount
+                  </button>
+                </div>
               </div>
 
               <!-- Phase 9.B / Option A — total supply input. Required so
                    the wizard can compute the cleartext per-share rate
-                   (`floor(totalYield / totalSupply)`) that fundEpoch
-                   stores on-chain. The on-chain encryptedTotalSupply
-                   isn't ACL'd to the issuer, so this comes from the
-                   issuer's off-chain ledger. Disclosed publicly via
+                   (`floor(totalYield × RATE_SCALE / totalSupply)`) that
+                   fundEpoch stores on-chain. Phase 9.C / L2 grants
+                   issuer ACL on `encTotalSupply` at finalize so the
+                   "Decrypt from chain" affordance can read on-chain
+                   truth without bookkeeping. Disclosed publicly via
                    the per-share rate; per-investor balances stay
                    encrypted. -->
               <div
@@ -1293,13 +1663,53 @@ function fmtClaimWindow(claimExpiry: bigint): string {
                 "
                 class="flex flex-col gap-2"
               >
-                <label
-                  for="distribute-supply-input"
-                  class="font-sans text-[10px] uppercase tracking-[0.22em] text-compute dark:text-signal font-semibold flex items-center gap-1.5"
-                >
-                  Outstanding token supply
-                </label>
-                <div class="relative bg-white dark:bg-[#0e0e0e] border-b border-compute/30 dark:border-signal/30 px-4 pb-2 pt-2 transition-colors focus-within:border-compute/70 dark:focus-within:border-signal/70">
+                <!-- Phase 9.C / L3 — anchor row. Always-visible context
+                     hint about where supply comes from + holder count. -->
+                <p class="font-sans text-[11px] text-cool flex items-center gap-1.5">
+                  <Users :size="12" :stroke-width="1.8" />
+                  <span class="font-medium text-midnight dark:text-white tabular-nums">
+                    {{ holderTotal === 1 ? '1 holder' : `${holderTotal} holders` }}
+                  </span>
+                  on-chain ·
+                  <template v-if="supplyDecryptAvailable">
+                    decrypt the snapshot's exact supply with the button below
+                  </template>
+                  <template v-else>
+                    supply is encrypted (issuer-known only)
+                  </template>
+                </p>
+
+                <div class="flex items-center justify-between gap-2">
+                  <label
+                    for="distribute-supply-input"
+                    class="font-sans text-[10px] uppercase tracking-[0.22em] text-compute dark:text-signal font-semibold flex items-center gap-1.5"
+                  >
+                    Outstanding token supply
+                  </label>
+                  <!-- Phase 9.C / L2 — decrypt the snapshot's exact
+                       supply from chain. Only shown when there's a
+                       finalized-but-not-funded epoch the issuer can
+                       read from (via the L2 ACL grant). -->
+                  <button
+                    v-if="supplyDecryptAvailable"
+                    type="button"
+                    @click="decryptSupplyFromChain"
+                    :disabled="supplyDecrypting"
+                    data-testid="distribute-supply-decrypt"
+                    class="inline-flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.18em] font-semibold
+                           text-compute dark:text-signal
+                           border border-compute/30 dark:border-signal/30
+                           hover:text-white dark:hover:text-[#412d00]
+                           hover:bg-compute dark:hover:bg-signal
+                           px-3 py-1.5 rounded transition-all duration-200 cursor-pointer
+                           disabled:opacity-60 disabled:cursor-wait disabled:hover:bg-transparent dark:disabled:hover:bg-transparent disabled:hover:text-compute dark:disabled:hover:text-signal"
+                  >
+                    <Loader2 v-if="supplyDecrypting" :size="11" class="animate-spin" />
+                    <Eye v-else :size="11" :stroke-width="2" />
+                    {{ supplyDecrypting ? 'Decrypting…' : 'Decrypt from chain' }}
+                  </button>
+                </div>
+                <div class="relative bg-white dark:bg-[#0e0e0e] border-b border-compute/30 dark:border-signal/30 px-4 pb-2 pt-2 transition-colors focus-within:border-compute/70 dark:focus-within:border-signal/70 flex items-baseline gap-2">
                   <input
                     id="distribute-supply-input"
                     v-model="totalSupply"
@@ -1317,21 +1727,51 @@ function fmtClaimWindow(claimExpiry: bigint): string {
                            [&::-webkit-outer-spin-button]:appearance-none
                            [&::-webkit-inner-spin-button]:appearance-none"
                   />
+                  <!-- Phase 9.C / L3 — token symbol suffix. Reinforces
+                       "this is whole-token units, not dollars" so the
+                       issuer doesn't accidentally type their yield in
+                       the supply field. -->
+                  <span
+                    v-if="selectedTokenInfo"
+                    aria-hidden="true"
+                    class="font-mono text-sm text-cool flex-shrink-0 tabular-nums"
+                  >{{ selectedTokenInfo.symbol }}</span>
                 </div>
                 <p class="font-sans text-[11px] text-cool flex items-center gap-1.5">
                   <span v-if="totalSupplyValid">
                     Per-share rate
                     <span class="font-medium text-midnight dark:text-white tabular-nums">
-                      {{ formatUSD(Number(ratePerShareUnits)) }}
+                      {{ formatUSD(Number(ratePerShareUnits) / Number(RATE_SCALE)) }}
                     </span>
                     per whole token — public on-chain (per-investor balances stay encrypted)
                   </span>
-                  <span v-else-if="totalSupply.length > 0 && amountValid && totalSupplyUnits > 0n" class="text-gold">
-                    <AlertTriangle :size="12" :stroke-width="1.8" />
-                    Per-share rate floors to zero — yield amount must be ≥ outstanding supply (in whole-token units)
+                  <!-- Phase 9.C / L3 — replacement floor-to-zero error.
+                       Post-L1 floor is six orders of magnitude smaller
+                       than pre-L1 (RATE_SCALE = 1e6). Surface the
+                       remediation paths inline: open the calculator
+                       (computes a working yield from APY × period) or
+                       set the minimum yield directly. -->
+                  <span
+                    v-else-if="totalSupply.length > 0 && amountValid && totalSupplyUnits > 0n"
+                    data-testid="distribute-rate-floor-error"
+                    class="text-gold flex flex-wrap items-center gap-x-2 gap-y-1"
+                  >
+                    <span class="flex items-center gap-1">
+                      <AlertTriangle :size="12" :stroke-width="1.8" />
+                      Yield rounds to zero on-chain.
+                    </span>
+                    <button
+                      type="button"
+                      @click="openCalculator"
+                      data-testid="distribute-rate-floor-calc"
+                      class="underline decoration-dotted underline-offset-2 hover:text-compute dark:hover:text-signal cursor-pointer"
+                    >
+                      Open calculator →
+                    </button>
                   </span>
-                  <span v-else>
-                    Issuer's off-chain ledger value. Required for claim math.
+                  <span v-else class="flex items-center gap-1.5">
+                    <Info :size="11" :stroke-width="1.8" />
+                    Required for claim math. Use Decrypt-from-chain (post-finalize) or your off-chain ledger.
                   </span>
                 </p>
               </div>

@@ -295,6 +295,25 @@ export function useFhe() {
   }
 
   /**
+   * Phase 9.C / L2 (2026-05-04) — decrypt a YieldSnapshot
+   * `encTotalSupply` handle. Issuer-only path: the contract grants
+   * `FHE.allow(encTotalSupply, issuer)` at finalize time (per
+   * ADR-049's issuer-trust-model), and the kernel-side permit
+   * decrypts via the standard `decryptForView` path.
+   *
+   * No refresh fallback: the L2 grant is durable on the historical
+   * supply handle (snapshot supply doesn't mutate post-finalize), and
+   * the snapshot proxy doesn't expose a `refreshDecryptGrant`-style
+   * helper for aggregate handles. A 403 here means the caller isn't
+   * the on-chain issuer for the token — surfacing it raw is the
+   * correct UX (the form should never have offered the affordance
+   * in the first place).
+   */
+  async function decryptSnapshotSupplyForView(ctHash: bigint | string): Promise<bigint> {
+    return decryptForView(ctHash, 128, { withRefresh: false })
+  }
+
+  /**
    * Phase 7.5 — decrypt an mhUSDC (`MuHavenStable`) `euint64` handle for
    * UI display. On 403, calls `MuHavenStable.refreshDecryptGrant` once
    * with the active ephemeral EOA and retries — closes the same kernel-
@@ -654,6 +673,7 @@ export function useFhe() {
     decryptAuditHandleForView,
     decryptTokenAuditHandleForView,
     decryptYieldClaimAuditHandleForView,
+    decryptSnapshotSupplyForView,
     getRawClient,
     destroy,
   }

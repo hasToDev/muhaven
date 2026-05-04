@@ -41,25 +41,34 @@ interface IYieldSnapshot {
         uint256  claimExpiry;
         uint256  holderCount;
         /// @notice Cleartext per-share yield rate (Phase 9.B / Option A,
-        ///         2026-05-04). Issuer submits at `fundEpoch` time as the
-        ///         floor-divide of `totalYield / totalSupply` in their own
-        ///         off-chain ledger. claimYield's payout is
-        ///         `encShare = FHE.mul(snapshotBalance,
-        ///         FHE.asEuint128(uint256(ratePerShare)))` — the trivial-
-        ///         encrypted cleartext rate has chain depth 1, so the
-        ///         resulting `encShare` ancestry doesn't trace through the
-        ///         deep `encRatio` accumulator that empirically stalls
-        ///         cofhe TN's resolution. See `PHASE9A_CHAIN_LENGTH_BLOCKER.md`.
+        ///         2026-05-04; Phase 9.C / L1, 2026-05-04). Stored as
+        ///         `realRate × YieldSnapshot.RATE_SCALE` (= `realRate
+        ///         × 1_000_000`) so issuers can fund sub-1:1 yields
+        ///         without precision loss (e.g. 4% APY on $25 supply
+        ///         → $1 yield → realRate $0.04/whole-token →
+        ///         `ratePerShare = 40_000`).
         ///
-        ///         Privacy boundary: per-share rate is publicly observable
-        ///         on-chain (storage slot is unencrypted). For RWAs this is
-        ///         conventionally OK — yield rates are published off-chain
-        ///         anyway (TBILL APY, dividend per share, etc). Per-investor
-        ///         balances and per-investor shares stay encrypted.
+        ///         claimYield's payout is `encShare = FHE.div(
+        ///         FHE.mul(snapshotBalance, FHE.asEuint128(uint256(
+        ///         ratePerShare))), FHE.asEuint128(RATE_SCALE))`. The
+        ///         trivial-encrypted rate AND scale are both depth-1
+        ///         leaves, so the resulting `encShare` ancestry doesn't
+        ///         trace through the deep `encRatio` accumulator that
+        ///         empirically stalls cofhe TN's resolution. See
+        ///         `PHASE9A_CHAIN_LENGTH_BLOCKER.md` for the encRatio
+        ///         pathology + `scripts/probe-trivial-div.ts` for the
+        ///         L1 probe that validated `FHE.div(handle, trivial)`.
         ///
-        ///         Zero means "legacy epoch (pre-Option-A) — claim falls
-        ///         back to the encRatio path." New epochs MUST set this
-        ///         to a non-zero value.
+        ///         Privacy boundary: per-share rate is publicly
+        ///         observable on-chain (storage slot is unencrypted).
+        ///         For RWAs this is conventionally OK — yield rates are
+        ///         published off-chain anyway (TBILL APY, dividend per
+        ///         share, etc). Per-investor balances and per-investor
+        ///         shares stay encrypted.
+        ///
+        ///         Zero means "legacy epoch (pre-Option-A) — claim
+        ///         falls back to the encRatio path." New epochs MUST
+        ///         set this to a non-zero value (scaled by RATE_SCALE).
         uint128  ratePerShare;
     }
 
@@ -128,8 +137,17 @@ interface IYieldSnapshot {
     ///         epoch's snapshot. Paginated — caller walks `InvestorRegistry`.
     function snapshotBatch(uint256 epochId, address[] calldata investors) external;
 
-    /// @notice Finalize the snapshot: read and lock `encTotalSupply` from
-    ///         `MuHavenToken`. Subsequent `snapshotBatch` calls revert.
+    /// @notice Finalize the snapshot: lock the aggregate `encTotalSupply`
+    ///         (already accumulated by `snapshotBatch` per ADR-038).
+    ///         Subsequent `snapshotBatch` calls revert.
+    ///
+    ///         Phase 9.C / L2 (2026-05-04) — also unconditionally grants
+    ///         the token's issuer `FHE.allow(encTotalSupply)` so the
+    ///         issuer dashboard can decrypt the snapshot's exact supply
+    ///         when funding the epoch. Privacy posture: per-investor
+    ///         balances stay encrypted; only the AGGREGATE supply is
+    ///         disclosed to the issuer (who already owns the cap
+    ///         table off-chain — see ADR-049).
     function finalizeSnapshot(uint256 epochId) external;
 
     /// @notice Pull `encTotalYield` PUSDC from the issuer and store the
@@ -138,17 +156,24 @@ interface IYieldSnapshot {
     ///         `encRatio = FHE.div(encTotalYield, encTotalSupply)`
     ///         computation, which produced a deep handle ancestry that
     ///         empirically stalled cofhe TN's resolution path (see
-    ///         `PHASE9A_CHAIN_LENGTH_BLOCKER.md`).
+    ///         `PHASE9A_CHAIN_LENGTH_BLOCKER.md`). Phase 9.C / L1
+    ///         (2026-05-04) — added `RATE_SCALE = 1_000_000` fixed-
+    ///         point precision so issuers can fund sub-1:1 yields.
     ///
     ///         `ratePerShare` is computed by the issuer off-chain as
-    ///         `floor(totalYieldCleartext / totalSupplyCleartext)`. It is
-    ///         stored cleartext on the epoch struct. Per-share rate
-    ///         disclosure is the privacy trade-off; per-investor balances
-    ///         and per-claim shares stay encrypted.
+    ///         `floor(totalYieldCleartext × YieldSnapshot.RATE_SCALE /
+    ///         totalSupplyCleartext)`. It is stored cleartext on the
+    ///         epoch struct (six fractional decimals — `realRate ×
+    ///         RATE_SCALE`). Per-share rate disclosure is the privacy
+    ///         trade-off; per-investor balances and per-claim shares
+    ///         stay encrypted.
     ///
     ///         Conservation guard: contract enforces
     ///         `ratePerShare > 0` (zero would silent-fail every claim,
-    ///         leaving funded PUSDC stranded until sweep).
+    ///         leaving funded PUSDC stranded until sweep). Note the
+    ///         floor still exists post-L1, just six orders of
+    ///         magnitude smaller — `ratePerShare` floors to zero when
+    ///         `totalYield × RATE_SCALE < totalSupply`.
     ///
     ///         `claimExpiry` is set to
     ///         `block.timestamp + claimExpirySeconds` (implementation-

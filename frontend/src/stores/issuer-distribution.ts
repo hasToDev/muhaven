@@ -37,8 +37,10 @@ interface PersistedSnapshot {
   totalYieldUnits: string  // bigint serialised
   /**
    * Phase 9.B / Option A — issuer's pre-computed cleartext per-share
-   * yield rate (`floor(totalYield / totalSupply)`), persisted across
-   * reloads alongside totalYield. Decoded as bigint at hydrate time.
+   * yield rate. Phase 9.C / L1 (2026-05-04) — stored as `realRate ×
+   * RATE_SCALE` (= `floor(totalYield × RATE_SCALE / totalSupply)` per
+   * the form's compute), persisted across reloads alongside
+   * totalYield. Decoded as bigint at hydrate time.
    */
   ratePerShareUnits: string
   holderTotal: number

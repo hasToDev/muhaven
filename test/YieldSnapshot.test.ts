@@ -38,6 +38,14 @@ const ONE_PUSDC = 1_000_000n;
 const HINT_CAP = 1_000_000n;
 const DEFAULT_NAV = ONE_PUSDC;
 const EPOCH_DURATION = 60 * 60;
+/**
+ * Phase 9.C / L1 (2026-05-04) — fixed-point scale on the cleartext
+ * `ratePerShare`. Must equal `YieldSnapshot.RATE_SCALE` on-chain. The
+ * contract divides per-claim share by this constant after the mul, so
+ * issuer-passed rates are computed as
+ * `floor(totalYield × RATE_SCALE / totalSupply)`.
+ */
+const RATE_SCALE = 1_000_000n;
 
 /**
  * Match any euint handle (bytes32 hex string). Used in event-emit asserts
@@ -474,6 +482,51 @@ describe("YieldSnapshot", () => {
         snapshot.connect(stranger).finalizeSnapshot(1n)
       ).to.be.revertedWithCustomError(snapshot, "OnlyIssuer");
     });
+
+    // ── Phase 9.C / L2 — issuer ACL grant on encTotalSupply ────────────
+
+    it("Phase 9.C / L2 — finalize grants issuer ACL on encTotalSupply (single-holder epoch)", async () => {
+      // Smallest interesting case: 1-holder epoch. Per ADR-049's
+      // issuer-trust-model, the grant fires unconditionally — even
+      // single-investor epochs (where the issuer can already infer the
+      // sole holder's balance from totalSupply ÷ 1) get the ACL.
+      const { snapshot, token, issuer, investor } =
+        await loadFixture(deploySnapshotFixture);
+      await snapshot.connect(issuer).openEpoch(await token.getAddress());
+      await snapshot.connect(issuer).snapshotBatch(1n, [investor.address]);
+      await snapshot.connect(issuer).finalizeSnapshot(1n);
+
+      const e = await snapshot.getEpoch(1n);
+      const acl = await hre.cofhe.mocks.getMockACL();
+      expect(
+        await acl.isAllowed(BigInt(e.encTotalSupply), issuer.address),
+        "single-holder finalize must grant issuer ACL on encTotalSupply",
+      ).to.equal(true);
+    });
+
+    it("Phase 9.C / L2 — finalize grants issuer ACL on encTotalSupply (multi-holder epoch)", async () => {
+      // Multi-investor case (default fixture). Same grant fires, no
+      // discrimination on holder count.
+      const { snapshot, token, issuer, investor, alice, stranger } =
+        await loadFixture(deploySnapshotFixture);
+      await snapshot.connect(issuer).openEpoch(await token.getAddress());
+      await snapshot.connect(issuer).snapshotBatch(1n, [investor.address, alice.address]);
+      await snapshot.connect(issuer).finalizeSnapshot(1n);
+
+      const e = await snapshot.getEpoch(1n);
+      const acl = await hre.cofhe.mocks.getMockACL();
+      expect(
+        await acl.isAllowed(BigInt(e.encTotalSupply), issuer.address),
+        "multi-holder finalize must grant issuer ACL on encTotalSupply",
+      ).to.equal(true);
+
+      // Defensive — no spurious grant to a stranger EOA. Confirms the
+      // grant is scoped to the issuer specifically, not a global broadcast.
+      expect(
+        await acl.isAllowed(BigInt(e.encTotalSupply), stranger.address),
+        "stranger must not receive encTotalSupply grant",
+      ).to.equal(false);
+    });
   });
 
   // ── fundEpoch ────────────────────────────────────────────────────────────
@@ -493,10 +546,13 @@ describe("YieldSnapshot", () => {
         alice.address,
       ]);
 
-      // 100 shares total supply, 1000 PUSDC → rate = 10 PUSDC per share base unit.
+      // 100 shares total supply, 1000 PUSDC. Phase 9.C / L1 — rate is
+      // scaled by RATE_SCALE: floor(1000e6 × 1e6 / 100) = 10_000e6 ×
+      // 1e6 = 10e13. Per-claim share: balance × rate / RATE_SCALE
+      // recovers the un-scaled "10 PUSDC per share base unit" semantics.
       const totalYield = 1000n * ONE_PUSDC;
       const totalSupply = 100n;
-      const ratePerShare = totalYield / totalSupply;
+      const ratePerShare = (totalYield * RATE_SCALE) / totalSupply;
       const encYield = await encUint128(issuerClient, totalYield);
 
       await expect(snapshot.connect(issuer).fundEpoch(1n, encYield, ratePerShare))
@@ -602,12 +658,15 @@ describe("YieldSnapshot", () => {
       // assumes the fixture's investorShares=60 + aliceShares=40 → total
       // 100, matching the deploySnapshotFixture default. Override for
       // single-investor or non-default-supply tests.
+      // Phase 9.C / L1 — rate is `floor(yieldAmt × RATE_SCALE /
+      // totalSupplyForRate)` so the contract's per-claim div-by-SCALE
+      // recovers the un-scaled per-share semantics.
       totalSupplyForRate: bigint = 100n,
     ) {
       await snapshot.connect(issuer).openEpoch(await token.getAddress());
       await snapshot.connect(issuer).snapshotBatch(1n, investors);
       await snapshot.connect(issuer).finalizeSnapshot(1n);
-      const ratePerShare = yieldAmt / totalSupplyForRate;
+      const ratePerShare = (yieldAmt * RATE_SCALE) / totalSupplyForRate;
       await snapshot
         .connect(issuer)
         .fundEpoch(1n, await encUint128(issuerClient, yieldAmt), ratePerShare);
@@ -785,6 +844,90 @@ describe("YieldSnapshot", () => {
       await snapshot.connect(bob).claimYield(1n, bobEph.address);
       expect(await snapshot.hasClaimed(1n, bob.address)).to.equal(true);
     });
+
+    // ── Phase 9.C / L1 — sub-1:1 yield (RATE_SCALE) coverage ──────────────
+
+    it("Phase 9.C / L1 — sub-1:1 yield (4% APY shape) pays correctly", async () => {
+      // Fixture: investor=60 shares, alice=40 shares, totalSupply=100.
+      // Goal: distribute $1 yield (= 1e6 PUSDC base units) on a 100-share
+      // supply — pre-L1 this would have floored ratePerShare to zero (1e6
+      // < 100? no — actually 1e6 / 100 = 10_000 ≠ 0; but for the same
+      // shape on supply 1e8 base units, pre-L1 would floor). Post-L1 the
+      // floor moves six orders of magnitude: ratePerShare = floor(1e6 ×
+      // 1e6 / 100) = 1e10. Per-claim:
+      //   investor (60 shares) → floor(60 × 1e10 / 1e6) = 600_000 = $0.60
+      //   alice    (40 shares) → floor(40 × 1e10 / 1e6) = 400_000 = $0.40
+      // Conservation: $0.60 + $0.40 = $1.00 ✓
+      const { snapshot, token, issuer, investor, alice, eph, aliceEph, pusdc, issuerClient } =
+        await loadFixture(deploySnapshotFixture);
+
+      const totalYield = 1n * ONE_PUSDC;  // $1 (= 1_000_000 base units)
+      await fullEpochSetup(
+        snapshot,
+        token,
+        issuer,
+        [investor.address, alice.address],
+        totalYield,
+        issuerClient,
+      );
+
+      const e = await snapshot.getEpoch(1n);
+      // ratePerShare = (1e6 × 1e6) / 100 = 1e10.
+      expect(e.ratePerShare).to.equal((totalYield * RATE_SCALE) / 100n);
+
+      const investorPusdcBefore = 940n * ONE_PUSDC;  // 1000 minted - 60 share cost
+      await snapshot.connect(investor).claimYield(1n, eph.address);
+      // investor: 60 × 1e10 / 1e6 = 6e5 = $0.60
+      await hre.cofhe.mocks.expectPlaintext(
+        await pusdc.confidentialBalanceOf(investor.address),
+        investorPusdcBefore + 600_000n,
+      );
+
+      const alicePusdcBefore = 960n * ONE_PUSDC;
+      await snapshot.connect(alice).claimYield(1n, aliceEph.address);
+      // alice: 40 × 1e10 / 1e6 = 4e5 = $0.40
+      await hre.cofhe.mocks.expectPlaintext(
+        await pusdc.confidentialBalanceOf(alice.address),
+        alicePusdcBefore + 400_000n,
+      );
+
+      // Conservation: snapshot float drains exactly to zero.
+      await hre.cofhe.mocks.expectPlaintext(
+        await snapshot.getEncRemaining(1n),
+        0n,
+      );
+    });
+
+    it("Phase 9.C / L1 — minimum-non-zero scaled rate works (precision floor)", async () => {
+      // Smallest meaningful scaled rate is `ratePerShare = 1n`. With
+      // balance=60, per-claim share = floor(60 × 1 / 1e6) = 0 — silent-
+      // failed claim, but the contract still honours it (no revert). The
+      // intent here is to verify L1 doesn't mis-handle the boundary
+      // condition and leaves the conservation accounting sane.
+      const { snapshot, token, issuer, investor, alice, eph, issuerClient, pusdc } =
+        await loadFixture(deploySnapshotFixture);
+
+      // Open + finalize manually so we can pass an exact rate.
+      await snapshot.connect(issuer).openEpoch(await token.getAddress());
+      await snapshot.connect(issuer).snapshotBatch(1n, [investor.address, alice.address]);
+      await snapshot.connect(issuer).finalizeSnapshot(1n);
+
+      const totalYield = 100n * ONE_PUSDC;
+      await snapshot
+        .connect(issuer)
+        .fundEpoch(1n, await encUint128(issuerClient, totalYield), 1n);
+
+      const e = await snapshot.getEpoch(1n);
+      expect(e.ratePerShare).to.equal(1n);
+
+      // Investor 60 shares × 1 / 1e6 = 0 (floor).
+      const investorPusdcBefore = 940n * ONE_PUSDC;
+      await snapshot.connect(investor).claimYield(1n, eph.address);
+      await hre.cofhe.mocks.expectPlaintext(
+        await pusdc.confidentialBalanceOf(investor.address),
+        investorPusdcBefore,  // unchanged — claim was floor=0
+      );
+    });
   });
 
   // ── Audit handle on YieldClaimed + refreshAuditGrant ─────────────────────
@@ -816,7 +959,10 @@ describe("YieldSnapshot", () => {
       await snapshot.connect(issuer).openEpoch(await token.getAddress());
       await snapshot.connect(issuer).snapshotBatch(1n, investors);
       await snapshot.connect(issuer).finalizeSnapshot(1n);
-      const ratePerShare = yieldAmt / totalSupplyForRate;
+      // Phase 9.C / L1 — scale by RATE_SCALE before the floor-divide
+      // so the contract's per-claim div-by-SCALE recovers the
+      // un-scaled per-share semantics.
+      const ratePerShare = (yieldAmt * RATE_SCALE) / totalSupplyForRate;
       await snapshot
         .connect(issuer)
         .fundEpoch(1n, await encUint128(issuerClient, yieldAmt), ratePerShare);
@@ -959,8 +1105,11 @@ describe("YieldSnapshot", () => {
       );
 
       const e = await snapshot.getEpoch(1n);
-      // ratePerShare = 1000e6 / 100 = 10e6.
-      expect(e.ratePerShare).to.equal(10n * ONE_PUSDC);
+      // Phase 9.C / L1 — ratePerShare scaled by RATE_SCALE:
+      //   floor(1000e6 × 1e6 / 100) = 10e6 × 1e6 = 10 PUSDC × RATE_SCALE.
+      // Per-claim share = balance × ratePerShare / RATE_SCALE recovers
+      // the un-scaled "10 PUSDC per share" semantics.
+      expect(e.ratePerShare).to.equal(10n * ONE_PUSDC * RATE_SCALE);
 
       // Investor 60 shares × 10e6 = 600e6 payout.
       const investorPusdcBefore = 940n * ONE_PUSDC;  // 1000 minted - 60 spent
@@ -1125,7 +1274,8 @@ describe("YieldSnapshot", () => {
         .connect(issuer)
         .snapshotBatch(1n, [investor.address, alice.address]);
       await snapshot.connect(issuer).finalizeSnapshot(1n);
-      const ratePerShare = yieldAmt / 100n;
+      // Phase 9.C / L1 — scale by RATE_SCALE before the floor-divide.
+      const ratePerShare = (yieldAmt * RATE_SCALE) / 100n;
       await snapshot
         .connect(issuer)
         .fundEpoch(1n, await encUint128(issuerClient, yieldAmt), ratePerShare);

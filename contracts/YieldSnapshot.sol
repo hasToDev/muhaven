@@ -37,18 +37,24 @@ import {ITokenRegistry} from "./interfaces/ITokenRegistry.sol";
 ///      pulls PUSDC from the issuer via the ADR-008 legacy
 ///      `confidentialTransferFrom(address,address,uint256)` selector,
 ///      stores the issuer-provided cleartext `ratePerShare` (Phase
-///      9.B / Option A — 2026-05-04), and sets `claimExpiry =
-///      block.timestamp + claimExpirySeconds(token)`. Issuer must
-///      have pre-granted this contract operator rights on PUSDC
-///      (standard operator-model flow). The legacy `encRatio` is
-///      still computed and stored for the audit-trail surface but
+///      9.B / Option A — 2026-05-04; Phase 9.C / L1 — 2026-05-04
+///      added the `RATE_SCALE = 1_000_000` fixed-point so issuers
+///      can fund sub-1:1 yields without precision loss), and sets
+///      `claimExpiry = block.timestamp + claimExpirySeconds(token)`.
+///      Issuer must have pre-granted this contract operator rights
+///      on PUSDC (standard operator-model flow). The legacy `encRatio`
+///      is still computed and stored for the audit-trail surface but
 ///      `claimYield` no longer multiplies through it — see step 5.
 ///   5. Each investor `claimYield(epochId, ephemeralEOA)` — computes their
-///      proportional share `encShare = FHE.mul(encBalance,
-///      FHE.asEuint128(uint256(ratePerShare)))` (Phase 9.B / Option A —
-///      the cleartext rate becomes a depth-1 trivial encryption,
-///      breaking the deep ancestry of the legacy `encRatio` path),
-///      narrows to PUSDC's `euint64` width, grants `ephemeralEOA` decrypt
+///      proportional share `encShare = FHE.div(FHE.mul(encBalance,
+///      FHE.asEuint128(uint256(ratePerShare))),
+///      FHE.asEuint128(RATE_SCALE))` (Phase 9.B / Option A — cleartext
+///      rate as a depth-1 trivial; Phase 9.C / L1 — div-by-trivial-
+///      scale recovers the un-scaled per-share amount). Both ops have
+///      shallow, wrapper-free ancestry, breaking the deep `encRatio`
+///      chain that empirically stalled cofhe TN's resolution path.
+///      Then narrows to PUSDC's `euint64` width, grants `ephemeralEOA`
+///      decrypt
 ///      per ADR-021, transfers to investor via the trusted-payer bypass
 ///      surface `IMuHavenStable.trustedPayout(investor, encShare64,
 ///      ephemeralEOA)` per Phase 8 Option B / ADR-046. Plants the
@@ -88,12 +94,23 @@ import {ITokenRegistry} from "./interfaces/ITokenRegistry.sol";
 ///      sweep on the same epoch reverts with `AlreadySwept`.
 ///
 ///   Conservation story (preserves "sum of claims <= pulled yield"):
-///   Per-investor share is `FHE.mul(encBalance, encRatio)` where
-///   `encRatio = encTotalYield / encTotalSupply` uses floor-division. For
-///   any snapshotted holder, `encBalance <= encTotalSupply`, so
-///   `sum(encShare) <= encTotalSupply * encRatio <= encTotalYield`. The
-///   floor-division slack is captured in `_encRemaining` and swept back to
-///   the issuer on expiry.
+///   Phase 9.B / Option A + Phase 9.C / L1 path:
+///     `encShare_i = floor(encBalance_i × ratePerShare / RATE_SCALE)` per
+///     investor. `sum(encShare_i) <= sum(encBalance_i) × ratePerShare /
+///     RATE_SCALE = totalSupply × ratePerShare / RATE_SCALE`. Holds
+///     iff issuer chose `ratePerShare <= floor(totalYield × RATE_SCALE
+///     / totalSupply)` — issuer-honesty conservation, mirrors
+///     ADR-047. The deploy-script + form-time `ratePerShare`
+///     computation enforces this floor; on-chain `FHE.lte` enforcement
+///     would re-introduce the deep-encRatio ancestry the entire L1
+///     design avoids.
+///   Legacy encRatio path (pre-Option-A epochs):
+///     `FHE.mul(encBalance, encRatio)` where
+///     `encRatio = encTotalYield / encTotalSupply` uses floor-division.
+///     For any snapshotted holder, `encBalance <= encTotalSupply`, so
+///     `sum(encShare) <= encTotalSupply * encRatio <= encTotalYield`.
+///   The floor-division slack (under either path) is captured in
+///   `_encRemaining` and swept back to the issuer on expiry.
 ///
 ///   Width handling (ADR-031 consistency):
 ///   `encTotalYield` arrives as `InEuint128` per the interface, but PUSDC
@@ -166,6 +183,56 @@ contract YieldSnapshot is Initializable, ReentrancyGuardTransient, IYieldSnapsho
     uint256[39] private __gap;
 
     // ── Constants ────────────────────────────────────────────────────────
+
+    /// @notice Phase 9.C / L1 (2026-05-04) — fixed-point scale applied
+    ///         to issuer-supplied `ratePerShare`. The cleartext rate
+    ///         persisted in `Epoch.ratePerShare` is `realRate ×
+    ///         RATE_SCALE` (PUSDC base units per token base unit ×
+    ///         1e6). `claimYield` divides by this constant after the
+    ///         mul so the per-claim share payout is in unscaled mhUSDC
+    ///         base units.
+    ///
+    ///         Why 1_000_000: matches mhUSDC's 6-decimal worldview, so
+    ///         the smallest representable per-share rate is one mhUSDC
+    ///         base unit per million-base-unit token (effectively
+    ///         $0.000001 per whole token). Pre-L1 the floor was
+    ///         "yield ≥ supply" — with RATE_SCALE the floor drops six
+    ///         orders of magnitude, unlocking realistic sub-1:1 yields
+    ///         (4% APY on $25 supply → $1 yield works).
+    ///
+    ///         Empirical safety: an early-2026-05-04 staging probe
+    ///         (`scripts/probe-trivial-div.ts`) verified that
+    ///         `FHE.div(handle, trivial)` resolves on cofhe TN —
+    ///         distinct from the aggregate-fan-in `FHE.div(handle,
+    ///         encTotalSupply)` shape that empirically stalls (see
+    ///         `PHASE9A_CHAIN_LENGTH_BLOCKER.md`). The probe contract
+    ///         (`contracts/probes/ProbeTrivialDiv.sol`) mirrors the
+    ///         exact L1 op chain: input verify → mul by trivial → div
+    ///         by trivial.
+    ///
+    ///         Conservation safety: per-claim share is `floor(balance
+    ///         × ratePerShare / RATE_SCALE)`. Sum-of-floor ≤ floor-of-
+    ///         sum = floor(totalSupply × ratePerShare / RATE_SCALE),
+    ///         which is bounded by `totalYield` whenever the issuer
+    ///         honestly chose `ratePerShare ≤ floor(totalYield ×
+    ///         RATE_SCALE / totalSupply)`. Conservation by issuer
+    ///         honesty mirrors Phase 9.B / Option A (ADR-047).
+    ///
+    ///         **Backward-compat caveat**: pre-L1 Phase 9.B epochs
+    ///         (funded between commit `bfbdac3` and the L1 impl
+    ///         rotation) carry an UNSCALED `ratePerShare`. Re-
+    ///         interpreting that stored rate as a scaled rate after L1
+    ///         would crash the math (claims become 1e6× too small,
+    ///         silent-failing on the snapshot float underflow). The L1
+    ///         struct is unchanged (per PHASE9C_PLAN.md) so the upgrade
+    ///         is operationally gated: the deploy script
+    ///         (`scripts/upgrade-yield-snapshot.ts`) enumerates every
+    ///         funded-but-not-fully-settled epoch and requires the
+    ///         operator to confirm none of them are pre-L1 9.B epochs
+    ///         with outstanding claims. Pre-9.B legacy epochs
+    ///         (`ratePerShare == 0`) keep working — they fall through
+    ///         to the `encRatio` branch in claimYield.
+    uint256 public constant RATE_SCALE = 1_000_000;
 
     /// @notice Default claim window if `claimExpirySeconds[token]` is 0.
     uint256 public constant DEFAULT_CLAIM_EXPIRY = 365 days;
@@ -367,6 +434,18 @@ contract YieldSnapshot is Initializable, ReentrancyGuardTransient, IYieldSnapsho
     /// @inheritdoc IYieldSnapshot
     /// @dev `encTotalSupply` is already populated by `snapshotBatch` as the
     ///      running sum (ADR-038); finalize just seals the phase.
+    ///
+    ///      Phase 9.C / L2 (2026-05-04) — unconditionally grant the issuer
+    ///      `FHE.allow(encTotalSupply)` at finalize time so the
+    ///      `/distribute` form's "Decrypt from chain" affordance can
+    ///      pre-fill the supply input from on-chain truth (no off-chain
+    ///      ledger bookkeeping required for a supply-already-known epoch).
+    ///      No holder-count gate per ADR-049's issuer-trust-model: the
+    ///      issuer already owns the cap table (KYC requires legal
+    ///      identity per investor), controls minting (`Subscription`),
+    ///      and signs distributions — encrypted aggregate supply
+    ///      doesn't introduce a new disclosure surface. Per-investor
+    ///      balances stay encrypted; this grant only exposes the SUM.
     function finalizeSnapshot(uint256 epochId) external onlyIssuerForEpoch(epochId) {
         Epoch storage e = _epochs[epochId];
         if (e.finalized) revert SnapshotAlreadyFinalized();
@@ -374,6 +453,11 @@ contract YieldSnapshot is Initializable, ReentrancyGuardTransient, IYieldSnapsho
 
         e.snapshotEndTs = block.timestamp;
         e.finalized = true;
+
+        // Phase 9.C / L2 — grant issuer ACL on the aggregate supply.
+        // See ADR-049 for the issuer-trust-model rationale that closes
+        // out the "why no MIN_HOLDERS_FOR_DECRYPT gate?" question.
+        FHE.allow(e.encTotalSupply, _issuerOf(e.token));
 
         emit SnapshotFinalized(e.token, epochId, e.holderCount);
     }
@@ -519,7 +603,7 @@ contract YieldSnapshot is Initializable, ReentrancyGuardTransient, IYieldSnapsho
 
         FHE.allowThis(encBalance);
 
-        // Proportional share = snapshotBalance * ratePerShare (floor).
+        // Proportional share = snapshotBalance * ratePerShare / RATE_SCALE.
         // Phase 9.B / Option A (2026-05-04): use the cleartext
         // `e.ratePerShare` via `FHE.asEuint128(uint256(ratePerShare))`
         // — depth-1 trivial — instead of the encrypted `e.encRatio`.
@@ -527,11 +611,25 @@ contract YieldSnapshot is Initializable, ReentrancyGuardTransient, IYieldSnapsho
         // TN's resolution path on the post-claim mhUSDC handle. See
         // `PHASE9A_CHAIN_LENGTH_BLOCKER.md > Option A`.
         //
-        // Backward-compat: pre-Option-A epochs (funded before this
-        // contract upgrade) have `e.ratePerShare == 0`. For those we
-        // fall back to the legacy `e.encRatio` path. New epochs MUST
-        // set ratePerShare via the new fundEpoch signature, which
-        // reverts on zero.
+        // Phase 9.C / L1 (2026-05-04): the issuer-supplied
+        // `ratePerShare` is now `realRate × RATE_SCALE` (six fractional
+        // decimals). After the mul, we divide by `RATE_SCALE` to
+        // recover the un-scaled per-share share. This unlocks
+        // sub-1:1 yields (e.g. 4% APY on $25 supply → $1 yield, rate
+        // $0.04/whole-token = 40_000 scaled). The trivial-divisor
+        // empirical safety was probed via
+        // `scripts/probe-trivial-div.ts` on staging
+        // (tx 0x9beeb144…fdf24727, decrypt resolved in ~23s) — see
+        // ADR-048 + PHASE9C_PLAN.md §3.4 for the verdict gate.
+        //
+        // Backward-compat: pre-Option-A epochs (funded before the
+        // Phase 9.B contract upgrade) have `e.ratePerShare == 0`. For
+        // those we fall back to the legacy `e.encRatio` path (no
+        // scale, no div). New epochs MUST set ratePerShare via the
+        // new fundEpoch signature, which reverts on zero. Pre-L1 9.B
+        // epochs (with non-zero unscaled `ratePerShare`) are NOT
+        // supported through this branch post-upgrade — see contract-
+        // level RATE_SCALE natspec for the operational hand-off.
         //
         // Upper bound argued in contract-level natspec: for any
         // snapshotted investor encShare <= encTotalYield <= 2^64 - 1.
@@ -539,7 +637,15 @@ contract YieldSnapshot is Initializable, ReentrancyGuardTransient, IYieldSnapsho
         if (e.ratePerShare != 0) {
             euint128 trivialRate = FHE.asEuint128(uint256(e.ratePerShare));
             FHE.allowThis(trivialRate);
-            encShare128 = FHE.mul(encBalance, trivialRate);
+            euint128 product = FHE.mul(encBalance, trivialRate);
+            FHE.allowThis(product);
+
+            // Phase 9.C / L1 — divide by the trivial-encrypted scale.
+            // The probe-trivial-div script verified this op shape
+            // (`FHE.div(handle, trivial)`) resolves on cofhe TN.
+            euint128 trivialScale = FHE.asEuint128(RATE_SCALE);
+            FHE.allowThis(trivialScale);
+            encShare128 = FHE.div(product, trivialScale);
         } else {
             // Legacy path — kept for any pre-Option-A epochs still in-flight.
             encShare128 = FHE.mul(encBalance, e.encRatio);
