@@ -424,7 +424,7 @@ async function claimEpoch(entry: EpochEntry) {
               Ready when an issuer funds the next epoch.
             </p>
             <p class="font-sans text-[12px] text-cool mt-1.5 leading-relaxed max-w-2xl">
-              On Wave 3.5, issuers open an epoch, snapshot balances, and fund it.
+              Issuers open an epoch, snapshot balances, and fund it.
               Once funded, you'll claim from this page and your encrypted
               <span class="font-mono text-compute dark:text-signal">mhUSDC</span> balance grows.
               The chart returns once you have at least one snapshotted epoch.

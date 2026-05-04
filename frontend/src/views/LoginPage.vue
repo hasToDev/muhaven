@@ -315,8 +315,8 @@ function toggleMode() {
                     Demo mode — self-serve KYC
                   </p>
                   <p class="text-xs font-sans text-slate dark:text-cool leading-relaxed">
-                    Production uses issuer-approved whitelisting + atomic on-chain purchase
-                    (see Wave 3.5 design). For this demo, click below to whitelist your passkey
+                    Production uses issuer-approved whitelisting + atomic on-chain purchase.
+                    For this demo, click below to whitelist your passkey
                     and grant it <span class="font-mono">MINTER_ROLE</span> on MuHavenToken so
                     you can mint encrypted tokens directly.
                   </p>

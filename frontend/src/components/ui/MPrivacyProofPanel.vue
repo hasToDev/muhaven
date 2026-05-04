@@ -949,7 +949,7 @@ const headline = computed(() => {
                   </p>
                   <p class="text-[10px] text-cool font-sans italic">
                     Per-tx amount reveal for {{ evt.contractMeta.name }} is not
-                    wired in this build — see Wave 4.
+                    wired in this build yet.
                   </p>
                 </template>
 
