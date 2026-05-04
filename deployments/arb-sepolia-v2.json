@@ -1,0 +1,60 @@
+{
+  "network": "arb-sepolia",
+  "env": "prod",
+  "timestamp": "2026-05-04T06:42:16.279Z",
+  "deployer": "0xe11E83398C33A37CaC02C01c43F14A7f95876986",
+  "external": {
+    "legacyPusdc": "0x6b6e6479b8b3237933c3ab9d8be969862d4ed89f",
+    "kycAdapter": "0x0aF7003E645b3f8028dac59556aa0Cf0AeA21851",
+    "chainlinkFunctionsRouter": "0x234a5fb5Bd614a7AA2FfAB244D603abFA0Ac5C5C",
+    "chainlinkFunctionsDonId": "0x66756e2d617262697472756d2d7365706f6c69612d310000000000000000000000",
+    "chainlinkFunctionsSubscriptionId": 567
+  },
+  "contracts": {
+    "MuHavenStable": {
+      "proxy": "0xF9bc25b67238C870255c33EC75fA37A09C00edE7",
+      "implementation": "0xA42e9Ef29de765c3bE3cF28233bdb047B447963C"
+    },
+    "ClaimTopicsRegistry": {
+      "proxy": "0x56Cb047ddCd07aD8217BE54Dd7703D9125D704d4",
+      "implementation": "0x421D7cfD2D913CD2729201f02D7a47313ab59CC4"
+    },
+    "TrustedIssuersRegistry": {
+      "proxy": "0x4587F75d0bCa84c8C944698b4e23Cb657E8D31B1",
+      "implementation": "0x619b478006ac16bD8103367908407482B3938684"
+    },
+    "MuHavenIdentityRegistry": {
+      "proxy": "0xD9Ab61fdED044bcBeB9eF687C357A35B5E7E9fAD",
+      "implementation": "0x58d8700bd193A1F70Dae820B513C644AEC70cE0D"
+    },
+    "ModularCompliance": {
+      "proxy": "0x9A190A310C23FcF9Cd6c5Eab26Eb624B89e4D07a",
+      "implementation": "0x0FfaabfA0405f90D5f01bE5b392778a05E53b2a4"
+    },
+    "TokenRegistry": {
+      "proxy": "0x4915E9Aa034244e299fb1609792D66b9fFAbf885",
+      "implementation": "0x87f9Fd116268e3feab2e8684175dE823cE23FeF9"
+    },
+    "InvestorRegistry": {
+      "proxy": "0xE7D4CB42EdB19e268e5e8a10d1A02f321Bfa50D0",
+      "implementation": "0x64475D5225704ED8166921e0fEe916f3936EAD68"
+    },
+    "MuHavenSubscription": {
+      "proxy": "0x39D49B2614d24ba189B613bEAa903d829A73eA9e",
+      "implementation": "0xb04b5d66440b6Cad755AE72de41F8015a6dDDF11"
+    },
+    "YieldSnapshot": {
+      "proxy": "0xaC4163f84db2C85333D5aF6f87848d7362A59887",
+      "implementation": "0x4336071f41e021aeebd9Cf4b3b91FB349098449d"
+    },
+    "IssuerControlledOracle": {
+      "proxy": "0xD30069114dFC83C714B04d6036dEfa64d2E9d583",
+      "implementation": "0x34E9149f84c36Fbf821B5428985dA456945ff896"
+    },
+    "ChainlinkFunctionsOracle": {
+      "proxy": "0x6a480c6F7553098f7B9b0b285EcB7207a93feC43",
+      "implementation": "0x732360067660fA99c16c9d10c8418bD594561900"
+    }
+  },
+  "tokens": {}
+}
