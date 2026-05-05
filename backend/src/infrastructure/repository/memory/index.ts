@@ -5,3 +5,7 @@ export { MemoryWithdrawalRepository } from './memory-withdrawal.repository.js';
 export { MemoryEscrowEventRepository } from './memory-escrow-event.repository.js';
 export { MemoryNonceRepository } from './memory-nonce.repository.js';
 export { MemoryYieldRecordRepository } from './memory-yield-record.repository.js';
+export { MemoryAgentStateRepository } from './memory-agent-state.repository.js';
+export { MemoryAgentAuditRepository } from './memory-agent-audit.repository.js';
+export { MemoryAgentCronStateRepository } from './memory-agent-cron-state.repository.js';
+export { MemoryAgentConfirmTokenRepository } from './memory-agent-confirm-token.repository.js';

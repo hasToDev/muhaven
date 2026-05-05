@@ -6,6 +6,7 @@ import {
   integer,
   numeric,
   jsonb,
+  boolean,
   index,
   uniqueIndex,
   primaryKey,
@@ -427,5 +428,141 @@ export const taxEvents = pgTable(
     index('tax_events_holder_address_idx').on(t.holderAddress),
     index('tax_events_token_address_idx').on(t.tokenAddress),
     index('tax_events_block_timestamp_idx').on(t.blockTimestamp),
+  ],
+);
+
+// ── Wave 4 Phase P1 — Tiered-autonomy engine ──────────────────────────
+//
+// Tables backing the agent state machine (ADR-0) and audit log. The
+// `agent_audit_events` table is append-only by contract — see
+// `IAgentAuditRepository`. Production deploys should additionally revoke
+// UPDATE/DELETE on this table at the Postgres role level.
+
+export const agentTierEnum = pgEnum('agent_tier', [
+  'advisory',
+  'confirm-per-action',
+  'policy-bound',
+  'paused',
+]);
+
+export const agentSurfaceEnum = pgEnum('agent_surface', [
+  'havenbot',
+  'mcp',
+  'openclaw',
+  'checkout',
+]);
+
+export const agentTriggerEnum = pgEnum('agent_trigger', [
+  'T-1-pause',
+  'T-2-drawdown',
+  'T-3-oracle',
+  'T-4-fhe-attest',
+  'T-5-kyc-revoke',
+  'T-6-account-recovery',
+  'T-7-session-ttl',
+]);
+
+export const agentAuditEventTypeEnum = pgEnum('agent_audit_event_type', [
+  'tier_changed',
+  'paused',
+  'resumed',
+  'cron_tick',
+  'confirm_token_issued',
+  'confirm_token_consumed',
+  'permit_granted',
+  'permit_revoked',
+  'validator_installed',
+  'validator_uninstalled',
+  'kyc_revocation_received',
+  'risk_questionnaire_complete',
+]);
+
+export const agentUserState = pgTable(
+  'agent_user_state',
+  {
+    userId: text('user_id')
+      .references(() => users.id)
+      .notNull(),
+    surface: agentSurfaceEnum('surface').notNull(),
+    tier: agentTierEnum('tier').notNull(),
+    pausedAt: timestamp('paused_at'),
+    pauseTrigger: agentTriggerEnum('pause_trigger'),
+    pauseMetadata: jsonb('pause_metadata'),
+    enteredAt: timestamp('entered_at').notNull(),
+    /** ZeroDev validator currently installed for the policy-bound tier. */
+    validatorAddress: text('validator_address'),
+    confirmedActionCount: integer('confirmed_action_count').notNull().default(0),
+    riskQuestionnaireComplete: boolean('risk_questionnaire_complete')
+      .notNull()
+      .default(false),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.surface] }),
+    index('agent_user_state_tier_surface_idx').on(t.tier, t.surface),
+    index('agent_user_state_user_id_idx').on(t.userId),
+  ],
+);
+
+export const agentAuditEvents = pgTable(
+  'agent_audit_events',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .references(() => users.id)
+      .notNull(),
+    surface: agentSurfaceEnum('surface').notNull(),
+    eventType: agentAuditEventTypeEnum('event_type').notNull(),
+    tierBefore: agentTierEnum('tier_before'),
+    tierAfter: agentTierEnum('tier_after'),
+    trigger: agentTriggerEnum('trigger'),
+    /** ActionId enum from ADR-1 (1=Buy, 2=Sell, 3=Claim, 4=Rebalance). */
+    actionId: integer('action_id'),
+    /**
+     * Event-specific JSON. NEVER store decrypted FHE values here — only
+     * handle hashes. See `THREAT_MODEL_P0.md` privacy boundary checklist.
+     */
+    metadata: jsonb('metadata'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('agent_audit_events_user_created_idx').on(t.userId, t.createdAt),
+    index('agent_audit_events_surface_created_idx').on(t.surface, t.createdAt),
+    index('agent_audit_events_event_type_idx').on(t.eventType),
+  ],
+);
+
+export const agentCronState = pgTable('agent_cron_state', {
+  id: text('id').primaryKey(),
+  lastTickAt: timestamp('last_tick_at'),
+  lastTickUserCount: integer('last_tick_user_count'),
+  lastTickBreachCount: integer('last_tick_breach_count'),
+  lastTickError: text('last_tick_error'),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+});
+
+export const agentConfirmTokenActionKindEnum = pgEnum(
+  'agent_confirm_token_action_kind',
+  ['tier_transition', 'pause', 'resume', 'permit_grant'],
+);
+
+export const agentConfirmTokens = pgTable(
+  'agent_confirm_tokens',
+  {
+    token: text('token').primaryKey(),
+    userId: text('user_id')
+      .references(() => users.id)
+      .notNull(),
+    actionKind: agentConfirmTokenActionKindEnum('action_kind').notNull(),
+    actionHash: text('action_hash').notNull(),
+    actionPayload: jsonb('action_payload').notNull(),
+    expiresAt: timestamp('expires_at').notNull(),
+    consumedAt: timestamp('consumed_at'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('agent_confirm_tokens_user_expires_idx').on(t.userId, t.expiresAt),
+    index('agent_confirm_tokens_action_hash_idx').on(t.actionHash, t.userId),
   ],
 );

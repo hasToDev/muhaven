@@ -1,0 +1,156 @@
+import { describe, it, expect } from 'vitest';
+import {
+  MIN_CONFIRMS_FOR_POLICY_BOUND,
+  requestUserTierChange,
+  resumeAfterPause,
+  triggerPause,
+} from '../state-machine.js';
+import { Tier } from '../tier.enum.js';
+import { Surface } from '../surface.enum.js';
+import { Trigger } from '../trigger.enum.js';
+import { AgentUserState } from '../agent-user-state.js';
+
+const NOW = new Date('2026-04-30T00:00:00.000Z');
+
+function freshState(overrides: Partial<AgentUserState> = {}): AgentUserState {
+  return new AgentUserState({
+    userId: 'u1',
+    surface: Surface.HavenBot,
+    tier: Tier.Advisory,
+    pausedAt: null,
+    pauseTrigger: null,
+    pauseMetadata: null,
+    enteredAt: NOW,
+    validatorAddress: null,
+    confirmedActionCount: 0,
+    riskQuestionnaireComplete: false,
+    createdAt: NOW,
+    updatedAt: NOW,
+    ...overrides,
+  });
+}
+
+describe('state-machine — allowed transitions', () => {
+  it('Advisory → ConfirmPerAction is always allowed', () => {
+    const s = freshState({ tier: Tier.Advisory });
+    const r = requestUserTierChange(s, Tier.ConfirmPerAction, { now: NOW });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.state.tier).toBe(Tier.ConfirmPerAction);
+  });
+
+  it('ConfirmPerAction → PolicyBound requires ≥5 confirms + risk Q&A', () => {
+    const s = freshState({
+      tier: Tier.ConfirmPerAction,
+      confirmedActionCount: MIN_CONFIRMS_FOR_POLICY_BOUND,
+      riskQuestionnaireComplete: true,
+    });
+    const r = requestUserTierChange(s, Tier.PolicyBound, { now: NOW });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.state.tier).toBe(Tier.PolicyBound);
+  });
+
+  it('PolicyBound → ConfirmPerAction is allowed (step-down)', () => {
+    const s = freshState({ tier: Tier.PolicyBound });
+    const r = requestUserTierChange(s, Tier.ConfirmPerAction, { now: NOW });
+    expect(r.ok).toBe(true);
+  });
+
+  it('ConfirmPerAction → Advisory is allowed (step-down)', () => {
+    const s = freshState({ tier: Tier.ConfirmPerAction });
+    const r = requestUserTierChange(s, Tier.Advisory, { now: NOW });
+    expect(r.ok).toBe(true);
+  });
+
+  it('PolicyBound → Advisory is allowed (step-down)', () => {
+    const s = freshState({ tier: Tier.PolicyBound });
+    const r = requestUserTierChange(s, Tier.Advisory, { now: NOW });
+    expect(r.ok).toBe(true);
+  });
+});
+
+describe('state-machine — forbidden transitions (ADR-0)', () => {
+  it('Advisory → PolicyBound is forbidden in Wave 4', () => {
+    const s = freshState({ tier: Tier.Advisory });
+    const r = requestUserTierChange(s, Tier.PolicyBound, { now: NOW });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('forbidden_transition');
+  });
+
+  it('ConfirmPerAction → PolicyBound without ≥5 confirms is rejected', () => {
+    const s = freshState({
+      tier: Tier.ConfirmPerAction,
+      confirmedActionCount: 4,
+      riskQuestionnaireComplete: true,
+    });
+    const r = requestUserTierChange(s, Tier.PolicyBound, { now: NOW });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('gate_failed_confirms');
+  });
+
+  it('ConfirmPerAction → PolicyBound without risk Q&A is rejected', () => {
+    const s = freshState({
+      tier: Tier.ConfirmPerAction,
+      confirmedActionCount: 5,
+      riskQuestionnaireComplete: false,
+    });
+    const r = requestUserTierChange(s, Tier.PolicyBound, { now: NOW });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('gate_failed_questionnaire');
+  });
+
+  it('any transition while paused is rejected — must call resume first', () => {
+    const s = freshState({ tier: Tier.Paused, pausedAt: NOW, pauseTrigger: Trigger.ExplicitPause });
+    const r = requestUserTierChange(s, Tier.Advisory, { now: NOW });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('gate_failed_already_paused');
+  });
+
+  it('cannot transition INTO paused via the user-tier-change path', () => {
+    const s = freshState({ tier: Tier.PolicyBound });
+    const r = requestUserTierChange(s, Tier.Paused, { now: NOW });
+    expect(r.ok).toBe(false);
+  });
+
+  it('rejecting a self-transition (advisory → advisory)', () => {
+    const s = freshState({ tier: Tier.Advisory });
+    const r = requestUserTierChange(s, Tier.Advisory, { now: NOW });
+    expect(r.ok).toBe(false);
+  });
+});
+
+describe('state-machine — pause/resume', () => {
+  it('triggerPause moves any tier into Paused with the trigger recorded', () => {
+    const s = freshState({ tier: Tier.PolicyBound });
+    const r = triggerPause(s, Trigger.DrawdownBreach, { source: 'cron' }, { now: NOW });
+    expect(r.ok).toBe(true);
+    expect(r.state.tier).toBe(Tier.Paused);
+    expect(r.state.pauseTrigger).toBe(Trigger.DrawdownBreach);
+    expect(r.state.pausedAt).toEqual(NOW);
+    expect(r.state.pauseMetadata).toEqual({ source: 'cron' });
+  });
+
+  it('resumeAfterPause lands paused users back in Advisory', () => {
+    const s = freshState({
+      tier: Tier.Paused,
+      pausedAt: NOW,
+      pauseTrigger: Trigger.ExplicitPause,
+      validatorAddress: '0xvalidator',
+    });
+    const r = resumeAfterPause(s, { now: NOW });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.state.tier).toBe(Tier.Advisory);
+      expect(r.state.pausedAt).toBeNull();
+      expect(r.state.pauseTrigger).toBeNull();
+      // validator address cleared — re-traverse Confirm → PolicyBound to remint
+      expect(r.state.validatorAddress).toBeNull();
+    }
+  });
+
+  it('resumeAfterPause refuses non-paused tiers', () => {
+    const s = freshState({ tier: Tier.PolicyBound });
+    const r = resumeAfterPause(s, { now: NOW });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('forbidden_transition');
+  });
+});

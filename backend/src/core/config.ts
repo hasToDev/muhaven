@@ -138,6 +138,14 @@ const EnvSchema = z.object({
   // Defaults to walking up to project root in dev; the Dockerfile bakes
   // artifacts into `/app/contracts-artifacts` for staging.
   MUHAVEN_ARTIFACTS_DIR: z.string().optional(),
+
+  // ── Wave 4 Phase P1 — Tiered-autonomy policy engine ────────────────
+  // The cron policy engine ticks every `AGENT_POLICY_CRON_INTERVAL_MS`
+  // (default 60s per ADR-0). When disabled the engine never fires —
+  // useful for dev environments without DB or for surfacing the cron
+  // exclusively via on-demand tick endpoints later.
+  AGENT_POLICY_CRON_ENABLED: z.coerce.boolean().default(false),
+  AGENT_POLICY_CRON_INTERVAL_MS: z.coerce.number().default(60_000),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

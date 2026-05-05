@@ -8,6 +8,11 @@ import { BlockchainEventPoller, NavWriterCron, TaxEventIndexer } from './infrast
 import { TokenRegistryHandler } from './infrastructure/blockchain/token-registry-handler.js';
 import { ProcessEscrowEventUseCase } from './application/use-case/webhook/process-escrow-event.use-case.js';
 import { container } from './infrastructure/container.js';
+import { PolicyEngineCron, StubRiskParamsAdapter } from './infrastructure/agent/index.js';
+import { GetPolicyStateUseCase } from './application/use-case/agent/policy/get-policy-state.use-case.js';
+import { AppendAuditEventUseCase } from './application/use-case/agent/policy/append-audit-event.use-case.js';
+import { PauseAgentUseCase } from './application/use-case/agent/policy/pause-agent.use-case.js';
+import { PolicyEngineTickUseCase } from './application/use-case/agent/policy/policy-engine-tick.use-case.js';
 import type { Address } from 'viem';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -389,6 +394,27 @@ async function main() {
 
       console.log(`[poller] Event poller started (interval: ${env.BLOCK_POLLER_INTERVAL_MS}ms)`);
     }
+  }
+
+  // Wave 4 P1 — agent policy engine cron (Tier=PolicyBound users only).
+  // The engine wires the StubRiskParamsAdapter for now; P6 swaps in the
+  // on-chain adapter that calls `RiskParams.checkAndExecute` + cofhejs
+  // `decryptForTx`.
+  if (env.AGENT_POLICY_CRON_ENABLED) {
+    const getPolicyState = new GetPolicyStateUseCase(container.agentStateRepo);
+    const appendAudit = new AppendAuditEventUseCase(container.agentAuditRepo);
+    const pauseAgent = new PauseAgentUseCase(container.agentStateRepo, getPolicyState, appendAudit);
+    const tick = new PolicyEngineTickUseCase(
+      container.agentStateRepo,
+      container.agentCronStateRepo,
+      new StubRiskParamsAdapter(),
+      pauseAgent,
+      appendAudit,
+    );
+    const cron = new PolicyEngineCron(tick, { intervalMs: env.AGENT_POLICY_CRON_INTERVAL_MS });
+    cron.start();
+    backgroundShutdown.push(() => cron.stop());
+    console.log(`[agent-policy] Started (interval: ${env.AGENT_POLICY_CRON_INTERVAL_MS}ms)`);
   }
 
   if (backgroundShutdown.length > 0) {

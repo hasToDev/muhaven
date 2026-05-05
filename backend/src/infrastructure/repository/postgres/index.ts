@@ -10,3 +10,7 @@ export { PgRwaTokenRepository } from './pg-rwa-token.repository.js';
 export { PgNavHistoryRepository } from './pg-nav-history.repository.js';
 export { PgTaxEventRepository } from './pg-tax-event.repository.js';
 export { PgIssuerTokenDeployRepository } from './pg-issuer-token-deploy.repository.js';
+export { PgAgentStateRepository } from './pg-agent-state.repository.js';
+export { PgAgentAuditRepository } from './pg-agent-audit.repository.js';
+export { PgAgentCronStateRepository } from './pg-agent-cron-state.repository.js';
+export { PgAgentConfirmTokenRepository } from './pg-agent-confirm-token.repository.js';

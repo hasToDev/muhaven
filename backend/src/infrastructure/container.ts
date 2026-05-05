@@ -6,6 +6,10 @@ import {
   MemoryWithdrawalRepository,
   MemoryEscrowEventRepository,
   MemoryYieldRecordRepository,
+  MemoryAgentStateRepository,
+  MemoryAgentAuditRepository,
+  MemoryAgentCronStateRepository,
+  MemoryAgentConfirmTokenRepository,
 } from './repository/memory/index.js';
 import {
   PgNonceRepository,
@@ -20,6 +24,10 @@ import {
   PgNavHistoryRepository,
   PgTaxEventRepository,
   PgIssuerTokenDeployRepository,
+  PgAgentStateRepository,
+  PgAgentAuditRepository,
+  PgAgentCronStateRepository,
+  PgAgentConfirmTokenRepository,
 } from './repository/postgres/index.js';
 import { getDb } from './repository/postgres/db.js';
 import { JwtService } from './auth/jwt.service.js';
@@ -45,6 +53,10 @@ import type { IRwaTokenRepository } from '../domain/token-registry/repository/rw
 import type { INavHistoryRepository } from '../domain/nav-history/repository/nav-history.repository.js';
 import type { ITaxEventRepository } from '../domain/tax-event/repository/tax-event.repository.js';
 import type { IIssuerTokenDeployRepository } from '../domain/issuer-onboarding/repository/issuer-token-deploy.repository.js';
+import type { IAgentStateRepository } from '../domain/agent/repository/agent-state.repository.js';
+import type { IAgentAuditRepository } from '../domain/agent/repository/agent-audit.repository.js';
+import type { IAgentCronStateRepository } from '../domain/agent/repository/agent-cron-state.repository.js';
+import type { IAgentConfirmTokenRepository } from '../domain/agent/repository/agent-confirm-token.repository.js';
 
 interface Repositories {
   nonceRepo: INonceRepository;
@@ -62,6 +74,13 @@ interface MuHavenRepositories {
   navHistoryRepo: INavHistoryRepository;
   taxEventRepo: ITaxEventRepository;
   issuerTokenDeployRepo: IIssuerTokenDeployRepository;
+}
+
+interface AgentRepositories {
+  agentStateRepo: IAgentStateRepository;
+  agentAuditRepo: IAgentAuditRepository;
+  agentCronStateRepo: IAgentCronStateRepository;
+  agentConfirmTokenRepo: IAgentConfirmTokenRepository;
 }
 
 function createMemoryRepos(): Repositories {
@@ -100,8 +119,28 @@ function createMuHavenRepos(): MuHavenRepositories {
   };
 }
 
+function createMemoryAgentRepos(): AgentRepositories {
+  return {
+    agentStateRepo: new MemoryAgentStateRepository(),
+    agentAuditRepo: new MemoryAgentAuditRepository(),
+    agentCronStateRepo: new MemoryAgentCronStateRepository(),
+    agentConfirmTokenRepo: new MemoryAgentConfirmTokenRepository(),
+  };
+}
+
+function createPostgresAgentRepos(): AgentRepositories {
+  const db = getDb();
+  return {
+    agentStateRepo: new PgAgentStateRepository(db),
+    agentAuditRepo: new PgAgentAuditRepository(db),
+    agentCronStateRepo: new PgAgentCronStateRepository(db),
+    agentConfirmTokenRepo: new PgAgentConfirmTokenRepository(db),
+  };
+}
+
 let _repos: Repositories | null = null;
 let _muhavenRepos: MuHavenRepositories | null = null;
+let _agentRepos: AgentRepositories | null = null;
 
 function getRepos(): Repositories {
   if (!_repos) {
@@ -116,6 +155,14 @@ function getMuHavenRepos(): MuHavenRepositories {
     _muhavenRepos = createMuHavenRepos();
   }
   return _muhavenRepos;
+}
+
+function getAgentRepos(): AgentRepositories {
+  if (!_agentRepos) {
+    const provider = getEnv().DB_PROVIDER;
+    _agentRepos = provider === 'postgres' ? createPostgresAgentRepos() : createMemoryAgentRepos();
+  }
+  return _agentRepos;
 }
 
 const jwtService = new JwtService();
@@ -226,6 +273,18 @@ export const container = {
   },
   get issuerTokenDeployRepo() {
     return getMuHavenRepos().issuerTokenDeployRepo;
+  },
+  get agentStateRepo() {
+    return getAgentRepos().agentStateRepo;
+  },
+  get agentAuditRepo() {
+    return getAgentRepos().agentAuditRepo;
+  },
+  get agentCronStateRepo() {
+    return getAgentRepos().agentCronStateRepo;
+  },
+  get agentConfirmTokenRepo() {
+    return getAgentRepos().agentConfirmTokenRepo;
   },
   get nonceService() {
     return new NonceService(getRepos().nonceRepo);
