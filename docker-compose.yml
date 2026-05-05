@@ -74,5 +74,22 @@ services:
       DATABASE_URL: postgresql://muhaven:${DB_PASSWORD:-muhaven}@postgres:5432/muhaven
     restart: unless-stopped
 
+  # Wave 4 P4 — Telegram bot worker. OpenClaw three-tier confirmation
+  # surface. Refuses to start without TELEGRAM_BOT_TOKEN +
+  # TELEGRAM_BOT_SERVICE_SECRET + TELEGRAM_WEBHOOK_SECRET_TOKEN; comment
+  # this block out to disable the integration entirely.
+  telegram-bot:
+    build: ./telegram-bot
+    ports:
+      - "3004:3004"
+    depends_on:
+      backend:
+        condition: service_started
+    env_file: ./telegram-bot/.env
+    environment:
+      PORT: 3004
+      TELEGRAM_BOT_BACKEND_URL: http://backend:3000
+    restart: unless-stopped
+
 volumes:
   pgdata:

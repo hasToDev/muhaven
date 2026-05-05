@@ -189,8 +189,28 @@ function toolJsonResponse(payload: unknown): { content: { type: 'text'; text: st
   };
 }
 
+/**
+ * Boot options for `runMcpStdioCli`.
+ *
+ * `filterRegistry` is the OpenClaw-shaped extension point: callers can
+ * supply a function that receives the post-`--read-only` registry and
+ * returns a (possibly narrower) subset. The bundled OpenClaw skill uses
+ * this to ship a curated 9-tool subset out of the 13-tool upstream
+ * surface (ADR-C). The filter MUST be a pure function; any side effect
+ * (mutation of the input array, network call, etc.) is unsupported.
+ *
+ * Tool-description hash verification fires BEFORE the filter — drift in
+ * an upstream descriptor must abort startup even if the consumer would
+ * have filtered the affected tool out. Otherwise an attacker who patches
+ * a single descriptor could hide it from the verification gate by
+ * shipping a subset filter that excludes only that tool.
+ */
+export interface RunMcpStdioCliOptions {
+  filterRegistry?: (registry: readonly ToolEntry[]) => readonly ToolEntry[];
+}
+
 /** Production STDIO entrypoint — wired through `bin/muhaven-mcp.cjs`. */
-export async function runMcpStdioCli(): Promise<void> {
+export async function runMcpStdioCli(opts: RunMcpStdioCliOptions = {}): Promise<void> {
   const config = loadMcpConfig();
 
   const pinned = await loadPinnedToolHashes();
@@ -215,7 +235,14 @@ export async function runMcpStdioCli(): Promise<void> {
     timeoutMs: config.requestTimeoutMs,
     allowedHosts: config.allowedBackendHosts,
   });
-  const registry = selectRegistry(config.readOnly);
+  const baseRegistry = selectRegistry(config.readOnly);
+  const registry = opts.filterRegistry ? opts.filterRegistry(baseRegistry) : baseRegistry;
+  if (registry.length === 0) {
+    process.stderr.write(
+      '[muhaven-mcp] tool registry is empty after filtering — refusing to start.\n',
+    );
+    process.exit(70);
+  }
 
   const server = buildMcpServer({
     registry,

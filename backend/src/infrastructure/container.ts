@@ -11,6 +11,9 @@ import {
   MemoryAgentCronStateRepository,
   MemoryAgentConfirmTokenRepository,
   MemoryAgentDeviceCodeRepository,
+  MemoryOpenClawIntentRepository,
+  MemoryTelegramLinkCodeRepository,
+  MemoryTelegramLinkRepository,
 } from './repository/memory/index.js';
 import {
   PgNonceRepository,
@@ -30,6 +33,9 @@ import {
   PgAgentCronStateRepository,
   PgAgentConfirmTokenRepository,
   PgAgentDeviceCodeRepository,
+  PgOpenClawIntentRepository,
+  PgTelegramLinkCodeRepository,
+  PgTelegramLinkRepository,
 } from './repository/postgres/index.js';
 import { getDb } from './repository/postgres/db.js';
 import { JwtService } from './auth/jwt.service.js';
@@ -60,6 +66,11 @@ import type { IAgentAuditRepository } from '../domain/agent/repository/agent-aud
 import type { IAgentCronStateRepository } from '../domain/agent/repository/agent-cron-state.repository.js';
 import type { IAgentConfirmTokenRepository } from '../domain/agent/repository/agent-confirm-token.repository.js';
 import type { IAgentDeviceCodeRepository } from '../domain/auth/repository/agent-device-code.repository.js';
+import type { IOpenClawIntentRepository } from '../domain/agent/repository/openclaw-intent.repository.js';
+import type {
+  ITelegramLinkCodeRepository,
+  ITelegramLinkRepository,
+} from '../domain/agent/repository/telegram-link.repository.js';
 
 interface Repositories {
   nonceRepo: INonceRepository;
@@ -85,6 +96,9 @@ interface AgentRepositories {
   agentCronStateRepo: IAgentCronStateRepository;
   agentConfirmTokenRepo: IAgentConfirmTokenRepository;
   agentDeviceCodeRepo: IAgentDeviceCodeRepository;
+  openclawIntentRepo: IOpenClawIntentRepository;
+  telegramLinkCodeRepo: ITelegramLinkCodeRepository;
+  telegramLinkRepo: ITelegramLinkRepository;
 }
 
 function createMemoryRepos(): Repositories {
@@ -130,6 +144,9 @@ function createMemoryAgentRepos(): AgentRepositories {
     agentCronStateRepo: new MemoryAgentCronStateRepository(),
     agentConfirmTokenRepo: new MemoryAgentConfirmTokenRepository(),
     agentDeviceCodeRepo: new MemoryAgentDeviceCodeRepository(),
+    openclawIntentRepo: new MemoryOpenClawIntentRepository(),
+    telegramLinkCodeRepo: new MemoryTelegramLinkCodeRepository(),
+    telegramLinkRepo: new MemoryTelegramLinkRepository(),
   };
 }
 
@@ -141,6 +158,9 @@ function createPostgresAgentRepos(): AgentRepositories {
     agentCronStateRepo: new PgAgentCronStateRepository(db),
     agentConfirmTokenRepo: new PgAgentConfirmTokenRepository(db),
     agentDeviceCodeRepo: new PgAgentDeviceCodeRepository(db),
+    openclawIntentRepo: new PgOpenClawIntentRepository(db),
+    telegramLinkCodeRepo: new PgTelegramLinkCodeRepository(db),
+    telegramLinkRepo: new PgTelegramLinkRepository(db),
   };
 }
 
@@ -294,6 +314,15 @@ export const container = {
   },
   get agentDeviceCodeRepo() {
     return getAgentRepos().agentDeviceCodeRepo;
+  },
+  get openclawIntentRepo() {
+    return getAgentRepos().openclawIntentRepo;
+  },
+  get telegramLinkCodeRepo() {
+    return getAgentRepos().telegramLinkCodeRepo;
+  },
+  get telegramLinkRepo() {
+    return getAgentRepos().telegramLinkRepo;
   },
   get nonceService() {
     return new NonceService(getRepos().nonceRepo);

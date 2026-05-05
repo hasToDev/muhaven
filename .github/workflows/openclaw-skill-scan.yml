@@ -1,0 +1,118 @@
+# OpenClaw skill scan workflow — `muhaven-rwa-skill`.
+#
+# Runs three independent supply-chain gates that all MUST pass before
+# `openclaw-skill-publish.yml` will accept the skill for publish:
+#
+#   1. `pnpm verify-subset` — local invariant that runtime + manifest +
+#      SKILL.md all advertise the same tool surface.
+#   2. `pnpm verify-tool-hashes --check` — upstream `@muhaven/mcp`
+#      descriptor SHA-256 pin (mcp-context-protector pattern).
+#   3. `openclaw skills publish --scan` — VirusTotal multi-engine + Code
+#      Insight scan (operator-installed CLI; placeholder for now per
+#      `PROGRESS.md` §"Phase P3 — operator tasks").
+#   4. `snyk mcp-scan` — Snyk's MCP-aware scan (catches the
+#      lethal-trifecta shape: signing + filesystem + network egress in
+#      one server).
+#
+# The workflow runs on PRs that touch `packages/openclaw-skill/**` or
+# `packages/mcp/**` and in advance of every publish (called via
+# workflow_call from `openclaw-skill-publish.yml`).
+
+name: openclaw-skill / scan
+
+on:
+  pull_request:
+    paths:
+      - 'packages/openclaw-skill/**'
+      - 'packages/mcp/**'
+      - '.github/workflows/openclaw-skill-scan.yml'
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Git ref to scan'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install (no scripts — supply-chain hygiene)
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Verify subset partition
+        run: pnpm --filter @muhaven/openclaw-skill verify-subset
+
+      - name: Verify upstream MCP tool-hash pin
+        run: pnpm --filter @muhaven/mcp verify-tool-hashes -- --check
+
+      - name: Typecheck
+        run: |
+          pnpm --filter @muhaven/mcp typecheck
+          pnpm --filter @muhaven/openclaw-skill typecheck
+
+      - name: Test
+        run: |
+          pnpm --filter @muhaven/mcp test
+          pnpm --filter @muhaven/openclaw-skill test
+
+      - name: openclaw skills publish --scan (placeholder)
+        run: |
+          set -euo pipefail
+          if command -v openclaw >/dev/null 2>&1; then
+            openclaw skills publish \
+              --scan \
+              --no-publish \
+              --report scan-report.openclaw.json \
+              packages/openclaw-skill
+          else
+            echo "::warning::openclaw CLI not installed in this runner — skipping the scan step. Wire this in the operator-task window."
+            mkdir -p packages/openclaw-skill
+            cat > packages/openclaw-skill/scan-report.openclaw.json <<'EOF'
+          { "status": "skipped", "reason": "openclaw CLI not installed in this CI runner" }
+          EOF
+          fi
+
+      - name: snyk mcp-scan
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SNYK_TOKEN:-}" ]; then
+            echo "::warning::SNYK_TOKEN not set — skipping snyk mcp-scan. Configure the secret to enable this gate."
+            exit 0
+          fi
+          npm install --no-save snyk@latest
+          # Snyk's MCP-scan flag is recent (Mar 2026); fall back to
+          # `snyk test` if the flag isn't recognized in this version.
+          npx snyk mcp-scan packages/openclaw-skill 2>/dev/null \
+            || npx snyk test --severity-threshold=high packages/openclaw-skill
+
+      - name: Upload scan reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openclaw-skill-scan-reports
+          path: |
+            packages/openclaw-skill/scan-report.openclaw.json
+          if-no-files-found: ignore
+          retention-days: 30

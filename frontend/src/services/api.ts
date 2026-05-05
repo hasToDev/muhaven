@@ -382,6 +382,71 @@ export interface DeviceLookupResponse {
   expiresAt: string
 }
 
+// ── OpenClaw / Telegram intent (Wave 4 P4) ──────────────────────────
+
+export interface OpenClawIntentSummary {
+  intentId: string
+  kind: 'buy' | 'claim'
+  tier: 'inline' | 'mini_app_otp' | 'passkey_deeplink'
+  status: 'pending' | 'confirmed' | 'consumed' | 'denied' | 'expired'
+  amountUsd6: string
+  payload: { token: string; summary: string; issuerLabel?: string; escrowId?: string }
+  intentHash: string
+  expiresAt: string
+  createdAt: string
+}
+
+export interface TelegramLinkIssueResponse {
+  linkCode: string
+  expiresInSec: number
+  botStartUrl: string | null
+}
+
+export const openClawApi = {
+  lookupIntent(intentId: string): Promise<OpenClawIntentSummary> {
+    return request(`/agent/openclaw/intent/lookup?intentId=${encodeURIComponent(intentId)}`, {
+      method: 'GET',
+      auth: true,
+    })
+  },
+
+  /**
+   * Confirm an intent. For >$5K (passkey_deeplink) tier the backend
+   * requires a non-empty `passkeyAssertion` blob — Wave 4 accepts a
+   * placeholder string ("wave4-stub"); Wave 5 swaps the value for a
+   * real WebAuthn assertion. The wire shape stays stable across the
+   * upgrade so callers can be migrated without an API break.
+   */
+  confirmIntent(
+    intentId: string,
+    opts?: { passkeyAssertion?: string },
+  ): Promise<{ intent: OpenClawIntentSummary }> {
+    return request('/agent/openclaw/intent/confirm', {
+      method: 'POST',
+      auth: true,
+      body: {
+        intentId,
+        ...(opts?.passkeyAssertion ? { passkeyAssertion: opts.passkeyAssertion } : {}),
+      },
+    })
+  },
+
+  denyIntent(intentId: string, reason?: string): Promise<{ intent: { intentId: string; status: string; deniedAt?: string } }> {
+    return request('/agent/openclaw/intent/deny', {
+      method: 'POST',
+      auth: true,
+      body: { intentId, ...(reason ? { reason } : {}) },
+    })
+  },
+
+  issueTelegramLink(): Promise<TelegramLinkIssueResponse> {
+    return request('/agent/openclaw/link/issue', {
+      method: 'POST',
+      auth: true,
+    })
+  },
+}
+
 export const deviceFlowApi = {
   /**
    * Look up a pending device-code's requesterMetadata so the /link page

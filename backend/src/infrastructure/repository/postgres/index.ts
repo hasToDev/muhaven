@@ -15,3 +15,8 @@ export { PgAgentAuditRepository } from './pg-agent-audit.repository.js';
 export { PgAgentCronStateRepository } from './pg-agent-cron-state.repository.js';
 export { PgAgentConfirmTokenRepository } from './pg-agent-confirm-token.repository.js';
 export { PgAgentDeviceCodeRepository } from './pg-agent-device-code.repository.js';
+export { PgOpenClawIntentRepository } from './pg-openclaw-intent.repository.js';
+export {
+  PgTelegramLinkCodeRepository,
+  PgTelegramLinkRepository,
+} from './pg-telegram-link.repository.js';

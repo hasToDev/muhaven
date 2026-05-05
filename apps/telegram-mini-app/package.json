@@ -1,0 +1,23 @@
+{
+  "name": "@muhaven/telegram-mini-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Telegram Mini App for the MuHaven OpenClaw mid-tier ($200–$5K) confirmation surface. Renders intent preview + 6-digit OTP entry; backend HMAC-verifies tgWebAppData on submit.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22",
+    "typescript": "^5.7",
+    "vite": "^5.4.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}

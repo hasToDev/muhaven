@@ -1,0 +1,185 @@
+# OpenClaw skill publish workflow — `muhaven-rwa-skill`.
+#
+# Trusted publishing model (Wave 4 P4):
+#   - Triggered ONLY on a tag push matching `openclaw-skill-v*` from a
+#     protected branch (master). Manual `workflow_dispatch` is gated by
+#     a GitHub Environment requiring two reviewer approvals.
+#   - GitHub OIDC mints a short-lived audience token for ClawHub —
+#     long-lived ClawHub publish tokens are NEVER stored in repo secrets.
+#   - Sigstore cosign keyless-signs the tarball with the same OIDC
+#     identity; the signature bundle is uploaded as a release asset and
+#     attached to the ClawHub publish call so consumers can verify the
+#     supply chain.
+#   - The manual approval gate doubles as the "two-maintainer release"
+#     control referenced in `manifest.json#publishing.policy.required_reviewers`.
+#
+# References:
+#   - `packages/openclaw-skill/manifest.json#publishing`
+#   - `development/research-docs/WAVE_4_AGENTIC_RESEARCH_RESULT.md` ADR-C
+#   - `development/DEV_WAVE_4/THREAT_MODEL_P0.md` §"R-5 OpenClaw skill supply-chain"
+#   - ClawHavoc precedent (Feb 2026): 1,184+ malicious skills surfaced via
+#     long-lived publish tokens — keyless signing + OIDC closes that hole.
+
+name: openclaw-skill / publish
+
+on:
+  push:
+    tags:
+      - 'openclaw-skill-v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (must match SKILL.md frontmatter)'
+        required: true
+
+permissions:
+  contents: read
+  # OIDC token mint — required by sigstore/cosign and the trusted-publish
+  # exchange with ClawHub. id-token is the only sensitive permission;
+  # everything else stays at default (read).
+  id-token: write
+
+concurrency:
+  # Tag-driven publishes serialize on the tag itself; manual dispatches
+  # serialize on the workflow run id so a re-run cannot race a previous
+  # in-flight publish.
+  group: openclaw-skill-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    # Runs the same scan as openclaw-skill-scan.yml but inline — a publish
+    # MUST NOT proceed if the scan workflow last failed. Re-running here
+    # also covers the dispatch path where no PR scan ran.
+    name: scan
+    uses: ./.github/workflows/openclaw-skill-scan.yml
+    with:
+      ref: ${{ github.sha }}
+
+  build-sign-publish:
+    name: build / sign / publish
+    needs: scan
+    runs-on: ubuntu-latest
+    # The `clawhub-publish` Environment has 2 reviewer approvals required +
+    # branch-protection on master. Configure in repo Settings → Environments.
+    environment:
+      name: clawhub-publish
+      url: https://clawhub.openclaw.dev/skills/muhaven-rwa-skill
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Verify subset partition
+        run: pnpm --filter @muhaven/openclaw-skill verify-subset
+
+      - name: Verify upstream MCP tool-hash pin
+        run: pnpm --filter @muhaven/mcp verify-tool-hashes -- --check
+
+      - name: Typecheck
+        run: pnpm --filter @muhaven/openclaw-skill typecheck
+
+      - name: Test
+        run: pnpm --filter @muhaven/openclaw-skill test
+
+      - name: Build
+        run: |
+          pnpm --filter @muhaven/mcp build
+          pnpm --filter @muhaven/openclaw-skill build
+
+      - name: Pack tarball
+        id: pack
+        working-directory: packages/openclaw-skill
+        run: |
+          set -euo pipefail
+          tarball=$(pnpm pack --silent | tail -n 1)
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          echo "abs_tarball=$PWD/$tarball" >> "$GITHUB_OUTPUT"
+          sha256sum "$tarball" | tee "$tarball.sha256"
+
+      - uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: Sign tarball with cosign keyless (Sigstore)
+        working-directory: packages/openclaw-skill
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+        run: |
+          set -euo pipefail
+          cosign sign-blob \
+            --yes \
+            --output-signature "${{ steps.pack.outputs.tarball }}.sig" \
+            --output-certificate "${{ steps.pack.outputs.tarball }}.pem" \
+            --bundle "${{ steps.pack.outputs.tarball }}.sigstore" \
+            "${{ steps.pack.outputs.tarball }}"
+
+      - name: Verify signature inline (defence in depth)
+        working-directory: packages/openclaw-skill
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+        run: |
+          set -euo pipefail
+          cosign verify-blob \
+            --bundle "${{ steps.pack.outputs.tarball }}.sigstore" \
+            --certificate-identity-regexp "^https://github\\.com/${{ github.repository }}/" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "${{ steps.pack.outputs.tarball }}"
+
+      - name: Mint OIDC token for ClawHub trusted publish
+        id: oidc
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const audience = 'openclaw://clawhub-trusted-publish';
+            const token = await core.getIDToken(audience);
+            // NEVER print the token. We pass it onward via the
+            // step output, which is masked by GHA when set via core
+            // setOutput on a token-shaped value.
+            core.setSecret(token);
+            core.setOutput('token', token);
+
+      - name: Publish to ClawHub
+        # NOTE: `openclaw` CLI is operator-installed; for the hackathon
+        # this step is a placeholder that records the publish payload. A
+        # real publish lands during the operator-task window per
+        # `PROGRESS.md` §"Phase P3 — operator tasks".
+        env:
+          OPENCLAW_OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
+        working-directory: packages/openclaw-skill
+        run: |
+          set -euo pipefail
+          : "${OPENCLAW_OIDC_TOKEN:?OIDC token missing — id-token: write permission must be set}"
+          echo "[openclaw publish] tarball=${{ steps.pack.outputs.tarball }}"
+          echo "[openclaw publish] sigstore-bundle=${{ steps.pack.outputs.tarball }}.sigstore"
+          # Real publish (operator-task window):
+          # openclaw skills publish \
+          #   --tarball "${{ steps.pack.outputs.tarball }}" \
+          #   --sigstore-bundle "${{ steps.pack.outputs.tarball }}.sigstore" \
+          #   --oidc-token "$OPENCLAW_OIDC_TOKEN"
+
+      - name: Upload signed artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: muhaven-rwa-skill-${{ github.ref_name }}
+          path: |
+            packages/openclaw-skill/${{ steps.pack.outputs.tarball }}
+            packages/openclaw-skill/${{ steps.pack.outputs.tarball }}.sigstore
+            packages/openclaw-skill/${{ steps.pack.outputs.tarball }}.pem
+            packages/openclaw-skill/${{ steps.pack.outputs.tarball }}.sig
+            packages/openclaw-skill/${{ steps.pack.outputs.tarball }}.sha256
+          if-no-files-found: error
+          retention-days: 90

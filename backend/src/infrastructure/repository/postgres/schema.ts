@@ -631,3 +631,110 @@ export const agentDeviceCodes = pgTable(
     index('agent_device_codes_expires_idx').on(t.expiresAt),
   ],
 );
+
+// ────────────────────────────────────────────────────────────────────────
+// OpenClaw confirmation intents (Wave 4 P4)
+//
+// Each intent represents a state-mutating action staged by the OpenClaw
+// skill / Telegram surface. Tier is computed at mint time and locked into
+// the row so a malicious caller cannot lower it after the fact. Status
+// only flips forward; production deploys should add a Postgres trigger
+// to enforce the transition at the row level (Wave 5).
+
+export const openclawIntentKindEnum = pgEnum('openclaw_intent_kind', ['buy', 'claim']);
+
+export const openclawIntentTierEnum = pgEnum('openclaw_intent_tier', [
+  'inline',
+  'mini_app_otp',
+  'passkey_deeplink',
+]);
+
+export const openclawIntentStatusEnum = pgEnum('openclaw_intent_status', [
+  'pending',
+  'confirmed',
+  'consumed',
+  'denied',
+  'expired',
+]);
+
+export const openclawIntents = pgTable(
+  'openclaw_intents',
+  {
+    /** ULID-shaped intent id. */
+    intentId: text('intent_id').primaryKey(),
+    userId: text('user_id')
+      .references(() => users.id)
+      .notNull(),
+    kind: openclawIntentKindEnum('kind').notNull(),
+    tier: openclawIntentTierEnum('tier').notNull(),
+    status: openclawIntentStatusEnum('status').notNull().default('pending'),
+    /** USDC 6-decimal — text to preserve bigint precision through Postgres NUMERIC. */
+    amountUsd6: numeric('amount_usd6', { precision: 30, scale: 0 }).notNull(),
+    payload: jsonb('payload').notNull(),
+    /** Deterministic hash of (kind, payload, userId, createdAtSec). */
+    intentHash: text('intent_hash').notNull(),
+    /**
+     * 6-digit OTP for the mini_app_otp tier; null otherwise. Stored in
+     * cleartext — short TTL (~5 min) and only valid for one consume.
+     */
+    otp: text('otp'),
+    telegramChatId: text('telegram_chat_id'),
+    confirmedAt: timestamp('confirmed_at'),
+    consumedAt: timestamp('consumed_at'),
+    deniedAt: timestamp('denied_at'),
+    denyReason: text('deny_reason'),
+    expiresAt: timestamp('expires_at').notNull(),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('openclaw_intents_user_created_idx').on(t.userId, t.createdAt),
+    index('openclaw_intents_status_idx').on(t.status),
+    index('openclaw_intents_telegram_chat_idx').on(t.telegramChatId),
+    index('openclaw_intents_expires_idx').on(t.expiresAt),
+  ],
+);
+
+// ────────────────────────────────────────────────────────────────────────
+// Telegram-account ↔ MuHaven-user link (Wave 4 P4)
+
+export const telegramLinkCodes = pgTable(
+  'telegram_link_codes',
+  {
+    linkCode: text('link_code').primaryKey(),
+    userId: text('user_id')
+      .references(() => users.id)
+      .notNull(),
+    expiresAt: timestamp('expires_at').notNull(),
+    consumedAt: timestamp('consumed_at'),
+    consumedByChatId: text('consumed_by_chat_id'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('telegram_link_codes_user_id_idx').on(t.userId),
+    index('telegram_link_codes_expires_idx').on(t.expiresAt),
+  ],
+);
+
+export const telegramLinks = pgTable(
+  'telegram_links',
+  {
+    telegramChatId: text('telegram_chat_id').primaryKey(),
+    /** Telegram user.id — verified at link time AND on every Mini App
+     *  initData hash check. Distinct from chat.id because the protocol
+     *  does not guarantee equality (private chat == ; group chat ≠). */
+    telegramUserId: text('telegram_user_id').notNull(),
+    userId: text('user_id')
+      .references(() => users.id)
+      .notNull(),
+    telegramUsername: text('telegram_username'),
+    linkedAt: timestamp('linked_at').notNull().defaultNow(),
+    unlinkedAt: timestamp('unlinked_at'),
+    lastActiveAt: timestamp('last_active_at'),
+  },
+  (t) => [
+    index('telegram_links_user_id_idx').on(t.userId),
+    index('telegram_links_tg_user_id_idx').on(t.telegramUserId),
+    index('telegram_links_unlinked_idx').on(t.unlinkedAt),
+  ],
+);

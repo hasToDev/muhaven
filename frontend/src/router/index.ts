@@ -129,6 +129,14 @@ const router = createRouter({
       component: () => import('@/views/auth/LinkDevicePage.vue'),
       meta: { title: 'Link device', layout: 'login' },
     },
+    // OpenClaw intent confirmation (Wave 4 P4 cross-branch exception).
+    // >$5K passkey-deeplink tier from Telegram lands here. Mirrors the
+    // /link page shape — leaf auth surface, NOT mounted under /agent/*.
+    {
+      path: '/agent/confirm',
+      component: () => import('@/views/auth/ConfirmIntentPage.vue'),
+      meta: { title: 'Confirm intent', layout: 'login' },
+    },
   ],
 })
 
@@ -155,7 +163,18 @@ const INVESTOR_ROUTES = new Set([
 // finish KYB. `/cash` stays open because it's the dual-role landing
 // surface and forcing it off-limits would trap them with no
 // orientation point.
-const UNAPPROVED_ISSUER_ALLOWLIST = new Set(['/apply-issuer', '/agent', '/cash'])
+// Wave 4 P4 port-time hardening: `/agent/confirm` (P4) + `/link` (P3)
+// are leaf auth-landing surfaces driven from cross-process deeplinks
+// (Telegram bot for /agent/confirm, MCP broker for /link). Bouncing an
+// unapproved issuer to /apply-issuer here lets a pending intent / device
+// code expire silently. Same carve-out reasoning as `/agent` itself.
+const UNAPPROVED_ISSUER_ALLOWLIST = new Set([
+  '/apply-issuer',
+  '/agent',
+  '/agent/confirm',
+  '/link',
+  '/cash',
+])
 
 // Auth guard — redirect unauthenticated users to /login
 router.beforeEach(async (to) => {

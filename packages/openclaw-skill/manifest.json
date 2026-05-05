@@ -1,0 +1,181 @@
+{
+  "$comment": "OpenClaw skill manifest for muhaven-rwa-skill. Mirrors the SKILL.md frontmatter in machine-readable form. ClawSecure permissions block is forward-compatible with NemoClaw runtime sandbox (OpenClaw issues #28298 / #28360). Network deny-by-default + filesystem deny-all + spawn deny-all is the lethal-trifecta defense (P8 forthcoming).",
+  "schema_version": "1.0",
+  "name": "muhaven-rwa-skill",
+  "display_name": "MuHaven RWA Portfolio",
+  "version": "0.1.0",
+  "description": "Confidential RWA portfolio agent on Fhenix CoFHE. Reads encrypted balances, stages buy + claim intents, never auto-submits. Three-tier confirmation surface (inline / Mini App OTP / passkey deep-link) keyed on intent notional.",
+  "license": "MIT",
+  "homepage": "https://muhaven.app",
+  "documentation": "https://github.com/hasToDev/muhaven/tree/master/packages/openclaw-skill",
+  "support": "https://github.com/hasToDev/muhaven/issues",
+  "icon": "icon.png",
+  "keywords": [
+    "fhe",
+    "fhenix",
+    "rwa",
+    "muhaven",
+    "openclaw",
+    "confidential-defi",
+    "erc-3643"
+  ],
+  "authors": [
+    {
+      "name": "MuHaven",
+      "email": "hello@muhaven.app",
+      "url": "https://muhaven.app"
+    }
+  ],
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "node": ">=20"
+    },
+    "openclaw_runtime": {
+      "min": "0.4.0",
+      "tested": "0.5.x"
+    }
+  },
+  "runtime": {
+    "type": "node",
+    "entry_point": "dist/index.cjs",
+    "args": []
+  },
+  "permissions": {
+    "network": {
+      "deny_default": true,
+      "egress_allowlist": [
+        "https://nagreg.hasto.dev",
+        "https://muhaven.hasto.dev",
+        "https://muhaven.app"
+      ],
+      "ingress_listen": []
+    },
+    "filesystem": {
+      "read": [],
+      "write": []
+    },
+    "process": {
+      "spawn": [],
+      "stdio": "manifest_only"
+    },
+    "secrets": {
+      "storage": "os_keychain",
+      "deny_paste_ui": true,
+      "references": [
+        {
+          "name": "muhaven_jwt",
+          "owner": "muhaven-broker",
+          "scope": ["mcp.read.*", "mcp.propose.*"]
+        }
+      ]
+    },
+    "telemetry": {
+      "deny_default": true
+    }
+  },
+  "sandbox": {
+    "runtime": "nemoclaw",
+    "fallback": "host_native",
+    "$comment_forward_compat": "Per OpenClaw issues #28298 (permissions schema) and #28360 (sandbox boot ABI). When the runtime doesn't recognize a field, it MUST treat unknown permissions as deny — not allow. Verified on NemoClaw 0.5.0 release notes."
+  },
+  "mcp": {
+    "transport": "stdio",
+    "command": "node",
+    "args": ["${__dirname}/dist/index.cjs"],
+    "env": {
+      "MUHAVEN_BACKEND_URL": "${user_config.backend_url}",
+      "MUHAVEN_DASHBOARD_URL": "${user_config.dashboard_url}",
+      "MUHAVEN_BROKER_ENDPOINT": "${user_config.broker_endpoint}",
+      "MUHAVEN_READ_ONLY": "${user_config.read_only}",
+      "MUHAVEN_OPENCLAW_SKILL_VERSION": "0.1.0"
+    },
+    "tool_subset": [
+      "muhaven.read.portfolio",
+      "muhaven.read.yields",
+      "muhaven.read.distribution",
+      "muhaven.read.tokens",
+      "muhaven.read.audit",
+      "muhaven.position.buy",
+      "muhaven.position.claim",
+      "muhaven.policy.pause",
+      "muhaven.policy.session_key_status"
+    ],
+    "tool_subset_excluded": [
+      "muhaven.position.sell",
+      "muhaven.position.rebalance",
+      "muhaven.policy.set_tier",
+      "muhaven.policy.audit_export"
+    ]
+  },
+  "tools": [
+    { "name": "muhaven.read.portfolio", "description": "Encrypted-balance portfolio summary; aggregates only.", "sensitive": false },
+    { "name": "muhaven.read.yields", "description": "Per-token yield history (cleartext aggregates).", "sensitive": false },
+    { "name": "muhaven.read.distribution", "description": "Distribution status for a (token, epoch).", "sensitive": false },
+    { "name": "muhaven.read.tokens", "description": "RWA tokens the user holds.", "sensitive": false },
+    { "name": "muhaven.read.audit", "description": "User's tiered-autonomy audit log.", "sensitive": false },
+    { "name": "muhaven.position.buy", "description": "Stage a Subscription buy — emits intent for three-tier confirmation. NEVER auto-submits.", "sensitive": true },
+    { "name": "muhaven.position.claim", "description": "Stage a yield claim — emits intent for three-tier confirmation. NEVER auto-submits.", "sensitive": true },
+    { "name": "muhaven.policy.pause", "description": "Activate /pause kill-switch (uninstallPlugin).", "sensitive": true },
+    { "name": "muhaven.policy.session_key_status", "description": "Inspect ZeroDev session-key state.", "sensitive": false }
+  ],
+  "user_config": [
+    {
+      "key": "backend_url",
+      "type": "string",
+      "title": "MuHaven backend URL",
+      "description": "Backend host. Default: https://nagreg.hasto.dev (production).",
+      "default": "https://nagreg.hasto.dev",
+      "sensitive": false
+    },
+    {
+      "key": "dashboard_url",
+      "type": "string",
+      "title": "MuHaven dashboard URL",
+      "description": "Dashboard origin used by deep-link confirmations and the device-code authorization page (/link). Hardcoded for phishing resistance — do not change unless you know what you are doing.",
+      "default": "https://muhaven.hasto.dev",
+      "sensitive": false
+    },
+    {
+      "key": "broker_endpoint",
+      "type": "string",
+      "title": "muhaven-broker IPC endpoint",
+      "description": "Path to the broker's Unix socket (POSIX) or named pipe (Windows). Leave blank for the per-user default.",
+      "default": "",
+      "sensitive": false
+    },
+    {
+      "key": "read_only",
+      "type": "boolean",
+      "title": "Read-only mode",
+      "description": "When enabled, only the muhaven.read.* toolset is exposed; position.* and policy.* tools are not registered.",
+      "default": false,
+      "sensitive": false
+    }
+  ],
+  "publishing": {
+    "registry": "clawhub",
+    "trusted_publishing": {
+      "provider": "github",
+      "repository": "hasToDev/muhaven",
+      "workflow": ".github/workflows/openclaw-skill-publish.yml",
+      "oidc_audience": "openclaw://clawhub-trusted-publish"
+    },
+    "signing": {
+      "provider": "sigstore",
+      "transparency_log": "rekor.sigstore.dev",
+      "expected_artifact": "muhaven-rwa-skill-${version}.tgz",
+      "expected_bundle": "muhaven-rwa-skill-${version}.tgz.sigstore"
+    },
+    "policy": {
+      "required_reviewers": 2,
+      "block_unsigned": true,
+      "block_unscanned": true
+    }
+  },
+  "scanning": {
+    "openclaw_skills_publish_scan": true,
+    "snyk_mcp_scan": true,
+    "scan_artifact": "scan-report.json"
+  }
+}

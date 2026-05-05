@@ -1,0 +1,173 @@
+/* MuHaven Telegram Mini App — minimal, system-font, dark-aware. */
+
+:root {
+  color-scheme: light dark;
+  --bg: var(--tg-theme-bg-color, #ffffff);
+  --fg: var(--tg-theme-text-color, #1a1d1f);
+  --muted: var(--tg-theme-hint-color, #758995);
+  --accent: var(--tg-theme-button-color, #b8860b);
+  --accent-fg: var(--tg-theme-button-text-color, #ffffff);
+  --border: var(--tg-theme-section-separator-color, rgba(0, 0, 0, 0.08));
+  --link: var(--tg-theme-link-color, #b8860b);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font:
+    16px/1.5 system-ui,
+    -apple-system,
+    Segoe UI,
+    Roboto,
+    sans-serif;
+  min-height: 100vh;
+}
+
+main {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 100vh;
+}
+
+main[data-state='loading'] section,
+main[data-state='loading'] footer {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.brand {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+}
+
+.logo {
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.origin {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+#intent-preview h1 {
+  font-size: 18px;
+  margin: 0 0 12px;
+}
+
+dl.meta {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  gap: 6px 12px;
+  margin: 0 0 16px;
+}
+
+dl.meta div {
+  display: contents;
+}
+
+dl.meta dt {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+dl.meta dd {
+  margin: 0;
+  font-size: 14px;
+  word-break: break-all;
+}
+
+.summary {
+  background: rgba(184, 134, 11, 0.08);
+  border-left: 3px solid var(--accent);
+  padding: 10px 12px;
+  border-radius: 4px;
+  font-size: 14px;
+  color: var(--fg);
+}
+
+label {
+  display: block;
+  margin-top: 16px;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+input#otp {
+  display: block;
+  width: 100%;
+  padding: 14px;
+  margin-top: 6px;
+  font-size: 22px;
+  letter-spacing: 0.5em;
+  text-align: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 6px 0 0;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+button {
+  flex: 1;
+  padding: 14px;
+  border-radius: 8px;
+  border: none;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+button.primary {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+button.secondary {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+
+#status {
+  text-align: center;
+  padding: 32px 16px;
+}
+
+.status-text {
+  font-size: 16px;
+}
+
+.footnote {
+  margin-top: auto;
+  font-size: 11px;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}

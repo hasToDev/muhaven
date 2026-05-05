@@ -9,7 +9,11 @@
  * embeddings) reach the building blocks without spawning a subprocess.
  */
 
-export { runMcpStdioCli, buildMcpServer } from './server.js';
+export {
+  runMcpStdioCli,
+  buildMcpServer,
+  type RunMcpStdioCliOptions,
+} from './server.js';
 export {
   loadMcpConfig,
   loadBrokerConfig,

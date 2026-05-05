@@ -159,6 +159,22 @@ const EnvSchema = z.object({
   // Per ADR-1 §"AgentPermit"; this EOA is also the platform owner from
   // the perspective of `consumeAgentPermit` and `settleBreachDecrypt`.
   AGENT_POLICY_PRIVATE_KEY: z.string().optional(),
+
+  // ── Wave 4 Phase P4 — OpenClaw / Telegram surface ──────────────────
+  // Shared secret presented by the `telegram-bot/` worker on every
+  // service-to-service call into the backend (`/api/v1/agent/openclaw/*`
+  // worker-shaped routes). Min 32 chars (we enforce 16 in the middleware
+  // for tests, 32+ in production env). Empty disables the worker integration
+  // entirely — the routes return 503 instead of accepting unauthenticated
+  // calls.
+  TELEGRAM_BOT_SERVICE_SECRET: z.string().optional(),
+  /** Bot token used to verify Mini App initData HMAC. Same string the
+   *  telegram-bot/ worker holds as TELEGRAM_BOT_TOKEN. */
+  TELEGRAM_BOT_TOKEN: z.string().optional(),
+  /** Telegram bot username (without `@`) used to render the t.me link. */
+  TELEGRAM_BOT_USERNAME: z.string().optional(),
+  /** Public Mini App URL ("web_app" target on the inline keyboard). */
+  TELEGRAM_MINI_APP_URL: z.string().optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

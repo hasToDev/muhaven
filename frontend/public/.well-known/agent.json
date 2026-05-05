@@ -1,0 +1,171 @@
+{
+  "$comment": "A2A Agent Card for MuHaven (Wave 4 P4). Discovery-only — A2A is NOT used as a payment rail (research §6: Google AP2 integrates with x402, doesn't replace it). External agents (VibeKit, Google ADK) can use this card to discover MuHaven's tool surface and confirmation contract.",
+  "schema_version": "1.0",
+  "protocol_version": "a2a/1.0",
+  "name": "MuHaven RWA Portfolio Agent",
+  "short_name": "MuHaven",
+  "description": "Confidential real-world-asset (RWA) portfolio management on Fhenix CoFHE. Investors hold encrypted token balances and receive yield privately. The agent reads encrypted positions, drafts buys + claims, and submits via three-tier confirmation (inline Telegram callback, Mini App OTP, dashboard passkey). NEVER auto-submits funds-moving operations without user-side cryptographic confirmation.",
+  "version": "0.1.0",
+  "url": "https://muhaven.hasto.dev/.well-known/agent.json",
+  "homepage": "https://muhaven.app",
+  "documentation": "https://github.com/hasToDev/muhaven#readme",
+  "support": "https://github.com/hasToDev/muhaven/issues",
+  "icon": "https://muhaven.hasto.dev/logo.png",
+  "license": "MIT",
+  "provider": {
+    "name": "MuHaven",
+    "url": "https://muhaven.app",
+    "contact": "hello@muhaven.app"
+  },
+  "capabilities": {
+    "streaming": true,
+    "push_notifications": false,
+    "state_transition_history": true,
+    "extensions": ["fhe-encrypted-balances", "tiered-autonomy", "tiered-confirmation"]
+  },
+  "default_input_modes": ["text/plain", "application/json"],
+  "default_output_modes": ["text/plain", "application/json"],
+  "auth": {
+    "schemes": [
+      {
+        "type": "oauth2",
+        "flow": "device_authorization_grant",
+        "rfc": "RFC 8628",
+        "authorization_url": "https://muhaven.hasto.dev/link",
+        "token_url": "https://nagreg.hasto.dev/api/v1/auth/device/token",
+        "device_code_url": "https://nagreg.hasto.dev/api/v1/auth/device/code",
+        "scopes": ["mcp.read.*", "mcp.propose.*"],
+        "$comment_a2a_pay": "AP2-style payment delegation is NOT supported in this card. MuHaven enforces three-tier confirmation server-side; an A2A peer cannot bypass the confirmation surface."
+      }
+    ]
+  },
+  "skills": [
+    {
+      "id": "read.portfolio",
+      "name": "Read encrypted portfolio",
+      "description": "Return the authenticated investor's encrypted-balance portfolio summary. Output exposes only public aggregates (token list, ebool isOverexposed / isUnderYield handles); decrypted balances are NEVER included.",
+      "tags": ["read", "fhe", "portfolio"],
+      "input_modes": ["application/json"],
+      "output_modes": ["application/json"]
+    },
+    {
+      "id": "read.yields",
+      "name": "Read yield history",
+      "description": "Return per-token yield history (cleartext aggregates only — distribution dates, total funded amounts, epoch numbers).",
+      "tags": ["read", "yields"],
+      "input_modes": ["application/json"],
+      "output_modes": ["application/json"]
+    },
+    {
+      "id": "read.distribution",
+      "name": "Read distribution status",
+      "description": "Return distribution status for a (token, epoch). Cleartext aggregates only.",
+      "tags": ["read", "distribution"],
+      "input_modes": ["application/json"],
+      "output_modes": ["application/json"]
+    },
+    {
+      "id": "read.tokens",
+      "name": "List held RWA tokens",
+      "description": "List the RWA tokens the authenticated user holds (token addresses + symbols + decimals).",
+      "tags": ["read", "tokens"],
+      "input_modes": ["application/json"],
+      "output_modes": ["application/json"]
+    },
+    {
+      "id": "read.audit",
+      "name": "Read agent audit log",
+      "description": "Return the user's tiered-autonomy audit log entries. Cursor-paginated.",
+      "tags": ["read", "audit", "compliance"],
+      "input_modes": ["application/json"],
+      "output_modes": ["application/json"]
+    },
+    {
+      "id": "position.buy",
+      "name": "Stage buy intent",
+      "description": "PROPOSE a Subscription buy. Returns an unsigned UserOp envelope routed through the three-tier confirmation surface based on intent notional. NEVER auto-submits.",
+      "tags": ["propose", "position", "buy"],
+      "input_modes": ["application/json"],
+      "output_modes": ["application/json"],
+      "examples": [
+        "Buy $200 of TBILL-A — routes to Telegram inline confirm",
+        "Buy $1500 of TBILL-A — routes to Mini App + 6-digit OTP",
+        "Buy $25000 of TBILL-A — routes to dashboard passkey deep-link"
+      ]
+    },
+    {
+      "id": "position.claim",
+      "name": "Stage claim intent",
+      "description": "PROPOSE a yield claim from RedemptionQueue / YieldSnapshot. Returns an unsigned UserOp envelope. Idempotent — proposing twice produces the same intent hash.",
+      "tags": ["propose", "position", "claim"],
+      "input_modes": ["application/json"],
+      "output_modes": ["application/json"]
+    },
+    {
+      "id": "policy.pause",
+      "name": "Pause kill-switch",
+      "description": "Activate the /pause kill-switch — uninstalls the on-chain @zerodev/permissions validator. Cascade-mode pauses every Wave 4 surface.",
+      "tags": ["policy", "pause", "kill-switch"],
+      "input_modes": ["application/json"],
+      "output_modes": ["application/json"]
+    },
+    {
+      "id": "policy.session_key_status",
+      "name": "Session-key state",
+      "description": "Return the current ZeroDev session-key validator state for the requested surface: tier, validator address, valid-until timestamp, recent action count.",
+      "tags": ["policy", "read"],
+      "input_modes": ["application/json"],
+      "output_modes": ["application/json"]
+    }
+  ],
+  "confirmation_contract": {
+    "$comment": "Three-tier dispatcher. External A2A peers MUST honour the confirmation requirement — there is no API path that bypasses tier dispatch.",
+    "tiers": [
+      {
+        "id": "inline",
+        "amount_max_usd6": 200000000,
+        "surface": "telegram_inline_keyboard",
+        "user_action": "single tap on inline Confirm button",
+        "ttl_seconds": 300
+      },
+      {
+        "id": "mini_app_otp",
+        "amount_max_usd6": 5000000000,
+        "surface": "telegram_mini_app",
+        "user_action": "Mini App + 6-digit OTP entered in app",
+        "ttl_seconds": 300,
+        "$comment": "OTP is delivered out-of-band as a separate Telegram message; defends against chat-stuffing where the LLM drafts a Confirm button users tap on autopilot."
+      },
+      {
+        "id": "passkey_deeplink",
+        "$comment_boundary": "Inclusive upper bounds on the prior tiers — anything above mini_app_otp.amount_max_usd6 falls here. classifyTier in the backend uses `<=` for both prior tier boundaries.",
+        "surface": "dashboard_passkey",
+        "user_action": "WebAuthn passkey signature in dashboard",
+        "ttl_seconds": 600,
+        "$comment": "Phishing-resistant by construction — WebAuthn RP-ID is bound to muhaven.hasto.dev; a Telegram-based MITM cannot complete passkey."
+      }
+    ]
+  },
+  "tiered_autonomy": {
+    "$comment": "Investor's per-surface tier governs whether agent calls require user confirmation at all. See development/DEV_WAVE_4/ADR_LOG.md ADR-0.",
+    "modes": ["advisory", "confirm-per-action", "policy-bound"],
+    "kill_switch": {
+      "endpoint": "POST /api/v1/agent/policy/pause",
+      "max_latency_ms": 250
+    }
+  },
+  "fhe": {
+    "scheme": "TFHE",
+    "platform": "fhenix-cofhe",
+    "chain": "arbitrum-sepolia",
+    "encrypted_types": ["euint64", "euint128", "ebool", "eaddress"],
+    "permit_decrypt_endpoint": "https://nagreg.hasto.dev/api/v1/decrypt/for-tx",
+    "$comment": "Decrypted plaintext is NEVER returned over A2A. Peers that need to display a balance must request a permit-bound decrypt via the user's session, not via the agent."
+  },
+  "compliance": {
+    "kyc_standard": "ERC-3643",
+    "identity_standard": "OnchainID",
+    "issuer_label_resolution": "OnchainID-resolved verified label always shown above any state-mutating CTA"
+  },
+  "$comment_evolution": "Future versions may add: (1) AP2-style explicit payment delegation, (2) finer-grained scope for read.audit (compliance-only role), (3) per-skill cost hints for capability ranking. Bumps schema_version when a backwards-incompatible change lands."
+}

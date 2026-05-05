@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="referrer" content="no-referrer" />
+    <!-- Locked allowlist: telegram.org for the Mini App SDK; nagreg /
+         muhaven origins for backend calls. No inline scripts; styles
+         allow inline (Vite injects scoped style tags in dev). M-6
+         mitigation. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' https://telegram.org; style-src 'self' 'unsafe-inline'; connect-src 'self' https://nagreg.hasto.dev https://nagreg-stage.hasto.dev; img-src 'self' data:; font-src 'self'; base-uri 'none'; frame-ancestors 'self' https://web.telegram.org;"
+    />
+    <title>MuHaven — Confirm intent</title>
+    <!-- Telegram WebApp SDK is loaded from telegram.org per the Mini App
+         protocol. The local Mini App does NOT bundle the SDK because
+         Telegram's host injects a versioned global at runtime. -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main id="app" data-state="loading">
+      <header class="brand">
+        <span class="logo">MuHaven</span>
+        <span class="origin"></span>
+      </header>
+      <section id="intent-preview" hidden>
+        <h1 class="kind"></h1>
+        <dl class="meta">
+          <div><dt>Issuer</dt><dd class="issuer"></dd></div>
+          <div><dt>Amount</dt><dd class="amount"></dd></div>
+          <div><dt>Hash</dt><dd class="hash"><code></code></dd></div>
+          <div><dt>Expires</dt><dd class="expires"></dd></div>
+        </dl>
+        <p class="summary"></p>
+        <form id="otp-form" autocomplete="off">
+          <label for="otp">6-digit code from Telegram message</label>
+          <input
+            id="otp"
+            name="otp"
+            type="text"
+            inputmode="numeric"
+            pattern="\d{6}"
+            maxlength="6"
+            required
+            aria-describedby="otp-hint"
+          />
+          <p id="otp-hint" class="hint">
+            Enter the OTP sent in a separate message from @muhaven_bot.
+            The code is single-use and expires when this intent does.
+          </p>
+          <div class="actions">
+            <button type="submit" class="primary">Confirm</button>
+            <button type="button" id="deny" class="secondary">Deny</button>
+          </div>
+        </form>
+      </section>
+      <section id="status" hidden>
+        <p class="status-text"></p>
+      </section>
+      <footer class="footnote">
+        MuHaven never sees your wallet's private key. Confirmations route
+        through the on-chain @zerodev/permissions validator the agent
+        installed at policy time. Pause anytime from the dashboard.
+      </footer>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
