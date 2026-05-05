@@ -736,7 +736,7 @@ function fulfillRequest(bytes32 requestId, bytes memory response, bytes memory e
 
 ## 11. RiskParams.sol
 
-Encrypted investor risk guardrails (4× `euint64`).
+Encrypted investor risk guardrails (4× `euint64`) plus per-investor pause / spend-epoch / agent-permit-nonce mappings + cleartext oracle-staleness packed slot + KYC gate pointer (Wave 4 P6 storage additions).
 
 ```solidity
 struct InvestorRisk {
@@ -760,25 +760,91 @@ function getEncryptedParams(address user) external view returns (
 );
 ```
 
-Wave 4 P6 adds:
+### Wave 4 P6 — encrypted-policy primitives (per ADR-1, shipped on `agenticwave` 2026-05-05)
+
+Branchless `FHE.select` hot-path with **cleartext gates short-circuiting BEFORE the encrypted leg** (oracle-stale / KYC-revoked / user-paused / unknown-action), plus encrypted `FHE.lte` against the per-investor `maxDailySpend` cap. Returns `(ebool ePassed, uint8 breachId)` so callers receive both the encrypted result handle (for downstream encrypted-leg enforcement) AND the cleartext breach taxonomy code (for short-circuit on oracle/KYC/pause failures, no decrypt round-trip needed):
 
 ```solidity
-// Branchless FHE.select hot path — no decryption (ADR for Wave 4 to be appended)
-function checkAndExecute(address user, euint64 eAmount, uint8 action)
-    external returns (euint64 chargedAmount);
+function checkAndExecute(
+    address investor,
+    InEuint64 calldata eAmount,
+    uint8 actionId
+) external returns (ebool ePassed, uint8 breachId);
 
-// Breach-only async decrypt
-function settleBreachDecrypt(bytes32 handle, uint256 cleartext, bytes calldata signature)
-    external;
-function publishDecryptResult(bytes32 handle, uint256 cleartext) external;
-event RiskBreach(address indexed user, uint8 action, uint256 timestamp);
+event PolicyChecked(
+    address indexed investor,
+    uint8 indexed actionId,
+    ebool encryptedBreachFlag,
+    uint8 breachId
+);
 
-// Encrypted signal flags returned as ebools to muhaven_portfolio_summary
-function computeSignalFlags(address user)
-    external view returns (ebool isOverexposed, ebool isUnderYield);
+// BreachCode (cleartext, returned as `breachId` from checkAndExecute):
+//   BREACH_NONE = 0, ORACLE_STALE = 1, KYC_REVOKED = 2,
+//   USER_PAUSED = 3, UNKNOWN_ACTION = 4
 ```
 
-Latency bench: `decryptForTx` p50 = 1.22s / p99 = 1.25s; end-to-end breach commit ~2.5–3s on Arb Sepolia. See `development/DEV_WAVE_4/LATENCY_BENCH_REPORT.md`.
+Async-decrypt path on the encrypted leg ONLY when the cleartext `breachId == 0` (i.e., cleartext gates passed but encrypted check may still indicate a breach). Operator submits the TN-signed decrypt result via `FHE.publishDecryptResult` — **reverts on wrong-cleartext signature** so operators can ONLY land an actual breach commit (a forged signature for cleartext=true / "no breach" fails at the TN signer recovery):
+
+```solidity
+function settleBreachDecrypt(
+    address investor,
+    uint8 triggerCode,
+    uint64 thresholdSnapshot,
+    ebool encryptedBreachFlag,
+    bytes calldata signature
+) external onlyOwner;
+
+event RiskBreach(address indexed investor, uint8 triggerCode, uint64 thresholdSnapshot);
+event BreachSettled(address indexed investor, uint32 pausedUntil);
+// Sets _pausedUntil[investor] = type(uint32).max on successful settle.
+```
+
+Encrypted signal flags computed against client-supplied current-state encrypted values; emits `SignalsComputed` so callers recover the ebool handles from the receipt (the staticCall path can't see the mock TaskManager's `mockStorage` write because it's reverted on staticCall):
+
+```solidity
+function computeSignalFlags(
+    address investor,
+    InEuint64 calldata eCurrentDriftBps,
+    InEuint64 calldata eCurrentYieldBps
+) external returns (ebool isOverexposed, ebool isUnderYield);
+
+event SignalsComputed(address indexed investor, ebool isOverexposed, ebool isUnderYield);
+```
+
+Investor-signed `AgentPermit` EIP-712 schema for action authorization — domain `"MuHaven AgentPermit" v1`. `consumeAgentPermit` is owner-only, enforces strictly-monotonic nonces, and uses OZ `ECDSA.recover` (which enforces s-malleability):
+
+```solidity
+struct AgentPermit {
+    address investor;
+    uint8 tier;        // 0 Advisory / 1 ConfirmPerAction / 2 PolicyBound
+    uint8 surface;     // 0 HavenBot / 1 MCP / 2 OpenClaw / 3 Checkout
+    uint8 actionId;
+    uint256 maxAmount;
+    uint64 nonce;
+    uint256 expiry;
+}
+
+function hashAgentPermit(...) public view returns (bytes32);
+function isAgentPermitValid(AgentPermit calldata permit, bytes calldata signature)
+    external view returns (bool);
+function consumeAgentPermit(AgentPermit calldata permit, bytes calldata signature)
+    external onlyOwner;
+
+event AgentPermitConsumed(
+    address indexed investor,
+    uint8 indexed tier,
+    uint8 surface,
+    uint8 actionId,
+    uint64 nonce,
+    uint256 maxAmount
+);
+```
+
+**Storage layout (P6):** 5 new slots appended at contract scope (`kycGate` address; packed `lastOracleUpdate uint64 + oracleStalenessSec uint64`; `_pausedUntil mapping`; `_lastSpendEpoch mapping`; `_agentPermitNonces mapping`); `__gap` reduced 50 → 45; total slots preserved at 53. Append-only, OZ-storage-safe — verified Code-Reviewer-agent-slot-by-slot during the agenticwave port.
+
+**Backend wiring:** `OnChainRiskParamsAdapter` (in `backend/src/infrastructure/agent/`) replaces P1's `StubRiskParamsAdapter` behind env toggle `RISK_PARAMS_ADAPTER=onchain` (requires `RPC_URL` + `RISK_PARAMS_ADDRESS` + `AGENT_POLICY_PRIVATE_KEY`). Cron tick currently encrypts candidate-spend = 0 — Wave 4 simplification, encrypted leg is enforced at UserOp commit time (cron only enforces cleartext gates). New FHE worker route `POST /api/v1/decrypt/for-tx` wraps `cofheClient.decryptForTx(handle).withPermit().execute()`.
+
+**Latency bench:** `decryptForTx` p50 = 1.22s / p99 = 1.25s; end-to-end breach commit ~2.5–3s on Arb Sepolia. See `development/DEV_WAVE_4/LATENCY_BENCH_REPORT.md`.
 
 ---
 

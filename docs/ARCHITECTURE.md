@@ -146,7 +146,7 @@ Redemption (instant + queued overflow):
 | `CountryAllow`, `CountryRestrict`, `MaxHolders`, `Lockup`, `MaxBalance` | platform | Pluggable compliance modules implementing `IComplianceModule`. |
 | `IssuerControlledOracle.sol` | platform | Pluggable `IPriceOracle` reference impl — issuer-write NAV with rotation, configurable staleness window, deviation gate (per-token `maxDeviationBps`, pending state on gate failure), L2 sequencer-uptime check via Chainlink-shaped feed. |
 | `ChainlinkFunctionsOracle.sol` | platform | Functions-backed `IPriceOracle` — pulls FRED `DGS3MO` for treasury bills, FRED `GOLDPMGBD228NLBM` (or metals-api fallback) for gold. Per-token `navRequester` hot key. |
-| `RiskParams.sol` | platform | Encrypted investor risk guardrails (4× `euint64`) — max drawdown, min yield, drift tolerance, max daily spend. Branchless `FHE.select` hot path planned for the Wave 4 policy engine. |
+| `RiskParams.sol` | platform | Encrypted investor risk guardrails (4× `euint64`) — max drawdown, min yield, drift tolerance, max daily spend. Wave 4 P6 added the branchless `FHE.select` hot path (`checkAndExecute` returning `(ePassed, breachId)`), breach-only async-decrypt (`settleBreachDecrypt`), encrypted signal flags (`computeSignalFlags`), and the investor-signed `AgentPermit` EIP-712 schema — see `SMART_CONTRACTS.md` §11. |
 
 ### Critical CoFHE patterns
 
