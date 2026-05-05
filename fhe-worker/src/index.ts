@@ -79,6 +79,63 @@ async function doInitialize(): Promise<void> {
   }
 }
 
+interface DecryptForTxResult {
+  ctHash: string;
+  decryptedValue: string;
+  signature: string;
+  durationMs: number;
+}
+
+async function decryptForTx(
+  ctHash: string,
+  fheTypeName: 'ebool' | 'euint8' | 'euint16' | 'euint32' | 'euint64' | 'euint128',
+): Promise<DecryptForTxResult> {
+  if (!cofheClient) {
+    throw new Error('CoFHE client not initialized');
+  }
+
+  // The cofhe SDK FheTypes enum uses non-prefixed names: Bool / Uint8 / Uint16
+  // / Uint32 / Uint64 / Uint128 / Uint160. Translate from the wire-format
+  // `e*` names which match the Solidity types our callers think in terms of.
+  const FHE_TYPE_NAME_MAP: Record<string, string> = {
+    ebool: 'Bool',
+    euint8: 'Uint8',
+    euint16: 'Uint16',
+    euint32: 'Uint32',
+    euint64: 'Uint64',
+    euint128: 'Uint128',
+  };
+  const sdkTypeKey = FHE_TYPE_NAME_MAP[fheTypeName];
+  if (!sdkTypeKey) {
+    throw new Error(`Unsupported FHE type: ${fheTypeName}`);
+  }
+
+  const { FheTypes } = await import('@cofhe/sdk');
+  const fheType = (FheTypes as Record<string, unknown>)[sdkTypeKey];
+  if (fheType === undefined) {
+    throw new Error(`SDK FheTypes enum missing key: ${sdkTypeKey}`);
+  }
+
+  const start = Date.now();
+  // ctHash arrives as hex (`0x...`); the SDK accepts a bigint.
+  const handle = BigInt(ctHash);
+  const result = await cofheClient
+    .decryptForTx(handle, fheType)
+    .withPermit()
+    .execute();
+  const durationMs = Date.now() - start;
+
+  return {
+    ctHash,
+    decryptedValue:
+      typeof result.decryptedValue === 'bigint'
+        ? result.decryptedValue.toString()
+        : String(result.decryptedValue),
+    signature: result.signature,
+    durationMs,
+  };
+}
+
 async function encryptBatch(
   userAddress: string,
   items: EncryptionItem[],
@@ -171,6 +228,34 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  // Decrypt-for-tx (TN-signed, on-chain-verifiable)
+  if (url.pathname === '/api/v1/decrypt/for-tx' && req.method === 'POST') {
+    try {
+      await initializeCofhe();
+
+      const body = (await parseBody(req)) as { ctHash?: string; fheType?: string };
+
+      if (!body?.ctHash || !body?.fheType) {
+        sendJson(res, 400, { error: 'Invalid request: ctHash and fheType required' });
+        return;
+      }
+
+      const result = await decryptForTx(
+        body.ctHash,
+        body.fheType as 'ebool' | 'euint8' | 'euint16' | 'euint32' | 'euint64' | 'euint128',
+      );
+      sendJson(res, 200, result);
+    } catch (error: any) {
+      console.error('Decrypt-for-tx failed:', error);
+      const message = error?.message ?? 'decrypt-for-tx failed';
+      // Surface "Forbidden" / "decrypt request failed" / "timeout" / "unavailable"
+      // verbatim so the backend's transient-error matcher can recognize and
+      // retry per the P0 bench DEV_LOG retry policy.
+      sendJson(res, 500, { error: message });
+    }
+    return;
+  }
+
   // Encrypt batch
   if (url.pathname === '/api/v1/encrypt/batch' && req.method === 'POST') {
     try {
@@ -204,4 +289,5 @@ server.listen(port, () => {
   console.log('  GET  /health/ready');
   console.log('  GET  /health');
   console.log('  POST /api/v1/encrypt/batch');
+  console.log('  POST /api/v1/decrypt/for-tx');
 });

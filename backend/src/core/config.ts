@@ -146,6 +146,19 @@ const EnvSchema = z.object({
   // exclusively via on-demand tick endpoints later.
   AGENT_POLICY_CRON_ENABLED: z.coerce.boolean().default(false),
   AGENT_POLICY_CRON_INTERVAL_MS: z.coerce.number().default(60_000),
+
+  // ── Wave 4 Phase P6 — RiskParams adapter selection ─────────────────
+  // `stub` (default) wires `StubRiskParamsAdapter` — always-pass; suitable
+  // for dev / CI without an on-chain RiskParams deployment. `onchain`
+  // wires `OnChainRiskParamsAdapter` which calls `RiskParams.checkAndExecute`
+  // via viem + the FHE worker. The on-chain path requires `RPC_URL`,
+  // `RISK_PARAMS_ADDRESS`, `AGENT_POLICY_PRIVATE_KEY`, and a healthy FHE
+  // worker.
+  RISK_PARAMS_ADAPTER: z.enum(['stub', 'onchain']).default('stub'),
+  // Cron signer key (granted `owner` on the deployed RiskParams proxy).
+  // Per ADR-1 §"AgentPermit"; this EOA is also the platform owner from
+  // the perspective of `consumeAgentPermit` and `settleBreachDecrypt`.
+  AGENT_POLICY_PRIVATE_KEY: z.string().optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

@@ -68,4 +68,49 @@ export class FheWorkerClient {
     this.logger.info({ totalTime: data.totalEncryptionTimeMs }, 'FHE batch encryption complete');
     return data;
   }
+
+  /**
+   * TN-signed `decryptForTx` against the deployed CoFHE TaskManager. Used
+   * by Wave 4 P6 `OnChainRiskParamsAdapter.decryptBreachFlag` to lift an
+   * `ebool` handle returned by `RiskParams.checkAndExecute` into the
+   * `(cleartext, signature)` triple that `settleBreachDecrypt` consumes.
+   *
+   * Caller-side error policy: transient errors (`Forbidden`,
+   * `decrypt request failed`, `timeout`, `unavailable`) are surfaced
+   * verbatim so the caller's transient-error matcher can recognize them
+   * and retry per the P0 bench DEV_LOG retry budget.
+   */
+  async decryptForTx(
+    ctHash: string,
+    fheType: 'ebool' | 'euint8' | 'euint16' | 'euint32' | 'euint64' | 'euint128',
+  ): Promise<FheDecryptForTxResponse> {
+    this.logger.info({ ctHash, fheType }, 'decryptForTx via FHE worker');
+
+    const res = await fetch(`${this.baseUrl}/api/v1/decrypt/for-tx`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ctHash, fheType }),
+      // Bench p99 was ~1.44s; soak-test could be slower under contention.
+      // Cap at 30s — anything past that is operationally a TN outage.
+      signal: AbortSignal.timeout(30000),
+    });
+
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+      const message = (error as Record<string, string>).error ?? res.statusText;
+      this.logger.warn({ status: res.status, message }, 'FHE worker decryptForTx failed');
+      // Re-throw with the upstream message so transient-error pattern matchers
+      // in PolicyEngineTickUseCase can recognize TN-side `Forbidden` etc.
+      throw new Error(message);
+    }
+
+    return (await res.json()) as FheDecryptForTxResponse;
+  }
+}
+
+export interface FheDecryptForTxResponse {
+  ctHash: string;
+  decryptedValue: string;
+  signature: string;
+  durationMs: number;
 }

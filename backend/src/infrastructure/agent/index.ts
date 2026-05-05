@@ -15,4 +15,8 @@ export {
   type IRiskParamsAdapter,
   type CheckAndExecuteResult,
 } from './risk-params.adapter.js';
+export {
+  OnChainRiskParamsAdapter,
+  type OnChainRiskParamsAdapterConfig,
+} from './on-chain-risk-params.adapter.js';
 export { PolicyEngineCron, type PolicyEngineCronConfig } from './policy-engine-cron.js';

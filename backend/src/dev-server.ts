@@ -8,7 +8,13 @@ import { BlockchainEventPoller, NavWriterCron, TaxEventIndexer } from './infrast
 import { TokenRegistryHandler } from './infrastructure/blockchain/token-registry-handler.js';
 import { ProcessEscrowEventUseCase } from './application/use-case/webhook/process-escrow-event.use-case.js';
 import { container } from './infrastructure/container.js';
-import { PolicyEngineCron, StubRiskParamsAdapter } from './infrastructure/agent/index.js';
+import {
+  OnChainRiskParamsAdapter,
+  PolicyEngineCron,
+  StubRiskParamsAdapter,
+  type IRiskParamsAdapter,
+} from './infrastructure/agent/index.js';
+import { FheWorkerClient } from './infrastructure/fhe/fhe-worker.client.js';
 import { GetPolicyStateUseCase } from './application/use-case/agent/policy/get-policy-state.use-case.js';
 import { AppendAuditEventUseCase } from './application/use-case/agent/policy/append-audit-event.use-case.js';
 import { PauseAgentUseCase } from './application/use-case/agent/policy/pause-agent.use-case.js';
@@ -397,17 +403,41 @@ async function main() {
   }
 
   // Wave 4 P1 — agent policy engine cron (Tier=PolicyBound users only).
-  // The engine wires the StubRiskParamsAdapter for now; P6 swaps in the
-  // on-chain adapter that calls `RiskParams.checkAndExecute` + cofhejs
-  // `decryptForTx`.
+  // P6 adds the `onchain` adapter wiring; defaults to `stub` for dev.
   if (env.AGENT_POLICY_CRON_ENABLED) {
     const getPolicyState = new GetPolicyStateUseCase(container.agentStateRepo);
     const appendAudit = new AppendAuditEventUseCase(container.agentAuditRepo);
     const pauseAgent = new PauseAgentUseCase(container.agentStateRepo, getPolicyState, appendAudit);
+
+    let adapter: IRiskParamsAdapter;
+    if (env.RISK_PARAMS_ADAPTER === 'onchain') {
+      const rpcUrl = env.RPC_URL;
+      const riskParamsAddress = env.RISK_PARAMS_ADDRESS;
+      const agentPrivateKey = env.AGENT_POLICY_PRIVATE_KEY;
+      if (!rpcUrl || !riskParamsAddress || !agentPrivateKey) {
+        console.warn(
+          '[agent-policy] RISK_PARAMS_ADAPTER=onchain requires RPC_URL + RISK_PARAMS_ADDRESS + AGENT_POLICY_PRIVATE_KEY; falling back to stub',
+        );
+        adapter = new StubRiskParamsAdapter();
+      } else {
+        adapter = new OnChainRiskParamsAdapter(
+          {
+            rpcUrl,
+            riskParamsAddress: riskParamsAddress as `0x${string}`,
+            agentPrivateKey: agentPrivateKey as `0x${string}`,
+          },
+          new FheWorkerClient(),
+        );
+        console.log('[agent-policy] OnChainRiskParamsAdapter wired');
+      }
+    } else {
+      adapter = new StubRiskParamsAdapter();
+    }
+
     const tick = new PolicyEngineTickUseCase(
       container.agentStateRepo,
       container.agentCronStateRepo,
-      new StubRiskParamsAdapter(),
+      adapter,
       pauseAgent,
       appendAudit,
     );
