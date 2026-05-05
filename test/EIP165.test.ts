@@ -80,6 +80,11 @@ describe("EIP-165 supportsInterface", function () {
         // Wave 3.5 Phase 9.A · Option Z follow-up — historical Transfer
         // audit-handle re-grant for cross-session decrypts on /activity.
         "function refreshAuditGrant(bytes32,address)",
+        // Wave 4 P11 — EncryptedGovernance integration.
+        "function setAuthorizedReader(address,bool)",
+        "function authorizedReaders(address) view returns (bool)",
+        "function getBalanceForGovernance(address) returns (bytes32)",
+        "function getTotalSupplyForGovernance() returns (bytes32)",
         "function encryptedBalanceOf(address) view returns (bytes32)",
         "function encryptedTotalSupply() view returns (bytes32)",
         "function setTotalSupplyPublic()",

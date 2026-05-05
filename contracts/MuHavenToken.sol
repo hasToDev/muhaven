@@ -174,6 +174,7 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
     error OnlySubscription();
     error OnlyQueue();
     error OnlyYieldSnapshot();
+    error OnlyAuthorizedReader();
     error RecipientNotKYC();
     error NoBalance();
     error ZeroAddress();
@@ -999,12 +1000,50 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
     }
 
     /// @notice Mark `reader` as authorised for Wave 4 agent-side encrypted-balance
-    ///         reads. Wave 3.5 exposes the slot + setter only; no read paths
-    ///         consume `authorizedReaders` yet.
+    ///         reads. Wave 4 P11 wires the EncryptedGovernance contract here so
+    ///         it can re-grant ACL on balance / total-supply handles via
+    ///         `getBalanceForGovernance` / `getTotalSupplyForGovernance`.
     function setAuthorizedReader(address reader, bool authorized) external onlyOwner {
         if (reader == address(0)) revert ZeroAddress();
         authorizedReaders[reader] = authorized;
         emit AuthorizedReaderUpdated(reader, authorized);
+    }
+
+    // ── Wave 4 P11 — EncryptedGovernance ACL-grant reads ─────────────────
+
+    /// @inheritdoc IMuHavenToken
+    /// @dev Mirrors the Phase-5 `snapshotBalance` pattern: re-grants the
+    ///      caller FHE ACL on the balance handle and returns it. Fresh
+    ///      zero-handle for never-held accounts so the governance vote-weight
+    ///      math always has a valid input. Caller-gated to authorised readers
+    ///      so arbitrary contracts cannot fish decrypt access.
+    function getBalanceForGovernance(address account)
+        external
+        returns (euint128)
+    {
+        if (!authorizedReaders[msg.sender]) revert OnlyAuthorizedReader();
+        euint128 b = _balances[account];
+        if (!Common.isInitialized(b)) {
+            b = FHE.asEuint128(uint256(0));
+            FHE.allowThis(b);
+        }
+        FHE.allow(b, msg.sender);
+        return b;
+    }
+
+    /// @inheritdoc IMuHavenToken
+    /// @dev Re-grants the caller ACL on `_encryptedTotalSupply` and returns
+    ///      it. Pre-mint state maps to a fresh zero-handle. Quorum logic
+    ///      upstream rejects zero supply explicitly.
+    function getTotalSupplyForGovernance() external returns (euint128) {
+        if (!authorizedReaders[msg.sender]) revert OnlyAuthorizedReader();
+        euint128 ts = _encryptedTotalSupply;
+        if (!Common.isInitialized(ts)) {
+            ts = FHE.asEuint128(uint256(0));
+            FHE.allowThis(ts);
+        }
+        FHE.allow(ts, msg.sender);
+        return ts;
     }
 
     function setKYCGate(address newGate) external onlyOwner {

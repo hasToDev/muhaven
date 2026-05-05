@@ -110,6 +110,31 @@ interface IMuHavenToken {
     ///         transfer-time sender or recipient can re-grant.
     function refreshAuditGrant(euint128 handle, address ephemeralEOA) external;
 
+    // ── Wave 4 P11 — EncryptedGovernance integration ────────────────────
+    //
+    // `EncryptedGovernance` reads encrypted balances + total supply with
+    // re-granted FHE ACL access so it can run `FHE.select` (vote weight) and
+    // `FHE.gte` (quorum) on the returned handles. Both helpers are gated to
+    // addresses pre-authorised via `setAuthorizedReader`. Not view because
+    // `FHE.allow` mutates CoFHE coprocessor state (ACL).
+
+    /// @notice Authorize / deauthorize a contract to call the governance
+    ///         read helpers below. Owner-only.
+    function setAuthorizedReader(address reader, bool authorized) external;
+
+    /// @notice Whether `reader` is authorised to call the governance helpers.
+    function authorizedReaders(address reader) external view returns (bool);
+
+    /// @notice Re-grant the caller (an authorised reader, e.g. governance)
+    ///         FHE ACL on `account`'s current balance handle and return it.
+    ///         Caller-gated to prevent arbitrary contracts fishing decrypt
+    ///         access on private balances.
+    function getBalanceForGovernance(address account) external returns (euint128);
+
+    /// @notice Re-grant the caller FHE ACL on the encrypted total supply
+    ///         handle and return it. Caller-gated.
+    function getTotalSupplyForGovernance() external returns (euint128);
+
     // ── Views / admin used by platform contracts ────────────────────────
     function encryptedBalanceOf(address account) external view returns (euint128);
     function encryptedTotalSupply() external view returns (euint128);

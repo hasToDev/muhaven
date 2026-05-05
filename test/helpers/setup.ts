@@ -142,6 +142,64 @@ export async function deployTestCanRedeemChecker() {
   return checker;
 }
 
+// ── Wave 4 P11 deploy helpers ────────────────────────────────────────────────
+
+export async function deployDefaultProtection(
+  registryAddress: string,
+  escrowAddress: string,
+  yieldGateAddress: string,
+  pusdcAddress: string,
+  ownerAddress: string,
+  minimumRateBps: number | bigint
+) {
+  const Factory = await hre.ethers.getContractFactory("DefaultProtection");
+  const protection = await upgrades.deployProxy(
+    Factory,
+    [registryAddress, escrowAddress, yieldGateAddress, pusdcAddress, ownerAddress, minimumRateBps],
+    { kind: "transparent", initializer: "initialize" }
+  );
+  return protection;
+}
+
+export async function deployEncryptedGovernance(
+  tokenAddress: string,
+  defaultProtectionAddress: string,
+  registryAddress: string,
+  ownerAddress: string,
+  votingPeriodSeconds: number | bigint,
+  quorumBps: number | bigint
+) {
+  const Factory = await hre.ethers.getContractFactory("EncryptedGovernance");
+  const governance = await upgrades.deployProxy(
+    Factory,
+    [tokenAddress, defaultProtectionAddress, registryAddress, ownerAddress, votingPeriodSeconds, quorumBps],
+    { kind: "transparent", initializer: "initialize" }
+  );
+  return governance;
+}
+
+export async function deployKYCAttestationRegistry(
+  kycGateAddress: string,
+  signerAddress: string,
+  adminAddress: string,
+  defaultValidityPeriod: number | bigint
+) {
+  const Factory = await hre.ethers.getContractFactory("KYCAttestationRegistry");
+  const reg = await Factory.deploy(kycGateAddress, signerAddress, adminAddress, defaultValidityPeriod);
+  return reg;
+}
+
+export async function deployMuHavenKYCVerifier(
+  trustedSignerAddress: string,
+  sourceChainId: number | bigint,
+  sourceRegistryAddr: string,
+  adminAddress: string
+) {
+  const Factory = await hre.ethers.getContractFactory("MuHavenKYCVerifier");
+  const verifier = await Factory.deploy(trustedSignerAddress, sourceChainId, sourceRegistryAddr, adminAddress);
+  return verifier;
+}
+
 // ── Full system fixture ───────────────────────────────────────────────────────
 
 /**
