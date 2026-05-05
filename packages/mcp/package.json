@@ -1,0 +1,71 @@
+{
+  "name": "@muhaven/mcp",
+  "version": "0.1.0",
+  "description": "MuHaven MCP server — read/position/policy toolsets bridging Claude Desktop / Cursor / Claude Code to the MuHaven backend, with a sibling muhaven-broker daemon holding the session-key private half over a local IPC socket",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./broker": {
+      "types": "./dist/broker.d.ts",
+      "import": "./dist/broker.js",
+      "require": "./dist/broker.cjs"
+    }
+  },
+  "bin": {
+    "muhaven-mcp": "./bin/muhaven-mcp.cjs",
+    "muhaven-broker": "./bin/muhaven-broker.cjs"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "manifest.json",
+    "tool-hashes.json",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "clean": "rimraf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify-tool-hashes": "tsx scripts/verify-tool-hashes.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "viem": "^2.47.0",
+    "zod": "^3.24.0"
+  },
+  "optionalDependencies": {
+    "@napi-rs/keyring": "^1.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "rimraf": "^5.0.0",
+    "tsup": "^8.5.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "mcpb",
+    "fhe",
+    "fhenix",
+    "muhaven",
+    "rwa",
+    "claude"
+  ],
+  "license": "MIT"
+}

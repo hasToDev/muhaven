@@ -31,10 +31,16 @@ export function withAuth(handler: VercelHandler): VercelHandler {
         issuer: JWT_ISSUER,
       });
 
-      (req as AuthenticatedRequest).authPayload = {
-        ...payload,
+      const ap: AuthPayload = {
+        ...(payload as object),
         userId: payload.sub as string,
       } as unknown as AuthPayload;
+      // jwtVerify returns scope as unknown[] when present — narrow to string[].
+      const rawScope = (payload as { scope?: unknown }).scope;
+      if (Array.isArray(rawScope)) {
+        ap.scope = rawScope.filter((s): s is string => typeof s === 'string');
+      }
+      (req as AuthenticatedRequest).authPayload = ap;
     } catch {
       sendResponse(res, Response.unauthorized('Invalid token', 'Token verification failed'));
       return;

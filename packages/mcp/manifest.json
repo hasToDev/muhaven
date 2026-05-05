@@ -1,0 +1,90 @@
+{
+  "$comment": "MCPB v0.2 manifest for @muhaven/mcp. Per ADR-3 the JWT is acquired via the device-code ceremony and stored in the broker's keystore — it is NOT a user_config entry. Sensitive items declared here are limited to the broker session-key + IPC endpoint overrides.",
+  "manifest_version": "0.2",
+  "name": "muhaven-mcp",
+  "display_name": "MuHaven (RWA portfolio)",
+  "version": "0.1.0",
+  "description": "Confidential RWA portfolio management on Fhenix CoFHE. Read your encrypted balances, propose yield claims and policy changes — all signing happens in a sibling broker daemon, the LLM never sees your private key.",
+  "long_description": "MuHaven MCP exposes 13 tools across read.* / position.* / policy.* groups for managing real-world asset (RWA) tokens with FHE-encrypted balances. Authentication uses a one-time device-code ceremony (run `muhaven-broker login`); subsequent tool calls fetch the JWT from the broker over a Unix socket. Position tools return unsigned UserOps + broker signatures — they NEVER auto-submit to a bundler. The companion `muhaven-broker` daemon must be running before tools can be invoked. See README for setup.",
+  "author": {
+    "name": "MuHaven",
+    "email": "hello@muhaven.app",
+    "url": "https://muhaven.app"
+  },
+  "homepage": "https://muhaven.app",
+  "documentation": "https://github.com/hasToDev/muhaven/blob/master/packages/mcp/README.md",
+  "support": "https://github.com/hasToDev/muhaven/issues",
+  "icon": "icon.png",
+  "license": "MIT",
+  "keywords": ["fhe", "fhenix", "rwa", "claude", "mcp", "muhaven"],
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "node": ">=20.0.0"
+    }
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "dist/index.cjs",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/dist/index.cjs"],
+      "env": {
+        "MUHAVEN_BACKEND_URL": "${user_config.backend_url}",
+        "MUHAVEN_DASHBOARD_URL": "${user_config.dashboard_url}",
+        "MUHAVEN_BROKER_ENDPOINT": "${user_config.broker_endpoint}",
+        "MUHAVEN_READ_ONLY": "${user_config.read_only}"
+      }
+    }
+  },
+  "tools": [
+    { "name": "muhaven.read.portfolio", "description": "Encrypted-balance portfolio summary; aggregates only.", "sensitive": false },
+    { "name": "muhaven.read.yields", "description": "Per-token yield history (cleartext aggregates).", "sensitive": false },
+    { "name": "muhaven.read.distribution", "description": "Distribution status for a (token, epoch).", "sensitive": false },
+    { "name": "muhaven.read.tokens", "description": "RWA tokens the user holds.", "sensitive": false },
+    { "name": "muhaven.read.audit", "description": "User's tiered-autonomy audit log.", "sensitive": false },
+    { "name": "muhaven.position.buy", "description": "Propose a Subscription buy. Returns unsigned UserOp.", "sensitive": true },
+    { "name": "muhaven.position.sell", "description": "Propose a redemption-queue sell. Returns unsigned UserOp.", "sensitive": true },
+    { "name": "muhaven.position.claim", "description": "Propose a yield claim. Returns unsigned UserOp.", "sensitive": true },
+    { "name": "muhaven.position.rebalance", "description": "Propose a multi-leg atomic rebalance.", "sensitive": true },
+    { "name": "muhaven.policy.set_tier", "description": "Request / commit a tiered-autonomy transition.", "sensitive": true },
+    { "name": "muhaven.policy.pause", "description": "Activate /pause kill-switch.", "sensitive": true },
+    { "name": "muhaven.policy.audit_export", "description": "Drain the audit log to JSON.", "sensitive": false },
+    { "name": "muhaven.policy.session_key_status", "description": "Inspect ZeroDev session-key state.", "sensitive": false }
+  ],
+  "user_config": [
+    {
+      "key": "backend_url",
+      "type": "string",
+      "title": "MuHaven backend URL",
+      "description": "Backend host. Default: https://nagreg.hasto.dev (production). Use https://nagreg-stage.hasto.dev for staging.",
+      "default": "https://nagreg.hasto.dev",
+      "sensitive": false
+    },
+    {
+      "key": "dashboard_url",
+      "type": "string",
+      "title": "MuHaven dashboard URL",
+      "description": "Dashboard origin used by the device-code authorization page (/link). Default: https://muhaven.hasto.dev. Hardcoded for phishing resistance — do not change unless you know what you are doing.",
+      "default": "https://muhaven.hasto.dev",
+      "sensitive": false
+    },
+    {
+      "key": "broker_endpoint",
+      "type": "string",
+      "title": "muhaven-broker IPC endpoint",
+      "description": "Path to the broker's Unix socket (POSIX) or named pipe (Windows). Leave blank to use the per-user default.",
+      "default": "",
+      "sensitive": false
+    },
+    {
+      "key": "read_only",
+      "type": "boolean",
+      "title": "Read-only mode",
+      "description": "When enabled, only the muhaven.read.* toolset is exposed; position.* and policy.* tools are not registered.",
+      "default": false,
+      "sensitive": false
+    }
+  ],
+  "$comment_setup": "First-run instructions: (1) install this package via your MCPB host (Claude Desktop / Cursor / Claude Code). (2) Start the broker daemon: `muhaven-broker` (running in the background; see README for systemd / launchd / Windows-Service recipes). (3) Authenticate: `muhaven-broker login` — opens browser to https://muhaven.hasto.dev/link?code=XXXX-XXXX, complete passkey ceremony. (4) Use any tool in this MCP package."
+}

@@ -1,0 +1,295 @@
+/**
+ * `muhaven-broker` CLI subcommand router.
+ *
+ * Subcommands:
+ *   (none)         → run the daemon (production)
+ *   login [flags]  → device-code flow client; stores JWT in keystore
+ *   logout         → clear keystore JWT
+ *   doctor         → environment + keystore capability report
+ *   --help, -h     → usage
+ */
+
+import { hostname, platform, release } from 'node:os';
+import { exec } from 'node:child_process';
+import {
+  defaultBrokerEndpoint,
+  loadMcpConfig,
+} from '../config.js';
+import { BrokerClient } from '../clients/broker-client.js';
+import { DeviceFlowClient, DeviceFlowAbortedError } from '../auth/device-flow.js';
+import { openKeystore } from './keystore.js';
+import { runBrokerDaemonCli } from './daemon.js';
+
+function print(line: string): void {
+  process.stdout.write(line + '\n');
+}
+
+function printErr(line: string): void {
+  process.stderr.write(line + '\n');
+}
+
+function detectMcpHost(): string {
+  // Best-effort: parent process name is the MCPB host. Falls back to
+  // the env var Claude Desktop / Cursor / Claude Code commonly set.
+  return (
+    process.env.MCP_HOST_NAME ??
+    process.env.CLAUDE_CODE_HOST ??
+    process.env.npm_lifecycle_event ??
+    'muhaven-broker-cli'
+  );
+}
+
+function detectEnvironment(): { kind: string; warnings: string[] } {
+  const warnings: string[] = [];
+  const isWsl =
+    platform() === 'linux' &&
+    (process.env.WSL_DISTRO_NAME !== undefined || /microsoft/i.test(release()));
+  if (isWsl) {
+    warnings.push('WSL2 detected — Secret Service is usually absent. Use MUHAVEN_KEYRING=file.');
+  }
+  if (process.env.REMOTE_CONTAINERS === 'true' || process.env.CODESPACES === 'true') {
+    warnings.push(
+      'devcontainer / Codespace detected — keystore in container FS is ephemeral on rebuild.',
+    );
+  }
+  if (process.env.SSH_CONNECTION) {
+    warnings.push('SSH session detected — D-Bus / Secret Service is typically unavailable.');
+  }
+  return {
+    kind: isWsl
+      ? 'linux/wsl2'
+      : process.env.REMOTE_CONTAINERS === 'true'
+        ? 'devcontainer'
+        : process.env.CODESPACES === 'true'
+          ? 'codespace'
+          : `${platform()}/${release()}`,
+    warnings,
+  };
+}
+
+interface LoginFlags {
+  noLaunchBrowser: boolean;
+  brokerEndpoint?: string;
+  backendBaseUrl?: string;
+  dashboardBaseUrl?: string;
+}
+
+function parseLoginFlags(argv: readonly string[]): LoginFlags {
+  let noLaunchBrowser = false;
+  let brokerEndpoint: string | undefined;
+  let backendBaseUrl: string | undefined;
+  let dashboardBaseUrl: string | undefined;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--no-launch-browser') noLaunchBrowser = true;
+    else if (a === '--broker-endpoint' && i + 1 < argv.length) {
+      brokerEndpoint = argv[++i];
+    } else if (a === '--backend-base-url' && i + 1 < argv.length) {
+      backendBaseUrl = argv[++i];
+    } else if (a === '--dashboard-base-url' && i + 1 < argv.length) {
+      dashboardBaseUrl = argv[++i];
+    } else {
+      throw new Error(`unknown flag: ${a}`);
+    }
+  }
+  return { noLaunchBrowser, brokerEndpoint, backendBaseUrl, dashboardBaseUrl };
+}
+
+async function tryLaunchBrowser(url: string): Promise<boolean> {
+  // Best-effort browser open. Failure is non-fatal — the URL is also
+  // printed so the user can paste it.
+  return new Promise<boolean>((resolve) => {
+    const cmd =
+      platform() === 'win32'
+        ? `cmd /c start "" "${url}"`
+        : platform() === 'darwin'
+          ? `open "${url}"`
+          : `xdg-open "${url}"`;
+    exec(cmd, (err) => resolve(err == null));
+  });
+}
+
+export async function runLogin(argv: readonly string[]): Promise<number> {
+  let flags: LoginFlags;
+  try {
+    flags = parseLoginFlags(argv);
+  } catch (err) {
+    printErr(`error: ${(err as Error).message}`);
+    printErr('usage: muhaven-broker login [--no-launch-browser] [--broker-endpoint PATH] [--backend-base-url URL] [--dashboard-base-url URL]');
+    return 2;
+  }
+
+  const env = process.env;
+  const config = loadMcpConfig({
+    ...env,
+    ...(flags.brokerEndpoint ? { MUHAVEN_BROKER_ENDPOINT: flags.brokerEndpoint } : {}),
+    ...(flags.backendBaseUrl ? { MUHAVEN_BACKEND_URL: flags.backendBaseUrl } : {}),
+    ...(flags.dashboardBaseUrl ? { MUHAVEN_DASHBOARD_URL: flags.dashboardBaseUrl } : {}),
+  });
+
+  const broker = new BrokerClient({
+    endpoint: config.brokerEndpoint,
+    timeoutMs: config.brokerTimeoutMs,
+  });
+
+  // Sanity check — broker reachable?
+  try {
+    await broker.hello();
+  } catch (err) {
+    printErr(
+      `cannot reach muhaven-broker daemon at ${config.brokerEndpoint}: ${(err as Error).message}`,
+    );
+    printErr('hint: start the daemon first (`muhaven-broker` with no subcommand).');
+    return 1;
+  }
+
+  const flow = new DeviceFlowClient({
+    backendBaseUrl: config.backendBaseUrl,
+    dashboardBaseUrl: config.dashboardBaseUrl,
+    requesterMetadata: {
+      processName: detectMcpHost(),
+      hostname: hostname(),
+      os: `${platform()}/${release()}`,
+    },
+  });
+
+  let lastIssuedSec = 0;
+  try {
+    const generator = flow.run();
+    let result: { jwt: string; expiresAtSec: number | null; scope: string[] | null } | undefined;
+    while (true) {
+      const next = await generator.next();
+      if (next.done) {
+        result = next.value;
+        break;
+      }
+      const event = next.value;
+      switch (event.type) {
+        case 'code_issued':
+          lastIssuedSec = Date.now();
+          print('');
+          print(`To link this Claude / Cursor / Claude Code install to MuHaven:`);
+          print('');
+          print(`  1. Open ${event.code.verificationUriComplete}`);
+          print(`  2. Verify the device fingerprint shown on that page`);
+          print(`  3. Authorize with your passkey`);
+          print('');
+          print(`Code expires in ${event.code.expiresInSec}s.`);
+          if (!flags.noLaunchBrowser) {
+            await tryLaunchBrowser(event.code.verificationUriComplete);
+          }
+          print('Waiting for authorization…');
+          break;
+        case 'polling':
+          // suppressed — too noisy
+          void event;
+          break;
+        case 'denied':
+          printErr(`device authorization DENIED${event.reason ? `: ${event.reason}` : ''}`);
+          break;
+        case 'expired':
+          printErr('device code expired — re-run `muhaven-broker login` to issue a new one');
+          break;
+        case 'authorized':
+          print(`Authorized in ${Math.round((Date.now() - lastIssuedSec) / 1000)}s.`);
+          break;
+      }
+    }
+
+    if (!result) return 1;
+    await broker.storeJwt(result.jwt, result.expiresAtSec ?? undefined);
+    print('JWT stored in keystore. MuHaven MCP tools will use it on next call.');
+    return 0;
+  } catch (err) {
+    if (err instanceof DeviceFlowAbortedError) {
+      printErr(`device flow aborted: ${err.detail.code}`);
+      return 1;
+    }
+    printErr(`unexpected error: ${(err as Error).message}`);
+    return 1;
+  }
+}
+
+export async function runLogout(): Promise<number> {
+  const config = loadMcpConfig();
+  const broker = new BrokerClient({
+    endpoint: config.brokerEndpoint,
+    timeoutMs: config.brokerTimeoutMs,
+  });
+  try {
+    await broker.clearJwt();
+    print('JWT cleared from keystore.');
+    return 0;
+  } catch (err) {
+    printErr(`logout failed: ${(err as Error).message}`);
+    return 1;
+  }
+}
+
+export async function runDoctor(): Promise<number> {
+  print('muhaven-broker doctor');
+  print('=====================');
+  const env = detectEnvironment();
+  print(`Environment       : ${env.kind}`);
+  for (const w of env.warnings) print(`  warning: ${w}`);
+  print(`Default endpoint  : ${defaultBrokerEndpoint()}`);
+  print(`Configured endpoint: ${process.env.MUHAVEN_BROKER_ENDPOINT ?? defaultBrokerEndpoint()}`);
+  print(`Backend URL       : ${process.env.MUHAVEN_BACKEND_URL ?? '(default https://nagreg.hasto.dev)'}`);
+  print(`Dashboard URL     : ${process.env.MUHAVEN_DASHBOARD_URL ?? '(default https://muhaven.hasto.dev)'}`);
+
+  const wantFile = process.env.MUHAVEN_KEYRING?.toLowerCase() === 'file';
+  print(`Keystore preference: ${wantFile ? 'file (env override)' : 'auto (OS keychain → file fallback)'}`);
+
+  // Probe keystore + report which backend is selected.
+  const { keystore, fallbackReason } = await openKeystore();
+  print(`Keystore backend  : ${keystore.backend}${fallbackReason ? ` (fell back: ${fallbackReason})` : ''}`);
+
+  // Probe broker reachability.
+  const config = loadMcpConfig();
+  const broker = new BrokerClient({
+    endpoint: config.brokerEndpoint,
+    timeoutMs: config.brokerTimeoutMs,
+  });
+  try {
+    const h = await broker.hello();
+    print(`Broker daemon     : reachable (proto v${h.version}, signer ${h.sessionKeyAddress}, hasJwt=${h.hasJwt})`);
+    return 0;
+  } catch (err) {
+    print(`Broker daemon     : NOT reachable (${(err as Error).message})`);
+    print('  hint: start it with `muhaven-broker` (no subcommand)');
+    return 1;
+  }
+}
+
+function printUsage(): void {
+  print('usage: muhaven-broker [<subcommand>] [options]');
+  print('');
+  print('  (no subcommand)    Run the daemon (production mode)');
+  print('  login              Acquire a JWT via the device-code flow + store in keystore');
+  print('  logout             Clear the JWT from the keystore');
+  print('  doctor             Print environment + keystore + reachability report');
+  print('  -h, --help         Show this help');
+}
+
+export async function runCli(argv: readonly string[]): Promise<number> {
+  const [sub, ...rest] = argv;
+  switch (sub) {
+    case undefined:
+      await runBrokerDaemonCli();
+      return 0;
+    case 'login':
+      return runLogin(rest);
+    case 'logout':
+      return runLogout();
+    case 'doctor':
+      return runDoctor();
+    case '-h':
+    case '--help':
+      printUsage();
+      return 0;
+    default:
+      printErr(`unknown subcommand: ${sub}`);
+      printUsage();
+      return 2;
+  }
+}

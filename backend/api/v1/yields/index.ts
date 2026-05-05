@@ -3,6 +3,7 @@ import { container } from '../../../src/infrastructure/container.js';
 import { createGetHandler } from '../../../src/interface/handler-factory.js';
 import { withAuth } from '../../../src/interface/middleware/with-auth.js';
 import { withCors } from '../../../src/interface/middleware/with-cors.js';
+import { withScope } from '../../../src/interface/middleware/with-scope.js';
 import { Response } from '../../../src/interface/response.js';
 
 const useCase = new GetYieldsUseCase(container.yieldRecordRepo, container.escrowRepo);
@@ -22,4 +23,5 @@ const handler = createGetHandler({
   },
 });
 
-export default withCors(withAuth(handler));
+// Wave 4 P3 ADR-3 D2: device-flow JWTs need mcp.read.*; SIWE tokens fall through.
+export default withCors(withAuth(withScope(['mcp.read.*'])(handler)));

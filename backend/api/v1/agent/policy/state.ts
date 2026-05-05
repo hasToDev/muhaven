@@ -11,6 +11,7 @@ import {
 } from '../../../../src/interface/handler-factory.js';
 import { withAuth } from '../../../../src/interface/middleware/with-auth.js';
 import { withCors } from '../../../../src/interface/middleware/with-cors.js';
+import { withScope } from '../../../../src/interface/middleware/with-scope.js';
 import { Response } from '../../../../src/interface/response.js';
 import { SURFACE_VALUES, type Surface } from '../../../../src/domain/agent/model/surface.enum.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
@@ -43,4 +44,5 @@ const router = async (req: VercelRequest, res: VercelResponse): Promise<void> =>
   sendResponse(res, Response.badRequest('Method not allowed'));
 };
 
-export default withCors(withAuth(router));
+// Wave 4 P3 ADR-3 D2: device-flow JWTs need mcp.read.*; SIWE tokens fall through.
+export default withCors(withAuth(withScope(['mcp.read.*'])(router)));

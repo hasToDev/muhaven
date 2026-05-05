@@ -363,6 +363,56 @@ export const usersApi = {
   },
 }
 
+// ── Device-code (Wave 4 P3 ADR-3) ──────────────────────────────────
+
+export interface DeviceCodeRequesterMetadata {
+  processName: string
+  hostname: string
+  os: string
+}
+
+export interface DeviceAuthorizeResponse {
+  status: 'authorized' | 'denied' | 'expired' | 'pending' | 'consumed'
+  requesterMetadata: DeviceCodeRequesterMetadata
+}
+
+export interface DeviceLookupResponse {
+  userCode: string
+  requesterMetadata: DeviceCodeRequesterMetadata
+  expiresAt: string
+}
+
+export const deviceFlowApi = {
+  /**
+   * Look up a pending device-code's requesterMetadata so the /link page
+   * can show process/host/OS BEFORE the user taps Authorize. This is the
+   * load-bearing phishing mitigation (ADR-3 D4) — never skip it.
+   */
+  lookup(userCode: string): Promise<DeviceLookupResponse> {
+    return request(`/auth/device/lookup?code=${encodeURIComponent(userCode.toUpperCase())}`, {
+      method: 'GET',
+      auth: true,
+    })
+  },
+
+  /**
+   * Authorize (or deny) a device-code on behalf of the authenticated user.
+   * Used by the dashboard `/link?code=ABCD-1234` route.
+   */
+  authorize(userCode: string, opts?: { deny?: boolean; denyReason?: string }):
+    Promise<DeviceAuthorizeResponse> {
+    return request('/auth/device/authorize', {
+      method: 'POST',
+      auth: true,
+      body: {
+        userCode: userCode.toUpperCase(),
+        ...(opts?.deny ? { deny: true } : {}),
+        ...(opts?.denyReason ? { denyReason: opts.denyReason } : {}),
+      },
+    })
+  },
+}
+
 // ── Token endpoints (public) ────────────────────────────────────────
 
 export const tokensApi = {

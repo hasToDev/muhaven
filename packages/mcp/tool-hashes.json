@@ -1,0 +1,57 @@
+{
+  "generatedAt": "2026-04-30T05:02:03.262Z",
+  "tools": [
+    {
+      "name": "muhaven.read.portfolio",
+      "sha256": "643f55750d6934436fc4b8ccf260e33d92dd6f757f004561049a9402192ebfd3"
+    },
+    {
+      "name": "muhaven.read.yields",
+      "sha256": "38f8763713ff28d2549d25a2c1b51d5b641dda9ff65d75ec9118cba92527a123"
+    },
+    {
+      "name": "muhaven.read.distribution",
+      "sha256": "5018fc19c4ff9ad832cd0f3d6884bc621be85ed9419e93f5f211157b01b016fd"
+    },
+    {
+      "name": "muhaven.read.tokens",
+      "sha256": "3705d66227d79cb26532c8ce0322b674bbc0aaf8792ceb2d5764123ce89261a2"
+    },
+    {
+      "name": "muhaven.read.audit",
+      "sha256": "a55b698911e8774b8022c98e86582368e76b12a7c8447afa57a4cfa9d3d6ae04"
+    },
+    {
+      "name": "muhaven.position.buy",
+      "sha256": "638c905c66d8eea6dcfebb412ebf7020d768fb3e023b3b7ec5783718592e99d0"
+    },
+    {
+      "name": "muhaven.position.sell",
+      "sha256": "20eb118ca994c2a1d4fd688c4832ecdfebb3f350e94dc6c4756a683d181f51c4"
+    },
+    {
+      "name": "muhaven.position.claim",
+      "sha256": "daa1c23ce6cf1a113f73ff1326e807e4a18c07c06db0f05c15e5ac01c8c15e86"
+    },
+    {
+      "name": "muhaven.position.rebalance",
+      "sha256": "750bfe5524ac611354d692b8f48d9d3ed41858a89340d2553e2260b34986a0d7"
+    },
+    {
+      "name": "muhaven.policy.set_tier",
+      "sha256": "f00c5aecc2f0ad3f80676993e3ae7481a89e6839ed4539c015249887816c736e"
+    },
+    {
+      "name": "muhaven.policy.pause",
+      "sha256": "f3283dc1338506ca3ba9e6df869146bb84f79b39c240540d2b5b71ef9cabe122"
+    },
+    {
+      "name": "muhaven.policy.audit_export",
+      "sha256": "b5f3b483667e2f39a3ca091e8b659ba8315d05ae7889a5dbaf64638b9039fce6"
+    },
+    {
+      "name": "muhaven.policy.session_key_status",
+      "sha256": "8f7f4da72fff040efca98bc6a9d53b74442b5d8ac5bc6a0b84f411c32ac1724f"
+    }
+  ]
+}

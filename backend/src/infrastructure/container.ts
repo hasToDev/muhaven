@@ -10,6 +10,7 @@ import {
   MemoryAgentAuditRepository,
   MemoryAgentCronStateRepository,
   MemoryAgentConfirmTokenRepository,
+  MemoryAgentDeviceCodeRepository,
 } from './repository/memory/index.js';
 import {
   PgNonceRepository,
@@ -28,6 +29,7 @@ import {
   PgAgentAuditRepository,
   PgAgentCronStateRepository,
   PgAgentConfirmTokenRepository,
+  PgAgentDeviceCodeRepository,
 } from './repository/postgres/index.js';
 import { getDb } from './repository/postgres/db.js';
 import { JwtService } from './auth/jwt.service.js';
@@ -57,6 +59,7 @@ import type { IAgentStateRepository } from '../domain/agent/repository/agent-sta
 import type { IAgentAuditRepository } from '../domain/agent/repository/agent-audit.repository.js';
 import type { IAgentCronStateRepository } from '../domain/agent/repository/agent-cron-state.repository.js';
 import type { IAgentConfirmTokenRepository } from '../domain/agent/repository/agent-confirm-token.repository.js';
+import type { IAgentDeviceCodeRepository } from '../domain/auth/repository/agent-device-code.repository.js';
 
 interface Repositories {
   nonceRepo: INonceRepository;
@@ -81,6 +84,7 @@ interface AgentRepositories {
   agentAuditRepo: IAgentAuditRepository;
   agentCronStateRepo: IAgentCronStateRepository;
   agentConfirmTokenRepo: IAgentConfirmTokenRepository;
+  agentDeviceCodeRepo: IAgentDeviceCodeRepository;
 }
 
 function createMemoryRepos(): Repositories {
@@ -125,6 +129,7 @@ function createMemoryAgentRepos(): AgentRepositories {
     agentAuditRepo: new MemoryAgentAuditRepository(),
     agentCronStateRepo: new MemoryAgentCronStateRepository(),
     agentConfirmTokenRepo: new MemoryAgentConfirmTokenRepository(),
+    agentDeviceCodeRepo: new MemoryAgentDeviceCodeRepository(),
   };
 }
 
@@ -135,6 +140,7 @@ function createPostgresAgentRepos(): AgentRepositories {
     agentAuditRepo: new PgAgentAuditRepository(db),
     agentCronStateRepo: new PgAgentCronStateRepository(db),
     agentConfirmTokenRepo: new PgAgentConfirmTokenRepository(db),
+    agentDeviceCodeRepo: new PgAgentDeviceCodeRepository(db),
   };
 }
 
@@ -285,6 +291,9 @@ export const container = {
   },
   get agentConfirmTokenRepo() {
     return getAgentRepos().agentConfirmTokenRepo;
+  },
+  get agentDeviceCodeRepo() {
+    return getAgentRepos().agentDeviceCodeRepo;
   },
   get nonceService() {
     return new NonceService(getRepos().nonceRepo);

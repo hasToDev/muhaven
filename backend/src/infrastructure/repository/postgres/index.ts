@@ -14,3 +14,4 @@ export { PgAgentStateRepository } from './pg-agent-state.repository.js';
 export { PgAgentAuditRepository } from './pg-agent-audit.repository.js';
 export { PgAgentCronStateRepository } from './pg-agent-cron-state.repository.js';
 export { PgAgentConfirmTokenRepository } from './pg-agent-confirm-token.repository.js';
+export { PgAgentDeviceCodeRepository } from './pg-agent-device-code.repository.js';

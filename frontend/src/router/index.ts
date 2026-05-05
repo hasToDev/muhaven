@@ -121,6 +121,14 @@ const router = createRouter({
       // sits anchored just above the viewport bottom (no page scroll).
       meta: { title: 'Agent', layout: 'agent' },
     },
+    // Device-code authorization landing (Wave 4 P3 ADR-3 D5).
+    // Cross-branch exception — see DEV_WAVE_4/ADR_LOG.md ADR-3.
+    // NOT mounted under /agent/* — this is a leaf auth surface, not chat.
+    {
+      path: '/link',
+      component: () => import('@/views/auth/LinkDevicePage.vue'),
+      meta: { title: 'Link device', layout: 'login' },
+    },
   ],
 })
 

@@ -6,6 +6,7 @@ import { container } from '../../../src/infrastructure/container.js';
 import { createGetHandler, createHandler, sendResponse } from '../../../src/interface/handler-factory.js';
 import { withAuth } from '../../../src/interface/middleware/with-auth.js';
 import { withCors } from '../../../src/interface/middleware/with-cors.js';
+import { withScope } from '../../../src/interface/middleware/with-scope.js';
 import { Response } from '../../../src/interface/response.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import type { AuthenticatedRequest } from '../../../src/interface/handler-factory.js';
@@ -60,4 +61,6 @@ const router = async (req: VercelRequest, res: VercelResponse): Promise<void> =>
   sendResponse(res, Response.badRequest('Method not allowed'));
 };
 
-export default withCors(withAuth(router));
+// Wave 4 P3 ADR-3 D2: device-flow JWTs must carry mcp.read.* to read
+// portfolio. Legacy unscoped (SIWE) tokens fall through with all scopes.
+export default withCors(withAuth(withScope(['mcp.read.*'])(router)));

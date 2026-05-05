@@ -12,6 +12,7 @@ import {
 } from '../../../../src/interface/handler-factory.js';
 import { withAuth } from '../../../../src/interface/middleware/with-auth.js';
 import { withCors } from '../../../../src/interface/middleware/with-cors.js';
+import { withScope } from '../../../../src/interface/middleware/with-scope.js';
 import { Response } from '../../../../src/interface/response.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
@@ -38,4 +39,5 @@ const router = async (req: VercelRequest, res: VercelResponse): Promise<void> =>
   return resumeHandler(req, res);
 };
 
-export default withCors(withAuth(router));
+// Wave 4 P3 ADR-3 D2: device-flow JWTs need mcp.propose.*; SIWE tokens fall through.
+export default withCors(withAuth(withScope(['mcp.propose.*'])(router)));

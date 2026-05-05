@@ -11,6 +11,7 @@ import {
   uniqueIndex,
   primaryKey,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 export const escrowStatusEnum = pgEnum('escrow_status', [
   'PENDING',
@@ -564,5 +565,69 @@ export const agentConfirmTokens = pgTable(
   (t) => [
     index('agent_confirm_tokens_user_expires_idx').on(t.userId, t.expiresAt),
     index('agent_confirm_tokens_action_hash_idx').on(t.actionHash, t.userId),
+  ],
+);
+
+// ────────────────────────────────────────────────────────────────────────
+// Device-code authorization (Wave 4 P3 ADR-3)
+//
+// Tracks the OAuth-2-style device-authorization-grant ceremony used by
+// `@muhaven/mcp` to acquire scoped JWTs without paste-token UX. WORM-ish:
+// `status` only flips forward (pending → authorized | denied | expired
+// → consumed). The Postgres CHECK constraint + a partial unique index on
+// `userCode WHERE status='pending'` enforce the invariant.
+//
+// The `jwt` column stores the issued (scoped) bearer token until the
+// broker polls and consumes it. Stored briefly (≤code TTL) and cleared
+// when status flips to `consumed`.
+
+export const agentDeviceCodeStatusEnum = pgEnum('agent_device_code_status', [
+  'pending',
+  'authorized',
+  'denied',
+  'expired',
+  'consumed',
+]);
+
+export const agentDeviceCodes = pgTable(
+  'agent_device_codes',
+  {
+    /** Opaque high-entropy primary key — broker polls with this. */
+    deviceCode: text('device_code').primaryKey(),
+    /** User-readable 8-char code (XXXX-XXXX, uppercase) typed in dashboard. */
+    userCode: text('user_code').notNull(),
+    status: agentDeviceCodeStatusEnum('status').notNull().default('pending'),
+    /**
+     * User who authorized the code (null until authorize step).
+     *
+     * `onDelete: 'set null'` (Code Review #5, post-port hardening): a
+     * delete-account flow that touches `users` would otherwise fail
+     * with a 23503 constraint violation against the consumed/denied
+     * audit rows. Audit-preserving SET NULL is the conservative
+     * choice — `userCode` / `deviceCode` carry no PII once `userId`
+     * is null.
+     */
+    userId: text('user_id').references(() => users.id, { onDelete: 'set null' }),
+    /** Scopes minted onto the JWT — JSON array of strings. */
+    scope: jsonb('scope').$type<string[]>(),
+    /** Scoped JWT — present iff status='authorized'; cleared on consume. */
+    jwt: text('jwt'),
+    /** Optional reason set by the deny path. */
+    denyReason: text('deny_reason'),
+    /** Process / host / OS the broker reported when requesting the code. */
+    requesterMetadata: jsonb('requester_metadata').notNull(),
+    expiresAt: timestamp('expires_at').notNull(),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    // Only ONE pending row per userCode — collisions on the user-code
+    // namespace are rejected at insert time. Status transitions release
+    // the user code for reuse if needed (Wave 5 may rotate codes).
+    uniqueIndex('agent_device_codes_user_code_pending_idx')
+      .on(t.userCode)
+      .where(sql`status = 'pending'`),
+    index('agent_device_codes_user_id_idx').on(t.userId),
+    index('agent_device_codes_expires_idx').on(t.expiresAt),
   ],
 );
