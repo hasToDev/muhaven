@@ -175,6 +175,14 @@ const EnvSchema = z.object({
   TELEGRAM_BOT_USERNAME: z.string().optional(),
   /** Public Mini App URL ("web_app" target on the inline keyboard). */
   TELEGRAM_MINI_APP_URL: z.string().optional(),
+
+  // ── Wave 4 Phase P5 — Hosted checkout `pay.muhaven.app` ────────────
+  // Public base URL the checkout page is hosted at — used to build the
+  // buyer-facing capability URL `<base>/c/<sessionId>#k=<key>`.
+  // Hackathon defaults: prod = `https://pay.muhaven.hasto.dev`, staging
+  // = `https://pay.muhaven-staging.hasto.dev`, dev = the local Vite
+  // server. Long-term prod = `https://pay.muhaven.app`.
+  CHECKOUT_PUBLIC_URL: z.string().default('http://localhost:7780'),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

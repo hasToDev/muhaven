@@ -738,3 +738,109 @@ export const telegramLinks = pgTable(
     index('telegram_links_unlinked_idx').on(t.unlinkedAt),
   ],
 );
+
+// ────────────────────────────────────────────────────────────────────────
+// Hosted-checkout sessions (Wave 4 P5)
+//
+// Stripe-style records describing a single buyer-facing payment flow.
+// `enc_payload` is AES-256-GCM ciphertext keyed by a 32B fragment key
+// that lives only in the buyer's URL hash — backend cannot decrypt the
+// payload after issue. Status only flips forward; concurrent
+// transitions resolve via conditional UPDATE.
+
+export const checkoutSessionStatusEnum = pgEnum('checkout_session_status', [
+  'pending',
+  'funded',
+  'wrapped',
+  'purchased',
+  'settled',
+  'expired',
+  'failed',
+]);
+
+export const checkoutSessions = pgTable(
+  'checkout_sessions',
+  {
+    /** `cs_<26-base32>` — Stripe-shaped public id. */
+    sessionId: text('session_id').primaryKey(),
+    issuerUserId: text('issuer_user_id')
+      .references(() => users.id)
+      .notNull(),
+    status: checkoutSessionStatusEnum('status').notNull().default('pending'),
+    /** Cleartext metadata — issuer/token/label/successUrl/cancelUrl. */
+    metadata: jsonb('metadata').notNull(),
+    /** Buyer's resolved kernel address — null until first page load + link. */
+    buyerAddress: text('buyer_address'),
+    /** AES-256-GCM iv:authTag:ciphertext envelope (base64url segments). */
+    encPayload: text('enc_payload').notNull(),
+    /** Set on the `purchased` transition; null otherwise. */
+    purchaseTxHash: text('purchase_tx_hash'),
+    expiresAt: timestamp('expires_at').notNull(),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('checkout_sessions_issuer_created_idx').on(t.issuerUserId, t.createdAt),
+    index('checkout_sessions_status_idx').on(t.status),
+    index('checkout_sessions_expires_idx').on(t.expiresAt),
+  ],
+);
+
+// ────────────────────────────────────────────────────────────────────────
+// Hosted-checkout webhook endpoints + delivery log (Wave 4 P5)
+//
+// Issuer-registered HTTPS targets receive Stripe-style HMAC-SHA256-signed
+// payloads on every session transition. `disabled_at` set when the
+// issuer revokes; `signing_secret` is shown ONCE at create time but
+// stored in the row so the dispatcher can keep signing.
+
+export const checkoutWebhookEndpoints = pgTable(
+  'checkout_webhook_endpoints',
+  {
+    endpointId: text('endpoint_id').primaryKey(),
+    issuerUserId: text('issuer_user_id')
+      .references(() => users.id)
+      .notNull(),
+    url: text('url').notNull(),
+    /** Random 32B `whsec_…` hex — surfaced ONCE at create time. */
+    signingSecret: text('signing_secret').notNull(),
+    /** JSON array of event types; empty = all. */
+    enabledEvents: jsonb('enabled_events').notNull().$type<string[]>(),
+    disabledAt: timestamp('disabled_at'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('checkout_webhook_endpoints_issuer_idx').on(t.issuerUserId),
+    index('checkout_webhook_endpoints_disabled_idx').on(t.disabledAt),
+  ],
+);
+
+export const checkoutWebhookDeliveryStatusEnum = pgEnum(
+  'checkout_webhook_delivery_status',
+  ['pending', 'delivered', 'failed'],
+);
+
+export const checkoutWebhookDeliveries = pgTable(
+  'checkout_webhook_deliveries',
+  {
+    deliveryId: text('delivery_id').primaryKey(),
+    endpointId: text('endpoint_id')
+      .references(() => checkoutWebhookEndpoints.endpointId)
+      .notNull(),
+    sessionId: text('session_id')
+      .references(() => checkoutSessions.sessionId)
+      .notNull(),
+    eventType: text('event_type').notNull(),
+    status: checkoutWebhookDeliveryStatusEnum('status').notNull().default('pending'),
+    responseStatus: integer('response_status'),
+    responseBodyExcerpt: text('response_body_excerpt'),
+    errorMessage: text('error_message'),
+    attemptedAt: timestamp('attempted_at').notNull().defaultNow(),
+    completedAt: timestamp('completed_at'),
+  },
+  (t) => [
+    index('checkout_webhook_deliveries_endpoint_idx').on(t.endpointId, t.attemptedAt),
+    index('checkout_webhook_deliveries_session_idx').on(t.sessionId, t.attemptedAt),
+  ],
+);

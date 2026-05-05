@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="referrer" content="no-referrer" />
+    <!-- CSP locks scripts to self + connect to backend. The Wave 5
+         on-ramp swap will need to relax connect-src for the chosen
+         provider (Sardine / Coinbase / MoonPay). NO inline scripts —
+         all interactivity runs from the bundled module. Inline styles
+         are not allowed; styles ship as a separate <link>. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://nagreg.hasto.dev https://nagreg-stage.hasto.dev http://localhost:3000; img-src 'self' data:; font-src 'self'; base-uri 'none'; frame-ancestors 'none';"
+    />
+    <title>MuHaven — Checkout</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main id="app" data-state="loading">
+      <header class="brand">
+        <span class="logo">MuHaven</span>
+        <span class="environment"></span>
+      </header>
+
+      <section id="loading" hidden>
+        <div class="spinner" aria-hidden="true"></div>
+        <p>Loading checkout…</p>
+      </section>
+
+      <section id="error" hidden>
+        <h1>Couldn't load this checkout</h1>
+        <p class="error-detail"></p>
+        <p class="hint">Double-check the URL or ask the issuer for a fresh link.</p>
+      </section>
+
+      <section id="checkout" hidden>
+        <div class="issuer">
+          <span class="label">You are paying</span>
+          <span class="name"></span>
+          <span class="badge" hidden>Verified</span>
+        </div>
+        <div class="amount-block">
+          <span class="amount"></span>
+          <span class="symbol">USDC</span>
+        </div>
+        <p class="memo"></p>
+        <p class="status-pill" data-status=""></p>
+
+        <div id="step-pending" class="step" hidden>
+          <h2>1 · Sign in with passkey</h2>
+          <p>
+            We'll create a passkey-protected smart account for you. The
+            same passkey logs you into the MuHaven dashboard later — no
+            seed phrase to write down.
+          </p>
+          <button id="cta-passkey" class="cta">Continue with passkey</button>
+        </div>
+
+        <div id="step-funding" class="step" hidden>
+          <h2>2 · Top up testnet USDC</h2>
+          <p>
+            Your account address — copy it and paste into the Circle
+            faucet. We'll watch for the deposit and continue automatically.
+          </p>
+          <code class="address" id="kernel-address"></code>
+          <div class="cta-row">
+            <button id="cta-copy-address" class="cta-secondary">Copy address</button>
+            <a
+              id="cta-faucet"
+              class="cta"
+              href="https://faucet.circle.com/"
+              target="_blank"
+              rel="noopener noreferrer"
+            >Open Circle faucet</a>
+          </div>
+          <p class="hint">
+            <strong>Production trajectory:</strong> in Wave 5 this panel
+            swaps to Sardine / Coinbase Onramp / MoonPay. The wire shape
+            (kernel address + amount) stays the same.
+          </p>
+        </div>
+
+        <div id="step-wrapped" class="step" hidden>
+          <h2>3 · Buy the asset</h2>
+          <p>
+            Confirm with your passkey to wrap USDC into confidential
+            PUSDC and complete the purchase in a single sealed envelope.
+          </p>
+          <button id="cta-buy" class="cta">Confirm purchase</button>
+        </div>
+
+        <div id="step-purchased" class="step" hidden>
+          <h2>4 · Settling on chain</h2>
+          <p>
+            Your purchase is confirming. The page will update once the
+            issuer's webhook fires.
+          </p>
+          <code class="tx-hash" id="purchase-tx"></code>
+        </div>
+
+        <div id="step-settled" class="step" hidden>
+          <h2>Done — you're a holder.</h2>
+          <p>
+            Open the MuHaven dashboard to view your encrypted balance and
+            track yields.
+          </p>
+          <a class="cta" href="/" id="cta-success">Go to dashboard</a>
+        </div>
+
+        <div id="step-failed" class="step" hidden>
+          <h2>Something went wrong</h2>
+          <p class="failure-detail"></p>
+          <a class="cta-secondary" href="/" id="cta-cancel">Cancel</a>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
