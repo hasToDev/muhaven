@@ -35,7 +35,8 @@
 		"test:e2e:sdk": "hardhat run scripts/test-e2e-sdk.ts --network arb-sepolia",
 		"deploy:diagnostic": "hardhat run scripts/deploy-diagnostic.ts --network arb-sepolia",
 		"test:diagnostic": "hardhat run scripts/test-diagnostic.ts --network arb-sepolia",
-		"setup:e2e": "hardhat run scripts/setup-e2e.ts --network arb-sepolia"
+		"setup:e2e": "hardhat run scripts/setup-e2e.ts --network arb-sepolia",
+		"bench:cofhe-latency": "hardhat run scripts/bench/cofhe-decrypt-latency.ts --network arb-sepolia"
 	},
 	"author": "hasToDev",
 	"license": "MIT",
