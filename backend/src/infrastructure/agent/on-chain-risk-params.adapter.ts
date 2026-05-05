@@ -215,7 +215,24 @@ export class OnChainRiskParamsAdapter implements IRiskParamsAdapter {
     // RiskParams.checkAndExecute returns an `ebool` handle.
     const result = await this.fheWorker.decryptForTx(handle, 'ebool');
     // The FHE worker stringifies the bigint; ebool decrypts to "0" / "1".
-    const cleartext = result.decryptedValue === '0' || result.decryptedValue === 'false' ? 0 : 1;
+    //
+    // **Hard assertion (Code Review #5, post-port hardening)**: the
+    // worker's `fheType` parameter is computed but silently dropped at
+    // the SDK call site (`@cofhe/sdk`'s `decryptForTx(ctHash)` is
+    // single-arg per `clientTypes-*.d.ts:952`). A future caller passing
+    // the wrong handle would surface as a non-bool string here. Reject
+    // anything other than "0" / "false" / "1" / "true" so a type
+    // mismatch becomes a hard error instead of silently mapping to
+    // `cleartext=1` (which the caller would interpret as "no breach"
+    // and fail to settle a real breach event). Wave 5 may drop the
+    // worker `fheType` param entirely once the SDK exposes type derivation.
+    const v = result.decryptedValue;
+    if (v !== '0' && v !== '1' && v !== 'false' && v !== 'true') {
+      throw new Error(
+        `decryptBreachFlag: expected ebool cleartext "0"/"1"/"false"/"true", got ${JSON.stringify(v)} (handle=${handle}). Wrong handle type submitted to /decrypt/for-tx?`,
+      );
+    }
+    const cleartext = v === '0' || v === 'false' ? 0 : 1;
     return { cleartext, signature: result.signature };
   }
 
