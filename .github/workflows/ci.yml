@@ -1,0 +1,152 @@
+# Develop / master / agenticwave merge-gate CI.
+#
+# Wave 4 P10 — wires the test surfaces that intentionally did NOT block
+# the per-phase lands so they keep working as the codebase moves:
+#
+#   1. `pnpm --filter @muhaven/mcp verify-tool-hashes --check` — runs on
+#      every PR regardless of touched paths so a backend/contract PR that
+#      accidentally regenerates the hashes (or imports the descriptor
+#      module differently) still surfaces drift in review. The
+#      `openclaw-skill-scan.yml` workflow runs the same gate but only on
+#      `packages/mcp/**` + `packages/openclaw-skill/**` paths — this
+#      workflow closes the unguarded backend / e2e / contract paths.
+#   2. Backend vitest against a real Postgres (the partial unique index
+#      `agent_device_codes_user_code_pending_idx` only matters when PG
+#      enforces it — memory-repo tests can't catch a regression in the
+#      `WHERE status='pending'` predicate or the `ON CONFLICT` matcher).
+#   3. Contract Hardhat suite (the encrypted-policy hot path / breach
+#      path coverage added in P10 §"Contract +30 cases").
+#   4. Lethal-trifecta strict lint (P8 introduced; this gate prevents a
+#      future PR from bundling untrusted_input + signing + filesystem on
+#      a single surface).
+#
+# The MCP / OpenClaw / Telegram-bot / SDK package tests already run on
+# `openclaw-skill-scan.yml` for `packages/**` PRs — we don't duplicate
+# them here, just the cross-cutting gates that protect every PR.
+
+name: ci / merge-gate
+
+on:
+  pull_request:
+    branches:
+      - master
+      - develop
+      - agenticwave
+  push:
+    branches:
+      - master
+      - develop
+      - agenticwave
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast-fail gate. Runs the descriptor hash check on every PR so a
+  # backend/frontend PR that imports the MCP package and accidentally
+  # mutates a descriptor surfaces drift in review.
+  tool-hash-gate:
+    name: tool-hash gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install (no scripts — supply-chain hygiene)
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Verify upstream MCP tool-hash pin
+        run: pnpm --filter @muhaven/mcp verify-tool-hashes -- --check
+
+  lethal-trifecta:
+    name: lethal-trifecta lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install (no scripts)
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Run strict trifecta lint
+        run: pnpm run lint:trifecta:strict
+
+  # Backend vitest with a real Postgres so the `(userCode WHERE
+  # status='pending')` partial unique index actually fires. Memory-repo
+  # tests cover the in-process happy path but cannot catch a Drizzle
+  # `WHERE` predicate divergence between the schema declaration and the
+  # generated DDL.
+  backend-vitest-pg:
+    name: backend vitest (real postgres)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: muhaven
+          POSTGRES_PASSWORD: muhaven
+          POSTGRES_DB: muhaven_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      INTEGRATION_PG_URL: postgresql://muhaven:muhaven@localhost:5432/muhaven_test
+      DATABASE_URL: postgresql://muhaven:muhaven@localhost:5432/muhaven_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install (no scripts)
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Push schema to test database
+        working-directory: backend
+        run: pnpm db:push --force
+      - name: Run backend vitest
+        working-directory: backend
+        run: pnpm test
+
+  # Hardhat compile + test. Catches the P10 §"Contract +30 cases"
+  # encrypted-policy regressions on every PR.
+  contracts-hardhat:
+    name: contracts hardhat
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install (no scripts)
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Compile contracts
+        run: pnpm compile
+      - name: Run hardhat tests
+        run: pnpm test

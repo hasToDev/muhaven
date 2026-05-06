@@ -122,6 +122,29 @@ export const SEL = {
   activityFilterYield: 'activity-filter-yield',
   activityFilterEscrow: 'activity-filter-escrow',
   activityLoadMore: 'activity-load-more',
+
+  // Wave 4 P2 — HavenBot /agent route + ConfirmModal
+  agentChatInput: 'agent-chat-input',
+  agentSendCta: 'agent-send-cta',
+  agentMessageUser: 'agent-message-user',
+  agentMessageAgent: 'agent-message-agent',
+  agentConfirmModal: 'agent-confirm-modal',
+  agentConfirmAuthorizeCta: 'agent-confirm-authorize-cta',
+  agentConfirmCancelCta: 'agent-confirm-cancel-cta',
+
+  // Wave 4 P3 — /link?code= device-flow page
+  linkPage: 'link-page',
+  linkUserCode: 'link-user-code',
+  linkRequesterMeta: 'link-requester-meta',
+  linkAuthorizeCta: 'link-authorize-cta',
+  linkDenyCta: 'link-deny-cta',
+  linkPhaseLookingUp: 'link-phase-looking-up',
+  linkPhaseIdle: 'link-phase-idle',
+  linkPhaseAuthorizing: 'link-phase-authorizing',
+  linkPhaseSuccess: 'link-phase-success',
+  linkPhaseDenied: 'link-phase-denied',
+  linkPhaseError: 'link-phase-error',
+  linkErrorMessage: 'link-error-message',
 } as const
 
 /** Shorthand: `byTestId(page, SEL.authCta)` → `page.getByTestId('auth-cta')`. */

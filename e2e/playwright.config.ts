@@ -43,6 +43,12 @@ export default defineConfig({
     // deployed in the target env.
     { name: 'v35', testDir: './tests/v35' },
     { name: 'regression', testDir: './tests/regression' },
+    // Wave 4 P10 surfaces — /link device-flow page, HavenBot copilot, MCP
+    // ceremony, hosted checkout. All four specs use page.route stubs for
+    // backend interactions so they don't need a fresh device-flow ceremony
+    // / passkey / live broker. Specs that DO require biometric for the
+    // full flow are kept as `test.skip()` with the trigger documented.
+    { name: 'wave4', testDir: './tests/wave4' },
     // logout runs last — it clears localStorage for the investor profile,
     // which would force every downstream spec's ensureInvestorReady() to
     // fresh-login (+2 biometric prompts per spec). Keeping it in a dedicated

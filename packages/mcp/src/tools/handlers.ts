@@ -23,6 +23,7 @@ import type { BackendClient } from '../clients/backend-client.js';
 import { BackendError } from '../clients/backend-client.js';
 import type { BrokerClient } from '../clients/broker-client.js';
 import { BrokerClientError } from '../clients/broker-client.js';
+import { authRequiredPayload, type AuthRequiredPayload } from './auth-required.js';
 import type {
   PolicyAuditExportInput,
   PolicyPauseInput,
@@ -55,7 +56,10 @@ export interface ToolDeps {
 
 export type ToolResult<T> =
   | { ok: true; data: T }
-  | { ok: false; code: string; message: string };
+  | { ok: false; code: string; message: string }
+  // Special unauthorized payload — adds `loginCommand` so the host LLM
+  // can present the device-flow CLI without parsing message strings.
+  | AuthRequiredPayload;
 
 function ok<T>(data: T): ToolResult<T> {
   return { ok: true, data };
@@ -65,8 +69,28 @@ function err(code: string, message: string): ToolResult<never> {
   return { ok: false, code, message };
 }
 
+/**
+ * `unauthorized` is a special case. The handler swallows the BackendError
+ * (every public handler wraps in try/catch+mapBackendError), which means
+ * the same-named branch in `server.ts` never observes it. We surface the
+ * structured AUTH_REQUIRED payload here so the host LLM can present the
+ * `muhaven-broker login` instruction without parsing the message string.
+ *
+ * P10 bug bash — discovered by `mcp-redteam.test.ts`'s "AUTH_REQUIRED with
+ * login command" case which previously asserted `code: 'AUTH_REQUIRED'`
+ * and saw `code: 'backend.unauthorized'` instead.
+ */
 function mapBackendError(e: unknown): ToolResult<never> {
-  if (e instanceof BackendError) return err(`backend.${e.code}`, e.message);
+  if (e instanceof BackendError) {
+    // Special-case unauthorized: every handler swallows BackendError via
+    // mapBackendError, so the same-named branch in `server.ts` never fires
+    // for handler-routed unauthorized errors. Returning the structured
+    // AUTH_REQUIRED payload here keeps the host LLM's contract uniform —
+    // it only ever needs to look for `code: 'AUTH_REQUIRED'` to know it
+    // should surface the `muhaven-broker login` instruction.
+    if (e.code === 'unauthorized') return authRequiredPayload();
+    return err(`backend.${e.code}`, e.message);
+  }
   if (e instanceof Error) return err('backend.network', e.message);
   return err('backend.network', 'unknown backend error');
 }

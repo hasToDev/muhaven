@@ -201,6 +201,8 @@ onMounted(() => {
           v-motion
           :initial="{ opacity: 0, y: 12 }"
           :enter="{ opacity: 1, y: 0, transition: { duration: 320 } }"
+          :data-testid="msg.role === 'user' ? 'agent-message-user' : 'agent-message-agent'"
+          :data-message-id="msg.id"
           :class="['flex w-full gap-6 group', msg.role === 'user' ? 'justify-end' : 'justify-start']"
         >
           <!-- Agent avatar (left) -->
@@ -306,6 +308,7 @@ onMounted(() => {
             type="text"
             placeholder="Ask about your portfolio, yields, or compliance…"
             aria-label="Ask the MuHaven agent"
+            data-testid="agent-chat-input"
             class="flex-1 bg-transparent px-3 py-3 font-sans text-sm text-midnight dark:text-white
                    placeholder:text-cool focus:outline-none min-w-0"
           />
@@ -314,6 +317,7 @@ onMounted(() => {
             @click="sendMessage()"
             :disabled="!input.trim()"
             aria-label="Send message"
+            data-testid="agent-send-cta"
             class="btn-gold-sweep w-11 h-11 rounded-xl flex items-center justify-center cursor-pointer
                    transition-transform duration-200 hover:scale-105 active:scale-95 shrink-0"
           >

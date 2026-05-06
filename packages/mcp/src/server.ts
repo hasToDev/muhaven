@@ -37,25 +37,10 @@ import {
   type ToolHashEntry,
 } from './tools/descriptions.js';
 
+import { authRequiredPayload } from './tools/auth-required.js';
+
 const SERVER_NAME = '@muhaven/mcp';
 const SERVER_VERSION = '0.1.0';
-
-interface AuthRequiredPayload {
-  ok: false;
-  code: 'AUTH_REQUIRED';
-  message: string;
-  loginCommand: string;
-}
-
-function authRequiredPayload(): AuthRequiredPayload {
-  return {
-    ok: false,
-    code: 'AUTH_REQUIRED',
-    message:
-      'No JWT in broker keystore. Run `muhaven-broker login` to authenticate via the device-code ceremony, then retry this tool.',
-    loginCommand: 'muhaven-broker login',
-  };
-}
 
 interface ZodSchemaWithJsonSchema {
   parse(input: unknown): unknown;

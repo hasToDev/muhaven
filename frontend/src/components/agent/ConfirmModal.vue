@@ -253,6 +253,8 @@ const arbiscanUrl = computed(() =>
     role="dialog"
     aria-modal="true"
     aria-labelledby="confirm-modal-title"
+    data-testid="agent-confirm-modal"
+    :data-status="status"
     class="fixed inset-0 z-50 flex items-center justify-center px-4"
   >
     <!-- Backdrop -->
@@ -402,6 +404,7 @@ const arbiscanUrl = computed(() =>
             v-if="status !== 'success'"
             type="button"
             @click="close"
+            data-testid="agent-confirm-cancel-cta"
             class="flex-1 py-3 px-4 rounded-xl font-sans text-sm font-medium
                    border border-haze dark:border-white/10
                    bg-white dark:bg-[#1f1e1e]
@@ -422,6 +425,7 @@ const arbiscanUrl = computed(() =>
             v-if="status === 'idle' || status === 'error'"
             type="button"
             @click="authorize"
+            data-testid="agent-confirm-authorize-cta"
             class="btn-gold-sweep flex-1 py-3 px-4 rounded-xl font-sans text-sm font-semibold
                    flex items-center justify-center gap-2 cursor-pointer
                    transition-transform duration-150 active:scale-95"

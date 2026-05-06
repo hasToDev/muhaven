@@ -124,7 +124,7 @@ async function handleDeny(): Promise<void> {
 </script>
 
 <template>
-  <div class="link-page">
+  <div class="link-page" :data-phase="phase" data-testid="link-page">
     <main class="card" role="main" aria-labelledby="link-title">
       <header class="card-header">
         <h1 id="link-title">Link a device to MuHaven</h1>
@@ -137,19 +137,19 @@ async function handleDeny(): Promise<void> {
       <!-- Code display (always visible while we have a code) -->
       <section class="code-block" aria-label="Verification code">
         <span class="label">Verification code</span>
-        <code class="code-value">{{ userCode || '— — — — — — — —' }}</code>
+        <code class="code-value" data-testid="link-user-code">{{ userCode || '— — — — — — — —' }}</code>
         <p class="hint">
           Make sure this matches the code printed by <code>muhaven-broker login</code> in your terminal.
         </p>
       </section>
 
       <!-- Looking up: spinner placeholder -->
-      <section v-if="phase === 'looking-up'" class="actions">
+      <section v-if="phase === 'looking-up'" class="actions" data-testid="link-phase-looking-up">
         <p>Looking up the device…</p>
       </section>
 
       <!-- Idle: requesterMetadata first, then CTA -->
-      <section v-else-if="phase === 'idle'" class="actions">
+      <section v-else-if="phase === 'idle'" class="actions" data-testid="link-phase-idle">
         <h2 class="section-h">You are about to authorize this device</h2>
         <dl v-if="requesterMeta" class="meta-list" data-testid="link-requester-meta">
           <dt>Process</dt>
@@ -167,22 +167,32 @@ async function handleDeny(): Promise<void> {
           the ability to propose (NOT execute) trades.
         </p>
         <div class="row">
-          <button class="btn btn-primary" type="button" @click="handleAuthorize">
+          <button
+            class="btn btn-primary"
+            type="button"
+            data-testid="link-authorize-cta"
+            @click="handleAuthorize"
+          >
             Authorize with my passkey session
           </button>
-          <button class="btn btn-ghost" type="button" @click="handleDeny">
+          <button
+            class="btn btn-ghost"
+            type="button"
+            data-testid="link-deny-cta"
+            @click="handleDeny"
+          >
             Deny
           </button>
         </div>
       </section>
 
       <!-- Authorizing -->
-      <section v-else-if="phase === 'authorizing'" class="actions">
+      <section v-else-if="phase === 'authorizing'" class="actions" data-testid="link-phase-authorizing">
         <p>Submitting…</p>
       </section>
 
       <!-- Success -->
-      <section v-else-if="phase === 'success'" class="actions success">
+      <section v-else-if="phase === 'success'" class="actions success" data-testid="link-phase-success">
         <h2>Linked.</h2>
         <p>
           The device above has been authorized. You can close this tab — your terminal
@@ -191,15 +201,15 @@ async function handleDeny(): Promise<void> {
       </section>
 
       <!-- Denied -->
-      <section v-else-if="phase === 'denied'" class="actions denied">
+      <section v-else-if="phase === 'denied'" class="actions denied" data-testid="link-phase-denied">
         <h2>Denied.</h2>
         <p>This authorization request has been recorded as denied. You can close this tab.</p>
       </section>
 
       <!-- Error -->
-      <section v-else-if="phase === 'error'" class="actions error">
+      <section v-else-if="phase === 'error'" class="actions error" data-testid="link-phase-error">
         <h2>Something went wrong.</h2>
-        <p>{{ errorMessage }}</p>
+        <p data-testid="link-error-message">{{ errorMessage }}</p>
       </section>
     </main>
   </div>
