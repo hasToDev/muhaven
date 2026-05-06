@@ -10,6 +10,8 @@
 
 **Wave 4 P2 update (2026-05-06).** HavenBot is live on `agenticwave`. The chat UI now consumes a real SSE streaming endpoint (`/api/v1/agent/chat/stream`) backed by the 8-tool surface + uniform tool dispatcher + per-action `<ConfirmModal>` with cleartext preview + on-chain SDK call via the user's ZeroDev kernel. Provider is Google Gemini via `@google/genai` (one-file swap to Claude via Vercel AI SDK when the user adds a Claude key — see ADR-6 D1). Onboarding wizard at `/agent/onboarding` ships the Wealthfront-style limits paragraph + sealed-glass-envelope copy + portfolio-probe restoration so returning users skip past completed steps.
 
+**Wave 4 P7 update (2026-05-06).** Issuer-side surface lands on `agenticwave` (commit `f8faf6d`). Five new tools wired across HavenBot + new `muhaven.issuer.*` MCP namespace per ADR-8. Same propose → confirm-token → commit shape as the P2 investor-side tools, with Tier-2 (Confirm-per-action) as the natural posture for issuer flows. The HavenBot tool surface goes from 8 → 13 (5 new propose / read tools); MCP goes from 13 → 18. All four propose tools sign as the **issuer kernel** (NOT the platform deployer) — production-trajectory shape. Audit copilot ships **issuer-self only** in Wave 4; the cross-user permit-gated path defers to Wave 5 with the wire shape pinned for purely-additive upgrade. Backend Telegram broadcast hook ships behind `LoggingIssuerChannelTransport` / `HttpIssuerChannelTransport` selection — operator BotFather + `TELEGRAM_ISSUER_CHANNEL_ID` provisioning deferred per the P4 operator-tasks pattern.
+
 **Wave 4 — in active development on a parallel branch (~203h of ~327h shipped, awaits production cutover settlement before merge).** Four agentic surfaces sitting on the same MuHaven SDK + `@zerodev/permissions` policy gate:
 
 - **HavenBot** — in-dashboard streaming chat (Vue 3, Anthropic Claude Sonnet 4.5 via Vercel AI SDK).
@@ -77,7 +79,8 @@ Each surface is a different way to reach the same SDK + policy gate. Naming and 
 - Where: `/agent` route in the Vue 3 dashboard.
 - Stack: Anthropic Claude Sonnet 4.5 via Vercel AI SDK; streaming chat; per-action `<ConfirmModal>` component with FHE-decrypted preview (`cofheClient.decryptForView(handle).withPermit().execute()`).
 - Onboarding flow: passkey → KYC → first-buy in <6 minutes (Wealthfront-style limits paragraph; "sealed-glass-envelope" copy from research Q17).
-- Tool surface: `muhaven_portfolio_summary`, `muhaven_quote`, `muhaven_propose_buy`, `muhaven_propose_claim`, `muhaven_propose_rebalance`, `muhaven_set_policy`, `muhaven_pause`, `muhaven_unseal_position`.
+- Tool surface (P2 — investor-facing): `muhaven_portfolio_summary`, `muhaven_quote`, `muhaven_propose_buy`, `muhaven_propose_claim`, `muhaven_propose_rebalance`, `muhaven_set_policy`, `muhaven_pause`, `muhaven_unseal_position`.
+- Tool surface (P7 — issuer-facing): `muhaven_propose_distribute_yield`, `muhaven_propose_kyc_add`, `muhaven_propose_kyc_remove`, `muhaven_propose_unpause_token`, `muhaven_audit_query`. All four propose tools gate on `role === 'issuer' && issuerStatus === 'approved'` AND `token.issuerAddress === ctx.walletAddress` (token-issuer-of-record).
 
 Demo loop: split-screen chat → encrypted balance unsealed client-side → buy proposal → passkey signature → Arbiscan settlement.
 
@@ -85,7 +88,7 @@ Demo loop: split-screen chat → encrypted balance unsealed client-side → buy 
 
 - Format: MCPB npm package with `manifest.json` declaring every env var + binary + endpoint. **All secrets `"sensitive": true` → OS keychain.** No env-block credentials.
 - Companion daemon: `muhaven-broker` (Node 20, ~200 LOC) listening on a Unix socket with peer-credential ACLs. Holds the session-key private half. MCP calls `signUserOp` over `/tmp/muhaven-broker.sock` (or named pipe on Windows).
-- Toolsets: `muhaven.read.*` (portfolio, yield, distribution), `muhaven.position.*` (buy, claim, redeem), `muhaven.policy.*` (set tier, pause, audit). `--read-only` flag analogous to `github/github-mcp-server`.
+- Toolsets: `muhaven.read.*` (portfolio, yield, distribution, audit), `muhaven.position.*` (buy, claim, redeem, rebalance), `muhaven.policy.*` (set tier, pause, audit_export, session_key_status), `muhaven.issuer.*` (P7 — distribute_yield, kyc_add, kyc_remove, unpause_token, audit_query). `--read-only` flag analogous to `github/github-mcp-server`; only `muhaven.read.*` survives the filter.
 - Hardening: tool-description pinning (`mcp-context-protector` pattern, post-MCPoison); transports bound to `127.0.0.1`; `mcp-remote` banned; `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` documented in setup.
 - Publish: npm OIDC + provenance attestations; Sigstore signing.
 - Install demos: Claude Desktop, Cursor, Claude Code.
@@ -139,14 +142,21 @@ Tools are typed function surfaces. Each carries strict-enum names, structured-ou
 | `muhaven_propose_governance_vote(proposalId)`, `muhaven_cast_encrypted_vote(proposalId, choice)` | Encrypted ballot via `FHE.select` + async tally | EncryptedGovernance (Wave 4 P11) |
 | `muhaven_explain_kyc_attestation` | Informational only — explains the cross-chain KYC attestation flow | KYCAttestationRegistry stub (Wave 4 P11.C) |
 
-### Issuer-facing
+### Issuer-facing (Wave 4 P7 — landed 2026-05-06 per ADR-8)
 
-| Tool | What it does | Backed by |
-|---|---|---|
-| `muhaven_distribution_wizard(token, totalYield, ratePerShare)` | Open epoch → snapshot holders → finalize → fund mhUSDC | `YieldSnapshotClient` |
-| `muhaven_kyc_whitelist_add(account)`, `muhaven_kyc_whitelist_remove(account)` | Direct ERC-3643 wrapper | `IdentityRegistryClient` |
-| `muhaven_audit_view(scope, filter)` | Read-only audit copilot with permits-based decrypt for compliance officer | `agent_audit_events` table + investor-signed grant |
-| `muhaven_set_token_compliance(token, modules)` | Bind / unbind compliance modules (CountryAllow, MaxHolders, Lockup, …) | `ModularCompliance` |
+| Tool (HavenBot) | MCP equivalent | What it does | Backed by |
+|---|---|---|---|
+| `muhaven_propose_distribute_yield(tokenAddress, totalYieldUsd6, label?)` | `muhaven.issuer.distribute_yield` | Schedule a yield epoch via `MuHavenClient.distributeYield(totalYield)` (startDistribution → batchCreate → fundEscrows). Backend never sees the encrypted yield handle — frontend encrypts SDK-side. | `@muhaven/sdk` `distributeYield` flow |
+| `muhaven_propose_kyc_add(tokenAddress, investorAddress, kycTier)` | `muhaven.issuer.kyc_add` | Add an investor to the ERC-3643 whitelist. Tier-1 = retail KYC (1 tx); tier-2 = accredited (2 sequential txs — `addToWhitelist` + `addToAccreditedList`). | `ERC3643KYCAdapter.addToWhitelist` + `addToAccreditedList` |
+| `muhaven_propose_kyc_remove(tokenAddress, investorAddress)` | `muhaven.issuer.kyc_remove` | Remove an investor from the ERC-3643 whitelist. Contract auto-clears tier-2 accredited status per `ERC3643KYCAdapter.sol:103-110`. | `ERC3643KYCAdapter.removeFromWhitelist` |
+| `muhaven_propose_unpause_token(tokenAddress, initialNavUsd6)` | `muhaven.issuer.unpause_token` | Closes the F2 wizard step 6: `oracle.setNAV(token, initialNav)` + `tokenRegistry.setPaused(token, false)`. Both signed by the **applicant kernel** — production-trajectory shape (NOT the deployer-side `scripts/unpause-token.ts` automation). Idempotent (refuses if already active). | `IssuerControlledOracle.setNAV` + `TokenRegistry.setPaused` |
+| `muhaven_audit_query(surface?, eventTypes?, since?, until?, cursor?, limit?)` | `muhaven.issuer.audit_query` | Read the calling user's tiered-autonomy audit log (cursor-paginated). Wave 4 = issuer-self only with 90-day window cap; Wave 5 adds permit-gated cross-user access for compliance officers. | `agent_audit_events` table |
+
+**Multi-tx descriptor shape (ADR-8 D4).** All four propose tools return `sdkCall.args.txs[]` — an ordered array of real `(contract, address, fn, args)` tuples. No synthetic function names; the runner branches on `txs.length` and resolves every entry against a real ABI.
+
+**Replay defense (ADR-8 D2 + Code-Review C1+C2).** Every issuer-side `actionPayload` pins `requestedAtSec` (Unix seconds) AND `tool` name into the action hash. Without `requestedAtSec`, an issuer could re-submit the same `(token, amount, label)` confirm token forever within the 5-min TTL. Without `tool`, the post-hoc audit log couldn't distinguish a `kyc_add` commit from a `distribute_yield` commit at the `permit_granted` row level.
+
+**Wave-5 deferred.** `muhaven_set_token_compliance(token, modules)` for ModularCompliance binding (CountryAllow / MaxHolders / Lockup) — out of P7 scope; lands when the issuer dashboard polish phase begins. Cross-user permit-gated audit (the original "compliance officer" wire) — wire shape pinned in ADR-8 §"D3" so the upgrade is purely additive (new `permit` request field; `scopedTo: 'self'` response field flips to a user-id when permit is present).
 
 All tool definitions live in `backend/src/agent/tools/*.ts` (Wave 4); HavenBot consumes them via Vercel AI SDK tool-call schemas, MCP exposes them through MCPB tool-list, OpenClaw bundles a subset.
 
@@ -349,7 +359,7 @@ explicit user-signed permit.
 | Demo capture + Dune dashboard | `development/DEV_WAVE_4/DEMO_SCRIPT.md` | P9 |
 | Threat-model hardening + red-team | PromptArmor preprocessing, CaMeL split, Promptfoo / DeepTeam suite, lethal-trifecta lint | P8 |
 
-Phase tracking: `development/DEV_WAVE_4/PROGRESS.md` (parallel-branch state). Architecture decisions log: `development/DEV_WAVE_4/ADR_LOG.md` (ADR-0..ADR-5 covering tiered-autonomy state machine, MCPB credential storage, hosted-checkout URL scheme, Telegram confirmation tiers, etc.).
+Phase tracking: `development/DEV_WAVE_4/PROGRESS.md` (parallel-branch state). Architecture decisions log: `development/DEV_WAVE_4/ADR_LOG.md` (ADR-0..ADR-8 covering tiered-autonomy state machine, hybrid policy split, MCPB credential storage, Telegram confirmation tiers, hosted-checkout routing, HavenBot LLM provider, P8 safety hardening, and P7 issuer-side namespace + naming).
 
 ---
 
@@ -363,7 +373,7 @@ Phase tracking: `development/DEV_WAVE_4/PROGRESS.md` (parallel-branch state). Ar
 - MuHaven SDK + contracts (the surface the agent calls)
 - FHE worker scaffolding (`@cofhe/sdk/node` for server-side tool handlers)
 
-### In active development (Wave 4 — parallel branch)
+### Shipped on `agenticwave` (Wave 4)
 
 - Tiered-autonomy engine + audit log + `/pause` kill-switch (P1)
 - HavenBot streaming chat + per-action confirm modals (P2)
@@ -371,10 +381,14 @@ Phase tracking: `development/DEV_WAVE_4/PROGRESS.md` (parallel-branch state). Ar
 - OpenClaw skill + Telegram surface (P4)
 - Hosted checkout `pay.muhaven.app` (P5)
 - Encrypted policy primitives in `RiskParams.sol` (P6)
-- Issuer-side distribution wizard + audit copilot (P7)
+- **Issuer-side distribution wizard + KYC inline + audit copilot + setNAVAndUnpause (P7)** ← landed 2026-05-06 (commit `f8faf6d`)
 - Threat-model hardening + red-team (P8)
-- Demo capture + Dune dashboard (P9)
 - DefaultProtection + EncryptedGovernance + KYC attestation stub contracts (P11)
+
+### In active development (Wave 4 — remaining ~44h on `agenticwave`)
+
+- Demo capture + Dune dashboard (P9)
+- Buffer + integration tests (P10)
 
 ### Post-Wave-4
 
