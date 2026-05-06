@@ -35,6 +35,15 @@ export const TOOLSET_EXCLUDED: readonly string[] = [
   'muhaven.position.rebalance',
   'muhaven.policy.set_tier',
   'muhaven.policy.audit_export',
+  // Wave 4 P7 — issuer-side tools are out of scope for the OpenClaw
+  // skill (investor-facing surface). Issuer flows live on HavenBot
+  // in-dashboard + the standalone `@muhaven/mcp` install. The bundled
+  // OpenClaw skill never advertises them.
+  'muhaven.issuer.distribute_yield',
+  'muhaven.issuer.kyc_add',
+  'muhaven.issuer.kyc_remove',
+  'muhaven.issuer.unpause_token',
+  'muhaven.issuer.audit_query',
 ];
 
 const SUBSET = new Set(TOOLSET_SUBSET);

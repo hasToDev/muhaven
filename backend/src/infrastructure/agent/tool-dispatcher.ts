@@ -10,6 +10,13 @@ import {
   PauseToolDtoSchema,
   UnsealPositionDtoSchema,
 } from '../../application/dto/agent/tool.dto.js';
+import {
+  ProposeDistributeYieldDtoSchema,
+  ProposeKycAddDtoSchema,
+  ProposeKycRemoveDtoSchema,
+  ProposeUnpauseTokenDtoSchema,
+  AuditQueryToolDtoSchema,
+} from '../../application/dto/agent/issuer-tool.dto.js';
 import type {
   PortfolioSummaryToolUseCase,
   QuoteToolUseCase,
@@ -19,6 +26,11 @@ import type {
   SetPolicyToolUseCase,
   PauseToolUseCase,
   UnsealPositionToolUseCase,
+  ProposeDistributeYieldToolUseCase,
+  ProposeKycAddToolUseCase,
+  ProposeKycRemoveToolUseCase,
+  ProposeUnpauseTokenToolUseCase,
+  AuditQueryToolUseCase,
 } from '../../application/use-case/agent/tool/index.js';
 import { gatePlannerIntent, sanitiseToolResult } from './safety/index.js';
 
@@ -31,6 +43,12 @@ export interface ToolDispatcherDeps {
   setPolicy: SetPolicyToolUseCase;
   pauseTool: PauseToolUseCase;
   unsealPosition: UnsealPositionToolUseCase;
+  // Wave 4 P7 — issuer-side tools
+  proposeDistributeYield: ProposeDistributeYieldToolUseCase;
+  proposeKycAdd: ProposeKycAddToolUseCase;
+  proposeKycRemove: ProposeKycRemoveToolUseCase;
+  proposeUnpauseToken: ProposeUnpauseTokenToolUseCase;
+  auditQuery: AuditQueryToolUseCase;
 }
 
 export interface ToolDispatcherContext {
@@ -126,6 +144,55 @@ export class ToolDispatcher {
       case 'muhaven_unseal_position': {
         const args = UnsealPositionDtoSchema.parse(rawArgs);
         return this.deps.unsealPosition.execute(args);
+      }
+      // ── Wave 4 P7 — issuer-side tools ───────────────────────────────
+      case 'muhaven_propose_distribute_yield': {
+        const args = ProposeDistributeYieldDtoSchema.parse(rawArgs);
+        return this.deps.proposeDistributeYield.execute(
+          {
+            userId: ctx.userId,
+            walletAddress: ctx.walletAddress,
+            surface: ctx.surface,
+          },
+          args,
+        );
+      }
+      case 'muhaven_propose_kyc_add': {
+        const args = ProposeKycAddDtoSchema.parse(rawArgs);
+        return this.deps.proposeKycAdd.execute(
+          {
+            userId: ctx.userId,
+            walletAddress: ctx.walletAddress,
+            surface: ctx.surface,
+          },
+          args,
+        );
+      }
+      case 'muhaven_propose_kyc_remove': {
+        const args = ProposeKycRemoveDtoSchema.parse(rawArgs);
+        return this.deps.proposeKycRemove.execute(
+          {
+            userId: ctx.userId,
+            walletAddress: ctx.walletAddress,
+            surface: ctx.surface,
+          },
+          args,
+        );
+      }
+      case 'muhaven_propose_unpause_token': {
+        const args = ProposeUnpauseTokenDtoSchema.parse(rawArgs);
+        return this.deps.proposeUnpauseToken.execute(
+          {
+            userId: ctx.userId,
+            walletAddress: ctx.walletAddress,
+            surface: ctx.surface,
+          },
+          args,
+        );
+      }
+      case 'muhaven_audit_query': {
+        const args = AuditQueryToolDtoSchema.parse(rawArgs ?? {});
+        return this.deps.auditQuery.execute({ userId: ctx.userId }, args);
       }
       default:
         throw ApplicationHttpError.badRequest(`Unknown tool: ${toolName}`);

@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-04-30T05:02:03.262Z",
+  "generatedAt": "2026-05-06T04:55:29.539Z",
   "tools": [
     {
       "name": "muhaven.read.portfolio",
@@ -52,6 +52,26 @@
     {
       "name": "muhaven.policy.session_key_status",
       "sha256": "8f7f4da72fff040efca98bc6a9d53b74442b5d8ac5bc6a0b84f411c32ac1724f"
+    },
+    {
+      "name": "muhaven.issuer.distribute_yield",
+      "sha256": "116e6e35696bc8e3d0cbdfc9e6a9fb2e9c00c96899a81ff6aca1007d6e776860"
+    },
+    {
+      "name": "muhaven.issuer.kyc_add",
+      "sha256": "5c1853d3d93b5c3babfc2db6d6a59a1cfc09c24512d13274ed1c37bd6aec82a4"
+    },
+    {
+      "name": "muhaven.issuer.kyc_remove",
+      "sha256": "563894d8d2ae63708de1b5851ecf2bc8d18012684d16a5d9e4eca7ee9a61653d"
+    },
+    {
+      "name": "muhaven.issuer.unpause_token",
+      "sha256": "e780ebc2e8dba6e4ebd16a1e789f7c65511fdf8a0811fb9b73f157e124089c04"
+    },
+    {
+      "name": "muhaven.issuer.audit_query",
+      "sha256": "4d2de70ea295ac7acd0a55352ce2af02e33dc8e23275d6010aca009207b2e8b0"
     }
   ]
 }

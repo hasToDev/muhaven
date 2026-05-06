@@ -55,6 +55,15 @@ const TOOL_NAMES = [
   'muhaven_set_policy',
   'muhaven_pause',
   'muhaven_unseal_position',
+  // Wave 4 P7 — issuer-side tools (ADR-8). The planner sees the same
+  // catalog regardless of caller role; the use-case-side issuer +
+  // approved + token-issuer-of-record gates produce structured 403s
+  // for non-issuers.
+  'muhaven_propose_distribute_yield',
+  'muhaven_propose_kyc_add',
+  'muhaven_propose_kyc_remove',
+  'muhaven_propose_unpause_token',
+  'muhaven_audit_query',
 ] as const;
 
 type ToolName = (typeof TOOL_NAMES)[number];
@@ -77,6 +86,15 @@ YOUR CAPABILITIES (write tools — tier-gated)
 - muhaven_propose_rebalance(legs[]): Multi-leg sell + buy.
 - muhaven_set_policy(targetTier): Tier transition.
 - muhaven_pause(): Kill-switch.
+
+YOUR CAPABILITIES (issuer-only write tools — tier-gated, requires approved issuer kernel)
+- muhaven_propose_distribute_yield(tokenAddress, totalYieldUsd6, label?): Schedule a yield epoch via SDK distributeYield.
+- muhaven_propose_kyc_add(tokenAddress, investorAddress, kycTier): Add an investor to the KYC whitelist.
+- muhaven_propose_kyc_remove(tokenAddress, investorAddress): Remove an investor from the KYC whitelist.
+- muhaven_propose_unpause_token(tokenAddress, initialNavUsd6): Set initial NAV + unpause a freshly-deployed token.
+
+YOUR CAPABILITIES (issuer-only read tools)
+- muhaven_audit_query(surface?, eventTypes?, since?, until?, cursor?, limit?): Read your own tiered-autonomy audit log.
 
 YOUR CONSTRAINTS
 - NEVER bypass the policy gate. NEVER call signing endpoints directly.
@@ -568,6 +586,106 @@ function buildGeminiToolDeclarations(): unknown[] {
               signerHint: { type: 'STRING', enum: ['session', 'master'] },
             },
             required: ['handle'],
+          },
+        },
+        // ── Wave 4 P7 — issuer-side tools ──────────────────────────────
+        {
+          name: 'muhaven_propose_distribute_yield',
+          description:
+            'Schedule a yield epoch for a registered RWA token. Wraps the @muhaven/sdk distributeYield pipeline (startDistribution → batchCreate → fundEscrows). Issuer-only.',
+          parameters: {
+            type: 'OBJECT',
+            properties: {
+              tokenAddress: { type: 'STRING' },
+              totalYieldUsd6: {
+                type: 'STRING',
+                description:
+                  'Cleartext PUSDC base units (1 USDC = 1000000). Encrypted SDK-side before submit.',
+              },
+              label: { type: 'STRING', description: 'Optional human-readable label.' },
+            },
+            required: ['tokenAddress', 'totalYieldUsd6'],
+          },
+        },
+        {
+          name: 'muhaven_propose_kyc_add',
+          description:
+            'Add an investor to the ERC-3643 whitelist for a token (tier 1 = retail KYC; tier 2 = accredited). Issuer-only.',
+          parameters: {
+            type: 'OBJECT',
+            properties: {
+              tokenAddress: { type: 'STRING' },
+              investorAddress: { type: 'STRING' },
+              kycTier: { type: 'NUMBER', enum: [1, 2] },
+            },
+            required: ['tokenAddress', 'investorAddress'],
+          },
+        },
+        {
+          name: 'muhaven_propose_kyc_remove',
+          description:
+            'Remove an investor from the ERC-3643 whitelist for a token (tier-2 accredited status auto-cleared). Issuer-only.',
+          parameters: {
+            type: 'OBJECT',
+            properties: {
+              tokenAddress: { type: 'STRING' },
+              investorAddress: { type: 'STRING' },
+            },
+            required: ['tokenAddress', 'investorAddress'],
+          },
+        },
+        {
+          name: 'muhaven_propose_unpause_token',
+          description:
+            'Set initial NAV + unpause a freshly-deployed token (closes the F2 wizard step 6). Issuer-only.',
+          parameters: {
+            type: 'OBJECT',
+            properties: {
+              tokenAddress: { type: 'STRING' },
+              initialNavUsd6: {
+                type: 'STRING',
+                description: 'Initial NAV in PUSDC base units (6 decimals). 1000000 = $1.00.',
+              },
+            },
+            required: ['tokenAddress', 'initialNavUsd6'],
+          },
+        },
+        {
+          name: 'muhaven_audit_query',
+          description:
+            'Return the calling user\'s own tiered-autonomy audit log entries (cursor-paginated). Useful for forensic review and compliance. Wave 4 = issuer-self only; Wave 5 will add permit-gated cross-user access.',
+          parameters: {
+            type: 'OBJECT',
+            properties: {
+              surface: {
+                type: 'STRING',
+                enum: ['havenbot', 'mcp', 'openclaw', 'checkout'],
+              },
+              eventTypes: {
+                type: 'ARRAY',
+                items: {
+                  type: 'STRING',
+                  enum: [
+                    'tier_changed',
+                    'paused',
+                    'resumed',
+                    'cron_tick',
+                    'confirm_token_issued',
+                    'confirm_token_consumed',
+                    'permit_granted',
+                    'permit_revoked',
+                    'validator_installed',
+                    'validator_uninstalled',
+                    'kyc_revocation_received',
+                    'risk_questionnaire_complete',
+                  ],
+                },
+              },
+              since: { type: 'STRING', description: 'ISO datetime — inclusive lower bound.' },
+              until: { type: 'STRING', description: 'ISO datetime — inclusive upper bound.' },
+              cursor: { type: 'STRING' },
+              limit: { type: 'NUMBER' },
+            },
           },
         },
       ],

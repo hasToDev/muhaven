@@ -19,8 +19,11 @@ import { createHash } from 'node:crypto';
 export interface ToolDescriptor {
   /** Canonical name. MUST match the regex in TOOL_NAMESPACE.md. */
   readonly name: string;
-  /** Group classification — drives the --read-only filter. */
-  readonly group: 'read' | 'position' | 'policy';
+  /** Group classification — drives the --read-only filter. P7 adds
+   *  `issuer` for issuer-side state-mutating tools that require an
+   *  approved issuer kernel (the use-case-side gate produces structured
+   *  403s for non-issuers; the group is for the read-only filter only). */
+  readonly group: 'read' | 'position' | 'policy' | 'issuer';
   /** Human-readable description shown in the host UI. */
   readonly description: string;
   /** When true, the host SHOULD render a confirmation cue before invoking. */
@@ -122,6 +125,48 @@ export const TOOL_DESCRIPTORS: readonly ToolDescriptor[] = [
     group: 'policy',
     description:
       'Return the current ZeroDev session-key validator state for the MCP surface: tier, validator address, valid-until timestamp, recent action count. Pure read; never modifies state.',
+    sensitive: false,
+  },
+  // ── Wave 4 P7 — issuer-side tools (ADR-8) ──────────────────────────
+  // Same use-case backing as HavenBot's `muhaven_propose_*` tools; the
+  // dotted MCP names follow the namespace rule established in P3
+  // (TOOL_NAMESPACE.md §"`@muhaven/mcp` namespaces"). Every issuer tool
+  // is sensitive=true (host MUST render confirmation cue); they require
+  // an approved issuer kernel — the backend returns a structured 403
+  // when the JWT subject isn't issuer-roled.
+  {
+    name: 'muhaven.issuer.distribute_yield',
+    group: 'issuer',
+    description:
+      'PROPOSE a yield distribution for a registered RWA token. Wraps the @muhaven/sdk distributeYield pipeline (startDistribution → batchCreate → fundEscrows). Returns an ActionDescriptor + confirmation token. Issuer-only — the use-case rejects non-issuer kernels with NOT_APPROVED_ISSUER.',
+    sensitive: true,
+  },
+  {
+    name: 'muhaven.issuer.kyc_add',
+    group: 'issuer',
+    description:
+      'PROPOSE adding an investor to the ERC-3643 whitelist for a registered token. kycTier=1 is retail KYC; kycTier=2 is accredited (which also requires tier 1). Returns an ActionDescriptor + confirmation token. Issuer-only.',
+    sensitive: true,
+  },
+  {
+    name: 'muhaven.issuer.kyc_remove',
+    group: 'issuer',
+    description:
+      'PROPOSE removing an investor from the ERC-3643 whitelist for a registered token. Tier-2 accredited status is auto-cleared by the contract. The on-chain T-5 KYC-revocation cascade across investor surfaces wires up in Wave 5 once the indexer subscribes. Issuer-only.',
+    sensitive: true,
+  },
+  {
+    name: 'muhaven.issuer.unpause_token',
+    group: 'issuer',
+    description:
+      'PROPOSE the F2 wizard step 6 closure: oracle.setNAV(token, initialNav) + tokenRegistry.setPaused(token, false). Both signed by the applicant kernel. Idempotent — refuses if the token is already active. Issuer-only.',
+    sensitive: true,
+  },
+  {
+    name: 'muhaven.issuer.audit_query',
+    group: 'issuer',
+    description:
+      'Return the calling issuer\'s tiered-autonomy audit log entries (cursor-paginated). Useful for compliance review of past distributions, KYC additions, and unpause events. Wave 4 = issuer-self only; Wave 5 adds permit-gated cross-user access for compliance officers.',
     sensitive: false,
   },
 ];

@@ -23,6 +23,12 @@ export interface TelegramBotConfig {
   dashboardUrl: string;
   /** HTTP port the bot worker listens on (webhook + health). */
   port: number;
+  /** Wave 4 P7 — Telegram channel id (numeric, e.g. `-1001234567890`)
+   *  the worker posts issuer-narrative events to (distribution-funded,
+   *  KYC-changed, token-unpaused). Operator setup deferred to the
+   *  grant-submission window (see PROGRESS.md §"P4 operator tasks").
+   *  When unset the broadcast endpoint logs + drops. */
+  issuerChannelId?: string | undefined;
 }
 
 const DEFAULT_BACKEND_URL = 'http://backend:3000';
@@ -72,6 +78,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): TelegramBotCon
   if (!Number.isFinite(port) || port <= 0) {
     throw new Error(`[telegram-bot] PORT must be a positive integer (got "${env.PORT}")`);
   }
+  // Wave 4 P7 — issuer channel (informative; broadcast is no-op when unset).
+  const issuerChannelId = env.TELEGRAM_ISSUER_CHANNEL_ID?.trim() || undefined;
+  if (issuerChannelId !== undefined && !/^-?\d{5,}$/.test(issuerChannelId)) {
+    throw new Error(
+      `[telegram-bot] TELEGRAM_ISSUER_CHANNEL_ID must be a Telegram chat-id integer (e.g. -1001234567890). Got "${issuerChannelId}".`,
+    );
+  }
   return {
     botToken,
     botUsername,
@@ -82,5 +95,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): TelegramBotCon
     miniAppUrl,
     dashboardUrl,
     port,
+    issuerChannelId,
   };
 }

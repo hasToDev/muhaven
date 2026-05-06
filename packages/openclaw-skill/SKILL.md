@@ -71,6 +71,11 @@ mcp:
     - muhaven.position.rebalance
     - muhaven.policy.set_tier
     - muhaven.policy.audit_export
+    - muhaven.issuer.distribute_yield
+    - muhaven.issuer.kyc_add
+    - muhaven.issuer.kyc_remove
+    - muhaven.issuer.unpause_token
+    - muhaven.issuer.audit_query
   toolset_excluded_reason: |
     Exclusions are deliberate per ADR-C — the OpenClaw surface is
     investor-buy-and-claim, not portfolio-management. `set_tier` requires
@@ -78,6 +83,9 @@ mcp:
     `audit_export` is operator-shaped and lives behind the dashboard.
     `sell` + `rebalance` raise the blast radius of a single misclick on
     a Telegram inline button — defer to Wave 5 once we have soak data.
+    `issuer.*` (Wave 4 P7) is issuer-only — the OpenClaw surface is
+    investor-facing; issuer flows live on HavenBot in-dashboard +
+    standalone `@muhaven/mcp` install.
 sandbox:
   runtime: nemoclaw
   forward_compat:

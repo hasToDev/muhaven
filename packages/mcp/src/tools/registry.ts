@@ -27,6 +27,12 @@ import {
   ReadPortfolioInputSchema,
   ReadTokensInputSchema,
   ReadYieldsInputSchema,
+  // Wave 4 P7 — issuer group
+  IssuerDistributeYieldInputSchema,
+  IssuerKycAddInputSchema,
+  IssuerKycRemoveInputSchema,
+  IssuerUnpauseTokenInputSchema,
+  IssuerAuditQueryInputSchema,
 } from './schemas.js';
 import {
   policyAuditExport,
@@ -42,6 +48,12 @@ import {
   readPortfolio,
   readTokens,
   readYields,
+  // Wave 4 P7 — issuer group
+  issuerDistributeYield,
+  issuerKycAdd,
+  issuerKycRemove,
+  issuerUnpauseToken,
+  issuerAuditQuery,
   type ToolDeps,
   type ToolResult,
 } from './handlers.js';
@@ -104,6 +116,27 @@ const HANDLERS: Record<string, Pick<ToolEntry, 'schema' | 'handler'>> = {
   'muhaven.policy.session_key_status': {
     schema: PolicySessionKeyStatusInputSchema,
     handler: policySessionKeyStatus as ToolEntry['handler'],
+  },
+  // ── Wave 4 P7 — issuer group ────────────────────────────────────
+  'muhaven.issuer.distribute_yield': {
+    schema: IssuerDistributeYieldInputSchema,
+    handler: issuerDistributeYield as ToolEntry['handler'],
+  },
+  'muhaven.issuer.kyc_add': {
+    schema: IssuerKycAddInputSchema,
+    handler: issuerKycAdd as ToolEntry['handler'],
+  },
+  'muhaven.issuer.kyc_remove': {
+    schema: IssuerKycRemoveInputSchema,
+    handler: issuerKycRemove as ToolEntry['handler'],
+  },
+  'muhaven.issuer.unpause_token': {
+    schema: IssuerUnpauseTokenInputSchema,
+    handler: issuerUnpauseToken as ToolEntry['handler'],
+  },
+  'muhaven.issuer.audit_query': {
+    schema: IssuerAuditQueryInputSchema,
+    handler: issuerAuditQuery as ToolEntry['handler'],
   },
 };
 

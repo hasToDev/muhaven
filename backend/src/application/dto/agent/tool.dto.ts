@@ -234,7 +234,11 @@ export type ActionDescriptorKind =
   | 'rebalance'
   | 'set_policy'
   | 'pause'
-  | 'resume';
+  | 'resume'
+  | 'distribute_yield'
+  | 'kyc_add'
+  | 'kyc_remove'
+  | 'unpause_token';
 
 export interface ActionDescriptorBase {
   kind: ActionDescriptorKind;
@@ -320,12 +324,86 @@ export interface PauseActionDescriptor extends ActionDescriptorBase {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Wave 4 P7 — issuer-side ActionDescriptors
+// ─────────────────────────────────────────────────────────────────────
+//
+// Distribution / KYC / unpause-token tools share the same shape as the
+// investor-side propose tools — confirm-token-bearing ActionDescriptors
+// that the frontend ConfirmModal renders + the issuer's kernel signs via
+// the existing ZeroDev session-key path. See ADR-8 for the issuer-side
+// namespace + naming locks.
+
+// `requestedAtSec` (Unix seconds) is pinned into the action hash for every
+// issuer-side propose so a stale-quote replay is rejected at consume time
+// (R-3 mitigation, mirrors BuyActionDescriptor.preview.navAt). Required
+// — omitting it would silently break every commit (action hashes would
+// never match across propose / commit).
+
+export interface DistributeYieldActionDescriptor extends ActionDescriptorBase {
+  kind: 'distribute_yield';
+  preview: {
+    tokenAddress: string;
+    tokenSymbol: string;
+    /** Cleartext PUSDC amount (6-decimal base units) the issuer will
+     *  deposit into the distribution. Encrypted SDK-side BEFORE the
+     *  submit — backend never sees the encrypted handle. */
+    totalYieldUsd6: string;
+    /** Human-readable distribution label captured at propose time. */
+    label: string;
+    /** Issuer wallet that funds + signs the distribution. */
+    issuerAddress: string;
+    requestedAtSec: number;
+  };
+}
+
+export interface KycAddActionDescriptor extends ActionDescriptorBase {
+  kind: 'kyc_add';
+  preview: {
+    tokenAddress: string;
+    tokenSymbol: string;
+    investorAddress: string;
+    /** ERC-3643 KYC tier: 1 = retail, 2 = accredited. */
+    kycTier: 1 | 2;
+    kycAdapterAddress: string;
+    requestedAtSec: number;
+  };
+}
+
+export interface KycRemoveActionDescriptor extends ActionDescriptorBase {
+  kind: 'kyc_remove';
+  preview: {
+    tokenAddress: string;
+    tokenSymbol: string;
+    investorAddress: string;
+    kycAdapterAddress: string;
+    requestedAtSec: number;
+  };
+}
+
+export interface UnpauseTokenActionDescriptor extends ActionDescriptorBase {
+  kind: 'unpause_token';
+  preview: {
+    tokenAddress: string;
+    tokenSymbol: string;
+    /** Initial NAV in PUSDC base units (6 decimals). */
+    initialNavUsd6: string;
+    issuerOracleAddress: string;
+    tokenRegistryAddress: string;
+    requestedAtSec: number;
+  };
+}
+
 export type ActionDescriptor =
   | BuyActionDescriptor
   | ClaimActionDescriptor
   | RebalanceActionDescriptor
   | SetPolicyActionDescriptor
-  | PauseActionDescriptor;
+  | PauseActionDescriptor
+  | DistributeYieldActionDescriptor
+  | KycAddActionDescriptor
+  | KycRemoveActionDescriptor
+  | UnpauseTokenActionDescriptor;
 
 // ─────────────────────────────────────────────────────────────────────
 // Audit-commit DTO — frontend POSTs this after the SDK tx confirms

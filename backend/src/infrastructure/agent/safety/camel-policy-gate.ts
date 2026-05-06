@@ -47,6 +47,12 @@ export const PLANNER_ALLOWED_TOOLS = [
   'muhaven_set_policy',
   'muhaven_pause',
   'muhaven_unseal_position',
+  // Wave 4 P7 — issuer-side tools (ADR-8)
+  'muhaven_propose_distribute_yield',
+  'muhaven_propose_kyc_add',
+  'muhaven_propose_kyc_remove',
+  'muhaven_propose_unpause_token',
+  'muhaven_audit_query',
 ] as const;
 
 export type PlannerAllowedTool = (typeof PLANNER_ALLOWED_TOOLS)[number];

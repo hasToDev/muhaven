@@ -105,7 +105,12 @@
       "muhaven.position.sell",
       "muhaven.position.rebalance",
       "muhaven.policy.set_tier",
-      "muhaven.policy.audit_export"
+      "muhaven.policy.audit_export",
+      "muhaven.issuer.distribute_yield",
+      "muhaven.issuer.kyc_add",
+      "muhaven.issuer.kyc_remove",
+      "muhaven.issuer.unpause_token",
+      "muhaven.issuer.audit_query"
     ]
   },
   "tools": [

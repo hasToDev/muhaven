@@ -50,7 +50,12 @@
     { "name": "muhaven.policy.set_tier", "description": "Request / commit a tiered-autonomy transition.", "sensitive": true },
     { "name": "muhaven.policy.pause", "description": "Activate /pause kill-switch.", "sensitive": true },
     { "name": "muhaven.policy.audit_export", "description": "Drain the audit log to JSON.", "sensitive": false },
-    { "name": "muhaven.policy.session_key_status", "description": "Inspect ZeroDev session-key state.", "sensitive": false }
+    { "name": "muhaven.policy.session_key_status", "description": "Inspect ZeroDev session-key state.", "sensitive": false },
+    { "name": "muhaven.issuer.distribute_yield", "description": "Propose a yield distribution. Issuer-only.", "sensitive": true },
+    { "name": "muhaven.issuer.kyc_add", "description": "Propose adding an investor to the ERC-3643 whitelist. Issuer-only.", "sensitive": true },
+    { "name": "muhaven.issuer.kyc_remove", "description": "Propose removing an investor from the ERC-3643 whitelist. Issuer-only.", "sensitive": true },
+    { "name": "muhaven.issuer.unpause_token", "description": "Propose set-NAV-and-unpause for a freshly-deployed token. Issuer-only.", "sensitive": true },
+    { "name": "muhaven.issuer.audit_query", "description": "Read your own tiered-autonomy audit log (issuer-self).", "sensitive": false }
   ],
   "user_config": [
     {

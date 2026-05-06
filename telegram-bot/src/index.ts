@@ -62,6 +62,61 @@ async function main(): Promise<void> {
     res.json({ status: 'ok', mode: config.webhookUrl ? 'webhook' : 'long-poll' });
   });
 
+  // Wave 4 P7 — issuer-channel broadcast endpoint. The backend POSTs
+  // sanitised issuer-narrative events here (distribution-funded /
+  // kyc-added / kyc-removed / token-unpaused). Authenticated by the
+  // existing `TELEGRAM_BOT_SERVICE_SECRET` shared between the dashboard
+  // → bot path and the bot → backend path. When the operator hasn't
+  // provisioned `TELEGRAM_ISSUER_CHANNEL_ID` the endpoint accepts the
+  // event but logs + drops it (operator-deferred).
+  app.post('/issuer-channel/broadcast', async (req: Request, res: Response) => {
+    const supplied = req.header('x-muhaven-service-secret') ?? '';
+    if (
+      supplied.length !== config.backendServiceSecret.length ||
+      !constantTimeEqual(supplied, config.backendServiceSecret)
+    ) {
+      res.status(401).json({ error: 'invalid service secret' });
+      return;
+    }
+    const body = req.body as {
+      eventType?: string;
+      tokenSymbol?: string;
+      issuerLabel?: string;
+      summary?: string;
+      txHash?: string | null;
+      distributionId?: number | null;
+      totalUsd6?: string | null;
+    } | null;
+    if (!body || typeof body !== 'object' || typeof body.eventType !== 'string') {
+      res.status(400).json({ error: 'malformed event payload' });
+      return;
+    }
+
+    if (!config.issuerChannelId) {
+      // eslint-disable-next-line no-console
+      console.info(
+        `[telegram-bot] issuer-channel broadcast received but TELEGRAM_ISSUER_CHANNEL_ID is unset — event ${body.eventType} for ${body.tokenSymbol} dropped`,
+      );
+      res.status(202).json({ status: 'logged', dispatched: false });
+      return;
+    }
+
+    const text = renderIssuerChannelMessage(body);
+    try {
+      await api.sendMessage({
+        chat_id: config.issuerChannelId,
+        text,
+        parse_mode: 'MarkdownV2',
+      });
+      res.status(200).json({ status: 'sent' });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[telegram-bot] issuer-channel send failed:', err);
+      // 200 — failures here MUST NOT block the agent's commit path.
+      res.status(200).json({ status: 'send-failed' });
+    }
+  });
+
   app.post('/webhook', async (req: Request, res: Response) => {
     const supplied = req.header('X-Telegram-Bot-Api-Secret-Token') ?? '';
     if (
@@ -164,6 +219,63 @@ async function runLongPoll(api: TelegramApi, handler: BotHandler): Promise<void>
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Compose a MarkdownV2 message for the issuer-narrative channel. Every
+ * dynamic substring is escaped per Bot API rules (`_*[]()~``>#+-=|{}.!`).
+ *
+ * Wave 4 P7 ships four event families: `distribution_funded` /
+ * `kyc_added` / `kyc_removed` / `token_unpaused`. Unknown events emit a
+ * generic "MuHaven event" line so a future event family doesn't silently
+ * disappear; the bot stays forward-compatible with any new shape the
+ * backend rolls out.
+ */
+function renderIssuerChannelMessage(ev: {
+  eventType?: string;
+  tokenSymbol?: string;
+  issuerLabel?: string;
+  summary?: string;
+  txHash?: string | null;
+  distributionId?: number | null;
+  totalUsd6?: string | null;
+}): string {
+  const esc = (s: string): string =>
+    s.replace(/[_*\[\]()~`>#+\-=|{}.!\\]/g, (c) => '\\' + c);
+  const symbol = esc(ev.tokenSymbol ?? '<?>');
+  const issuer = esc(ev.issuerLabel ?? 'MuHaven Issuer');
+  let title: string;
+  switch (ev.eventType) {
+    case 'distribution_funded':
+      title = `*Yield distributed* — ${symbol}`;
+      break;
+    case 'kyc_added':
+      title = `*KYC added* — ${symbol}`;
+      break;
+    case 'kyc_removed':
+      title = `*KYC removed* — ${symbol}`;
+      break;
+    case 'token_unpaused':
+      title = `*Token activated* — ${symbol}`;
+      break;
+    default:
+      title = `*MuHaven event* — ${symbol}`;
+  }
+  const lines: string[] = [title, `_Issuer: ${issuer}_`];
+  if (ev.summary) lines.push(esc(ev.summary));
+  if (ev.distributionId != null) lines.push(`Distribution \\#${esc(String(ev.distributionId))}`);
+  if (ev.totalUsd6 != null) {
+    const v = BigInt(ev.totalUsd6);
+    const whole = (v / 1_000_000n).toString();
+    const frac = (v % 1_000_000n).toString().padStart(6, '0').replace(/0+$/, '');
+    const display = frac ? `$${whole}\\.${frac}` : `$${whole}`;
+    lines.push(`Total: ${display}`);
+  }
+  if (ev.txHash) {
+    const hex = ev.txHash.replace(/[^0-9a-fA-Fx]/g, '');
+    lines.push(`Tx: \`${esc(hex)}\``);
+  }
+  return lines.join('\n');
 }
 
 function constantTimeEqual(a: string, b: string): boolean {

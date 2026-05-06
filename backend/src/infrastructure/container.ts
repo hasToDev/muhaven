@@ -103,11 +103,23 @@ import {
   PauseToolUseCase,
   UnsealPositionToolUseCase,
   CommitToolActionUseCase,
+  // Wave 4 P7 — issuer-side tools
+  ProposeDistributeYieldToolUseCase,
+  ProposeKycAddToolUseCase,
+  ProposeKycRemoveToolUseCase,
+  ProposeUnpauseTokenToolUseCase,
+  AuditQueryToolUseCase,
 } from '../application/use-case/agent/tool/index.js';
 import { GetPolicyStateUseCase } from '../application/use-case/agent/policy/get-policy-state.use-case.js';
 import { ConfirmTokenService } from '../application/use-case/agent/policy/confirm-token.service.js';
 import { AppendAuditEventUseCase } from '../application/use-case/agent/policy/append-audit-event.use-case.js';
 import { PauseAgentUseCase } from '../application/use-case/agent/policy/pause-agent.use-case.js';
+import {
+  PublishIssuerChannelEventUseCase,
+  LoggingIssuerChannelTransport,
+  HttpIssuerChannelTransport,
+  type IIssuerChannelTransport,
+} from '../application/use-case/agent/openclaw/publish-issuer-channel-event.use-case.js';
 
 interface Repositories {
   nonceRepo: INonceRepository;
@@ -411,8 +423,68 @@ function getToolDispatcher(): ToolDispatcher {
     setPolicy: new SetPolicyToolUseCase(getPolicyState, confirmTokens, appendAudit),
     pauseTool: new PauseToolUseCase(pauseAgent),
     unsealPosition: new UnsealPositionToolUseCase(),
+    // ── Wave 4 P7 — issuer-side tools ──────────────────────────────
+    proposeDistributeYield: new ProposeDistributeYieldToolUseCase(
+      muhaven.rwaTokenRepo,
+      repos.userRepo,
+      getPolicyState,
+      confirmTokens,
+      appendAudit,
+    ),
+    proposeKycAdd: new ProposeKycAddToolUseCase(
+      muhaven.rwaTokenRepo,
+      repos.userRepo,
+      getPolicyState,
+      confirmTokens,
+      appendAudit,
+    ),
+    proposeKycRemove: new ProposeKycRemoveToolUseCase(
+      muhaven.rwaTokenRepo,
+      repos.userRepo,
+      getPolicyState,
+      confirmTokens,
+      appendAudit,
+    ),
+    proposeUnpauseToken: new ProposeUnpauseTokenToolUseCase(
+      muhaven.rwaTokenRepo,
+      repos.userRepo,
+      getPolicyState,
+      confirmTokens,
+      appendAudit,
+    ),
+    auditQuery: new AuditQueryToolUseCase(agentRepos.agentAuditRepo),
   });
   return _toolDispatcher;
+}
+
+// ── Wave 4 P7 — issuer-channel broadcast (Telegram) ─────────────────
+let _issuerChannelTransport: IIssuerChannelTransport | null = null;
+function getIssuerChannelTransport(): IIssuerChannelTransport {
+  if (_issuerChannelTransport) return _issuerChannelTransport;
+  const env = getEnv();
+  const workerUrl = env.TELEGRAM_BOT_WORKER_URL;
+  const secret = env.TELEGRAM_BOT_SERVICE_SECRET;
+  if (workerUrl && secret) {
+    _issuerChannelTransport = new HttpIssuerChannelTransport({
+      botWorkerUrl: workerUrl,
+      serviceSecret: secret,
+    });
+  } else {
+    // Operator setup deferred — fall back to the logging transport
+    // so the use-case is callable in dev / staging / pre-BotFather
+    // production.
+    _issuerChannelTransport = new LoggingIssuerChannelTransport();
+  }
+  return _issuerChannelTransport;
+}
+
+let _publishIssuerChannelEvent: PublishIssuerChannelEventUseCase | null = null;
+function getPublishIssuerChannelEvent(): PublishIssuerChannelEventUseCase {
+  if (_publishIssuerChannelEvent) return _publishIssuerChannelEvent;
+  _publishIssuerChannelEvent = new PublishIssuerChannelEventUseCase(
+    getIssuerChannelTransport(),
+  );
+  return _publishIssuerChannelEvent;
 }
 
 let _commitToolAction: CommitToolActionUseCase | null = null;
@@ -525,5 +597,9 @@ export const container = {
   },
   get commitToolAction() {
     return getCommitToolAction();
+  },
+  // Wave 4 P7 — issuer-channel broadcast use-case
+  get publishIssuerChannelEvent() {
+    return getPublishIssuerChannelEvent();
   },
 };

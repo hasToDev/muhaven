@@ -37,6 +37,12 @@ import type {
   ReadPortfolioInput,
   ReadTokensInput,
   ReadYieldsInput,
+  // Wave 4 P7 — issuer group
+  IssuerDistributeYieldInput,
+  IssuerKycAddInput,
+  IssuerKycRemoveInput,
+  IssuerUnpauseTokenInput,
+  IssuerAuditQueryInput,
 } from './schemas.js';
 
 export interface ToolDeps {
@@ -349,6 +355,97 @@ export async function policySessionKeyStatus(
 ): Promise<ToolResult<unknown>> {
   try {
     const data = await deps.backend.get('/api/v1/agent/policy/state', { surface: deps.surface });
+    return ok(data);
+  } catch (e) {
+    return mapBackendError(e);
+  }
+}
+
+// ---------- issuer group (Wave 4 P7) ----------
+//
+// All issuer tools are thin proxies over the existing HavenBot
+// `/agent/tools/propose_*` routes. The backend's ToolDispatcher fans out
+// to the same use-cases regardless of surface, so the MCP host gets the
+// same ActionDescriptor shape that HavenBot returns. The issuer kernel
+// (the user's existing JWT subject) is the actual signer — the broker
+// daemon does NOT auto-submit; the host LLM presents the descriptor for
+// host-side confirmation.
+
+export async function issuerDistributeYield(
+  input: IssuerDistributeYieldInput,
+  deps: ToolDeps,
+): Promise<ToolResult<unknown>> {
+  try {
+    const data = await deps.backend.post('/api/v1/agent/tools/propose_distribute_yield', {
+      tokenAddress: input.tokenAddress,
+      totalYieldUsd6: input.totalYieldUsd6,
+      ...(input.label ? { label: input.label } : {}),
+    });
+    return ok(data);
+  } catch (e) {
+    return mapBackendError(e);
+  }
+}
+
+export async function issuerKycAdd(
+  input: IssuerKycAddInput,
+  deps: ToolDeps,
+): Promise<ToolResult<unknown>> {
+  try {
+    const data = await deps.backend.post('/api/v1/agent/tools/propose_kyc_add', {
+      tokenAddress: input.tokenAddress,
+      investorAddress: input.investorAddress,
+      kycTier: input.kycTier,
+    });
+    return ok(data);
+  } catch (e) {
+    return mapBackendError(e);
+  }
+}
+
+export async function issuerKycRemove(
+  input: IssuerKycRemoveInput,
+  deps: ToolDeps,
+): Promise<ToolResult<unknown>> {
+  try {
+    const data = await deps.backend.post('/api/v1/agent/tools/propose_kyc_remove', {
+      tokenAddress: input.tokenAddress,
+      investorAddress: input.investorAddress,
+    });
+    return ok(data);
+  } catch (e) {
+    return mapBackendError(e);
+  }
+}
+
+export async function issuerUnpauseToken(
+  input: IssuerUnpauseTokenInput,
+  deps: ToolDeps,
+): Promise<ToolResult<unknown>> {
+  try {
+    const data = await deps.backend.post('/api/v1/agent/tools/propose_unpause_token', {
+      tokenAddress: input.tokenAddress,
+      initialNavUsd6: input.initialNavUsd6,
+    });
+    return ok(data);
+  } catch (e) {
+    return mapBackendError(e);
+  }
+}
+
+export async function issuerAuditQuery(
+  input: IssuerAuditQueryInput,
+  deps: ToolDeps,
+): Promise<ToolResult<unknown>> {
+  try {
+    const data = await deps.backend.get('/api/v1/agent/tools/audit_query', {
+      surface: input.surface,
+      eventTypes: input.eventTypes?.join(','),
+      since: input.since,
+      until: input.until,
+      cursor: input.cursor,
+      limit: input.limit,
+    });
     return ok(data);
   } catch (e) {
     return mapBackendError(e);

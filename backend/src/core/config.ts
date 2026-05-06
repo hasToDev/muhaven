@@ -175,6 +175,12 @@ const EnvSchema = z.object({
   TELEGRAM_BOT_USERNAME: z.string().optional(),
   /** Public Mini App URL ("web_app" target on the inline keyboard). */
   TELEGRAM_MINI_APP_URL: z.string().optional(),
+  /** Wave 4 P7 — base URL of the running `telegram-bot/` worker so the
+   *  backend can publish issuer-channel broadcasts (distribution-funded
+   *  / KYC-changed / token-unpaused). Operator setup is deferred to
+   *  the grant-submission window — when unset, the use-case falls back
+   *  to the LoggingIssuerChannelTransport (events log + drop). */
+  TELEGRAM_BOT_WORKER_URL: z.string().optional(),
 
   // ── Wave 4 Phase P5 — Hosted checkout `pay.muhaven.app` ────────────
   // Public base URL the checkout page is hosted at — used to build the

@@ -142,6 +142,51 @@ export const PolicyAuditExportInputSchema = z
 
 export const PolicySessionKeyStatusInputSchema = z.object({}).strict();
 
+// ---------- issuer group (Wave 4 P7) ----------
+
+export const IssuerDistributeYieldInputSchema = z
+  .object({
+    tokenAddress: addressSchema,
+    /** Cleartext PUSDC base units — encrypted SDK-side before submit. */
+    totalYieldUsd6: z.string().regex(/^[1-9]\d*$/, 'must be a positive integer string'),
+    label: z.string().min(1).max(200).optional(),
+  })
+  .strict();
+
+export const IssuerKycAddInputSchema = z
+  .object({
+    tokenAddress: addressSchema,
+    investorAddress: addressSchema,
+    kycTier: z.union([z.literal(1), z.literal(2)]).default(1),
+  })
+  .strict();
+
+export const IssuerKycRemoveInputSchema = z
+  .object({
+    tokenAddress: addressSchema,
+    investorAddress: addressSchema,
+  })
+  .strict();
+
+export const IssuerUnpauseTokenInputSchema = z
+  .object({
+    tokenAddress: addressSchema,
+    /** Initial NAV in PUSDC base units (6 decimals). 1_000_000 = $1.00. */
+    initialNavUsd6: z.string().regex(/^[1-9]\d*$/, 'must be a positive integer string'),
+  })
+  .strict();
+
+export const IssuerAuditQueryInputSchema = z
+  .object({
+    surface: surfaceSchema.optional(),
+    eventTypes: z.array(auditEventTypeSchema).max(20).optional(),
+    since: z.string().datetime().optional(),
+    until: z.string().datetime().optional(),
+    cursor: z.string().min(1).max(512).optional(),
+    limit: z.number().int().min(1).max(200).optional(),
+  })
+  .strict();
+
 // ---------- type exports ----------
 
 export type ReadPortfolioInput = z.infer<typeof ReadPortfolioInputSchema>;
@@ -159,5 +204,12 @@ export type PolicySetTierInput = z.infer<typeof PolicySetTierInputSchema>;
 export type PolicyPauseInput = z.infer<typeof PolicyPauseInputSchema>;
 export type PolicyAuditExportInput = z.infer<typeof PolicyAuditExportInputSchema>;
 export type PolicySessionKeyStatusInput = z.infer<typeof PolicySessionKeyStatusInputSchema>;
+
+// Wave 4 P7 — issuer group
+export type IssuerDistributeYieldInput = z.infer<typeof IssuerDistributeYieldInputSchema>;
+export type IssuerKycAddInput = z.infer<typeof IssuerKycAddInputSchema>;
+export type IssuerKycRemoveInput = z.infer<typeof IssuerKycRemoveInputSchema>;
+export type IssuerUnpauseTokenInput = z.infer<typeof IssuerUnpauseTokenInputSchema>;
+export type IssuerAuditQueryInput = z.infer<typeof IssuerAuditQueryInputSchema>;
 
 export { actionIdSchema, addressSchema, surfaceSchema, tierSchema };
