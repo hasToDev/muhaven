@@ -4,6 +4,10 @@ import { useMediaQuery } from '@vueuse/core'
 import { useAgentStore } from '@/stores/agent'
 import { cn } from '@/lib/utils'
 import ActionCard from '@/components/agent/ActionCard.vue'
+import ConfirmModal from '@/components/agent/ConfirmModal.vue'
+import { runAgentAction } from '@/composables/useAgentActionRunner'
+import type { ActionDescriptor } from '@/services/api'
+import { toast } from 'vue-sonner'
 import {
   Sparkles, Send, Zap, PieChart, ArrowDown, Shield, User, ShieldCheck, Lightbulb,
 } from 'lucide-vue-next'
@@ -12,6 +16,58 @@ const agentStore = useAgentStore()
 const input = ref('')
 const messagesEl = ref<HTMLElement | null>(null)
 const inputFocused = ref(false)
+const confirmModalRef = ref<InstanceType<typeof ConfirmModal> | null>(null)
+const activeAction = ref<ActionDescriptor | null>(null)
+
+// When a propose_* tool result arrives, mount the ConfirmModal for the
+// next pending action. The composable maintains a queue; we pop the
+// front whenever the modal closes.
+watch(
+  () => agentStore.pendingActions.length,
+  (n) => {
+    if (n > 0 && !activeAction.value) {
+      activeAction.value = agentStore.pendingActions[0] ?? null
+    }
+  },
+)
+
+async function onAuthorize(action: ActionDescriptor): Promise<void> {
+  // Tell the modal we're submitting so it shows the spinner state.
+  confirmModalRef.value?.setSubmitting()
+  const result = await runAgentAction(action)
+  await confirmModalRef.value?.reportResult(result)
+  if (result.ok === true) {
+    toast.success('Confirmed', {
+      description: `Action ${action.kind} settled. The audit log has the receipt.`,
+    })
+  } else if (result.ok === 'deferred') {
+    toast.info('Continue on the next page', { description: result.reason })
+  }
+}
+
+function onConfirmComplete(payload: {
+  action: ActionDescriptor
+  ok: boolean
+  txHash?: string | null
+  error?: string
+}): void {
+  // Remove the action from the pending queue regardless of ok/fail —
+  // the user has either authorized + (succeeded|failed) or cancelled.
+  agentStore.consumePendingAction(payload.action.toolCallId)
+  // Defer modal close until status="success" / "deferred" so the user
+  // can see the receipt or follow-up CTA. The modal closes on Done tap.
+  if (!payload.ok && payload.error !== 'deferred') {
+    activeAction.value = null
+    if (payload.error) {
+      toast.error('Authorization failed', { description: payload.error })
+    }
+  }
+}
+
+function onConfirmCancel(action: ActionDescriptor): void {
+  agentStore.consumePendingAction(action.toolCallId)
+  activeAction.value = null
+}
 
 // Teleport the right aside to <body> on xl+ so `position: fixed` works
 // against the viewport. Without teleport, the page-transition transform
@@ -83,6 +139,20 @@ onMounted(() => {
 
 <template>
   <div>
+    <!-- Wave 4 P2 — per-action confirmation surface. Mounts when the
+         LLM emits a propose_* tool result and the user has not yet
+         authorized + the queue isn't empty. Teleported to <body> so
+         the backdrop covers the full viewport regardless of layout. -->
+    <Teleport to="body">
+      <ConfirmModal
+        ref="confirmModalRef"
+        :action="activeAction"
+        @confirm="onAuthorize"
+        @cancel="onConfirmCancel"
+        @complete="onConfirmComplete"
+      />
+    </Teleport>
+
     <!-- ── Chat column (with input bar pinned at bottom).
          On xl+: `xl:mr-80` reserves space for the fixed right aside. ── -->
     <div class="flex flex-col h-[calc(100vh-2.75rem)] xl:mr-80">

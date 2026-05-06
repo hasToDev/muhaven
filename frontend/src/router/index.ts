@@ -121,6 +121,15 @@ const router = createRouter({
       // sits anchored just above the viewport bottom (no page scroll).
       meta: { title: 'Agent', layout: 'agent' },
     },
+    // Wave 4 P2 — onboarding wizard. Standalone leaf surface; the
+    // Wealthfront-style limits paragraph + sealed-glass-envelope copy
+    // live here so non-technical investors get the privacy pitch on the
+    // rails of the first-buy flow.
+    {
+      path: '/agent/onboarding',
+      component: () => import('@/views/agent/OnboardingPage.vue'),
+      meta: { title: 'Get started' },
+    },
     // Device-code authorization landing (Wave 4 P3 ADR-3 D5).
     // Cross-branch exception — see DEV_WAVE_4/ADR_LOG.md ADR-3.
     // NOT mounted under /agent/* — this is a leaf auth surface, not chat.
@@ -172,6 +181,7 @@ const UNAPPROVED_ISSUER_ALLOWLIST = new Set([
   '/apply-issuer',
   '/agent',
   '/agent/confirm',
+  '/agent/onboarding',
   '/link',
   '/cash',
 ])

@@ -88,6 +88,26 @@ import {
   StubIssuerLabelResolver,
   type IIssuerLabelResolver,
 } from './checkout/issuer-label-resolver.js';
+import {
+  ChatLlmService,
+  ToolDispatcher,
+  type IChatLlmService,
+} from './agent/index.js';
+import {
+  PortfolioSummaryToolUseCase,
+  QuoteToolUseCase,
+  ProposeBuyToolUseCase,
+  ProposeClaimToolUseCase,
+  ProposeRebalanceToolUseCase,
+  SetPolicyToolUseCase,
+  PauseToolUseCase,
+  UnsealPositionToolUseCase,
+  CommitToolActionUseCase,
+} from '../application/use-case/agent/tool/index.js';
+import { GetPolicyStateUseCase } from '../application/use-case/agent/policy/get-policy-state.use-case.js';
+import { ConfirmTokenService } from '../application/use-case/agent/policy/confirm-token.service.js';
+import { AppendAuditEventUseCase } from '../application/use-case/agent/policy/append-audit-event.use-case.js';
+import { PauseAgentUseCase } from '../application/use-case/agent/policy/pause-agent.use-case.js';
 
 interface Repositories {
   nonceRepo: INonceRepository;
@@ -341,6 +361,74 @@ function getDeployLibrary(): DeployTokenLibrary | null {
   return _deployLibrary;
 }
 
+// ── Wave 4 P2 — HavenBot tool surface singletons ─────────────────────
+let _chatLlmService: IChatLlmService | null = null;
+function getChatLlmService(): IChatLlmService {
+  if (!_chatLlmService) _chatLlmService = new ChatLlmService();
+  return _chatLlmService;
+}
+
+let _toolDispatcher: ToolDispatcher | null = null;
+function getToolDispatcher(): ToolDispatcher {
+  if (_toolDispatcher) return _toolDispatcher;
+
+  const repos = getRepos();
+  const muhaven = getMuHavenRepos();
+  const agentRepos = getAgentRepos();
+
+  const getPolicyState = new GetPolicyStateUseCase(agentRepos.agentStateRepo);
+  const confirmTokens = new ConfirmTokenService(agentRepos.agentConfirmTokenRepo);
+  const appendAudit = new AppendAuditEventUseCase(agentRepos.agentAuditRepo);
+  const pauseAgent = new PauseAgentUseCase(agentRepos.agentStateRepo, getPolicyState, appendAudit);
+
+  _toolDispatcher = new ToolDispatcher({
+    portfolioSummary: new PortfolioSummaryToolUseCase(
+      muhaven.portfolioRepo,
+      muhaven.rwaTokenRepo,
+      muhaven.navHistoryRepo,
+    ),
+    quote: new QuoteToolUseCase(muhaven.rwaTokenRepo, muhaven.navHistoryRepo),
+    proposeBuy: new ProposeBuyToolUseCase(
+      muhaven.rwaTokenRepo,
+      muhaven.navHistoryRepo,
+      getPolicyState,
+      confirmTokens,
+      appendAudit,
+    ),
+    proposeClaim: new ProposeClaimToolUseCase(
+      repos.yieldRecordRepo,
+      repos.escrowRepo,
+      getPolicyState,
+      confirmTokens,
+      appendAudit,
+    ),
+    proposeRebalance: new ProposeRebalanceToolUseCase(
+      muhaven.rwaTokenRepo,
+      getPolicyState,
+      confirmTokens,
+      appendAudit,
+    ),
+    setPolicy: new SetPolicyToolUseCase(getPolicyState, confirmTokens, appendAudit),
+    pauseTool: new PauseToolUseCase(pauseAgent),
+    unsealPosition: new UnsealPositionToolUseCase(),
+  });
+  return _toolDispatcher;
+}
+
+let _commitToolAction: CommitToolActionUseCase | null = null;
+function getCommitToolAction(): CommitToolActionUseCase {
+  if (_commitToolAction) return _commitToolAction;
+  const agentRepos = getAgentRepos();
+  const confirmTokens = new ConfirmTokenService(agentRepos.agentConfirmTokenRepo);
+  const appendAudit = new AppendAuditEventUseCase(agentRepos.agentAuditRepo);
+  _commitToolAction = new CommitToolActionUseCase(
+    confirmTokens,
+    appendAudit,
+    agentRepos.agentStateRepo,
+  );
+  return _commitToolAction;
+}
+
 export const container = {
   get nonceRepo() {
     return getRepos().nonceRepo;
@@ -428,4 +516,14 @@ export const container = {
   fheService,
   getQuickNodeVerifier,
   getDeployLibrary,
+  // Wave 4 P2 — HavenBot tool surface
+  get chatLlmService() {
+    return getChatLlmService();
+  },
+  get toolDispatcher() {
+    return getToolDispatcher();
+  },
+  get commitToolAction() {
+    return getCommitToolAction();
+  },
 };

@@ -25,6 +25,11 @@ export interface AppendAuditEventInput {
  * stripping (privacy-boundary checklist from `THREAT_MODEL_P0.md`) can be
  * enforced in one place: this use case will reject any metadata key whose
  * shape matches a decrypted-FHE primitive (added in P8 hardening).
+ *
+ * TODO(P8): metadata sanitizer — strip keys matching /Handle$|^euint|^ebool/
+ * and reject decrypted-cleartext values. Today this is enforced at the
+ * call sites by convention (every P2 propose use case writes only
+ * cleartext-by-design fields like tokenAddress, shares, confirmTokenId).
  */
 export class AppendAuditEventUseCase {
   constructor(private readonly auditRepo: IAgentAuditRepository) {}

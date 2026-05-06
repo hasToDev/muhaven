@@ -183,6 +183,16 @@ const EnvSchema = z.object({
   // = `https://pay.muhaven-staging.hasto.dev`, dev = the local Vite
   // server. Long-term prod = `https://pay.muhaven.app`.
   CHECKOUT_PUBLIC_URL: z.string().default('http://localhost:7780'),
+
+  // ── Wave 4 Phase P2 — HavenBot in-dashboard copilot ────────────────
+  // Google Gemini API key (the user's available key — see ADR-6 for the
+  // Claude → Gemini swap rationale). When unset, the chat surface falls
+  // back to a deterministic intent classifier that emits the same SSE
+  // wire shape so the UI keeps working in dev/CI without a key.
+  GEMINI_API_KEY: z.string().optional(),
+  // Model selector — default `gemini-2.0-flash`. Smaller / cheaper than
+  // `pro`, fast enough for the ~6-min onboarding budget.
+  GEMINI_MODEL: z.string().default('gemini-2.0-flash'),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

@@ -792,6 +792,194 @@ export const agentApi = {
   },
 }
 
+// ── Wave 4 P2 — HavenBot tool surface + streaming chat ────────────
+//
+// These are the LLM-facing tool endpoints. The chat-stream endpoint
+// returns a long-lived SSE response that the `useAgentChat` composable
+// consumes via fetch + ReadableStream (NOT EventSource — POST + stream).
+
+export type Tier = 'advisory' | 'confirm-per-action' | 'policy-bound' | 'paused'
+export type Surface = 'havenbot' | 'mcp' | 'openclaw' | 'checkout'
+
+export interface ActionDescriptor {
+  kind: 'buy' | 'claim' | 'rebalance' | 'set_policy' | 'pause' | 'resume'
+  toolCallId: string
+  confirmTokenId: string
+  expiresAtSec: number
+  summary: string
+  preview: Record<string, unknown>
+  sdkCall: {
+    contractName: string
+    functionName: string
+    args: Record<string, unknown>
+  }
+}
+
+export type AgentStreamEvent =
+  | { type: 'meta'; model: string; sessionId: string }
+  | { type: 'text'; delta: string }
+  | { type: 'tool_call'; toolCallId: string; toolName: string; args: Record<string, unknown> }
+  | {
+      type: 'tool_result'
+      toolCallId: string
+      toolName: string
+      ok: boolean
+      result?: unknown
+      error?: string
+    }
+  | { type: 'done'; finishReason: 'stop' | 'tool_loop_exhausted' | 'error' }
+  | { type: 'error'; message: string }
+
+export interface AgentChatStreamRequest {
+  message: string
+  history?: AgentHistoryMessage[]
+}
+
+export interface CommitToolActionRequest {
+  surface?: Surface
+  actionKind: 'permit_grant' | 'tier_transition'
+  actionPayload: Record<string, unknown>
+  confirmToken: string
+  txHash: string | null
+  metadata?: Record<string, unknown>
+}
+
+export interface CommitToolActionResponse {
+  consumed: true
+  auditEventId: string
+}
+
+export const agentToolsApi = {
+  /** Open a long-lived SSE stream. Caller iterates the events via
+   *  the `events` async generator and aborts via the returned controller. */
+  async openChatStream(
+    data: AgentChatStreamRequest,
+    abortController: AbortController,
+  ): Promise<{ events: AsyncGenerator<AgentStreamEvent>; release: () => void }> {
+    const tokens = getStoredTokens()
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+    }
+    if (tokens?.access_token) {
+      headers['Authorization'] = `Bearer ${tokens.access_token}`
+    }
+    const res = await fetch(`${BASE_URL}/agent/chat/stream`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(data),
+      signal: abortController.signal,
+    })
+    if (!res.ok || !res.body) {
+      const errBody = await res.json().catch(() => null)
+      throw new ApiError(res.status, errBody)
+    }
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder('utf-8')
+    let buf = ''
+    async function* events(): AsyncGenerator<AgentStreamEvent> {
+      try {
+        while (true) {
+          const { value, done } = await reader.read()
+          if (done) break
+          buf += decoder.decode(value, { stream: true })
+          // SSE blocks separate by \n\n. Parse every full block.
+          // On user-driven abort (AbortController.abort), partially
+          // received blocks in `buf` are silently dropped — by design;
+          // the user explicitly cancelled the turn. Reader.read()
+          // rejects with AbortError on the next iteration.
+          while (true) {
+            const idx = buf.indexOf('\n\n')
+            if (idx < 0) break
+            const block = buf.slice(0, idx)
+            buf = buf.slice(idx + 2)
+            for (const line of block.split('\n')) {
+              if (!line.startsWith('data:')) continue
+              const payload = line.slice(5).trim()
+              if (!payload) continue
+              try {
+                yield JSON.parse(payload) as AgentStreamEvent
+              } catch {
+                // ignore malformed; SSE comments / heartbeats etc.
+              }
+            }
+          }
+        }
+      } finally {
+        reader.releaseLock()
+      }
+    }
+    const release = (): void => {
+      try {
+        abortController.abort()
+      } catch {
+        /* noop */
+      }
+    }
+    return { events: events(), release }
+  },
+
+  // Per-tool REST endpoints — also callable directly (e.g., for
+  // the onboarding wizard's first-buy step which doesn't go through
+  // the LLM at all).
+  portfolioSummary(args: { tokenAddress?: string }): Promise<unknown> {
+    return request('/agent/tools/portfolio_summary', {
+      method: 'POST',
+      body: args,
+      auth: true,
+    })
+  },
+  quote(args: { tokenAddress: string; notionalUsd6: string }): Promise<unknown> {
+    return request('/agent/tools/quote', {
+      method: 'POST',
+      body: args,
+      auth: true,
+    })
+  },
+  proposeBuy(args: {
+    tokenAddress: string
+    shares: string
+    maxSharesHint?: string
+  }): Promise<ActionDescriptor> {
+    return request('/agent/tools/propose_buy', {
+      method: 'POST',
+      body: args,
+      auth: true,
+    })
+  },
+  proposeClaim(args: { yieldRecordId: string }): Promise<ActionDescriptor> {
+    return request('/agent/tools/propose_claim', {
+      method: 'POST',
+      body: args,
+      auth: true,
+    })
+  },
+  pause(args: { surface?: Surface }): Promise<ActionDescriptor> {
+    return request('/agent/tools/pause', {
+      method: 'POST',
+      body: args,
+      auth: true,
+    })
+  },
+  unsealPosition(args: {
+    handle: string
+    signerHint?: 'session' | 'master'
+  }): Promise<{ tool: 'muhaven_unseal_position'; handle: string; signerHint: string; decryptInstruction: string }> {
+    return request('/agent/tools/unseal_position', {
+      method: 'POST',
+      body: args,
+      auth: true,
+    })
+  },
+  commit(data: CommitToolActionRequest): Promise<CommitToolActionResponse> {
+    return request('/agent/tools/commit', {
+      method: 'POST',
+      body: data,
+      auth: true,
+    })
+  },
+}
+
 // ── Demo endpoints ─────────────────────────────────────────────────
 
 export interface WhitelistSelfResult {

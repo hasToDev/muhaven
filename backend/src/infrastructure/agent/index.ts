@@ -20,3 +20,14 @@ export {
   type OnChainRiskParamsAdapterConfig,
 } from './on-chain-risk-params.adapter.js';
 export { PolicyEngineCron, type PolicyEngineCronConfig } from './policy-engine-cron.js';
+export {
+  ChatLlmService,
+  type IChatLlmService,
+  type ChatStreamRequest,
+  type ChatHistoryMessage,
+} from './chat-llm.service.js';
+export {
+  ToolDispatcher,
+  type ToolDispatcherDeps,
+  type ToolDispatcherContext,
+} from './tool-dispatcher.js';

@@ -1,7 +1,22 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
-import { agentApi, type AgentHistoryMessage, type AgentCardType } from '@/services/api'
+import { ref, watch } from 'vue'
+import {
+  agentApi,
+  type ActionDescriptor,
+  type AgentHistoryMessage,
+  type AgentCardType,
+} from '@/services/api'
+import { useAgentChat } from '@/composables/useAgentChat'
 
+/**
+ * Wave 4 P2 — agent chat store.
+ *
+ * Wraps `useAgentChat` so the SSE stream + pending ActionDescriptors
+ * are available to the dashboard UI through Pinia. The legacy
+ * `/agent/chat` keyword stub stays as the no-stream fallback for
+ * environments where the streaming endpoint isn't reachable (tests,
+ * pre-deploy probe, network failures).
+ */
 export interface AgentMessage {
   id: number
   role: 'user' | 'agent'
@@ -9,15 +24,14 @@ export interface AgentMessage {
   cardType?: AgentCardType
   cardData?: Record<string, unknown>
   timestamp: Date
+  /** ActionDescriptors emitted by the LLM tool loop on this turn. */
+  actions?: ActionDescriptor[]
 }
 
 const MAX_HISTORY = 10
 
-let nextId = 2
+let nextId = 1
 
-// Generic fallback used when the backend returns no card data — keeps the
-// "Recommended Actions" panel consistent across every agent reply so users
-// always have follow-up affordances.
 const FALLBACK_RECOMMENDED_ACTIONS = {
   title: 'Recommended Actions',
   description: 'Pick one to keep exploring — the agent will respond based on your choice.',
@@ -28,60 +42,35 @@ const FALLBACK_RECOMMENDED_ACTIONS = {
   ],
 }
 
-// Always render an action-shaped card under every agent reply. If the backend
-// already returned `card_type === 'action'` with the right shape, use it as-is.
-// Otherwise (no card / different card type / malformed data), fall back so the
-// in-chat Recommended Actions card stays visually consistent.
-function normalizeAgentCard(
-  cardType: AgentCardType | undefined,
-  cardData: Record<string, unknown> | undefined,
-): Record<string, unknown> {
-  if (
-    cardType === 'action'
-    && cardData
-    && typeof cardData.title === 'string'
-    && typeof cardData.description === 'string'
-    && Array.isArray(cardData.actions)
-    && cardData.actions.length > 0
-  ) {
-    return cardData
-  }
-  return FALLBACK_RECOMMENDED_ACTIONS
-}
-
 export const useAgentStore = defineStore('agent', () => {
-  const messages = ref<AgentMessage[]>([
-    {
-      id: 1,
-      role: 'agent',
-      text: 'Welcome back. Your portfolio is up 2.3% this month. Treasury bonds are performing well at 4.8% APY. How can I help you today?',
-      cardType: 'action',
-      cardData: {
-        title: 'Recommended Actions',
-        description: 'Based on your encrypted positions and current rate environment, here are three moves the agent recommends reviewing.',
-        actions: [
-          { label: 'Rebalance to 60% treasuries', variant: 'primary' },
-          { label: 'Increase allocation to private credit', variant: 'secondary' },
-          { label: 'Explain the trade-offs', variant: 'ghost' },
-        ],
-      },
-      timestamp: new Date(),
-    },
-  ])
-
-  const isTyping = ref(false)
+  const chat = useAgentChat()
+  const messages = ref<AgentMessage[]>([])
   const pendingPrompt = ref('')
+  const useStreaming = ref(true)
 
-  function buildHistory(): AgentHistoryMessage[] {
-    return messages.value
-      .slice(-MAX_HISTORY)
-      .map(m => ({ role: m.role, text: m.text }))
+  // Live-stream the streamingText into the latest in-progress agent
+  // message so the existing AgentPage.vue render path picks it up
+  // without changing the template (msg.text reactivity wins).
+  let inflightAgentMessageId: number | null = null
+  watch(
+    () => chat.streamingText.value,
+    (text) => {
+      if (inflightAgentMessageId === null) return
+      const msg = messages.value.find((m) => m.id === inflightAgentMessageId)
+      if (msg) msg.text = text
+    },
+  )
+
+  function reset(): void {
+    chat.abort()
+    messages.value = []
+    nextId = 1
   }
 
-  async function sendMessage(text: string) {
-    // Build history BEFORE pushing the new message to avoid duplicating
-    // the current message in both `message` and `history`
-    const history = buildHistory()
+  async function sendMessage(text: string): Promise<void> {
+    const history: AgentHistoryMessage[] = messages.value
+      .slice(-MAX_HISTORY)
+      .map((m) => ({ role: m.role, text: m.text }))
 
     messages.value.push({
       id: nextId++,
@@ -90,37 +79,61 @@ export const useAgentStore = defineStore('agent', () => {
       timestamp: new Date(),
     })
 
-    isTyping.value = true
+    const agentMessage: AgentMessage = {
+      id: nextId++,
+      role: 'agent',
+      text: '',
+      timestamp: new Date(),
+    }
+    messages.value.push(agentMessage)
 
+    if (useStreaming.value) {
+      inflightAgentMessageId = agentMessage.id
+      try {
+        const { text: finalText, actions } = await chat.send({ message: text, history })
+        agentMessage.text = finalText
+        agentMessage.actions = actions
+        if (!agentMessage.text && actions.length === 0) {
+          agentMessage.text =
+            "I'm not sure how to help with that yet. Try asking about your portfolio, yields, or a buy."
+        }
+        if (actions.length === 0) {
+          agentMessage.cardType = 'action'
+          agentMessage.cardData = FALLBACK_RECOMMENDED_ACTIONS
+        }
+        return
+      } catch (err) {
+        // Stream failed — fall back to the legacy keyword endpoint so
+        // the user sees something. The composable already set
+        // `chat.lastError` for surfacing.
+        agentMessage.text = `Streaming error — using fallback. ${
+          err instanceof Error ? err.message : ''
+        }`.trim()
+        useStreaming.value = false
+      } finally {
+        inflightAgentMessageId = null
+      }
+    }
+
+    // Legacy keyword stub — only reached on streaming failure.
     try {
-      const result = await agentApi.chat({
-        message: text,
-        history,
-      })
-
-      messages.value.push({
-        id: nextId++,
-        role: 'agent',
-        text: result.response.text,
-        cardType: 'action',
-        cardData: normalizeAgentCard(result.response.card_type, result.response.card_data),
-        timestamp: new Date(),
-      })
-    } catch (e) {
-      messages.value.push({
-        id: nextId++,
-        role: 'agent',
-        text: e instanceof Error
-          ? `Sorry, I encountered an error: ${e.message}. Please try again.`
-          : 'Sorry, something went wrong. Please try again.',
-        timestamp: new Date(),
-      })
-    } finally {
-      isTyping.value = false
+      const result = await agentApi.chat({ message: text, history })
+      agentMessage.text = result.response.text
+      agentMessage.cardType = result.response.card_type ?? 'action'
+      agentMessage.cardData = (result.response.card_data as Record<string, unknown>) ?? FALLBACK_RECOMMENDED_ACTIONS
+    } catch (err) {
+      agentMessage.text =
+        err instanceof Error
+          ? `Sorry, I encountered an error: ${err.message}. Please try again.`
+          : 'Sorry, something went wrong. Please try again.'
     }
   }
 
-  function openWithPrompt(prompt: string) {
+  function consumePendingAction(toolCallId: string): ActionDescriptor | null {
+    return chat.consumePendingAction(toolCallId)
+  }
+
+  function openWithPrompt(prompt: string): void {
     pendingPrompt.value = prompt
   }
 
@@ -130,5 +143,17 @@ export const useAgentStore = defineStore('agent', () => {
     return p
   }
 
-  return { messages, isTyping, pendingPrompt, sendMessage, openWithPrompt, consumePrompt }
+  return {
+    messages,
+    isTyping: chat.isStreaming,
+    streamingText: chat.streamingText,
+    pendingActions: chat.pendingActions,
+    lastError: chat.lastError,
+    pendingPrompt,
+    consumePendingAction,
+    sendMessage,
+    openWithPrompt,
+    consumePrompt,
+    reset,
+  }
 })

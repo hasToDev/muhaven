@@ -8,6 +8,8 @@
 
 **Wave 3.** The agent **chat UI is scaffolded** (`frontend/src/views/AgentPage.vue` + `frontend/src/components/agent/*`) and wired to a backend stub at `/api/v1/agent/chat`. Investors and issuers drive every flow directly from the Vue dashboard today — buy, redeem, claim, snapshot, fund, NAV writes.
 
+**Wave 4 P2 update (2026-05-06).** HavenBot is live on `agenticwave`. The chat UI now consumes a real SSE streaming endpoint (`/api/v1/agent/chat/stream`) backed by the 8-tool surface + uniform tool dispatcher + per-action `<ConfirmModal>` with cleartext preview + on-chain SDK call via the user's ZeroDev kernel. Provider is Google Gemini via `@google/genai` (one-file swap to Claude via Vercel AI SDK when the user adds a Claude key — see ADR-6 D1). Onboarding wizard at `/agent/onboarding` ships the Wealthfront-style limits paragraph + sealed-glass-envelope copy + portfolio-probe restoration so returning users skip past completed steps.
+
 **Wave 4 — in active development on a parallel branch (~203h of ~327h shipped, awaits production cutover settlement before merge).** Four agentic surfaces sitting on the same MuHaven SDK + `@zerodev/permissions` policy gate:
 
 - **HavenBot** — in-dashboard streaming chat (Vue 3, Anthropic Claude Sonnet 4.5 via Vercel AI SDK).
