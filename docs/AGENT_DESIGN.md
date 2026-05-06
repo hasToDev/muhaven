@@ -232,6 +232,37 @@ Implementation reference: `frontend/src/providers/zerodev/`, `frontend/src/provi
 
 ---
 
+## Auth posture (no third-party IdP, by design)
+
+**Every auth primitive across the agent layer is self-hosted.** Auth0 / Okta / Firebase Auth / Clerk / Magic / Supabase Auth — none of them appear anywhere in the stack. This is a deliberate architectural decision driven by the threat model, not a backlog item awaiting an integration.
+
+| Surface | Auth primitive | Backed by |
+|---|---|---|
+| Dashboard (`muhaven.hasto.dev`) | **SIWE (EIP-4361)** → JOSE-signed JWT | ZeroDev passkey kernel (WebAuthn). `backend/src/infrastructure/auth/jwt.service.ts` |
+| HavenBot `/agent` chat (Wave 4 P2) | Same SIWE JWT + `withScope(['mcp.read.*' \| 'mcp.propose.*'])` | Inherits dashboard auth |
+| `@muhaven/mcp` server (Wave 4 P3) | **OAuth 2.0 Device Authorization Grant (RFC 8628)** → scoped JWT in OS keychain | `@napi-rs/keyring` + `muhaven-broker` daemon over Unix socket. Self-hosted endpoints under `/api/v1/auth/device/*`. |
+| Telegram / OpenClaw (Wave 4 P4) | Bot service-secret + Telegram `initData` HMAC-SHA256 + dashboard JWT for >$5K tier | All self-verified |
+| Hosted checkout (Wave 4 P5) | URL-as-capability (~127-bit sessionId entropy) + AES-256-GCM payload + WebAuthn passkey at first use | Self-hosted, RP-ID pinned to dashboard hostname |
+
+### Why no Auth0 / external IdP
+
+Five reasons, in priority order:
+
+1. **WebAuthn RP-ID pinning is the load-bearing phishing-resistance control.** ADR-3 D4 makes this explicit: a phishing site at `muhaven-link.com` literally cannot complete the passkey ceremony because the browser enforces RP-ID match. Routing through an external IdP would either replace the WebAuthn ceremony (kernels become unrecoverable from the dashboard) or layer on top of it (doubling the auth surface for zero security gain).
+2. **Trust anchor is wallet-rooted, not identity-provider-rooted.** Investors prove control via SIWE signature; smart-account recoverability flows from passkey-on-device. Adding an IdP creates the confused-deputy hole that ADR-3 D2 (scoped JWT) was designed to close.
+3. **Privacy-boundary forbids operator-side metadata leaks.** R-1 and R-7 say strategy + auth events stay private from operator infra. An external IdP sees every login event for every surface — metadata it monetizes and stores. Self-hosted JWT emits no such signal.
+4. **R-7 (MCP env-block exfiltration)** is solved by `@napi-rs/keyring` + the broker daemon, not by an external IdP. External-IdP bearer tokens have identical exfil characteristics — adding one wouldn't have fixed R-7, just relocated the secret.
+5. **Cost asymmetry**: external IdPs price ~$0.20/MAU at scale. For a confidential-RWA platform aiming for millions of investors that's real money for zero security gain over self-hosted.
+
+### Where an IdP MIGHT land later
+
+- **Enterprise SSO for issuers** (Okta / Azure AD) in Wave 5+ if institutional issuers need it. Would NOT replace investor-side passkey/SIWE; would land as an alternate route through `apply-issuer`.
+- **OIDC federation for compliance officers** — same shape; Wave 5+ scope for the read-only audit copilot path.
+
+Investor-side SIWE + WebAuthn + scoped JWT + device flow is the floor — adding to it (for issuer SSO) is fine; replacing it (for investor convenience) is not.
+
+---
+
 ## Threat model
 
 Wave 4-specific risk register. Augments the project-wide register at `development/WAVE_PLAN.md` § "Risk register".
