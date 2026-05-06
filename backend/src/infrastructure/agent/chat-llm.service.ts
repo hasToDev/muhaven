@@ -3,6 +3,13 @@ import type { Tier } from '../../domain/agent/model/tier.enum.js';
 import type { StreamEvent } from '../../application/dto/agent/chat-stream.dto.js';
 import { getEnv } from '../../core/config.js';
 import { getLogger } from '../../core/logger.js';
+import {
+  preprocessChatInput,
+  buildArmorNudge,
+  sanitiseToolResult,
+  type PromptArmorResult,
+  type Violation,
+} from './safety/index.js';
 
 const logger = getLogger('chat-llm');
 
@@ -162,11 +169,36 @@ export class ChatLlmService implements IChatLlmService {
     sink: (event: StreamEvent) => void,
   ): Promise<void> {
     const sessionId = `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+    // P8 — PromptArmor preprocessing. Sanitise the user message + every
+    // history entry before either path (Gemini or stub) sees them. A
+    // critical-tier violation hard-blocks; warn/info pass through with a
+    // system-prompt nudge so the planner LLM treats the content as data.
+    const armored = applyArmorPipeline(req);
+    if (armored.blocked) {
+      sink({ type: 'meta', model: 'armor-blocked', sessionId });
+      logger.warn(
+        {
+          userId: req.userId,
+          rules: armored.violations.map((v) => v.rule),
+        },
+        'PromptArmor blocked chat input',
+      );
+      sink({
+        type: 'error',
+        message:
+          'Your message was rejected by the safety layer because it matched a known prompt-injection shape. '
+          + 'Try rephrasing in plain language without code blocks, embedded instructions, or hidden formatting.',
+      });
+      sink({ type: 'done', finishReason: 'error' });
+      return;
+    }
+
     const gemini = await tryLoadGemini();
 
     if (!gemini) {
       sink({ type: 'meta', model: 'stub', sessionId });
-      await this.runStubLoop(req, sink);
+      await this.runStubLoop({ ...req, message: armored.message, history: armored.history }, sink);
       sink({ type: 'done', finishReason: 'stop' });
       return;
     }
@@ -183,8 +215,13 @@ export class ChatLlmService implements IChatLlmService {
       }
       sink(event);
     };
+    const cleanReq: ChatStreamRequest = {
+      ...req,
+      message: armored.message,
+      history: armored.history,
+    };
     try {
-      await this.runGeminiLoop(gemini, req, guardedSink);
+      await this.runGeminiLoop(gemini, cleanReq, guardedSink, armored.nudge);
       sink({ type: 'done', finishReason: 'stop' });
     } catch (err) {
       logger.error({ err: err instanceof Error ? err.message : String(err) }, 'Gemini stream error');
@@ -197,7 +234,7 @@ export class ChatLlmService implements IChatLlmService {
       // Otherwise we'd risk a duplicate ActionDescriptor when the LLM
       // had already pushed one (e.g., a propose_buy) before erroring.
       if (!geminiEmittedAny) {
-        await this.runStubLoop(req, sink);
+        await this.runStubLoop(cleanReq, sink);
       }
       sink({ type: 'done', finishReason: 'stop' });
     }
@@ -225,7 +262,7 @@ export class ChatLlmService implements IChatLlmService {
         toolCallId,
         toolName: toolCall.toolName,
         ok: true,
-        result,
+        result: sanitiseToolResult(result),
       });
     } catch (err) {
       sink({
@@ -242,6 +279,7 @@ export class ChatLlmService implements IChatLlmService {
     client: unknown,
     req: ChatStreamRequest,
     sink: (event: StreamEvent) => void,
+    armorNudge?: string | null,
   ): Promise<void> {
     // Wave 4 P2 ships the Gemini integration as a thin wrapper around the
     // streaming-with-tool-calling primitive. The function-declaration shapes
@@ -249,6 +287,9 @@ export class ChatLlmService implements IChatLlmService {
     // by the route handlers' Zod schemas.
     const tools = buildGeminiToolDeclarations();
     const contents = buildGeminiContents(req.history, req.message);
+    const systemInstruction = armorNudge
+      ? `${SYSTEM_PROMPT}\n\n${armorNudge}`
+      : SYSTEM_PROMPT;
 
     // The @google/genai SDK is dynamically imported; we keep the call
     // surface narrow + use any-typed access to avoid pulling its types
@@ -275,7 +316,7 @@ export class ChatLlmService implements IChatLlmService {
       model: 'gemini-2.0-flash',
       contents,
       config: {
-        systemInstruction: SYSTEM_PROMPT,
+        systemInstruction,
         tools,
         toolConfig: { functionCallingConfig: { mode: 'AUTO' } },
       },
@@ -306,7 +347,7 @@ export class ChatLlmService implements IChatLlmService {
               toolCallId,
               toolName: fc.name,
               ok: true,
-              result,
+              result: sanitiseToolResult(result),
             });
           } catch (err) {
             sink({
@@ -321,6 +362,57 @@ export class ChatLlmService implements IChatLlmService {
       }
     }
   }
+}
+
+/**
+ * Apply PromptArmor to the user message + history. Critical-tier
+ * violations on the current message hard-block; violations in history
+ * are sanitised away (we never echo a known-bad pattern back into the
+ * LLM context). Returns the cleaned message + history + violations
+ * collected across the turn.
+ */
+interface ArmoredRequest {
+  blocked: boolean;
+  message: string;
+  history: ChatHistoryMessage[];
+  violations: Violation[];
+  nudge: string | null;
+}
+
+function applyArmorPipeline(req: ChatStreamRequest): ArmoredRequest {
+  const messageResult: PromptArmorResult = preprocessChatInput(req.message);
+  if (!messageResult.allowed) {
+    return {
+      blocked: true,
+      message: '',
+      history: [],
+      violations: messageResult.violations,
+      nudge: null,
+    };
+  }
+
+  const history: ChatHistoryMessage[] = [];
+  const violations: Violation[] = [...messageResult.violations];
+  for (const m of req.history) {
+    const r = preprocessChatInput(m.text);
+    // History entries that match a critical pattern are dropped entirely
+    // (we already approved them at write-time; this is defence-in-depth
+    // for any backfill / replay path).
+    if (!r.allowed) {
+      violations.push(...r.violations);
+      continue;
+    }
+    violations.push(...r.violations);
+    history.push({ role: m.role, text: r.sanitized });
+  }
+
+  return {
+    blocked: false,
+    message: messageResult.sanitized,
+    history,
+    violations,
+    nudge: buildArmorNudge(messageResult),
+  };
 }
 
 function isToolName(name: string): name is ToolName {

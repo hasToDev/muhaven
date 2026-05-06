@@ -31,3 +31,18 @@ export {
   type ToolDispatcherDeps,
   type ToolDispatcherContext,
 } from './tool-dispatcher.js';
+export {
+  preprocessChatInput,
+  buildArmorNudge,
+  sanitizeText,
+  sanitizeJsonValue,
+  stripControl,
+  gatePlannerIntent,
+  sanitiseToolResult,
+  PLANNER_ALLOWED_TOOLS,
+  type PromptArmorResult,
+  type Violation,
+  type ViolationSeverity,
+  type CaMeLGateInput,
+  type CaMeLGateOutput,
+} from './safety/index.js';

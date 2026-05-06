@@ -20,6 +20,7 @@ import type {
   PauseToolUseCase,
   UnsealPositionToolUseCase,
 } from '../../application/use-case/agent/tool/index.js';
+import { gatePlannerIntent, sanitiseToolResult } from './safety/index.js';
 
 export interface ToolDispatcherDeps {
   portfolioSummary: PortfolioSummaryToolUseCase;
@@ -60,6 +61,23 @@ export class ToolDispatcher {
     ctx: ToolDispatcherContext,
     toolName: string,
     rawArgs: unknown,
+  ): Promise<unknown> {
+    // P8 — CaMeL gate: deterministic sanitisation between planner LLM
+    // intent and the action layer. Reject prototype-pollution shapes,
+    // strip ANSI/smuggling Unicode in args, and tag a correlation id.
+    const gated = gatePlannerIntent({ toolName, rawArgs });
+    const result = await this.dispatchInner(ctx, gated.toolName, gated.cleanArgs);
+    // P8 — sanitise the tool result before it reaches the planner LLM
+    // context or hits the SSE wire. Defence-in-depth on top of strict
+    // Zod schemas — guards against an upstream contract / API returning
+    // smuggled bytes that could rewrite chat history visually.
+    return sanitiseToolResult(result);
+  }
+
+  private async dispatchInner(
+    ctx: ToolDispatcherContext,
+    toolName: string,
+    rawArgs: Record<string, unknown> | undefined,
   ): Promise<unknown> {
     switch (toolName) {
       case 'muhaven_portfolio_summary': {
