@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { getHealthStatus } from './infrastructure/health.js';
 import { getEnv } from './core/config.js';
 import { BlockchainEventPoller, NavWriterCron, TaxEventIndexer } from './infrastructure/blockchain/index.js';
@@ -218,7 +218,12 @@ async function main() {
     const res = createVercelResponse(rawRes);
 
     try {
-      const mod = await import(matched.filePath);
+      // Convert Windows absolute path → file:// URL. Node's ESM loader (and
+      // tsx's load hook) reject `D:\path\to\file.ts` with
+      // ERR_UNSUPPORTED_ESM_URL_SCHEME because it parses `D:` as the URL
+      // protocol. POSIX paths (`/path/to/file.ts`) round-trip through
+      // pathToFileURL unchanged, so this is safe on every platform.
+      const mod = await import(pathToFileURL(matched.filePath).href);
       const handler = mod.default;
       if (typeof handler !== 'function') {
         rawRes.statusCode = 500;
