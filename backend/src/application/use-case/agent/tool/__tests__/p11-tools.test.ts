@@ -20,6 +20,7 @@ import {
 import { RwaToken, type AssetClass } from '../../../../../domain/token-registry/model/rwa-token.js';
 import type { IRwaTokenRepository } from '../../../../../domain/token-registry/repository/rwa-token.repository.js';
 import type { PublicClient } from 'viem';
+import { CastEncryptedVoteDtoSchema } from '../../../../dto/agent/p11-tool.dto.js';
 
 const NOW = new Date('2026-05-07T00:00:00.000Z');
 const USER_ID = 'investor-user-1';
@@ -549,6 +550,47 @@ describe('CastEncryptedVoteToolUseCase', () => {
     );
     expect(out.preview.voteYes).toBe(false);
     expect(out.summary).toContain('NO');
+  });
+
+  it('persists the round-tripable actionPayload in agent_confirm_tokens', async () => {
+    // The frontend echoes the actionPayload back in the commit POST so the
+    // ConfirmTokenService action-hash recovery succeeds. This test pins the
+    // exact stored shape so a Wave-5 frontend that omits any field would
+    // surface as a regression here, BEFORE the frontend ships.
+    const uc = new CastEncryptedVoteToolUseCase(getPolicy, confirmTokens, appendAudit, {
+      encryptedGovernanceAddress: GOVERNANCE_ADDR,
+    });
+    const out = await uc.execute(
+      { userId: USER_ID, walletAddress: WALLET, surface: Surface.HavenBot },
+      { proposalId: '42', voteYes: true },
+      NOW,
+    );
+    const stored = await confirmRepo.findByToken(out.confirmTokenId);
+    expect(stored).not.toBeNull();
+    expect(stored!.actionPayload).toEqual({
+      tool: 'muhaven_cast_encrypted_vote',
+      action: 'governance_vote',
+      proposalId: '42',
+      voteYes: true,
+      governanceAddress: GOVERNANCE_ADDR.toLowerCase(),
+      requestedAtSec: Math.floor(NOW.getTime() / 1000),
+    });
+  });
+
+  it('refuses proposalId="0" + leading-zero strings at the DTO boundary', () => {
+    // Defence-in-depth: the DTO regex `^[1-9]\d*$` rejects "0" + leading-zero
+    // strings. Pin the failure so a Wave-5 schema relax can't silently allow
+    // proposalId=0 commits (the contract reverts but the audit row would
+    // still write before the revert reaches the indexer).
+    expect(() => CastEncryptedVoteDtoSchema.parse({ proposalId: '0', voteYes: true })).toThrow();
+    expect(() => CastEncryptedVoteDtoSchema.parse({ proposalId: '01', voteYes: true })).toThrow();
+    expect(() => CastEncryptedVoteDtoSchema.parse({ proposalId: '', voteYes: true })).toThrow();
+    expect(() => CastEncryptedVoteDtoSchema.parse({ proposalId: '-1', voteYes: true })).toThrow();
+    // Sanity: the canonical form is accepted.
+    expect(() => CastEncryptedVoteDtoSchema.parse({ proposalId: '1', voteYes: true })).not.toThrow();
+    expect(() =>
+      CastEncryptedVoteDtoSchema.parse({ proposalId: '1234567890', voteYes: false }),
+    ).not.toThrow();
   });
 
   it('does NOT include voteYes in the audit metadata (privacy invariant)', async () => {

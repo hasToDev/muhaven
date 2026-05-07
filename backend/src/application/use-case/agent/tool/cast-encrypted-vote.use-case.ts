@@ -103,9 +103,18 @@ export class CastEncryptedVoteToolUseCase {
         tool: 'muhaven_cast_encrypted_vote',
         proposalId: proposalId.toString(),
         // voteYes is intentionally NOT in the audit metadata — the
-        // privacy guarantee is "encrypted ballot" so even an audit-log
-        // reader shouldn't be able to read which way each user voted.
-        // The cleartext sits in the in-flight ConfirmModal preview only.
+        // privacy guarantee surfaced through `agent_audit_events` is
+        // "encrypted ballot": an audit-log reader cannot determine which
+        // way each user voted from this row.
+        //
+        // Bounded leak (documented Wave 5 follow-up — ADR-9 §D3): the
+        // cleartext `voteYes` IS persisted in `agent_confirm_tokens
+        // .action_payload` for the 5-minute confirm-token TTL because
+        // the action-hash recovery on commit reproduces it byte-for-byte.
+        // An operator with database read access can correlate
+        // (userId, proposalId, voteYes) during that window. Wave 5 ships
+        // a per-action redaction mechanism so the row stores a hash
+        // instead of the cleartext.
         confirmTokenId: issued.token,
       },
     });

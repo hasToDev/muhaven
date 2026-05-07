@@ -103,9 +103,9 @@ describe('redteam · tool-name injection', () => {
   });
 
   // Adversarial names that an injected LLM might emit. None exist in the
-  // canonical 18-tool surface; all MUST land on `unknown_tool`. This also
-  // documents that the dispatch is exact-match: no fuzzy resolution, no
-  // partial-prefix fallback, no case-insensitive lookup.
+  // canonical 22-tool surface (P3+P7+P11); all MUST land on `unknown_tool`.
+  // This also documents that the dispatch is exact-match: no fuzzy
+  // resolution, no partial-prefix fallback, no case-insensitive lookup.
   const INJECTED_NAMES = [
     'muhaven.read.portfolio.exfiltrate', // canonical name + suffix
     'muhaven.read.portfolio_evil', // canonical name + underscore-suffix

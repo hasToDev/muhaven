@@ -95,9 +95,9 @@ describe('ToolDispatcher routing', () => {
     const calls = (deps.proposeBuy.execute as ReturnType<typeof vi.fn>).mock.calls;
     expect(calls.length).toBe(1);
     expect(calls[0]?.[0]).toEqual({
-      userId: 'u_test',
-      walletAddress: VALID_TOKEN === VALID_TOKEN ? '0x' + 'aa'.repeat(20) : VALID_TOKEN,
-      surface: Surface.HavenBot,
+      userId: CTX.userId,
+      walletAddress: CTX.walletAddress,
+      surface: CTX.surface,
     });
   });
 
@@ -262,17 +262,32 @@ describe('ToolDispatcher — CaMeL gate enforcement', () => {
   it('rejects prototype-pollution shapes (gate runs first)', async () => {
     const deps = buildDeps();
     const d = new ToolDispatcher(deps);
-    // The CaMeL gate refuses args that contain dangerous keys at the
-    // top level. Constructed via assign so the parser doesn't reject
-    // the literal at parse time.
-    const malicious = Object.assign({}, { tokenAddress: VALID_TOKEN, shares: '100' }) as Record<
-      string,
-      unknown
-    >;
-    Object.defineProperty(malicious, '__proto__', {
-      value: { polluted: true },
-      enumerable: true,
-    });
+    // The CaMeL gate refuses args that contain any of the three reserved
+    // keys (`__proto__`, `constructor`, `prototype`) at the top level.
+    // We exercise `constructor` here because `__proto__` has engine-
+    // specific accessor semantics and may not appear in `Object.keys`
+    // depending on how it was set — `constructor` is unambiguously an
+    // own enumerable string key when assigned via spread / object literal
+    // and triggers the gate's deterministic guard.
+    const malicious: Record<string, unknown> = {
+      tokenAddress: VALID_TOKEN,
+      shares: '100',
+      constructor: { polluted: true },
+    };
+    await expect(d.dispatch(CTX, 'muhaven_propose_buy', malicious)).rejects.toBeInstanceOf(
+      ApplicationHttpError,
+    );
+    expect((deps.proposeBuy.execute as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+  });
+
+  it('rejects `prototype` key (gate-level reserved-key reject)', async () => {
+    const deps = buildDeps();
+    const d = new ToolDispatcher(deps);
+    const malicious: Record<string, unknown> = {
+      tokenAddress: VALID_TOKEN,
+      shares: '100',
+      prototype: 'whatever',
+    };
     await expect(d.dispatch(CTX, 'muhaven_propose_buy', malicious)).rejects.toBeInstanceOf(
       ApplicationHttpError,
     );
