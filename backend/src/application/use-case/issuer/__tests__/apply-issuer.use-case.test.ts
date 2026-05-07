@@ -46,6 +46,26 @@ class StubTaxEventRepo implements ITaxEventRepository {
       .filter((r) => r.holderAddress.toLowerCase() === lower)
       .slice(0, limit);
   }
+  async aggregateCounts() {
+    return {
+      Acquisition: 0,
+      Disposition: 0,
+      IncomeAccrual: 0,
+      FeeEvent: 0,
+      Wrap: 0,
+      Unwrap: 0,
+      Transfer: 0,
+    };
+  }
+  async dailyCounts() {
+    return [];
+  }
+  async acquisitionsByToken() {
+    return [];
+  }
+  async dispositionsByKind() {
+    return { totals: { instant: 0, queued: 0, escalatedToQueue: 0 }, byDay: [] };
+  }
 }
 
 const WALLET = '0xabCDEF1234567890ABcDEF1234567890aBCDeF12';

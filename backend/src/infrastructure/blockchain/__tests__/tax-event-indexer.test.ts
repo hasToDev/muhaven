@@ -27,6 +27,20 @@ function emptyTaxEventRepo(): ITaxEventRepository {
   return {
     saveMany: vi.fn().mockResolvedValue(0),
     findByHolder: vi.fn().mockResolvedValue([]),
+    aggregateCounts: vi.fn().mockResolvedValue({
+      Acquisition: 0,
+      Disposition: 0,
+      IncomeAccrual: 0,
+      FeeEvent: 0,
+      Wrap: 0,
+      Unwrap: 0,
+      Transfer: 0,
+    }),
+    dailyCounts: vi.fn().mockResolvedValue([]),
+    acquisitionsByToken: vi.fn().mockResolvedValue([]),
+    dispositionsByKind: vi
+      .fn()
+      .mockResolvedValue({ totals: { instant: 0, queued: 0, escalatedToQueue: 0 }, byDay: [] }),
   };
 }
 

@@ -1006,3 +1006,82 @@ export const demoApi = {
     })
   },
 }
+
+// ── Wave 4 P9 — public metrics ────────────────────────────────────
+
+export interface PublicMetricsTokenDto {
+  address: string
+  symbol: string
+  status: string
+}
+
+export interface PublicMetricsDailyCount {
+  day: string
+  count: number
+}
+
+export interface PublicMetricsTokenCount {
+  tokenAddress: string
+  symbol: string
+  count: number
+}
+
+export interface PublicMetricsWrapUnwrapByDay {
+  day: string
+  wrap: number
+  unwrap: number
+}
+
+export interface PublicMetricsRedemptionByDay {
+  day: string
+  instant: number
+  queued: number
+  escalated: number
+}
+
+export interface PublicMetricsNavPoint {
+  timestamp: string
+  nav: string
+}
+
+export interface PublicMetricsNavSeries {
+  tokenAddress: string
+  symbol: string
+  points: PublicMetricsNavPoint[]
+}
+
+export interface PublicMetricsDto {
+  generatedAt: string
+  tokens: PublicMetricsTokenDto[]
+  purchases: {
+    total: number
+    byDay: PublicMetricsDailyCount[]
+    byToken: PublicMetricsTokenCount[]
+  }
+  yieldDistributions: {
+    total: number
+    byDay: PublicMetricsDailyCount[]
+  }
+  wrapUnwrap: {
+    wrapTotal: number
+    unwrapTotal: number
+    byDay: PublicMetricsWrapUnwrapByDay[]
+  }
+  redemptions: {
+    total: number
+    instant: number
+    queued: number
+    escalatedToQueue: number
+    byDay: PublicMetricsRedemptionByDay[]
+  }
+  navHistory: PublicMetricsNavSeries[]
+}
+
+export const publicMetricsApi = {
+  // Public endpoint — no auth header. Backend caches for 60s, so
+  // polling at <60s interval is intentional waste; the page reloads
+  // on mount + button-driven refresh only.
+  get(): Promise<PublicMetricsDto> {
+    return request<PublicMetricsDto>('/public/metrics')
+  },
+}

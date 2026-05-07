@@ -120,6 +120,7 @@ import {
   HttpIssuerChannelTransport,
   type IIssuerChannelTransport,
 } from '../application/use-case/agent/openclaw/publish-issuer-channel-event.use-case.js';
+import { GetPublicMetricsUseCase } from '../application/use-case/metrics/get-public-metrics.use-case.js';
 
 interface Repositories {
   nonceRepo: INonceRepository;
@@ -487,6 +488,19 @@ function getPublishIssuerChannelEvent(): PublishIssuerChannelEventUseCase {
   return _publishIssuerChannelEvent;
 }
 
+// ── Wave 4 P9 — public metrics aggregator ──────────────────────────
+let _publicMetricsUseCase: GetPublicMetricsUseCase | null = null;
+function getPublicMetricsUseCase(): GetPublicMetricsUseCase {
+  if (_publicMetricsUseCase) return _publicMetricsUseCase;
+  const muhaven = getMuHavenRepos();
+  _publicMetricsUseCase = new GetPublicMetricsUseCase(
+    muhaven.taxEventRepo,
+    muhaven.navHistoryRepo,
+    muhaven.rwaTokenRepo,
+  );
+  return _publicMetricsUseCase;
+}
+
 let _commitToolAction: CommitToolActionUseCase | null = null;
 function getCommitToolAction(): CommitToolActionUseCase {
   if (_commitToolAction) return _commitToolAction;
@@ -601,5 +615,11 @@ export const container = {
   // Wave 4 P7 — issuer-channel broadcast use-case
   get publishIssuerChannelEvent() {
     return getPublishIssuerChannelEvent();
+  },
+  // Wave 4 P9 — public metrics aggregator (singleton owns the
+  // 60s in-process cache; reusing the route's instance is what
+  // makes the cache TTL meaningful).
+  get publicMetricsUseCase() {
+    return getPublicMetricsUseCase();
   },
 };

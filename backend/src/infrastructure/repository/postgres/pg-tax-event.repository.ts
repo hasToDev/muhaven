@@ -1,9 +1,44 @@
 import { desc, eq, sql } from 'drizzle-orm';
-import type { ITaxEventRepository } from '../../../domain/tax-event/repository/tax-event.repository.js';
+import type {
+  AcquisitionsByToken,
+  DailyCount,
+  DispositionsByKindResult,
+  ITaxEventRepository,
+  TaxEventCountsByType,
+} from '../../../domain/tax-event/repository/tax-event.repository.js';
 import { TaxEvent } from '../../../domain/tax-event/model/tax-event.js';
 import type { TaxEventType } from '../../../domain/tax-event/model/tax-event.js';
 import { taxEvents } from './schema.js';
 import type { Db } from './db.js';
+
+const ALL_EVENT_TYPES: TaxEventType[] = [
+  'Acquisition',
+  'Disposition',
+  'IncomeAccrual',
+  'FeeEvent',
+  'Wrap',
+  'Unwrap',
+  'Transfer',
+];
+
+function emptyCounts(): TaxEventCountsByType {
+  return {
+    Acquisition: 0,
+    Disposition: 0,
+    IncomeAccrual: 0,
+    FeeEvent: 0,
+    Wrap: 0,
+    Unwrap: 0,
+    Transfer: 0,
+  };
+}
+
+function dayKey(d: Date): string {
+  // ISO date YYYY-MM-DD in UTC. Postgres `date_trunc('day', ts)` returns a
+  // timestamp at 00:00 UTC; toISOString → "YYYY-MM-DDT00:00:00.000Z" → slice
+  // gives us the canonical day key.
+  return d.toISOString().slice(0, 10);
+}
 
 export class PgTaxEventRepository implements ITaxEventRepository {
   constructor(private readonly db: Db) {}
@@ -67,5 +102,117 @@ export class PgTaxEventRepository implements ITaxEventRepository {
           createdAt: r.createdAt,
         }),
     );
+  }
+
+  async aggregateCounts(): Promise<TaxEventCountsByType> {
+    const rows = await this.db
+      .select({
+        eventType: taxEvents.eventType,
+        count: sql<string>`count(*)`,
+      })
+      .from(taxEvents)
+      .groupBy(taxEvents.eventType);
+
+    const out = emptyCounts();
+    for (const r of rows) {
+      // event_type is a pg enum so the value matches one of the seven
+      // TaxEventType strings; defensively guard so an unexpected enum
+      // expansion never throws here (the map starts at 0 for all keys).
+      if (ALL_EVENT_TYPES.includes(r.eventType as TaxEventType)) {
+        out[r.eventType as TaxEventType] = Number(r.count);
+      }
+    }
+    return out;
+  }
+
+  async dailyCounts(eventType: TaxEventType): Promise<DailyCount[]> {
+    const rows = await this.db
+      .select({
+        day: sql<Date>`date_trunc('day', ${taxEvents.blockTimestamp})`,
+        count: sql<string>`count(*)`,
+      })
+      .from(taxEvents)
+      .where(eq(taxEvents.eventType, eventType))
+      .groupBy(sql`1`)
+      .orderBy(sql`1`);
+
+    return rows.map((r) => ({
+      day: dayKey(r.day instanceof Date ? r.day : new Date(r.day as unknown as string)),
+      count: Number(r.count),
+    }));
+  }
+
+  async acquisitionsByToken(): Promise<AcquisitionsByToken[]> {
+    const rows = await this.db
+      .select({
+        tokenAddress: sql<string>`lower(${taxEvents.tokenAddress})`,
+        count: sql<string>`count(*)`,
+      })
+      .from(taxEvents)
+      .where(
+        sql`${taxEvents.eventType} = 'Acquisition' AND ${taxEvents.tokenAddress} IS NOT NULL`,
+      )
+      .groupBy(sql`1`);
+
+    return rows
+      .filter((r) => r.tokenAddress !== null)
+      .map((r) => ({
+        tokenAddress: r.tokenAddress,
+        count: Number(r.count),
+      }));
+  }
+
+  async dispositionsByKind(): Promise<DispositionsByKindResult> {
+    const totalRows = await this.db
+      .select({
+        kind: sql<string | null>`${taxEvents.metadata}->>'kind'`,
+        count: sql<string>`count(*)`,
+      })
+      .from(taxEvents)
+      .where(eq(taxEvents.eventType, 'Disposition'))
+      .groupBy(sql`1`);
+
+    const totals = { instant: 0, queued: 0, escalatedToQueue: 0 };
+    for (const r of totalRows) {
+      const n = Number(r.count);
+      if (r.kind === 'instant') totals.instant += n;
+      else if (r.kind === 'queued') totals.queued += n;
+      else if (r.kind === 'escalated_to_queue') totals.escalatedToQueue += n;
+      // Unknown kinds (or null metadata) are intentionally dropped from
+      // the totals — the public taxonomy is documented and adding a new
+      // kind is a deliberate schema change, not a metric drift.
+    }
+
+    const dayRows = await this.db
+      .select({
+        day: sql<Date>`date_trunc('day', ${taxEvents.blockTimestamp})`,
+        kind: sql<string | null>`${taxEvents.metadata}->>'kind'`,
+        count: sql<string>`count(*)`,
+      })
+      .from(taxEvents)
+      .where(eq(taxEvents.eventType, 'Disposition'))
+      .groupBy(sql`1, 2`)
+      .orderBy(sql`1`);
+
+    const byDayMap = new Map<
+      string,
+      { instant: number; queued: number; escalatedToQueue: number }
+    >();
+    for (const r of dayRows) {
+      const day = dayKey(
+        r.day instanceof Date ? r.day : new Date(r.day as unknown as string),
+      );
+      const slot = byDayMap.get(day) ?? { instant: 0, queued: 0, escalatedToQueue: 0 };
+      const n = Number(r.count);
+      if (r.kind === 'instant') slot.instant += n;
+      else if (r.kind === 'queued') slot.queued += n;
+      else if (r.kind === 'escalated_to_queue') slot.escalatedToQueue += n;
+      byDayMap.set(day, slot);
+    }
+    const byDay = Array.from(byDayMap.entries())
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([day, kinds]) => ({ day, ...kinds }));
+
+    return { totals, byDay };
   }
 }

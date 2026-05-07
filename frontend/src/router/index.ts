@@ -1,7 +1,10 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 
-const PUBLIC_ROUTES = new Set(['/', '/login'])
+// Public, unauthenticated routes — bypass the auth guard entirely.
+// `/metrics` is the Wave 4 P9 public dashboard; landing layout (no
+// sidebar) so reviewers / grant assessors see it without an account.
+const PUBLIC_ROUTES = new Set(['/', '/login', '/metrics'])
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -145,6 +148,13 @@ const router = createRouter({
       path: '/agent/confirm',
       component: () => import('@/views/auth/ConfirmIntentPage.vue'),
       meta: { title: 'Confirm intent', layout: 'login' },
+    },
+    // Wave 4 P9 — public metrics dashboard. Unauthenticated; landing
+    // layout so reviewers see it without provisioning a passkey.
+    {
+      path: '/metrics',
+      component: () => import('@/views/MetricsPage.vue'),
+      meta: { title: 'Public Metrics', layout: 'landing' },
     },
   ],
 })
