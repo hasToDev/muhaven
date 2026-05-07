@@ -69,6 +69,17 @@ async function doInitialize(): Promise<void> {
     });
 
     await cofheClient.connect(publicClient, walletClient);
+
+    // Seed a fresh self-permit at init. `decryptForTx(...).withPermit()` (with
+    // no args) resolves to the active permit; in Node the cofhe permit store
+    // is in-memory so the very first call without this seed would throw
+    // "Active permit not found". `ensureFreshSelfPermit` also closes the
+    // long-lived-process gap: `getOrCreateSelfPermit` does NOT verify the
+    // permit's `expiration`, so on a worker that runs longer than the SDK
+    // default 7d TTL the active permit would stale-out and every decrypt
+    // would throw "Permit is expired" with no recovery.
+    await ensureFreshSelfPermit(cofheClient);
+
     ready = true;
     console.log('CoFHE client initialized successfully');
   } catch (error) {
@@ -84,6 +95,38 @@ interface DecryptForTxResult {
   decryptedValue: string;
   signature: string;
   durationMs: number;
+}
+
+/**
+ * Detect the cofhe SDK's "Permit is expired" / "not signed" / "invalid"
+ * surface. `decryptForTx(...).withPermit().execute()` runs
+ * `PermitUtils.validate(permit)` which calls
+ * `ValidationUtils.assertSignedAndNotExpired(permit)` — that throws a
+ * generic `Error` with one of these messages when the active permit's
+ * `expiration` (default 7d) is in the past. Catching and refreshing keeps
+ * a long-lived worker honest beyond a single permit's lifetime.
+ */
+function isExpiredPermitError(e: unknown): boolean {
+  const raw = e instanceof Error ? e.message : String(e);
+  return /Permit is (expired|not signed|invalid)/i.test(raw);
+}
+
+/**
+ * Seed or refresh the active self-permit on the cofhe client.
+ *
+ * The published `client.permits.getOrCreateSelfPermit()` only checks
+ * `(activePermit && activePermit.type === 'self')` — it returns expired
+ * permits as-is (per the Fhenix dev's own warning, and the source at
+ * `cofhesdk/packages/sdk/core/permits.ts:123-142`). The trap is then
+ * sprung at decrypt time. This wrapper closes the gap by inspecting
+ * `ValidationUtils.isExpired` and re-signing via `createSelf` when stale.
+ */
+async function ensureFreshSelfPermit(client: any): Promise<void> {
+  const { ValidationUtils } = await import('@cofhe/sdk/permits');
+  const permit = await client.permits.getOrCreateSelfPermit();
+  if (!ValidationUtils.isExpired(permit)) return;
+  await client.permits.removeActivePermit();
+  await client.permits.createSelf({ issuer: permit.issuer });
 }
 
 async function decryptForTx(
@@ -119,10 +162,22 @@ async function decryptForTx(
   const start = Date.now();
   // ctHash arrives as hex (`0x...`); the SDK accepts a bigint.
   const handle = BigInt(ctHash);
-  const result = await cofheClient
-    .decryptForTx(handle, fheType)
-    .withPermit()
-    .execute();
+  const runDecrypt = () =>
+    cofheClient
+      .decryptForTx(handle, fheType)
+      .withPermit()
+      .execute();
+
+  let result;
+  try {
+    result = await runDecrypt();
+  } catch (e) {
+    if (!isExpiredPermitError(e)) throw e;
+    // Stale active permit — refresh once and retry. Only one retry; if a
+    // freshly-signed permit is still rejected, surface the error.
+    await ensureFreshSelfPermit(cofheClient);
+    result = await runDecrypt();
+  }
   const durationMs = Date.now() - start;
 
   return {

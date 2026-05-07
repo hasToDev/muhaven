@@ -64,6 +64,11 @@ async function loadEncryptable() {
   return Encryptable
 }
 
+async function loadValidationUtils() {
+  const { ValidationUtils } = await import('@cofhe/sdk/permits')
+  return ValidationUtils
+}
+
 export type { EncryptableItem, EncryptedItemInput }
 
 // ── Ephemeral EOA plumbing ──────────────────────────────────────────────
@@ -149,9 +154,12 @@ export function useFhe() {
         ephemeralWalletClient as any,
       )
 
-      // Create the self-permit eagerly. The ephemeral EOA has no counterfactual
-      // problem — it's a plain EOA, so the permit is valid at signing time.
-      await client.permits.getOrCreateSelfPermit()
+      // Create (or refresh) the self-permit eagerly. The ephemeral EOA has no
+      // counterfactual problem — it's a plain EOA, so the permit is valid at
+      // signing time. `ensureFreshSelfPermit` adds the expiration check the
+      // SDK's `getOrCreateSelfPermit` is documented NOT to perform — see the
+      // banner comment above that helper for the trap details.
+      await ensureFreshSelfPermit(client)
 
       cofheClient = client
       fheStore.setReady()
@@ -187,6 +195,52 @@ export function useFhe() {
   function is403Error(e: unknown): boolean {
     const raw = e instanceof Error ? e.message : String(e)
     return /HTTP 403/.test(raw) || /403 \(Forbidden\)/.test(raw) || /Forbidden/i.test(raw)
+  }
+
+  /**
+   * Detect the SDK's "Permit is expired" / "Permit is not signed" / "Permit
+   * is invalid" surface from `ValidationUtils.assertSignedAndNotExpired`,
+   * thrown via `PermitUtils.validate(permit)` inside
+   * `decryptForView/Tx.execute()`. We catch this so callers can transparently
+   * refresh the active self-permit and retry once.
+   */
+  function isExpiredPermitError(e: unknown): boolean {
+    const raw = e instanceof Error ? e.message : String(e)
+    return /Permit is (expired|not signed|invalid)/i.test(raw)
+  }
+
+  /**
+   * Get a guaranteed-fresh self permit on the connected client.
+   *
+   * The SDK's `client.permits.getOrCreateSelfPermit()` only checks
+   * `(activePermit && activePermit.type === 'self')` — it returns expired
+   * permits as-is (per the Fhenix dev's own warning, and by inspection of
+   * `cofhesdk/packages/sdk/core/permits.ts:123-142`). The expiration trap
+   * is then sprung at decrypt time: `decryptForView/Tx.execute()` calls
+   * `PermitUtils.validate(permit)` which throws "Permit is expired".
+   *
+   * This wrapper closes the gap. Flow:
+   *   1. Ask the SDK for the active-or-new self permit.
+   *   2. If `ValidationUtils.isExpired(permit)` is true, drop the active hash
+   *      (`removeActivePermit`) and call `createSelf({ issuer })` to force a
+   *      fresh EIP-712 sign. The cofhe permit store is keyed by hash, so the
+   *      stale entry stays addressable but is no longer the active default.
+   *   3. Return the validated permit.
+   *
+   * Idempotent: a healthy (non-expired) self permit is returned unchanged
+   * with no extra signing prompt.
+   */
+  async function ensureFreshSelfPermit(client: CofheClient) {
+    const ValidationUtils = await loadValidationUtils()
+    const permit = await client.permits.getOrCreateSelfPermit()
+    if (!ValidationUtils.isExpired(permit)) return permit
+
+    // Active permit exists but its `expiration` is in the past. Drop it from
+    // the active slot and mint a new one. The issuer of a self permit is the
+    // permit signer (the ephemeral EOA's address); pulling it from the stale
+    // permit avoids a second `walletClient.account` round-trip.
+    await client.permits.removeActivePermit()
+    return client.permits.createSelf({ issuer: permit.issuer })
   }
 
   // ── Encryption helpers ────────────────────────────────────────────────
@@ -476,6 +530,28 @@ export function useFhe() {
     try {
       return await runDecrypt()
     } catch (e) {
+      // The SDK validates the active permit (`PermitUtils.validate` →
+      // `assertSignedAndNotExpired`) inside `decryptForView.execute()`. An
+      // expired permit surfaces as a thrown JS error, NOT a TN 403. Refresh
+      // the self-permit once and retry before falling through to the 403
+      // path below — without this, long-lived sessions (>7d default TTL)
+      // would start failing every decrypt with no recovery.
+      if (isExpiredPermitError(e)) {
+        try {
+          await ensureFreshSelfPermit(client)
+          return await runDecrypt()
+        } catch (retryErr) {
+          if (!isExpiredPermitError(retryErr)) throw retryErr
+          // Still expired after a fresh sign? Surface a clear message
+          // instead of looping — likely the wallet client clock is wrong
+          // or the user rejected the sign-in prompt.
+          throw new Error(
+            'Permit refresh failed — the cofhe SDK still reports the active '
+            + 'permit as expired after re-signing. Check the wallet clock '
+            + 'and that the EIP-712 sign-in prompt was approved.',
+          )
+        }
+      }
       if (is403Error(e) && opts.withRefresh !== false && kind !== 'none') {
         // First defence — TN propagation lag. The on-chain `FHE.allow` was
         // already stamped on this handle at mint/transfer time per ADR-021,
