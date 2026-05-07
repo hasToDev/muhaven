@@ -33,7 +33,7 @@ interface EnrichedRequest {
 }
 
 const { address, connected } = useWallet()
-const { decryptUint128ForView } = useFhe()
+const { decryptRedemptionProceedsForView } = useFhe()
 const marketplace = useMarketplaceStore()
 
 const items = ref<EnrichedRequest[]>([])
@@ -140,10 +140,18 @@ async function decryptProceeds(req: EnrichedRequest) {
   try {
     // The proceeds handle's ACL is granted to `request.ephemeralEOA` at
     // settlement. That address is recorded on submit, so only the original
-    // session's in-memory EOA can decrypt. After logout / tab close, the key
-    // is gone and decrypt 403s — see PERMIT_DECRYPT_LIFECYCLE.md §8 Q4
-    // (refreshDecryptGrant is deferred). Surface the friendly error.
-    const val = await decryptUint128ForView(req.state.encProceeds as unknown as string)
+    // session's in-memory EOA can decrypt. After logout / tab close, the
+    // key is gone and decrypt 403s — see PERMIT_DECRYPT_LIFECYCLE.md §8
+    // Q4. The `decryptRedemptionProceedsForView` decryptor uses
+    // `withRefresh: false` so the SDK's 403 fallback doesn't dispatch
+    // `MuHavenToken.refreshDecryptGrant` against the legacy Wave 3 proxy
+    // (wrong contract for a `RedemptionQueue.encProceeds` handle, which
+    // is what previously simulation-reverted with `0x` and surfaced a
+    // confusing console error). Cross-session decrypts now surface 403
+    // raw via the toast below; closing that gap requires a
+    // `RedemptionQueue.refreshDecryptGrant(handle, eph)` external —
+    // tracked as follow-up.
+    const val = await decryptRedemptionProceedsForView(req.state.encProceeds as unknown as string)
     req.decryptedProceeds = val
   } catch (e) {
     toast.error('Decrypt failed', {

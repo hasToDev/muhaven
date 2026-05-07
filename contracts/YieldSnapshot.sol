@@ -424,6 +424,23 @@ contract YieldSnapshot is Initializable, ReentrancyGuardTransient, IYieldSnapsho
 
             // Accumulate into running supply (sum-of-snapshots — preserves
             // conservation under intra-snapshot mutations per ADR-038).
+            //
+            // Frontend dependency (`ActivityPage.vue` Round-3 decoupled-
+            // decrypt): the 1-investor case ALIASES `encTotalSupply` to
+            // `snapshotBalance` via the `else` branch below — both
+            // variables hold the SAME ctHash. The frontend de-dupes the
+            // two decrypts on this exact ctHash equality to avoid
+            // racing two parallel sealOutput requests for the same
+            // handle (TN tends to 404 the second mid-resolution of the
+            // first). If a future contract change initializes
+            // `encTotalSupply` non-trivially (e.g. starts from a fresh
+            // zero handle and FHE.add'es every balance regardless), the
+            // ctHash equality breaks; the frontend's `supplyEqualsBalance`
+            // check goes false-negative (still safe — it just decrypts
+            // both) but the comment around the frontend de-dupe
+            // ("literally the same handle") would no longer hold. Keep
+            // this aliasing intentional — or update the frontend's
+            // de-dupe site (search `supplyEqualsBalance`) when changing.
             if (Common.isInitialized(runningSupply)) {
                 runningSupply = FHE.add(runningSupply, bal);
             } else {

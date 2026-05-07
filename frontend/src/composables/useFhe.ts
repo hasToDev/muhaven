@@ -386,13 +386,45 @@ export function useFhe() {
    * `0x` data even on the passkey fallback). Surfacing a 403 raw is
    * better than dispatching a refresh that can't possibly work.
    *
+   * `withRefresh: false` disables ONLY the on-chain refresh-grant
+   * fallback. The permit-expiry retry (re-sign self-permit + retry)
+   * and the 2s TN-propagation retry inside `decryptForView` still
+   * apply — those are orthogonal to the wrong-contract hazard.
+   *
    * Cross-session decrypts (eph rotated since claim time): currently
    * fail. Followup work could add a `YieldSnapshot.refreshDecryptGrant
    * (handle, eph)` — gate on `FHE.isAllowed(handle, msg.sender)` so
    * only the rightful kernel passes — to close that gap, mirroring
-   * `MuHavenStable.refreshAuditGrant`'s shape.
+   * `MuHavenStable.refreshAuditGrant`'s shape (currently euint64-only;
+   * a euint128 sibling would also close the snapshot-balance
+   * post-transfer gap noted in `ActivityPage.vue`'s comment).
    */
   async function decryptYieldEpochAggregateForView(ctHash: bigint | string): Promise<bigint> {
+    return decryptForView(ctHash, 128, { withRefresh: false })
+  }
+
+  /**
+   * Decrypt a `RedemptionQueue.RequestState.encProceeds` handle (Phase
+   * 7.6). The proceeds are payable mhUSDC base units the queue planted
+   * at `processEpoch` settlement; ACL is granted to the request's
+   * `ephemeralEOA` (recorded at submit time) and to the contract self.
+   *
+   * Same wrong-contract-refresh hazard shape as
+   * `decryptYieldEpochAggregateForView`: `RedemptionQueue.encProceeds`
+   * isn't on `MuHavenToken`, but the default `decryptUint128ForView`
+   * 403-fallback would dispatch `MuHavenToken.refreshDecryptGrant`
+   * against the legacy Wave 3 proxy. Worse — `RedemptionQueue` exposes
+   * NO refresh-grant helper, so even routing the refresh to the right
+   * contract wouldn't help. `withRefresh: false` is the only correct
+   * stance here.
+   *
+   * Cross-session decrypts: same gap. The original `ephemeralEOA` is
+   * gone after logout/tab-close; the kernel still has ACL via the
+   * claim-time grant chain but there's no on-chain `refresh*Grant`
+   * path on `RedemptionQueue` to re-stamp the eph. Adding one would
+   * close this gap; out of scope for this fix.
+   */
+  async function decryptRedemptionProceedsForView(ctHash: bigint | string): Promise<bigint> {
     return decryptForView(ctHash, 128, { withRefresh: false })
   }
 
@@ -616,6 +648,35 @@ export function useFhe() {
             // GOLD1, …); refreshing the grant on the wrong contract is
             // a no-op against the actual handle. Falls back to the
             // Wave 3 default inside `refreshDecryptGrant` when omitted.
+            //
+            // Foot-gun visibility: when `opts.tokenAddress` is undefined
+            // we're about to dispatch the refresh against the legacy
+            // Wave 3 single-token proxy, which is correct ONLY when the
+            // handle being refreshed is a Wave 3 `_balances` entry on
+            // that exact contract. For YieldSnapshot epoch aggregates,
+            // RedemptionQueue proceeds, or any handle on a per-RWA
+            // (TBILL1 / GOLD1 / …) MuHavenToken, this is the
+            // wrong-contract hazard documented in commit 8a10e51 — the
+            // simulation reverts with empty `0x` data and the user sees
+            // a confusing console error. Loud-warn so future occurrences
+            // are visible during dev / staging without grepping kernel
+            // RPC payloads. Callers wanting to silence the warning
+            // should either pass an explicit `tokenAddress` or use a
+            // dedicated `decrypt*ForView` helper with `withRefresh:
+            // false` (see `decryptYieldEpochAggregateForView` /
+            // `decryptRedemptionProceedsForView`).
+            if (!opts.tokenAddress) {
+              console.warn(
+                '[useFhe] decryptForView refresh fallback is dispatching '
+                + 'MuHavenToken.refreshDecryptGrant against the legacy '
+                + 'Wave 3 default (addresses.muHavenToken). If the handle '
+                + 'being decrypted is NOT a Wave 3 _balances entry, this '
+                + 'will simulation-revert with empty 0x data. Pass an '
+                + 'explicit `tokenAddress` (per-RWA MuHavenToken) or use '
+                + 'a withRefresh:false helper for non-token handles. See '
+                + 'commit 8a10e51 for the precedent.',
+              )
+            }
             await refreshDecryptGrant(
               address as `0x${string}`,
               opts.tokenAddress,
@@ -780,6 +841,7 @@ export function useFhe() {
     decryptYieldClaimAuditHandleForView,
     decryptSnapshotSupplyForView,
     decryptYieldEpochAggregateForView,
+    decryptRedemptionProceedsForView,
     getRawClient,
     destroy,
   }
