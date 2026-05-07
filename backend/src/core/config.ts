@@ -190,6 +190,18 @@ const EnvSchema = z.object({
   // server. Long-term prod = `https://pay.muhaven.app`.
   CHECKOUT_PUBLIC_URL: z.string().default('http://localhost:7780'),
 
+  // ── Wave 4 Phase P11 — DefaultProtection / EncryptedGovernance / KYC stubs ──
+  // P11 contracts are not yet deployed to Arb Sepolia at Wave 4 close —
+  // the four P11 agent tools (`muhaven_check_protection_coverage`,
+  // `muhaven_explain_kyc_attestation`, `muhaven_propose_governance_vote`,
+  // `muhaven_cast_encrypted_vote`) gracefully degrade when the proxy
+  // addresses are unset: read tools return a structured "p11.not_deployed"
+  // response; propose tools refuse with the same code rather than mint
+  // ActionDescriptors that point at the zero address.
+  DEFAULT_PROTECTION_ADDRESS: z.string().optional(),
+  ENCRYPTED_GOVERNANCE_ADDRESS: z.string().optional(),
+  KYC_ATTESTATION_REGISTRY_ADDRESS: z.string().optional(),
+
   // ── Wave 4 Phase P2 — HavenBot in-dashboard copilot ────────────────
   // Google Gemini API key (the user's available key — see ADR-6 for the
   // Claude → Gemini swap rationale). When unset, the chat surface falls

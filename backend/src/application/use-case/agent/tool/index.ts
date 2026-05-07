@@ -9,6 +9,11 @@
  *   muhaven_propose_kyc_add, muhaven_propose_kyc_remove,
  *   muhaven_propose_unpause_token (propose; tier-gated, issuer-only),
  *   muhaven_audit_query (read; issuer-self).
+ * P11 (4 governance / protection / KYC tools):
+ *   muhaven_check_protection_coverage (read; on-chain proxy state),
+ *   muhaven_explain_kyc_attestation (read; informational),
+ *   muhaven_propose_governance_vote (propose; tier-gated),
+ *   muhaven_cast_encrypted_vote (propose; tier-gated, FHE ceremony).
  * + commit-tool-action closes propose → confirm → commit loop.
  */
 export {
@@ -38,3 +43,14 @@ export { ProposeUnpauseTokenToolUseCase } from './propose-unpause-token.use-case
 export type { ProposeUnpauseTokenContext } from './propose-unpause-token.use-case.js';
 export { AuditQueryToolUseCase } from './audit-query.use-case.js';
 export type { AuditQueryToolContext } from './audit-query.use-case.js';
+// ── Wave 4 P11 — governance / protection / KYC tools ────────────────
+export { CheckProtectionCoverageToolUseCase } from './check-protection-coverage.use-case.js';
+export type { CheckProtectionCoverageDeps } from './check-protection-coverage.use-case.js';
+export { ExplainKycAttestationToolUseCase } from './explain-kyc-attestation.use-case.js';
+export type { ExplainKycAttestationDeps } from './explain-kyc-attestation.use-case.js';
+export {
+  ProposeGovernanceVoteToolUseCase,
+} from './propose-governance-vote.use-case.js';
+export type { ProposeGovernanceVoteContext } from './propose-governance-vote.use-case.js';
+export { CastEncryptedVoteToolUseCase } from './cast-encrypted-vote.use-case.js';
+export type { CastEncryptedVoteContext } from './cast-encrypted-vote.use-case.js';

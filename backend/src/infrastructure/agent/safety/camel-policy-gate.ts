@@ -53,6 +53,11 @@ export const PLANNER_ALLOWED_TOOLS = [
   'muhaven_propose_kyc_remove',
   'muhaven_propose_unpause_token',
   'muhaven_audit_query',
+  // Wave 4 P11 — governance / protection / KYC tools (ADR-9)
+  'muhaven_check_protection_coverage',
+  'muhaven_explain_kyc_attestation',
+  'muhaven_propose_governance_vote',
+  'muhaven_cast_encrypted_vote',
 ] as const;
 
 export type PlannerAllowedTool = (typeof PLANNER_ALLOWED_TOOLS)[number];

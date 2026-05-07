@@ -238,7 +238,10 @@ export type ActionDescriptorKind =
   | 'distribute_yield'
   | 'kyc_add'
   | 'kyc_remove'
-  | 'unpause_token';
+  | 'unpause_token'
+  // Wave 4 P11 — governance ceremony
+  | 'governance_propose'
+  | 'governance_vote';
 
 export interface ActionDescriptorBase {
   kind: ActionDescriptorKind;
@@ -394,6 +397,50 @@ export interface UnpauseTokenActionDescriptor extends ActionDescriptorBase {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Wave 4 P11 — governance ActionDescriptors
+// ─────────────────────────────────────────────────────────────────────
+//
+// Two-step governance ceremony — `propose` opens a proposal on the
+// `EncryptedGovernance` contract; `cast_vote` submits an FHE-encrypted
+// ballot. Backend never sees the ballot cleartext post-encrypt.
+//
+// `requestedAtSec` is pinned for the same R-3 reason as P7 — the
+// commit POST round-trips it byte-for-byte through the action hash so
+// stale-quote replay is rejected.
+//
+// `governanceAddress` is surfaced in the descriptor so the frontend
+// runner sees exactly which proxy it must hit; the addresses are
+// resolved server-side from `ENCRYPTED_GOVERNANCE_ADDRESS`. This makes
+// post-deploy address rotations a single env-var swap (no frontend
+// release needed) and gives the ConfirmModal a verified target.
+
+export interface GovernanceProposeActionDescriptor extends ActionDescriptorBase {
+  kind: 'governance_propose';
+  preview: {
+    tokenAddress: string;
+    tokenSymbol: string;
+    /** 0 = TRIGGER_PROTECTION (Wave 4 only); 1 reserved Wave 5. */
+    proposalType: 0 | 1;
+    proposalTypeLabel: string;
+    governanceAddress: string;
+    requestedAtSec: number;
+  };
+}
+
+export interface GovernanceVoteActionDescriptor extends ActionDescriptorBase {
+  kind: 'governance_vote';
+  preview: {
+    proposalId: string;
+    /** Cleartext yes/no. SDK encrypts to InEuint128 client-side BEFORE
+     *  the on-chain `castVote` write — backend never sees the
+     *  encrypted handle. */
+    voteYes: boolean;
+    governanceAddress: string;
+    requestedAtSec: number;
+  };
+}
+
 export type ActionDescriptor =
   | BuyActionDescriptor
   | ClaimActionDescriptor
@@ -403,7 +450,9 @@ export type ActionDescriptor =
   | DistributeYieldActionDescriptor
   | KycAddActionDescriptor
   | KycRemoveActionDescriptor
-  | UnpauseTokenActionDescriptor;
+  | UnpauseTokenActionDescriptor
+  | GovernanceProposeActionDescriptor
+  | GovernanceVoteActionDescriptor;
 
 // ─────────────────────────────────────────────────────────────────────
 // Audit-commit DTO — frontend POSTs this after the SDK tx confirms

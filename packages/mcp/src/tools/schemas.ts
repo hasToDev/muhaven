@@ -187,6 +187,35 @@ export const IssuerAuditQueryInputSchema = z
   })
   .strict();
 
+// ---------- governance / protection / KYC group (Wave 4 P11) ----------
+
+export const ReadProtectionCoverageInputSchema = z
+  .object({
+    tokenAddress: addressSchema,
+  })
+  .strict();
+
+export const ReadKycAttestationInputSchema = z
+  .object({
+    investorAddress: addressSchema.optional(),
+  })
+  .strict();
+
+export const GovernanceProposeInputSchema = z
+  .object({
+    tokenAddress: addressSchema,
+    /** 0 = TRIGGER_PROTECTION (Wave 4 only); 1 reserved Wave 5. */
+    proposalType: z.union([z.literal(0), z.literal(1)]),
+  })
+  .strict();
+
+export const GovernanceCastVoteInputSchema = z
+  .object({
+    proposalId: z.string().regex(/^[1-9]\d*$/, 'must be a positive integer string'),
+    voteYes: z.boolean(),
+  })
+  .strict();
+
 // ---------- type exports ----------
 
 export type ReadPortfolioInput = z.infer<typeof ReadPortfolioInputSchema>;
@@ -211,5 +240,11 @@ export type IssuerKycAddInput = z.infer<typeof IssuerKycAddInputSchema>;
 export type IssuerKycRemoveInput = z.infer<typeof IssuerKycRemoveInputSchema>;
 export type IssuerUnpauseTokenInput = z.infer<typeof IssuerUnpauseTokenInputSchema>;
 export type IssuerAuditQueryInput = z.infer<typeof IssuerAuditQueryInputSchema>;
+
+// Wave 4 P11 — governance / protection / KYC
+export type ReadProtectionCoverageInput = z.infer<typeof ReadProtectionCoverageInputSchema>;
+export type ReadKycAttestationInput = z.infer<typeof ReadKycAttestationInputSchema>;
+export type GovernanceProposeInput = z.infer<typeof GovernanceProposeInputSchema>;
+export type GovernanceCastVoteInput = z.infer<typeof GovernanceCastVoteInputSchema>;
 
 export { actionIdSchema, addressSchema, surfaceSchema, tierSchema };

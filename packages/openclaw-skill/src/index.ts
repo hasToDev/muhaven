@@ -23,6 +23,9 @@ export const TOOLSET_SUBSET: readonly string[] = [
   'muhaven.read.distribution',
   'muhaven.read.tokens',
   'muhaven.read.audit',
+  // Wave 4 P11 — informational read tools fit the investor surface.
+  'muhaven.read.protection_coverage',
+  'muhaven.read.kyc_attestation',
   'muhaven.position.buy',
   'muhaven.position.claim',
   'muhaven.policy.pause',
@@ -44,6 +47,12 @@ export const TOOLSET_EXCLUDED: readonly string[] = [
   'muhaven.issuer.kyc_remove',
   'muhaven.issuer.unpause_token',
   'muhaven.issuer.audit_query',
+  // Wave 4 P11 — governance ceremony requires the dashboard ConfirmModal
+  // + cofhe encrypt ceremony, neither of which the OpenClaw skill
+  // surface (Telegram bot / inline confirm) can drive. Investors who
+  // want to vote follow the dashboard flow.
+  'muhaven.governance.propose',
+  'muhaven.governance.cast_vote',
 ];
 
 const SUBSET = new Set(TOOLSET_SUBSET);

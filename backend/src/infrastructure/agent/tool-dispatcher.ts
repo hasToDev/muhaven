@@ -17,6 +17,12 @@ import {
   ProposeUnpauseTokenDtoSchema,
   AuditQueryToolDtoSchema,
 } from '../../application/dto/agent/issuer-tool.dto.js';
+import {
+  CheckProtectionCoverageDtoSchema,
+  ExplainKycAttestationDtoSchema,
+  ProposeGovernanceVoteDtoSchema,
+  CastEncryptedVoteDtoSchema,
+} from '../../application/dto/agent/p11-tool.dto.js';
 import type {
   PortfolioSummaryToolUseCase,
   QuoteToolUseCase,
@@ -31,6 +37,10 @@ import type {
   ProposeKycRemoveToolUseCase,
   ProposeUnpauseTokenToolUseCase,
   AuditQueryToolUseCase,
+  CheckProtectionCoverageToolUseCase,
+  ExplainKycAttestationToolUseCase,
+  ProposeGovernanceVoteToolUseCase,
+  CastEncryptedVoteToolUseCase,
 } from '../../application/use-case/agent/tool/index.js';
 import { gatePlannerIntent, sanitiseToolResult } from './safety/index.js';
 
@@ -49,6 +59,11 @@ export interface ToolDispatcherDeps {
   proposeKycRemove: ProposeKycRemoveToolUseCase;
   proposeUnpauseToken: ProposeUnpauseTokenToolUseCase;
   auditQuery: AuditQueryToolUseCase;
+  // Wave 4 P11 — governance / protection / KYC tools
+  checkProtectionCoverage: CheckProtectionCoverageToolUseCase;
+  explainKycAttestation: ExplainKycAttestationToolUseCase;
+  proposeGovernanceVote: ProposeGovernanceVoteToolUseCase;
+  castEncryptedVote: CastEncryptedVoteToolUseCase;
 }
 
 export interface ToolDispatcherContext {
@@ -193,6 +208,37 @@ export class ToolDispatcher {
       case 'muhaven_audit_query': {
         const args = AuditQueryToolDtoSchema.parse(rawArgs ?? {});
         return this.deps.auditQuery.execute({ userId: ctx.userId }, args);
+      }
+      // ── Wave 4 P11 — governance / protection / KYC tools ───────────
+      case 'muhaven_check_protection_coverage': {
+        const args = CheckProtectionCoverageDtoSchema.parse(rawArgs);
+        return this.deps.checkProtectionCoverage.execute(args);
+      }
+      case 'muhaven_explain_kyc_attestation': {
+        const args = ExplainKycAttestationDtoSchema.parse(rawArgs ?? {});
+        return this.deps.explainKycAttestation.execute(ctx.walletAddress, args);
+      }
+      case 'muhaven_propose_governance_vote': {
+        const args = ProposeGovernanceVoteDtoSchema.parse(rawArgs);
+        return this.deps.proposeGovernanceVote.execute(
+          {
+            userId: ctx.userId,
+            walletAddress: ctx.walletAddress,
+            surface: ctx.surface,
+          },
+          args,
+        );
+      }
+      case 'muhaven_cast_encrypted_vote': {
+        const args = CastEncryptedVoteDtoSchema.parse(rawArgs);
+        return this.deps.castEncryptedVote.execute(
+          {
+            userId: ctx.userId,
+            walletAddress: ctx.walletAddress,
+            surface: ctx.surface,
+          },
+          args,
+        );
       }
       default:
         throw ApplicationHttpError.badRequest(`Unknown tool: ${toolName}`);

@@ -33,6 +33,11 @@ import {
   IssuerKycRemoveInputSchema,
   IssuerUnpauseTokenInputSchema,
   IssuerAuditQueryInputSchema,
+  // Wave 4 P11 — governance / protection / KYC group
+  ReadProtectionCoverageInputSchema,
+  ReadKycAttestationInputSchema,
+  GovernanceProposeInputSchema,
+  GovernanceCastVoteInputSchema,
 } from './schemas.js';
 import {
   policyAuditExport,
@@ -54,6 +59,11 @@ import {
   issuerKycRemove,
   issuerUnpauseToken,
   issuerAuditQuery,
+  // Wave 4 P11 — governance / protection / KYC group
+  readProtectionCoverage,
+  readKycAttestation,
+  governancePropose,
+  governanceCastVote,
   type ToolDeps,
   type ToolResult,
 } from './handlers.js';
@@ -137,6 +147,23 @@ const HANDLERS: Record<string, Pick<ToolEntry, 'schema' | 'handler'>> = {
   'muhaven.issuer.audit_query': {
     schema: IssuerAuditQueryInputSchema,
     handler: issuerAuditQuery as ToolEntry['handler'],
+  },
+  // ── Wave 4 P11 — governance / protection / KYC group ──────────────
+  'muhaven.read.protection_coverage': {
+    schema: ReadProtectionCoverageInputSchema,
+    handler: readProtectionCoverage as ToolEntry['handler'],
+  },
+  'muhaven.read.kyc_attestation': {
+    schema: ReadKycAttestationInputSchema,
+    handler: readKycAttestation as ToolEntry['handler'],
+  },
+  'muhaven.governance.propose': {
+    schema: GovernanceProposeInputSchema,
+    handler: governancePropose as ToolEntry['handler'],
+  },
+  'muhaven.governance.cast_vote': {
+    schema: GovernanceCastVoteInputSchema,
+    handler: governanceCastVote as ToolEntry['handler'],
   },
 };
 

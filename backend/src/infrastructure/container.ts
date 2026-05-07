@@ -109,6 +109,11 @@ import {
   ProposeKycRemoveToolUseCase,
   ProposeUnpauseTokenToolUseCase,
   AuditQueryToolUseCase,
+  // Wave 4 P11 — governance / protection / KYC tools
+  CheckProtectionCoverageToolUseCase,
+  ExplainKycAttestationToolUseCase,
+  ProposeGovernanceVoteToolUseCase,
+  CastEncryptedVoteToolUseCase,
 } from '../application/use-case/agent/tool/index.js';
 import { GetPolicyStateUseCase } from '../application/use-case/agent/policy/get-policy-state.use-case.js';
 import { ConfirmTokenService } from '../application/use-case/agent/policy/confirm-token.service.js';
@@ -454,6 +459,29 @@ function getToolDispatcher(): ToolDispatcher {
       appendAudit,
     ),
     auditQuery: new AuditQueryToolUseCase(agentRepos.agentAuditRepo),
+    // ── Wave 4 P11 — governance / protection / KYC tools ───────────────
+    checkProtectionCoverage: new CheckProtectionCoverageToolUseCase({
+      rpcUrl: getEnv().RPC_URL,
+      defaultProtectionAddress: getEnv().DEFAULT_PROTECTION_ADDRESS,
+      rwaTokenRepo: muhaven.rwaTokenRepo,
+    }),
+    explainKycAttestation: new ExplainKycAttestationToolUseCase({
+      rpcUrl: getEnv().RPC_URL,
+      kycAttestationRegistryAddress: getEnv().KYC_ATTESTATION_REGISTRY_ADDRESS,
+    }),
+    proposeGovernanceVote: new ProposeGovernanceVoteToolUseCase(
+      muhaven.rwaTokenRepo,
+      getPolicyState,
+      confirmTokens,
+      appendAudit,
+      { encryptedGovernanceAddress: getEnv().ENCRYPTED_GOVERNANCE_ADDRESS },
+    ),
+    castEncryptedVote: new CastEncryptedVoteToolUseCase(
+      getPolicyState,
+      confirmTokens,
+      appendAudit,
+      { encryptedGovernanceAddress: getEnv().ENCRYPTED_GOVERNANCE_ADDRESS },
+    ),
   });
   return _toolDispatcher;
 }

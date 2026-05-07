@@ -420,24 +420,27 @@ describe('redteam · scope-bypass via 403 on policy tool with read-only JWT', ()
     expect(payload3).toMatchObject({ ok: false, code: 'unknown_tool' });
   });
 
-  it('read-only registry advertises only the 5 read.* tools to listTools', async () => {
+  it('read-only registry advertises only the 7 read.* tools to listTools', async () => {
+    // Wave 4 P11 added 2 read tools (protection_coverage + kyc_attestation)
+    // bringing the read group to 7.
     const h = await buildHarness({ readOnly: true });
     const list = await h.client.listTools();
-    expect(list.tools.length).toBe(5);
+    expect(list.tools.length).toBe(7);
     for (const t of list.tools) {
       expect(t.name.startsWith('muhaven.read.')).toBe(true);
     }
   });
 
-  it('full registry advertises all 18 tools (5 read + 4 position + 4 policy + 5 issuer)', async () => {
+  it('full registry advertises all 22 tools (7 read + 4 position + 4 policy + 5 issuer + 2 governance)', async () => {
     const h = await buildHarness();
     const list = await h.client.listTools();
-    expect(list.tools.length).toBe(18);
+    expect(list.tools.length).toBe(22);
     const groups = countBy(list.tools.map((t) => t.name.split('.')[1]));
-    expect(groups.read).toBe(5);
+    expect(groups.read).toBe(7);
     expect(groups.position).toBe(4);
     expect(groups.policy).toBe(4);
     expect(groups.issuer).toBe(5);
+    expect(groups.governance).toBe(2);
   });
 });
 

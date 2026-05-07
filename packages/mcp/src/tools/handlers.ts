@@ -44,6 +44,11 @@ import type {
   IssuerKycRemoveInput,
   IssuerUnpauseTokenInput,
   IssuerAuditQueryInput,
+  // Wave 4 P11 — governance / protection / KYC group
+  ReadProtectionCoverageInput,
+  ReadKycAttestationInput,
+  GovernanceProposeInput,
+  GovernanceCastVoteInput,
 } from './schemas.js';
 
 export interface ToolDeps {
@@ -469,6 +474,66 @@ export async function issuerAuditQuery(
       until: input.until,
       cursor: input.cursor,
       limit: input.limit,
+    });
+    return ok(data);
+  } catch (e) {
+    return mapBackendError(e);
+  }
+}
+
+// ---------- governance / protection / KYC group (Wave 4 P11) ----------
+
+export async function readProtectionCoverage(
+  input: ReadProtectionCoverageInput,
+  deps: ToolDeps,
+): Promise<ToolResult<unknown>> {
+  try {
+    const data = await deps.backend.post('/api/v1/agent/tools/check_protection_coverage', {
+      tokenAddress: input.tokenAddress,
+    });
+    return ok(data);
+  } catch (e) {
+    return mapBackendError(e);
+  }
+}
+
+export async function readKycAttestation(
+  input: ReadKycAttestationInput,
+  deps: ToolDeps,
+): Promise<ToolResult<unknown>> {
+  try {
+    const data = await deps.backend.post('/api/v1/agent/tools/explain_kyc_attestation', {
+      ...(input.investorAddress ? { investorAddress: input.investorAddress } : {}),
+    });
+    return ok(data);
+  } catch (e) {
+    return mapBackendError(e);
+  }
+}
+
+export async function governancePropose(
+  input: GovernanceProposeInput,
+  deps: ToolDeps,
+): Promise<ToolResult<unknown>> {
+  try {
+    const data = await deps.backend.post('/api/v1/agent/tools/propose_governance_vote', {
+      tokenAddress: input.tokenAddress,
+      proposalType: input.proposalType,
+    });
+    return ok(data);
+  } catch (e) {
+    return mapBackendError(e);
+  }
+}
+
+export async function governanceCastVote(
+  input: GovernanceCastVoteInput,
+  deps: ToolDeps,
+): Promise<ToolResult<unknown>> {
+  try {
+    const data = await deps.backend.post('/api/v1/agent/tools/cast_encrypted_vote', {
+      proposalId: input.proposalId,
+      voteYes: input.voteYes,
     });
     return ok(data);
   } catch (e) {

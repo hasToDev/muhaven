@@ -96,6 +96,8 @@
       "muhaven.read.distribution",
       "muhaven.read.tokens",
       "muhaven.read.audit",
+      "muhaven.read.protection_coverage",
+      "muhaven.read.kyc_attestation",
       "muhaven.position.buy",
       "muhaven.position.claim",
       "muhaven.policy.pause",
@@ -110,7 +112,9 @@
       "muhaven.issuer.kyc_add",
       "muhaven.issuer.kyc_remove",
       "muhaven.issuer.unpause_token",
-      "muhaven.issuer.audit_query"
+      "muhaven.issuer.audit_query",
+      "muhaven.governance.propose",
+      "muhaven.governance.cast_vote"
     ]
   },
   "tools": [
@@ -119,6 +123,8 @@
     { "name": "muhaven.read.distribution", "description": "Distribution status for a (token, epoch).", "sensitive": false },
     { "name": "muhaven.read.tokens", "description": "RWA tokens the user holds.", "sensitive": false },
     { "name": "muhaven.read.audit", "description": "User's tiered-autonomy audit log.", "sensitive": false },
+    { "name": "muhaven.read.protection_coverage", "description": "Read DefaultProtection coverage for an RWA token (reserveRateBps + status). Public aggregates only.", "sensitive": false },
+    { "name": "muhaven.read.kyc_attestation", "description": "Read-only informational explainer for MuHaven cross-chain KYC attestations.", "sensitive": false },
     { "name": "muhaven.position.buy", "description": "Stage a Subscription buy — emits intent for three-tier confirmation. NEVER auto-submits.", "sensitive": true },
     { "name": "muhaven.position.claim", "description": "Stage a yield claim — emits intent for three-tier confirmation. NEVER auto-submits.", "sensitive": true },
     { "name": "muhaven.policy.pause", "description": "Activate /pause kill-switch (uninstallPlugin).", "sensitive": true },

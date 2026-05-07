@@ -62,6 +62,8 @@ mcp:
     - muhaven.read.distribution
     - muhaven.read.tokens
     - muhaven.read.audit
+    - muhaven.read.protection_coverage
+    - muhaven.read.kyc_attestation
     - muhaven.position.buy
     - muhaven.position.claim
     - muhaven.policy.pause
@@ -76,6 +78,8 @@ mcp:
     - muhaven.issuer.kyc_remove
     - muhaven.issuer.unpause_token
     - muhaven.issuer.audit_query
+    - muhaven.governance.propose
+    - muhaven.governance.cast_vote
   toolset_excluded_reason: |
     Exclusions are deliberate per ADR-C — the OpenClaw surface is
     investor-buy-and-claim, not portfolio-management. `set_tier` requires
@@ -86,6 +90,9 @@ mcp:
     `issuer.*` (Wave 4 P7) is issuer-only — the OpenClaw surface is
     investor-facing; issuer flows live on HavenBot in-dashboard +
     standalone `@muhaven/mcp` install.
+    `governance.*` (Wave 4 P11) requires the dashboard ConfirmModal +
+    cofhe encrypt ceremony, neither of which the Telegram-bot surface
+    can drive. Investors who want to vote follow the dashboard flow.
 sandbox:
   runtime: nemoclaw
   forward_compat:

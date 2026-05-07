@@ -22,8 +22,16 @@ export interface ToolDescriptor {
   /** Group classification — drives the --read-only filter. P7 adds
    *  `issuer` for issuer-side state-mutating tools that require an
    *  approved issuer kernel (the use-case-side gate produces structured
-   *  403s for non-issuers; the group is for the read-only filter only). */
-  readonly group: 'read' | 'position' | 'policy' | 'issuer';
+   *  403s for non-issuers; the group is for the read-only filter only).
+   *
+   *  P11 adds `governance` for the FHE-encrypted voting ceremony +
+   *  protection-coverage / KYC-attestation reads. The two read tools
+   *  (`muhaven.governance.protection_coverage`,
+   *  `muhaven.governance.kyc_attestation`) are also exposed under
+   *  `read` so `--read-only` keeps them available; the two propose
+   *  tools (`muhaven.governance.propose`, `muhaven.governance.cast_vote`)
+   *  are filtered off in read-only mode. */
+  readonly group: 'read' | 'position' | 'policy' | 'issuer' | 'governance';
   /** Human-readable description shown in the host UI. */
   readonly description: string;
   /** When true, the host SHOULD render a confirmation cue before invoking. */
@@ -168,6 +176,38 @@ export const TOOL_DESCRIPTORS: readonly ToolDescriptor[] = [
     description:
       'Return the calling issuer\'s tiered-autonomy audit log entries (cursor-paginated). Useful for compliance review of past distributions, KYC additions, and unpause events. Wave 4 = issuer-self only; Wave 5 adds permit-gated cross-user access for compliance officers.',
     sensitive: false,
+  },
+  // ── Wave 4 P11 — governance / protection / KYC tools ──────────────
+  // Reads land in `read` so `--read-only` keeps them available.
+  // State-mutating governance ceremony lives in the new `governance`
+  // group, filtered off by `--read-only`.
+  {
+    name: 'muhaven.read.protection_coverage',
+    group: 'read',
+    description:
+      'Read-only inspection of DefaultProtection coverage for an RWA token. Returns the public reserveRateBps, status, issuer address, and a human-readable explanation. Encrypted reserve balances are NEVER decrypted server-side; only public aggregates surface. Returns "not_deployed" when the P11.A contract is not yet on-chain.',
+    sensitive: false,
+  },
+  {
+    name: 'muhaven.read.kyc_attestation',
+    group: 'read',
+    description:
+      'Read-only informational tool that explains MuHaven cross-chain KYC attestations + returns the registry config (default validity period, attestation signer, jurisdiction hash). Use to answer "how does cross-chain KYC work?" with authoritative data. Returns "not_deployed" when the P11.C registry is not yet on-chain.',
+    sensitive: false,
+  },
+  {
+    name: 'muhaven.governance.propose',
+    group: 'governance',
+    description:
+      'PROPOSE opening a governance proposal on the EncryptedGovernance contract. Wave 4 supports proposalType=0 (TRIGGER_PROTECTION) only; type=1 reserved for Wave 5. Returns an ActionDescriptor + confirmation token; the user signs through the dashboard ConfirmModal. Tier-gated. Refuses with P11_NOT_DEPLOYED when the contract is not yet on-chain.',
+    sensitive: true,
+  },
+  {
+    name: 'muhaven.governance.cast_vote',
+    group: 'governance',
+    description:
+      'PROPOSE submitting an FHE-encrypted ballot on an EncryptedGovernance proposal. The cleartext yes/no is rendered for the user in ConfirmModal; the SDK encrypts to InEuint128 client-side BEFORE the on-chain write so the agent surface NEVER sees the encrypted handle. The audit log records that a vote was cast but does NOT record which way (privacy invariant).',
+    sensitive: true,
   },
 ];
 

@@ -25,21 +25,14 @@
  *     mid-tier intents are session-key-bound, not passkey-bound.
  *   - "Deny" path is a separate POST so an accidentally-tapped Confirm
  *     can be reverted by the user up until consume.
+ *
+ * Pure helpers (regex, format, fetch wrappers) live in `format.ts` +
+ * `api.ts` so they can be unit-tested without a Telegram host or DOM.
  */
 
 import { getTelegramWebApp } from './telegram.js';
-
-interface IntentSummary {
-  intentId: string;
-  kind: 'buy' | 'claim';
-  tier: 'inline' | 'mini_app_otp' | 'passkey_deeplink';
-  status: 'pending' | 'confirmed' | 'consumed' | 'denied' | 'expired';
-  amountUsd6: string;
-  payload: { token: string; summary: string; issuerLabel?: string; escrowId?: string };
-  intentHash: string;
-  expiresAt: string;
-  createdAt: string;
-}
+import { formatUsd, isValidIntentId, isValidOtp } from './format.js';
+import { createMiniAppApi, type IntentSummary } from './api.js';
 
 const BACKEND_BASE_URL = (() => {
   // Allow override via meta tag for staging swaps.
@@ -70,61 +63,6 @@ function showStatus(text: string, hideForm = true): void {
   if (hideForm && preview) preview.hidden = true;
 }
 
-function formatUsd(amountUsd6: string): string {
-  const parsed = BigInt(amountUsd6);
-  const whole = parsed / 1_000_000n;
-  const cents = parsed % 1_000_000n;
-  const wholeStr = whole.toString();
-  // Show 2-decimal display for amounts under 1M USD, drop the cents
-  // for larger values.
-  if (whole < 1_000_000n) {
-    const centsTwo = (cents / 10_000n).toString().padStart(2, '0');
-    return `$${withSeparators(wholeStr)}.${centsTwo}`;
-  }
-  return `$${withSeparators(wholeStr)}`;
-}
-
-function withSeparators(intStr: string): string {
-  return intStr.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-}
-
-async function lookupIntent(intentId: string, initData: string): Promise<IntentSummary> {
-  const res = await fetch(`${BACKEND_BASE_URL}/api/v1/agent/openclaw/intent/lookup-miniapp`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ intentId, telegramInitData: initData }),
-  });
-  if (!res.ok) {
-    const reason = res.status === 404 ? 'Intent not found or no longer active.' : `Lookup failed (HTTP ${res.status}).`;
-    throw new Error(reason);
-  }
-  return (await res.json()) as IntentSummary;
-}
-
-async function confirmIntent(intentId: string, otp: string, initData: string): Promise<void> {
-  const res = await fetch(`${BACKEND_BASE_URL}/api/v1/agent/openclaw/intent/confirm`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ intentId, otp, telegramInitData: initData, source: 'mini_app' }),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({ title: 'Unknown error' }));
-    throw new Error(body.title || `Confirm failed (HTTP ${res.status}).`);
-  }
-}
-
-async function denyIntent(intentId: string, initData: string): Promise<void> {
-  const res = await fetch(`${BACKEND_BASE_URL}/api/v1/agent/openclaw/intent/deny`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ intentId, telegramInitData: initData, source: 'mini_app' }),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({ title: 'Unknown error' }));
-    throw new Error(body.title || `Deny failed (HTTP ${res.status}).`);
-  }
-}
-
 function renderIntent(intent: IntentSummary): void {
   const preview = $('#intent-preview');
   if (!preview) return;
@@ -146,7 +84,7 @@ function renderIntent(intent: IntentSummary): void {
 async function main(): Promise<void> {
   const url = new URL(window.location.href);
   const intentId = url.searchParams.get('intent') ?? '';
-  if (!/^oci_[A-Z0-9]{26}$/.test(intentId)) {
+  if (!isValidIntentId(intentId)) {
     showStatus('Missing or malformed intent id. Re-open the link from Telegram.');
     setState('error');
     return;
@@ -166,9 +104,11 @@ async function main(): Promise<void> {
   const originLabel = $('.origin');
   if (originLabel) originLabel.textContent = new URL(BACKEND_BASE_URL).host;
 
+  const api = createMiniAppApi({ backendBaseUrl: BACKEND_BASE_URL });
+
   let intent: IntentSummary;
   try {
-    intent = await lookupIntent(intentId, tg.initData);
+    intent = await api.lookupIntent(intentId, tg.initData);
   } catch (err) {
     showStatus(err instanceof Error ? err.message : 'Lookup failed.');
     setState('error');
@@ -186,14 +126,14 @@ async function main(): Promise<void> {
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const otp = otpInput.value.trim();
-    if (!/^\d{6}$/.test(otp)) {
+    if (!isValidOtp(otp)) {
       tg.HapticFeedback?.notificationOccurred?.('error');
       showStatus('Enter the 6-digit code from the @muhaven_bot message.', false);
       return;
     }
     setState('submitting');
     try {
-      await confirmIntent(intentId, otp, tg.initData);
+      await api.confirmIntent(intentId, otp, tg.initData);
       tg.HapticFeedback?.notificationOccurred?.('success');
       showStatus('Confirmed. The MuHaven backend is submitting your transaction. You can close this window.');
       setState('done');
@@ -208,7 +148,7 @@ async function main(): Promise<void> {
   denyBtn.addEventListener('click', async () => {
     setState('submitting');
     try {
-      await denyIntent(intentId, tg.initData);
+      await api.denyIntent(intentId, tg.initData);
       tg.HapticFeedback?.notificationOccurred?.('success');
       showStatus('Denied. Nothing was submitted on-chain. You can close this window.');
       setState('done');
