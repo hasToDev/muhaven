@@ -412,20 +412,32 @@ async function decryptAmount(item: ActivityItemDto) {
         // encTotalYield: kernel + eph ACL granted by claimYield (post-
         // 2026-05-04 Round 3 upgrade). Depth ~3 (asEuint128 →
         // asEuint64 → asEuint128), wrapper-free. Reliable.
-        fhe.decryptUint128ForView(epoch.encTotalYield),
+        //
+        // Use the YieldSnapshot-aggregate decryptor (no refresh
+        // fallback). The default `decryptUint128ForView` path's
+        // 403 fallback dispatches `MuHavenToken.refreshDecryptGrant`
+        // against the legacy Wave 3 token proxy by default — wrong
+        // contract for a YieldSnapshot handle, simulation reverts
+        // with `0x`. See `decryptYieldEpochAggregateForView` natspec.
+        fhe.decryptYieldEpochAggregateForView(epoch.encTotalYield),
         // Snapshot balance: same handle as MuHavenToken._balances at
         // snapshot time. Investor has ACL via the original mint —
-        // decrypts via the per-RWA token path.
+        // decrypts via the per-RWA token path. The per-RWA
+        // `tokenAddress` is required so the 403 fallback's
+        // `refreshDecryptGrant` targets the right MuHavenToken
+        // (TBILL1 / GOLD1) instead of the legacy Wave 3 default.
         fhe.decryptUint128ForView(
           snapshotBalanceHandle,
           item.token_address as `0x${string}`,
         ),
         // encTotalSupply: kernel + eph ACL granted by claimYield
         // (Round 3). For 1-investor case, alias to snapshotBalance to
-        // skip the redundant TN round-trip.
+        // skip the redundant TN round-trip. Same wrong-contract
+        // hazard as encTotalYield above; same `decryptYieldEpochAggregateForView`
+        // fix.
         supplyEqualsBalance
           ? Promise.resolve<bigint | null>(null)
-          : fhe.decryptUint128ForView(epoch.encTotalSupply),
+          : fhe.decryptYieldEpochAggregateForView(epoch.encTotalSupply),
       ])
       const supply = supplyEqualsBalance ? snapshotBalance : (totalSupply as bigint)
 

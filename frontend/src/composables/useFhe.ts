@@ -368,6 +368,35 @@ export function useFhe() {
   }
 
   /**
+   * Decrypt an investor-side YieldSnapshot `Epoch.encTotalYield` /
+   * `encTotalSupply` aggregate handle for the /activity Round 3
+   * decoupled-decrypt path. claimYield stamps both kernel + the
+   * claim-time `ephemeralEOA` ACL on these handles, so a same-session
+   * decrypt resolves cleanly via the standard `decryptForView`.
+   *
+   * **No refresh fallback** — and that's the bug fix this function
+   * exists to close. The default `decryptUint128ForView` path's 403
+   * fallback dispatches `MuHavenToken.refreshDecryptGrant(eph)`
+   * against `addresses.muHavenToken` (the legacy Wave 3 single-token
+   * proxy when no per-RWA `tokenAddress` is passed). YieldSnapshot
+   * epoch aggregates aren't on MuHavenToken — they're on the
+   * YieldSnapshot proxy's storage — so the refresh tx targets the
+   * wrong contract for the wrong handle type and fails the kernel's
+   * scoped session-key allowlist (or simulation-reverts with empty
+   * `0x` data even on the passkey fallback). Surfacing a 403 raw is
+   * better than dispatching a refresh that can't possibly work.
+   *
+   * Cross-session decrypts (eph rotated since claim time): currently
+   * fail. Followup work could add a `YieldSnapshot.refreshDecryptGrant
+   * (handle, eph)` — gate on `FHE.isAllowed(handle, msg.sender)` so
+   * only the rightful kernel passes — to close that gap, mirroring
+   * `MuHavenStable.refreshAuditGrant`'s shape.
+   */
+  async function decryptYieldEpochAggregateForView(ctHash: bigint | string): Promise<bigint> {
+    return decryptForView(ctHash, 128, { withRefresh: false })
+  }
+
+  /**
    * Phase 7.5 — decrypt an mhUSDC (`MuHavenStable`) `euint64` handle for
    * UI display. On 403, calls `MuHavenStable.refreshDecryptGrant` once
    * with the active ephemeral EOA and retries — closes the same kernel-
@@ -750,6 +779,7 @@ export function useFhe() {
     decryptTokenAuditHandleForView,
     decryptYieldClaimAuditHandleForView,
     decryptSnapshotSupplyForView,
+    decryptYieldEpochAggregateForView,
     getRawClient,
     destroy,
   }
