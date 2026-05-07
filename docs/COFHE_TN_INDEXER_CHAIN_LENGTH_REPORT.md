@@ -296,6 +296,22 @@ honest issuer satisfies this trivially since it's their own money).
 
 ---
 
+## Update 2026-05-07 — bit-width hypothesis empirically refuted at the composed reveal
+
+Following Alex's 2026-05-07 reply on this report — *"a 128-bit div could take up to 10s … if possible try to move to 64-bits like we use on fherc20 token, that should improve it a lot"* — we shipped Wave 4.5 (`docs/COFHE_TN_COMPOSED_REVEAL_REPORT.md` for the full empirical record; archived on branch `wave4-5-narrow-div`). Two empirical findings:
+
+1. **Isolated divide narrows cleanly at `euint64`.** A standalone `FHE.div(asEuint64(big_sum), asEuint64(small))` (the shape `scripts/probe-wave45-div.ts:probeA` produces) resolves in 7-10s for N=2/5/10 add-chain depths. **Bit-width hypothesis confirmed at the divide layer.**
+
+2. **Composed reveal still 204-stalls.** Restoring `encRatio` in `claimYield` using the validated 64-bit divide produces a `euint64`-typed `MuHavenStable._balances[investor]` reveal handle (via `add(prev_mhUSDC, encShare64)` in `trustedPayout`) that times out at 45s indefinitely on `/v2/sealoutput`. Identical symptom to the original `encRatio` failure. Tested with two impl variants (with and without an `asEuint128 → asEuint64` round-trip cast in claimYield), a fresh investor account, a fresh distribution, and a 5-minute post-claim wait. All combinations 204.
+
+**The discriminator we observe:** the **multiplicand's ancestry shape** in `mul(encBalance, *)`, not bit-width or single-op chain depth. Working pattern uses a depth-1 trivial-encrypted leaf (cleartext `ratePerShare`); failing pattern uses a stored handle whose ancestry transitively pulls in an N-wide `FHE.add` accumulator over investor balances + per-investor wrapper history.
+
+**Filed as a follow-up issue** with five testable hypotheses (allowPublic short-circuit, fresh `InEuint64` re-input, internal ancestry bound, mainnet vs testnet behavior, fherc20 fixture comparison) — see `docs/COFHE_TN_COMPOSED_REVEAL_REPORT.md` and the GitHub issue body draft at `development/DEV_WAVE_4_5/GITHUB_ISSUE.md`.
+
+**Status**: cleartext-rate workaround stays in production indefinitely. Staging rolled back to the Phase 9.C / L2 impl. Wave 4.5 archived as forward-compat reference until Fhenix's response unlocks a viable composed-reveal path.
+
+---
+
 ## What we'd love from cofhe
 
 1. **Telemetry / log access** for one specific stuck handle so we
