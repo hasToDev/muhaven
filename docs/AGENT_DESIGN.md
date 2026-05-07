@@ -356,7 +356,7 @@ explicit user-signed permit.
 | Hosted checkout | `apps/checkout-pay/` Vite project + `backend/api/v1/checkout/*` routes | P5 |
 | Encrypted policy primitives | `contracts/RiskParams.sol` (`checkAndExecute`, `settleBreachDecrypt`, `computeSignalFlags`) | P6 |
 | DefaultProtection / EncryptedGovernance / KYCAttestationRegistry | `contracts/protection/` + `contracts/governance/` + `contracts/identity/` | P11 |
-| Demo capture + Dune dashboard | `development/DEV_WAVE_4/DEMO_SCRIPT.md` | P9 |
+| Demo capture + public metrics page | `development/DEV_WAVE_4/DEMO_SCRIPT.md` + `development/DEV_WAVE_4/SELF_HOSTED_METRICS_PLAN.md` | P9 |
 | Threat-model hardening + red-team | PromptArmor preprocessing, CaMeL split, Promptfoo / DeepTeam suite, lethal-trifecta lint | P8 |
 
 Phase tracking: `development/DEV_WAVE_4/PROGRESS.md` (parallel-branch state). Architecture decisions log: `development/DEV_WAVE_4/ADR_LOG.md` (ADR-0..ADR-8 covering tiered-autonomy state machine, hybrid policy split, MCPB credential storage, Telegram confirmation tiers, hosted-checkout routing, HavenBot LLM provider, P8 safety hardening, and P7 issuer-side namespace + naming).
@@ -387,7 +387,7 @@ Phase tracking: `development/DEV_WAVE_4/PROGRESS.md` (parallel-branch state). Ar
 
 ### In active development (Wave 4 — remaining ~44h on `agenticwave`)
 
-- Demo capture + Dune dashboard (P9)
+- Demo capture + public metrics page (P9) — pivoted from Dune to self-hosted 2026-05-07; see `development/DEV_WAVE_4/SELF_HOSTED_METRICS_PLAN.md`
 - Buffer + integration tests (P10)
 
 ### Post-Wave-4

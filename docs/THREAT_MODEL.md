@@ -79,6 +79,14 @@ MuHaven uses three distinct FHE access patterns:
 
 **Why it's acceptable:** Reveals existence of configuration, not the configuration itself. We deliberately chose a boolean over a cleartext timestamp to minimize metadata leakage (a timestamp would reveal *when* params were set, enabling behavioral profiling).
 
+### 2.7 Per-share yield rate (`Epoch.ratePerShare`) — Phase 9.B trade-off
+
+**What leaks:** The issuer-supplied `ratePerShare` cleartext field on `YieldSnapshot.Epoch` is publicly readable on-chain. For each funded epoch, observers can compute `ratePerShare = floor(totalYield / totalSupply × RATE_SCALE)` and infer the per-share yield rate (e.g. TBILL APY).
+
+**Why it's currently acceptable:** Phase 9.B / Option A (commit `bfbdac3`, 2026-05-04) replaced the on-chain encrypted `encRatio = FHE.div(encTotalYield, encTotalSupply)` with the cleartext `ratePerShare` because the encrypted-ratio computation 204'd indefinitely on cofhe TN's testnet — the deep aggregate-fan-in ancestry stalled the threshold network's resolution path. For RWAs (TBILLs, dividend-paying equities, gold leases) the per-share yield rate is conventionally published off-chain anyway, so the privacy compromise is bounded. **Per-investor balances and per-claim shares stay encrypted end-to-end.**
+
+**Mitigation path (Wave 4.5, planned):** Restore the encrypted-ratio computation at `euint64` width per Fhenix team's 2026-05-07 bit-width hypothesis. The probe-first plan in `development/DEV_WAVE_4_5/PLAN.md` validates whether `FHE.div` on aggregate-fan-in denominators resolves at 64-bit; if yes, `Epoch.encRatio64` replaces `Epoch.ratePerShare` as the multiplicand in `claimYield`. The cleartext slot stays as a fallback for pre-Wave-4.5 epochs. **Status: PLANNED — gated on Wave 4 P9 closure.**
+
 ---
 
 ## 3. Side-Channel Resistance

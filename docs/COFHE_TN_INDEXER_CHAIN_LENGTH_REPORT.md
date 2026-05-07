@@ -3,6 +3,13 @@
 > **Filed:** 2026-04-29 (initial — chain-length hypothesis)
 > **Major revision:** 2026-05-04 (corrected model after empirical
 > evidence; renamed to reflect actual mechanism)
+> **Fhenix-team reply received 2026-05-07** — bit-width hypothesis
+> (~10s per 128-bit FHE.div) consistent with our `scripts/probe-trivial-div.ts`
+> measurement (~23s for euint128 mul + div). Probe-first validation +
+> privacy-restoration patch tracked as **Wave 4.5** in
+> `development/DEV_WAVE_4_5/PLAN.md` (gated on Wave 4 P9 closure).
+> A §"Update" subsection will be appended at the bottom of this
+> document on Wave 4.5 completion with the Option A / B verdict.
 > **Filed by:** MuHaven (Wave 3.5 / Phase 8 staging cutover, then
 > Wave 3.5 / Phase 9.A audit-handle slate, then Wave 3.5 / Phase 9.B
 > Option A architectural change).
