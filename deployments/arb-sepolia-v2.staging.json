@@ -1,7 +1,7 @@
 {
   "network": "arb-sepolia",
   "env": "staging",
-  "timestamp": "2026-05-04T05:09:35.636Z",
+  "timestamp": "2026-05-08T01:12:22.238Z",
   "deployer": "0xe11E83398C33A37CaC02C01c43F14A7f95876986",
   "external": {
     "legacyPusdc": "0x6b6e6479b8b3237933c3ab9d8be969862d4ed89f",
@@ -12,47 +12,47 @@
   },
   "contracts": {
     "MuHavenStable": {
-      "proxy": "0xf7f6Db67E06923f458F8a465160f53b2486F77Fd",
+      "proxy": "0x08Cc77db8243c22153dDEc28A5505Fb41Ca0AfF5",
       "implementation": "0xA42e9Ef29de765c3bE3cF28233bdb047B447963C"
     },
     "ClaimTopicsRegistry": {
-      "proxy": "0x8E13fF83E308D4Af52216b83d107e30B314e1fAe",
+      "proxy": "0x72A40b9D2cA68190d438c4F5A136C0B95BFCF01c",
       "implementation": "0x421D7cfD2D913CD2729201f02D7a47313ab59CC4"
     },
     "TrustedIssuersRegistry": {
-      "proxy": "0x3a4Ad102488D2bB079Ec7Eb6d2A0cad3B5beE600",
+      "proxy": "0x503DBcB304335bDb01FcFBb08eDE8BbC70980863",
       "implementation": "0x619b478006ac16bD8103367908407482B3938684"
     },
     "MuHavenIdentityRegistry": {
-      "proxy": "0x968Fa8D6e4D2c7aEeE98BB56475a72Dd72fda399",
+      "proxy": "0x265c5B13690e785A6607A13fF59e05533e3338Eb",
       "implementation": "0x58d8700bd193A1F70Dae820B513C644AEC70cE0D"
     },
     "ModularCompliance": {
-      "proxy": "0xC8B2FD6A690815AD49F448Ea4789fF1BD81002Ca",
+      "proxy": "0x83912E1fF0A2cc3680B696f9beC53cD28E3E7e20",
       "implementation": "0x0FfaabfA0405f90D5f01bE5b392778a05E53b2a4"
     },
     "TokenRegistry": {
-      "proxy": "0x9079E96DF0e1Ea1028d8809D8Ce083d5e912f219",
+      "proxy": "0x95030e3c3302B8FC0c2e5cEb425a57FA889f9AC6",
       "implementation": "0x87f9Fd116268e3feab2e8684175dE823cE23FeF9"
     },
     "InvestorRegistry": {
-      "proxy": "0x1F4BD727ea4De31C76943D66F198536b3fC1d9E4",
+      "proxy": "0x16624D01086Eb2A23492cd261d85E238ebc07468",
       "implementation": "0x64475D5225704ED8166921e0fEe916f3936EAD68"
     },
     "MuHavenSubscription": {
-      "proxy": "0x094F6eb63a9A8788697BBCA0589c1A285DD1e03A",
+      "proxy": "0x6238d7f702F192dE4B84f7d9A38A4F569fc04466",
       "implementation": "0xb04b5d66440b6Cad755AE72de41F8015a6dDDF11"
     },
     "YieldSnapshot": {
-      "proxy": "0x6d5C0E40f53c702CDc4923acccbdD6F45cBD3E29",
+      "proxy": "0x4942d1dE584CE7e6f3407d6E86efFbB9ED81fd1C",
       "implementation": "0x4336071f41e021aeebd9Cf4b3b91FB349098449d"
     },
     "IssuerControlledOracle": {
-      "proxy": "0xdD945eAbc3f708d31bA00DD0b384B04F35c53D2A",
+      "proxy": "0x1e799f7bA4B1e4D5c835C5af6491c188944C0594",
       "implementation": "0x34E9149f84c36Fbf821B5428985dA456945ff896"
     },
     "ChainlinkFunctionsOracle": {
-      "proxy": "0xF9908091855A500CE67A7Cb10992f56571096A32",
+      "proxy": "0x803B563C5E1082750479c373BD83DdA07EE18319",
       "implementation": "0x732360067660fA99c16c9d10c8418bD594561900"
     }
   },
@@ -62,48 +62,83 @@
       "name": "MuHaven Treasury Bill Series 1",
       "issuer": "0xe11E83398C33A37CaC02C01c43F14A7f95876986",
       "oracleKind": "issuer",
-      "registeredOracle": "0xdD945eAbc3f708d31bA00DD0b384B04F35c53D2A",
+      "registeredOracle": "0x1e799f7bA4B1e4D5c835C5af6491c188944C0594",
       "initialNav": "1000000",
       "treasurySeed": "0",
       "contracts": {
         "MuHavenToken": {
-          "proxy": "0x3E570bDb3928488b0092FBE149d4B7E8d12cb178",
-          "implementation": "0x2248d438a6fB374fA0E3ab6C17160922E75Ea3da"
+          "proxy": "0xe80a64C13759e9b823265e2691c7C481EaAaf6e2",
+          "implementation": "0x53aF0EcEb7bF3921923a062CE092A194724af092"
         },
         "RedemptionQueue": {
-          "proxy": "0xcD934a65bFe6C920b15cE3d4e65f7EF0662322Ed",
+          "proxy": "0x994989781f221b59985DD7b30eE10906b95fa2Be",
           "implementation": "0xce2Dc759159d22Aa112F5DcEDBE19a8aa52303CE"
         },
         "MuHavenTreasury": {
-          "proxy": "0x4B35A182d502cfebAe9fabF9e8A25D80A3AA9B52",
+          "proxy": "0x46a304002A7c02e387726af06d9C640B39D75064",
           "implementation": "0x4decB7D835f84959C118A03bB7D037fF300fF5A6"
         }
       },
-      "registeredAt": "2026-04-26T03:45:03.566Z"
+      "registeredAt": "2026-05-08T01:11:40.447Z"
     },
     "GOLD1": {
       "symbol": "GOLD1",
       "name": "MuHaven Gold Series 1",
       "issuer": "0xe11E83398C33A37CaC02C01c43F14A7f95876986",
       "oracleKind": "issuer",
-      "registeredOracle": "0xdD945eAbc3f708d31bA00DD0b384B04F35c53D2A",
+      "registeredOracle": "0x1e799f7bA4B1e4D5c835C5af6491c188944C0594",
       "initialNav": "10000",
       "treasurySeed": "0",
       "contracts": {
         "MuHavenToken": {
-          "proxy": "0x4963e942A846e7F537358fe0CC18C7aA9B554375",
-          "implementation": "0x2248d438a6fB374fA0E3ab6C17160922E75Ea3da"
+          "proxy": "0x80327c5D46c2c4C517B5f021f69cA7667f30b270",
+          "implementation": "0x53aF0EcEb7bF3921923a062CE092A194724af092"
         },
         "RedemptionQueue": {
-          "proxy": "0x791e2736Bb9f11114E36B40836f7Bd4666f93fA5",
+          "proxy": "0xB2e6Aa27C7C31ab18D33d0CbB20a30A7138670B4",
           "implementation": "0xce2Dc759159d22Aa112F5DcEDBE19a8aa52303CE"
         },
         "MuHavenTreasury": {
-          "proxy": "0xe4320790833042b43A61CEff05a604D6CB2C195b",
+          "proxy": "0x756AdFe36F29886be0dfF87F80D4FC9D6ddDF414",
           "implementation": "0x4decB7D835f84959C118A03bB7D037fF300fF5A6"
         }
       },
-      "registeredAt": "2026-04-26T03:47:15.084Z"
+      "registeredAt": "2026-05-08T01:12:22.237Z"
+    }
+  },
+  "p11": {
+    "timestamp": "2026-05-08T01:14:43.870Z",
+    "governanceBoundTokenSymbol": "TBILL1",
+    "contracts": {
+      "KYCAttestationRegistry": {
+        "address": "0x948036BC34056B849f60E2329ca97d933FC55e75"
+      },
+      "MuHavenKYCVerifier": {
+        "address": "0xC1B500b52F14817e341aC269de0e2c147119A9Bf"
+      },
+      "DefaultProtection": {
+        "proxy": "0x52Dc40995dF5ab5bd2463F49516946fEa4a2122a",
+        "implementation": "0xdb8dFacfc6d3582DC86bb81Dd503F1d5EC7A1A28"
+      },
+      "EncryptedGovernance": {
+        "proxy": "0x59298178aF7635d20164B23632Fc1656dc9Fdf32",
+        "implementation": "0x2f4CaB3cFfF5794e651d093c489ebBd8226F2a63"
+      }
+    },
+    "external": {
+      "muhavenEscrow": "0xafBfcF26f9951F793647B2628013B2cA0bA6F94D",
+      "yieldGate": "0x9165104828f252Fc7F9277F21D59E78BA0827505",
+      "legacyPusdc": "0x6b6e6479b8b3237933c3ab9d8be969862d4ed89f",
+      "kycAdapter": "0x02Fd3E06c6b1FD849ec94F456a67d1852f2b2a56",
+      "governanceBoundToken": "0xe80a64C13759e9b823265e2691c7C481EaAaf6e2"
+    },
+    "config": {
+      "minimumRateBps": 300,
+      "votingPeriodSeconds": 604800,
+      "quorumBps": 5000,
+      "kycValidityPeriodSeconds": 2592000,
+      "kycTrustedSigner": "0xe11E83398C33A37CaC02C01c43F14A7f95876986",
+      "kycSourceChainId": 421614
     }
   }
 }
