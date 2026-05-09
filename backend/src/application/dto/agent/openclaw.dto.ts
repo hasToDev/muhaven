@@ -5,7 +5,7 @@ const INTENT_ID_RE = /^oci_[A-Z0-9]{26}$/;
 const LINK_CODE_RE = /^[A-Z0-9]{8}$/;
 const OTP_RE = /^\d{6}$/;
 /** USDC 6-decimal amount as a non-negative decimal string. Capped at 18
- *  digits to fit comfortably below 2**63 (matches PUSDC native uint64). */
+ *  digits to fit comfortably below 2**63 (matches mhUSDC native uint64). */
 const AMOUNT_USD6_RE = /^\d{1,18}$/;
 
 const PayloadSchema = z

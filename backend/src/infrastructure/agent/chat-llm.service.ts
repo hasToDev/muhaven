@@ -46,7 +46,7 @@ export interface ChatStreamRequest {
   history: ChatHistoryMessage[];
   /** Active RWA tokens registered on-chain at request time. Used to
    *  enrich the system prompt with the symbol→address map so the LLM
-   *  can resolve "Quote 100 PUSDC of TBILL1" without prompting the
+   *  can resolve "Quote 100 mhUSDC of TBILL1" without prompting the
    *  user for the address. Pulled from `IRwaTokenRepository.findAll`
    *  in the route handler — kept on the request so the service stays
    *  stateless + easy to mock in tests. */
@@ -122,7 +122,7 @@ Your strategy, the user's strategy, and the encrypted state itself are private. 
 
 /**
  * Build a "KNOWN TOKENS" addendum from the active RWA catalog. The
- * planner LLM uses this to resolve "Quote 100 PUSDC of TBILL1" → a
+ * planner LLM uses this to resolve "Quote 100 mhUSDC of TBILL1" → a
  * concrete `tokenAddress` without having to ask the user. The list
  * comes from `IRwaTokenRepository` at request time so the section
  * stays correct across staging vs prod redeployments (token
@@ -233,7 +233,7 @@ const MAX_TOOL_TURNS = 3;
 /**
  * Strip privileged fields from an ActionDescriptor before re-feeding it to
  * the LLM as a `functionResponse`. The LLM should be able to *describe*
- * the proposed action ("here's a buy proposal for 100 PUSDC of TBILL1")
+ * the proposed action ("here's a buy proposal for 100 mhUSDC of TBILL1")
  * without ever seeing or speaking the single-use confirm token (R-3) or
  * the raw `sdkCall` wire-shape internals.
  */
@@ -825,7 +825,7 @@ function buildGeminiToolDeclarations(): unknown[] {
               totalYieldUsd6: {
                 type: 'STRING',
                 description:
-                  'Cleartext PUSDC base units (1 USDC = 1000000). Encrypted SDK-side before submit.',
+                  'Cleartext mhUSDC base units (1 mhUSDC = 1000000). Encrypted SDK-side before submit.',
               },
               label: { type: 'STRING', description: 'Optional human-readable label.' },
             },
@@ -879,7 +879,7 @@ function buildGeminiToolDeclarations(): unknown[] {
               tokenAddress: { type: 'STRING' },
               initialNavUsd6: {
                 type: 'STRING',
-                description: 'Initial NAV in PUSDC base units (6 decimals). 1000000 = $1.00.',
+                description: 'Initial NAV in mhUSDC base units (6 decimals). 1000000 = $1.00.',
               },
             },
             required: ['tokenAddress', 'initialNavUsd6'],

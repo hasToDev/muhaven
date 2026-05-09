@@ -25,7 +25,7 @@ import { byTestId, SEL } from '../../lib/selectors.js'
 const FAKE_ACTION_BUY = {
   toolCallId: 'tcl_test_buy_1',
   kind: 'buy',
-  summary: 'Buy 100 PUSDC of GOLD1 at $1.0000',
+  summary: 'Buy 100 mhUSDC of GOLD1 at $1.0000',
   expiresAtSec: Math.floor(Date.now() / 1000) + 600,
   preview: {
     token: '0x' + 'aa'.repeat(20),

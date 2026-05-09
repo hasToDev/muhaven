@@ -45,7 +45,7 @@ export const IssuerChannelEventSchema = z
     tokenSymbol: z.string().min(1).max(32),
     /** Distribution-id when applicable; otherwise null. */
     distributionId: z.union([z.number().int().nonnegative(), z.null()]),
-    /** Total amount in PUSDC base units when applicable (cleartext-by-design). */
+    /** Total amount in mhUSDC base units when applicable (cleartext-by-design). */
     totalUsd6: z.union([z.string().regex(/^\d+$/), z.null()]),
     /** Issuer label rendered to the channel ("Acme RWA" / "TBILL Issuer"). */
     issuerLabel: z.string().min(1).max(120),

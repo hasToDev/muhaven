@@ -147,7 +147,7 @@ export const PolicySessionKeyStatusInputSchema = z.object({}).strict();
 export const IssuerDistributeYieldInputSchema = z
   .object({
     tokenAddress: addressSchema,
-    /** Cleartext PUSDC base units — encrypted SDK-side before submit. */
+    /** Cleartext mhUSDC base units — encrypted SDK-side before submit. */
     totalYieldUsd6: z.string().regex(/^[1-9]\d*$/, 'must be a positive integer string'),
     label: z.string().min(1).max(200).optional(),
   })
@@ -171,7 +171,7 @@ export const IssuerKycRemoveInputSchema = z
 export const IssuerUnpauseTokenInputSchema = z
   .object({
     tokenAddress: addressSchema,
-    /** Initial NAV in PUSDC base units (6 decimals). 1_000_000 = $1.00. */
+    /** Initial NAV in mhUSDC base units (6 decimals). 1_000_000 = $1.00. */
     initialNavUsd6: z.string().regex(/^[1-9]\d*$/, 'must be a positive integer string'),
   })
   .strict();

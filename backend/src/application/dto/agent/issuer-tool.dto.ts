@@ -40,14 +40,14 @@ const auditEventTypeSchema = z.enum(
 //
 // Wraps the existing `@muhaven/sdk` `distributeYield` flow. Issuer must
 // (a) own MINTER_ROLE on the registered RWA token, (b) hold ≥ totalYield
-// in PUSDC, (c) have set an operator approval for YieldDistributor.
+// in mhUSDC, (c) have set an operator approval for YieldDistributor.
 // Pre-flight checks land at the use-case level; the on-chain pipeline
 // (startDistribution → batchCreate → fundEscrows) runs frontend-side.
 
 export const ProposeDistributeYieldDtoSchema = z
   .object({
     tokenAddress: addressSchema,
-    /** Cleartext PUSDC base units — encrypted SDK-side before submit. */
+    /** Cleartext mhUSDC base units — encrypted SDK-side before submit. */
     totalYieldUsd6: usd6Schema,
     /** Human-readable label captured into the audit log + Telegram broadcast. */
     label: z.string().min(1).max(200).optional(),
@@ -95,7 +95,7 @@ export type ProposeKycRemoveDto = z.infer<typeof ProposeKycRemoveDtoSchema>;
 export const ProposeUnpauseTokenDtoSchema = z
   .object({
     tokenAddress: addressSchema,
-    /** Initial NAV in PUSDC base units (6 decimals). 1_000_000 = $1.00. */
+    /** Initial NAV in mhUSDC base units (6 decimals). 1_000_000 = $1.00. */
     initialNavUsd6: usd6Schema,
   })
   .strict();

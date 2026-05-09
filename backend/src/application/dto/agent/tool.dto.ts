@@ -348,7 +348,7 @@ export interface DistributeYieldActionDescriptor extends ActionDescriptorBase {
   preview: {
     tokenAddress: string;
     tokenSymbol: string;
-    /** Cleartext PUSDC amount (6-decimal base units) the issuer will
+    /** Cleartext mhUSDC amount (6-decimal base units) the issuer will
      *  deposit into the distribution. Encrypted SDK-side BEFORE the
      *  submit — backend never sees the encrypted handle. */
     totalYieldUsd6: string;
@@ -389,7 +389,7 @@ export interface UnpauseTokenActionDescriptor extends ActionDescriptorBase {
   preview: {
     tokenAddress: string;
     tokenSymbol: string;
-    /** Initial NAV in PUSDC base units (6 decimals). */
+    /** Initial NAV in mhUSDC base units (6 decimals). */
     initialNavUsd6: string;
     issuerOracleAddress: string;
     tokenRegistryAddress: string;

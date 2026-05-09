@@ -39,7 +39,7 @@ const VALID_INTENT = {
   amountUsd6: '500000000',
   payload: {
     token: '0x' + 'a'.repeat(40),
-    summary: 'Buy 500 PUSDC of GOLD1',
+    summary: 'Buy 500 mhUSDC of GOLD1',
     issuerLabel: 'GoldVault Issuer',
     escrowId: '42',
   },

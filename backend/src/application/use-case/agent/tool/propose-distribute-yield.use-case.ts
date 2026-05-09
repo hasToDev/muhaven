@@ -33,7 +33,7 @@ export interface ProposeDistributeYieldContext {
  * Production-trajectory: signs as the issuer kernel (NOT the platform
  * deployer). The use-case enforces (a) caller has `issuer` role with
  * `issuerStatus === 'approved'`, (b) token is registered + active, (c)
- * caller is the issuer-of-record for the token. Pre-flight PUSDC balance
+ * caller is the issuer-of-record for the token. Pre-flight mhUSDC balance
  * + operator-approval checks live frontend-side via the SDK's
  * `validateNetwork` + `startDistribution` revert paths.
  */
@@ -86,7 +86,7 @@ export class ProposeDistributeYieldToolUseCase {
     // distribution proposal targeting another issuer's token even if the
     // caller is approved + issuer-roled — otherwise an issuer with
     // valid kernel could fund yield against tokens they don't own,
-    // wasting their PUSDC + breaking the per-token issuer audit trail.
+    // wasting their mhUSDC + breaking the per-token issuer audit trail.
     if (token.issuerAddress.toLowerCase() !== ctx.walletAddress.toLowerCase()) {
       throw ApplicationHttpError.forbidden(
         'NOT_TOKEN_ISSUER: caller is not the registered issuer of this token.',

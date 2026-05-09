@@ -401,7 +401,7 @@ describe('ChatLlmService.runGeminiLoop', () => {
         walletAddress: '0xabc',
         surface: 'havenbot' as Surface,
         currentTier: 'advisory' as Tier,
-        message: 'Quote 100 PUSDC of TBILL1',
+        message: 'Quote 100 mhUSDC of TBILL1',
         history: [],
         tokenCatalog: [
           { symbol: 'TBILL1', address: '0x' + 'aa'.repeat(20), assetClass: 'treasury', status: 'active' },
