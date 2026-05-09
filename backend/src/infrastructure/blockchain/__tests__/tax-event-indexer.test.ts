@@ -310,10 +310,13 @@ describe('TaxEventIndexer · IssuerUpdated dispatch (F1)', () => {
       handler,
     );
 
-    await indexer.tick(); // init at 100
-    await indexer.tick(); // throws — cursor stays at 100
+    await indexer.tick(); // init at 99 (currentBlock - 1)
+    await indexer.tick(); // throws — cursor stays at 99
 
-    expect(indexer.getStatus().lastProcessedBlock).toBe('100');
+    // Cursor stays one block behind the current head — that's what
+    // "didn't advance" means after the post-init shift. The next tick
+    // re-fetches blocks 100..105 inclusively.
+    expect(indexer.getStatus().lastProcessedBlock).toBe('99');
     // Subsequent tick replays the same chunk; the second updateIssuer
     // invocation now succeeds (mockRejectedValueOnce only affects the
     // first call).
@@ -776,5 +779,51 @@ describe('TaxEventIndexer · Transfer dispatch (Option Z follow-up)', () => {
       expect(addrs.some((a: string) => a?.toLowerCase() === TOKEN_PROXY.toLowerCase())).toBe(false);
     }
     expect(taxEventRepo.saveMany).not.toHaveBeenCalled();
+  });
+
+  it('cursor init does NOT skip the boot block — events at currentBlock are processed on next tick', async () => {
+    // Regression test for the pre-bd304e5 bug where `lastProcessedBlock
+    // = currentBlock` on init, so events in the boot block were lost
+    // forever (next tick's `fromBlock = cursor + 1` skipped past it).
+    // Post-fix: init sets `lastProcessedBlock = currentBlock - 1n`, so
+    // a transfer that confirmed in the boot block is fetched on the
+    // next tick.
+    let blockCallCount = 0;
+    const fromBlocks: bigint[] = [];
+    const toBlocks: bigint[] = [];
+    const client = createMockClient({
+      getBlockNumber: vi.fn().mockImplementation(() => {
+        blockCallCount++;
+        // Tick 1 sees block 100 (init). Tick 2 sees the same block —
+        // simulates the realistic case where the operator restarted
+        // the backend and the user's transfer landed in the same
+        // 12s window before the next chain block.
+        return Promise.resolve(100n);
+      }),
+      getLogs: vi.fn().mockImplementation((params: any) => {
+        if (params.fromBlock !== undefined) fromBlocks.push(params.fromBlock as bigint);
+        if (params.toBlock !== undefined) toBlocks.push(params.toBlock as bigint);
+        const addrs = Array.isArray(params.address) ? params.address : [params.address];
+        if (addrs.some((a: string) => a?.toLowerCase() === TOKEN_PROXY.toLowerCase())) {
+          return Promise.resolve([
+            transferLog({ from: KERNEL_A, to: KERNEL_B, blockNumber: 100n }),
+          ]);
+        }
+        return Promise.resolve([]);
+      }),
+    });
+
+    const indexer = new TaxEventIndexer(taxEventRepo, transferIndexerConfig(), client);
+    await indexer.tick(); // init: lastProcessedBlock = 99 (NOT 100).
+    await indexer.tick(); // currentBlock=100 > 99 → fromBlock=100, toBlock=100.
+
+    // The boot-block transfer was indexed on tick 2.
+    expect(taxEventRepo.saveMany).toHaveBeenCalledOnce();
+    const events = (taxEventRepo.saveMany as any).mock.calls[0][0];
+    expect(events).toHaveLength(2);
+    // Cursor advanced to currentBlock; subsequent ticks won't re-fetch.
+    expect(indexer.getStatus().lastProcessedBlock).toBe('100');
+    // Sanity: at least one getLogs call covered fromBlock=100, not 101.
+    expect(fromBlocks).toContain(100n);
   });
 });

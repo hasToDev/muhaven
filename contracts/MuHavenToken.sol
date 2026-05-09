@@ -531,11 +531,27 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
             FHE.allow(_balances[from], ephemeralEOA);
         }
 
-        // Update recipient balance
+        // Update recipient balance.
+        //
+        // Privacy invariant (Phase 9.A · Option Z follow-up · 2026-05-09
+        // hardening): `_balances[to]` MUST be a FRESH handle, not an
+        // alias of `transferAmount`. Reason: `_stampTransferAuditAcl`
+        // below grants `from` ACL on the audit handle so the sender can
+        // decrypt their /activity row. CoFHE ACLs are keyed by handle ID
+        // — if `_balances[to]` aliases the audit handle, granting
+        // `from` ACL on the audit handle implicitly grants the sender's
+        // kernel ACL on the recipient's balance handle, leaking the
+        // recipient's post-transfer balance to the sender. The
+        // `FHE.add` path on the initialised branch produces a fresh
+        // handle organically; the first-receipt branch needs an
+        // explicit `FHE.add(zero, …)` to match. One extra FHE op per
+        // first-time recipient — cheap insurance for a privacy bug
+        // that would otherwise be silent. Same fix applied to
+        // `pullFromInvestor` + `returnToInvestor` in this commit.
         if (Common.isInitialized(_balances[to])) {
             _balances[to] = FHE.add(_balances[to], transferAmount);
         } else {
-            _balances[to] = transferAmount;
+            _balances[to] = FHE.add(zero, transferAmount);
         }
         FHE.allowThis(_balances[to]);
         // Recipient always gets a kernel grant. Their own ephemeralEOA grant
@@ -552,6 +568,9 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         // audit row on /activity. Sender's eph (when provided) is granted
         // immediately; recipient relies on `refreshAuditGrant` for cross-
         // session decrypts (their kernel-only grant passes the gate).
+        // Safe to grant `from` here: the privacy-invariant fix above
+        // ensures `_balances[to]` is a distinct handle, so this grant
+        // doesn't leak to the recipient's balance.
         _stampTransferAuditAcl(transferAmount, from, to);
         emit Transfer(from, to, transferAmount);
     }
@@ -679,10 +698,21 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
 
         // Credit to queue (msg.sender). Kernel-only grant — the queue is a
         // contract, no ephemeralEOA semantics.
+        //
+        // Privacy invariant (mirrors the `_transfer` fix above): the
+        // first-receipt branch must produce a fresh handle, not alias
+        // `actualPulled`. `_stampTransferAuditAcl(actualPulled, from,
+        // msg.sender)` below grants `from` (the investor) ACL on the
+        // audit handle; if the queue's balance aliased it, the
+        // investor would get ACL on the queue's aggregate balance.
+        // Practically unreachable today (kernel can't sign permits;
+        // on-chain async decrypt only reads `_balances[msg.sender]`),
+        // but the invariant should hold structurally so future ACL-
+        // surface changes don't accidentally make it exploitable.
         if (Common.isInitialized(_balances[msg.sender])) {
             _balances[msg.sender] = FHE.add(_balances[msg.sender], actualPulled);
         } else {
-            _balances[msg.sender] = actualPulled;
+            _balances[msg.sender] = FHE.add(zero, actualPulled);
         }
         FHE.allowThis(_balances[msg.sender]);
         FHE.allow(_balances[msg.sender], msg.sender);
@@ -729,10 +759,17 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         FHE.allowThis(_balances[msg.sender]);
         FHE.allow(_balances[msg.sender], msg.sender);
 
+        // Privacy invariant (mirrors the `_transfer` + `pullFromInvestor`
+        // fixes): first-receipt path must produce a fresh handle, not
+        // alias `amount`. `_stampTransferAuditAcl(amount, msg.sender=
+        // queue, to=investor)` below grants the queue ACL on the audit
+        // handle; aliasing would extend that grant to the investor's
+        // balance. Queue is a trusted contract, but the invariant
+        // should hold structurally regardless.
         if (Common.isInitialized(_balances[to])) {
             _balances[to] = FHE.add(_balances[to], amount);
         } else {
-            _balances[to] = amount;
+            _balances[to] = FHE.add(zero, amount);
         }
         FHE.allowThis(_balances[to]);
         FHE.allow(_balances[to], to);
@@ -874,15 +911,23 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
     ///      `refreshAuditGrant`, plus kernel-only grants on `from` / `to`.
     ///      Address args are skipped when zero (mints / burns).
     ///
+    ///      Caller-side invariant (enforced at every call site since
+    ///      2026-05-09): the `amount` handle MUST NOT alias any
+    ///      live `_balances[*]` handle. CoFHE ACLs are keyed by handle
+    ///      ID — granting `from` ACL on `amount` extends that grant to
+    ///      every storage slot pointing at the same handle ID. The
+    ///      Solidity assignment `_balances[to] = amount` (first-receipt
+    ///      paths in `_transfer` / `pullFromInvestor` / `returnToInvestor`)
+    ///      previously aliased these handles, leaking the recipient's
+    ///      balance ACL to the sender. All such call sites now wrap the
+    ///      assignment with `FHE.add(zero, amount)` to mint a fresh
+    ///      handle; this function ASSUMES that invariant holds and does
+    ///      not re-check.
+    ///
     ///      Note: deliberately does NOT grant any ephemeralEOA on the
-    ///      amount handle. On the silent-fail / first-recipient path,
-    ///      `_balances[to]` aliases the same `transferAmount` handle (the
-    ///      Solidity assignment `_balances[to] = transferAmount` produces a
-    ///      shared handle), so granting `fromEph` here would expose the
-    ///      recipient's fresh balance to the sender's session — privacy
-    ///      leak. Both parties use `refreshAuditGrant(handle, eph)` on
-    ///      first audit-decrypt instead; same UX shape as Wrap/Unwrap
-    ///      cross-session decrypts on /activity.
+    ///      amount handle. Both parties use `refreshAuditGrant(handle,
+    ///      eph)` on first audit-decrypt instead; same UX shape as
+    ///      Wrap/Unwrap cross-session decrypts on /activity.
     function _stampTransferAuditAcl(
         euint128 amount,
         address from,

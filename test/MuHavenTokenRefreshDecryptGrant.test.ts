@@ -473,4 +473,180 @@ describe("MuHavenToken.refreshAuditGrant (Phase 9.A · Option Z follow-up)", () 
     const holderBal = await token.encryptedBalanceOf(holder.address);
     await hre.cofhe.mocks.expectPlaintext(holderBal, 50n);
   });
+
+  // ── Handle-aliasing privacy invariant (2026-05-09 hardening) ──────────
+  //
+  // Pre-2026-05-09, the first-receipt path did `_balances[to] =
+  // transferAmount`, aliasing the storage slot to the audit handle. When
+  // `_stampTransferAuditAcl(transferAmount, from, to)` then granted
+  // `from` (sender's kernel) ACL on the audit handle, that grant
+  // implicitly extended to `_balances[to]` (handles are keyed by ID).
+  // Sender could call `getDecryptResultSafe(_balances[recipient])`
+  // off-chain via the cofhe SDK and read the recipient's post-transfer
+  // balance — privacy leak.
+  //
+  // Fix: the first-receipt branch wraps the assignment with
+  // `FHE.add(zero, transferAmount)` so `_balances[to]` is a fresh
+  // handle ID, distinct from the audit handle. Same shape applied in
+  // `pullFromInvestor` and `returnToInvestor` for consistency.
+
+  it("first-receipt path: recipient's balance handle is DISTINCT from the Transfer audit handle (no aliasing)", async () => {
+    const { token, issuer, holder, recipient, issuerClient, holderClient } =
+      await loadFixture(deployRefreshFixture);
+
+    const [encMint] = await issuerClient
+      .encryptInputs([Encryptable.uint128(50n)])
+      .execute();
+    await token.connect(issuer).mint(holder.address, encMint);
+
+    const senderEph = createEphemeralEOA();
+    const [encXfer] = await holderClient
+      .encryptInputs([Encryptable.uint128(10n)])
+      .execute();
+    // Recipient has zero prior balance — this is the first-receipt path.
+    const tx = await token
+      .connect(holder)
+      .getFunction("transfer(address,(uint256,uint8,uint8,bytes),address)")(
+        recipient.address,
+        encXfer,
+        senderEph.address,
+      );
+    const receipt = await tx.wait();
+    const amountHandle = extractTransferAmount(token, receipt);
+    const recipientBal = await token.encryptedBalanceOf(recipient.address);
+
+    // Pre-fix: these would be the SAME handle ID (direct alias).
+    // Post-fix: `_balances[to] = FHE.add(zero, transferAmount)` mints a
+    // fresh handle, so the IDs differ.
+    expect(handleToUint(amountHandle)).to.not.equal(handleToUint(recipientBal));
+    // Both decrypt to the same plaintext value (10) — fresh handle,
+    // logically equivalent.
+    await hre.cofhe.mocks.expectPlaintext(recipientBal, 10n);
+    await hre.cofhe.mocks.expectPlaintext(amountHandle, 10n);
+  });
+
+  it("first-receipt path: sender's kernel does NOT have ACL on the recipient's balance handle (privacy invariant)", async () => {
+    const { token, issuer, holder, recipient, issuerClient, holderClient, acl } =
+      await loadFixture(deployRefreshFixture);
+
+    const [encMint] = await issuerClient
+      .encryptInputs([Encryptable.uint128(50n)])
+      .execute();
+    await token.connect(issuer).mint(holder.address, encMint);
+
+    const senderEph = createEphemeralEOA();
+    const [encXfer] = await holderClient
+      .encryptInputs([Encryptable.uint128(10n)])
+      .execute();
+    await token
+      .connect(holder)
+      .getFunction("transfer(address,(uint256,uint8,uint8,bytes),address)")(
+        recipient.address,
+        encXfer,
+        senderEph.address,
+      );
+    const recipientBal = await token.encryptedBalanceOf(recipient.address);
+
+    // Sender's kernel must NOT have ACL on the recipient's balance.
+    // (Pre-fix this was `true` because of the aliasing leak.)
+    expect(
+      await acl.isAllowed(handleToUint(recipientBal), holder.address),
+    ).to.equal(false);
+    // Sender's eph is also not on the recipient's balance.
+    expect(
+      await acl.isAllowed(handleToUint(recipientBal), senderEph.address),
+    ).to.equal(false);
+    // Recipient's kernel IS allowed (legitimate balance owner).
+    expect(
+      await acl.isAllowed(handleToUint(recipientBal), recipient.address),
+    ).to.equal(true);
+  });
+
+  it("first-receipt path: sender CAN still decrypt their own audit row (the fix doesn't break audit)", async () => {
+    const { token, issuer, holder, recipient, issuerClient, holderClient, acl } =
+      await loadFixture(deployRefreshFixture);
+
+    const [encMint] = await issuerClient
+      .encryptInputs([Encryptable.uint128(50n)])
+      .execute();
+    await token.connect(issuer).mint(holder.address, encMint);
+
+    const senderEph = createEphemeralEOA();
+    const [encXfer] = await holderClient
+      .encryptInputs([Encryptable.uint128(10n)])
+      .execute();
+    const tx = await token
+      .connect(holder)
+      .getFunction("transfer(address,(uint256,uint8,uint8,bytes),address)")(
+        recipient.address,
+        encXfer,
+        senderEph.address,
+      );
+    const receipt = await tx.wait();
+    const amountHandle = extractTransferAmount(token, receipt);
+
+    // The audit-handle ACL stamps still work post-fix:
+    //  - sender's kernel can re-grant their own session via refreshAuditGrant.
+    //  - recipient's kernel can re-grant their own session.
+    // (We don't double-test the refresh path here — covered above —
+    // we just verify the kernel grant survives, which is the entry
+    // condition for `refreshAuditGrant`'s `FHE.isAllowed(handle,
+    // msg.sender)` gate.)
+    expect(
+      await acl.isAllowed(handleToUint(amountHandle), holder.address),
+    ).to.equal(true);
+    expect(
+      await acl.isAllowed(handleToUint(amountHandle), recipient.address),
+    ).to.equal(true);
+  });
+
+  it("subsequent-receipt path also keeps the balance handle distinct (regression guard against the FHE.add organic-fresh assumption)", async () => {
+    // Recipient already has shares from a prior transfer; the second
+    // transfer hits the `Common.isInitialized(_balances[to])` branch
+    // (`_balances[to] = FHE.add(_balances[to], transferAmount)`). This
+    // path was never aliased — `FHE.add` always returns a fresh
+    // handle — but the privacy invariant (sender's kernel must NOT
+    // have ACL on the new recipient balance) is the same. Lock it in
+    // to prevent a future refactor from accidentally re-introducing
+    // an alias on this branch too.
+    const { token, issuer, holder, recipient, issuerClient, holderClient, acl } =
+      await loadFixture(deployRefreshFixture);
+
+    const [encMint] = await issuerClient
+      .encryptInputs([Encryptable.uint128(50n)])
+      .execute();
+    await token.connect(issuer).mint(holder.address, encMint);
+
+    const senderEph = createEphemeralEOA();
+    // First transfer — primes recipient balance.
+    const [encXfer1] = await holderClient
+      .encryptInputs([Encryptable.uint128(5n)])
+      .execute();
+    await token
+      .connect(holder)
+      .getFunction("transfer(address,(uint256,uint8,uint8,bytes),address)")(
+        recipient.address,
+        encXfer1,
+        senderEph.address,
+      );
+    // Second transfer — recipient balance is already initialised, so
+    // we exercise the `FHE.add(_balances[to], transferAmount)` branch.
+    const [encXfer2] = await holderClient
+      .encryptInputs([Encryptable.uint128(7n)])
+      .execute();
+    await token
+      .connect(holder)
+      .getFunction("transfer(address,(uint256,uint8,uint8,bytes),address)")(
+        recipient.address,
+        encXfer2,
+        senderEph.address,
+      );
+    const recipientBal = await token.encryptedBalanceOf(recipient.address);
+    await hre.cofhe.mocks.expectPlaintext(recipientBal, 12n);
+
+    // Sender remains locked out of the recipient's balance.
+    expect(
+      await acl.isAllowed(handleToUint(recipientBal), holder.address),
+    ).to.equal(false);
+  });
 });

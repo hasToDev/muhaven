@@ -260,8 +260,18 @@ export class TaxEventIndexer {
     try {
       const currentBlock = await this.client.getBlockNumber();
       if (this.lastProcessedBlock === null) {
-        this.lastProcessedBlock = currentBlock;
-        this.logger.info(`Initialised cursor at block ${currentBlock}`);
+        // Init cursor one block BEFORE current head so the next tick
+        // covers `currentBlock` inclusively. The previous shape
+        // (`lastProcessedBlock = currentBlock`) silently dropped any
+        // event in the block of indexer-boot — `fromBlock = cursor + 1`
+        // skipped past it — which made restart-during-user-tx a
+        // permanent-data-loss footgun. `currentBlock - 1n` is safe at
+        // genesis: BigInt allows -1n; the next tick's `fromBlock = 0n`
+        // is a valid getLogs range.
+        this.lastProcessedBlock = currentBlock - 1n;
+        this.logger.info(
+          `Initialised cursor at block ${currentBlock - 1n} (next tick starts at ${currentBlock})`,
+        );
         return;
       }
       if (currentBlock <= this.lastProcessedBlock) return;
