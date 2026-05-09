@@ -11,6 +11,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { getConfig } from './config.js';
 import { checkDbHealth, closeDb } from './db.js';
 import { runBackfill } from './backfill.js';
+import { probeTokenRegistration } from './engine.js';
 import { startScheduler, stopScheduler, getSchedulerStatus } from './scheduler.js';
 
 let ready = false;
@@ -35,6 +36,15 @@ async function startup(): Promise<void> {
     if (!retryOk) {
       console.error('[nav-worker] Postgres still unavailable — starting anyway, scheduler will retry');
     }
+  }
+
+  // Probe each TOKEN_SOURCES entry against rwa_tokens. Loud warnings
+  // when the hardcoded staging defaults drift out of sync with the
+  // latest deploy. Best-effort: errors don't abort startup.
+  try {
+    await probeTokenRegistration();
+  } catch (err) {
+    console.warn('[nav-worker] Token registration probe failed (non-fatal):', err);
   }
 
   // Backfill historical data for tokens with no history

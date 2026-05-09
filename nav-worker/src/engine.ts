@@ -51,15 +51,26 @@ interface TokenSourceConfig {
  * `deployments/arb-sepolia-v2.staging.json` so a fresh dev box works
  * without setup.
  *
+ * **Stale-defaults hazard**: these hardcoded staging addresses MUST be
+ * refreshed every time the v2 staging platform is redeployed (`pnpm run
+ * deploy:v2:testnet:stage` rotates them). When stale, the nav-worker
+ * silently writes NAV rows for token addresses that no longer exist in
+ * `rwa_tokens` — every quote for the new tokens then fails with "No NAV
+ * snapshot indexed". Wave 5 should replace this constant pair with a
+ * runtime read from the indexer's `rwa_tokens` table so addresses
+ * track the live deployment automatically.
+ *
  * Tokens with no env override AND a falsey default are filtered out at
  * cycle time so the worker doesn't run against zero-address tokens.
  *
  * Wave 3 history note: this used to list 8 demo placeholders at
  * 0x0000…0001 through 0x0000…0008 — meaningless writes against orphan
  * addresses. Removed in Phase 8 cutover.
+ *
+ * Last refreshed: 2026-05-09 (post the 2026-05-08 fresh staging redeploy).
  */
-const STAGING_TBILL1 = '0x3E570bDb3928488b0092FBE149d4B7E8d12cb178';
-const STAGING_GOLD1  = '0x4963e942A846e7F537358fe0CC18C7aA9B554375';
+const STAGING_TBILL1 = '0xe80a64C13759e9b823265e2691c7C481EaAaf6e2';
+const STAGING_GOLD1  = '0x80327c5D46c2c4C517B5f021f69cA7667f30b270';
 
 const TOKEN_SOURCES: TokenSourceConfig[] = [
   {
@@ -262,6 +273,62 @@ export interface FetchCycleResult {
   written: number;
   skipped: number;
   errors: number;
+}
+
+/**
+ * Cross-check every configured `TOKEN_SOURCES.tokenAddress` against the
+ * indexer's `rwa_tokens` registry. A miss means the cron is about to
+ * write NAV rows for an orphan address — visible only as silent
+ * "No NAV snapshot indexed for SYMBOL" failures from `muhaven_quote`,
+ * because `nav_history` lookups are token-address-keyed.
+ *
+ * Surfaced 2026-05-09 — the staging hardcoded defaults rotated out of
+ * sync with the 2026-05-08 fresh redeploy and every quote silently
+ * failed for ~24h. This probe makes the next stale-defaults regression
+ * loud.
+ *
+ * Probe is best-effort: a DB error doesn't abort startup (the worker
+ * still cycles through all sources; missing NAV rows just won't
+ * surface in `muhaven_quote` until the operator notices).
+ */
+export async function probeTokenRegistration(): Promise<void> {
+  if (TOKEN_SOURCES.length === 0) {
+    console.log('[probe] no TOKEN_SOURCES configured — skipping registration check');
+    return;
+  }
+  try {
+    const db = getDb();
+    for (const config of TOKEN_SOURCES) {
+      const lower = config.tokenAddress.toLowerCase();
+      const rows = await db.execute<{ symbol: string; status: string }>(sql`
+        SELECT symbol, status FROM rwa_tokens
+        WHERE LOWER(address) = ${lower}
+        LIMIT 1
+      `);
+      const row = rows.rows?.[0];
+      if (!row) {
+        console.warn(
+          `[probe] WARNING: ${config.symbol} configured at ${config.tokenAddress} has NO matching row in rwa_tokens. ` +
+            `Quote tool will fail with "No NAV snapshot indexed" for this symbol. ` +
+            `Likely cause: hardcoded staging default in engine.ts rotated out of sync with the latest deploy. ` +
+            `Fix: set NAV_${config.symbol}_ADDRESS in nav-worker/.env to the live address from deployments/arb-sepolia-v2*.json.`,
+        );
+      } else if (row.symbol !== config.symbol) {
+        console.warn(
+          `[probe] WARNING: ${config.tokenAddress} resolves to symbol="${row.symbol}" in rwa_tokens but NAV cron has it as ${config.symbol}. Symbol/address mismatch.`,
+        );
+      } else {
+        console.log(
+          `[probe] ${config.symbol}: ${config.tokenAddress} → rwa_tokens row OK (status=${row.status})`,
+        );
+      }
+    }
+  } catch (err) {
+    console.warn(
+      '[probe] registration probe failed (non-fatal):',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
 }
 
 /**
