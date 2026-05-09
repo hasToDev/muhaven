@@ -412,6 +412,12 @@ function getToolDispatcher(): ToolDispatcher {
       getPolicyState,
       confirmTokens,
       appendAudit,
+      // Fresh-wallet gate — refuses propose_buy when the holder has
+      // never had a Wrap / Unwrap / Transfer event for mhUSDC (memory
+      // `feedback_user_facing_says_mhusdc`). Backend can't read FHE
+      // balance directly; this catches the most common new-user
+      // failure mode without a decrypt round-trip.
+      repos.taxEventRepo,
     ),
     proposeClaim: new ProposeClaimToolUseCase(
       repos.yieldRecordRepo,

@@ -42,6 +42,28 @@ export const INVESTOR_ACTIVITY_EVENT_TYPES: TaxEventType[] = [
   'Transfer',
 ];
 
+/**
+ * Cash-rail tax-event types — what the agent's `propose_buy` gate
+ * uses to short-circuit fresh wallets that have never wrapped USDC.
+ * The backend can't read the FHE-encrypted mhUSDC balance directly
+ * (privacy invariant), but the absence of any cash-rail history is
+ * a hard "definitely zero balance" signal: no Wrap means no mhUSDC
+ * was minted to the wallet, and an incoming Transfer of mhUSDC
+ * (`Transfer` event with `metadata.token = MuHavenStable`) is
+ * functionally equivalent.
+ *
+ * Wave 5 follow-up: replace this best-effort check with an SDK-side
+ * decrypt-and-compare at ConfirmModal mount once the cofhe permit
+ * helper is wired. The current shape catches the most common new-
+ * user failure mode (drafting a buy on a fresh kernel) without
+ * needing an FHE round-trip.
+ */
+export const CASH_RAIL_EVENT_TYPES: TaxEventType[] = [
+  'Wrap',
+  'Unwrap',
+  'Transfer',
+];
+
 export interface TaxEventProps {
   txHash: string;
   logIndex: number;

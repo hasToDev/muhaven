@@ -7,6 +7,7 @@ import type {
   TaxEventCountsByType,
 } from '../../../domain/tax-event/repository/tax-event.repository.js';
 import {
+  CASH_RAIL_EVENT_TYPES,
   INVESTOR_ACTIVITY_EVENT_TYPES,
   TaxEvent,
 } from '../../../domain/tax-event/model/tax-event.js';
@@ -89,6 +90,20 @@ export class PgTaxEventRepository implements ITaxEventRepository {
         and(
           eq(sql`lower(${taxEvents.holderAddress})`, holderAddress.toLowerCase()),
           inArray(taxEvents.eventType, INVESTOR_ACTIVITY_EVENT_TYPES),
+        ),
+      )
+      .limit(1);
+    return row.length > 0;
+  }
+
+  async hasCashRailActivity(holderAddress: string): Promise<boolean> {
+    const row = await this.db
+      .select({ one: sql<number>`1` })
+      .from(taxEvents)
+      .where(
+        and(
+          eq(sql`lower(${taxEvents.holderAddress})`, holderAddress.toLowerCase()),
+          inArray(taxEvents.eventType, CASH_RAIL_EVENT_TYPES),
         ),
       )
       .limit(1);

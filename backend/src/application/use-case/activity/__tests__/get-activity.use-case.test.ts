@@ -7,6 +7,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { randomUUID } from 'crypto';
 import { GetActivityUseCase } from '../get-activity.use-case.js';
 import {
+  CASH_RAIL_EVENT_TYPES,
   INVESTOR_ACTIVITY_EVENT_TYPES,
   TaxEvent,
 } from '../../../../domain/tax-event/model/tax-event.js';
@@ -33,6 +34,11 @@ class FakeTaxEventRepo implements ITaxEventRepository {
   async hasInvestorActivity(holderAddress: string): Promise<boolean> {
     const all = this.store.get(holderAddress.toLowerCase()) ?? [];
     return all.some((r) => INVESTOR_ACTIVITY_EVENT_TYPES.includes(r.eventType));
+  }
+
+  async hasCashRailActivity(holderAddress: string): Promise<boolean> {
+    const all = this.store.get(holderAddress.toLowerCase()) ?? [];
+    return all.some((r) => CASH_RAIL_EVENT_TYPES.includes(r.eventType));
   }
 
   async aggregateCounts() {

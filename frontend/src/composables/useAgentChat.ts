@@ -3,6 +3,7 @@ import {
   agentToolsApi,
   type ActionDescriptor,
   type AgentStreamEvent,
+  type AgentSuggestionItem,
   type AgentChatStreamRequest,
 } from '@/services/api'
 
@@ -28,12 +29,19 @@ export interface UseAgentChat {
   pendingActions: Ref<ActionDescriptor[]>
   consumePendingAction: (toolCallId: string) => ActionDescriptor | null
   /** Returns the final accumulated text + any ActionDescriptors emitted +
-   * a count of tool_result events seen on this turn. Callers use the
+   * a count of tool_result events seen on this turn + the suggestions
+   * the backend emitted at the end of the turn. Callers use the
    * `toolsCalled` count to suppress the "I'm not sure how to help"
-   * fallback when a read tool ran but produced no synthesised text. */
+   * fallback when a read tool ran but produced no synthesised text;
+   * `suggestions` drives the ActionCard chips below the agent reply. */
   send: (
     req: AgentChatStreamRequest,
-  ) => Promise<{ text: string; actions: ActionDescriptor[]; toolsCalled: number }>
+  ) => Promise<{
+    text: string
+    actions: ActionDescriptor[]
+    toolsCalled: number
+    suggestions: AgentSuggestionItem[]
+  }>
   abort: () => void
 }
 
@@ -77,7 +85,12 @@ export function useAgentChat(): UseAgentChat {
 
   async function send(
     req: AgentChatStreamRequest,
-  ): Promise<{ text: string; actions: ActionDescriptor[]; toolsCalled: number }> {
+  ): Promise<{
+    text: string
+    actions: ActionDescriptor[]
+    toolsCalled: number
+    suggestions: AgentSuggestionItem[]
+  }> {
     abort()
     activeController = new AbortController()
     streamingText.value = ''
@@ -86,19 +99,21 @@ export function useAgentChat(): UseAgentChat {
 
     const turnActions: ActionDescriptor[] = []
     const turnCounter = { tools: 0 }
+    const turnSuggestions: { items: AgentSuggestionItem[] } = { items: [] }
 
     let release: (() => void) | null = null
     try {
       const opened = await agentToolsApi.openChatStream(req, activeController)
       release = opened.release
       for await (const event of opened.events) {
-        handleEvent(event, turnActions, turnCounter)
+        handleEvent(event, turnActions, turnCounter, turnSuggestions)
         if (event.type === 'done') break
       }
       return {
         text: streamingText.value,
         actions: turnActions,
         toolsCalled: turnCounter.tools,
+        suggestions: turnSuggestions.items,
       }
     } catch (err) {
       const msg =
@@ -128,6 +143,7 @@ export function useAgentChat(): UseAgentChat {
     event: AgentStreamEvent,
     turnActions: ActionDescriptor[],
     turnCounter: { tools: number },
+    turnSuggestions: { items: AgentSuggestionItem[] },
   ): void {
     switch (event.type) {
       case 'meta':
@@ -152,6 +168,9 @@ export function useAgentChat(): UseAgentChat {
         // Successful read-tool results (portfolio_summary, quote, etc.)
         // are surfaced to the user via the backend's post-dispatch
         // synthesis text; no UI surface needed for the raw result.
+        break
+      case 'suggestions':
+        turnSuggestions.items = event.items
         break
       case 'error':
         lastError.value = event.message

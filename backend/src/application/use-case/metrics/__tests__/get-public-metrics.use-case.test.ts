@@ -59,6 +59,9 @@ class StubTaxEventRepo implements ITaxEventRepository {
   async hasInvestorActivity() {
     return false;
   }
+  async hasCashRailActivity() {
+    return false;
+  }
   async aggregateCounts() {
     this.callCounts.aggregateCounts++;
     return this.counts;

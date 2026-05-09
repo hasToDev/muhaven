@@ -74,6 +74,23 @@ export interface ITaxEventRepository {
   hasInvestorActivity(holderAddress: string): Promise<boolean>;
 
   /**
+   * Wave 4 P2 follow-up — the agent's `propose_buy` fresh-wallet gate.
+   * Returns true when the holder has any cash-rail event row (Wrap /
+   * Unwrap / Transfer per `CASH_RAIL_EVENT_TYPES`). Mirrors
+   * `hasInvestorActivity` posture: case-insensitive WHERE, IN-list on
+   * event_type, LIMIT 1.
+   *
+   * The agent uses `false` as a hard "definitely no mhUSDC balance"
+   * signal so it can refuse propose_buy with INSUFFICIENT_MHUSDC and
+   * the LLM can synthesise a "wrap first" reply. A `true` result is
+   * NOT a positive balance check — the user could have wrapped 100
+   * and spent 100. Backend can't read the encrypted balance directly
+   * (privacy invariant); the SDK-side decrypt-and-compare lands in
+   * Wave 5 alongside the cofhe permit helper.
+   */
+  hasCashRailActivity(holderAddress: string): Promise<boolean>;
+
+  /**
    * Wave 4 P9 · public-metrics aggregations. All four read-only
    * methods return aggregate counts only — never per-investor or
    * cleartext amounts. Lower-case `token_address` at the SQL

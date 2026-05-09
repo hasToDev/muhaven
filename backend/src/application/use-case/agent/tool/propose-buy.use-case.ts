@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import type { IRwaTokenRepository } from '../../../../domain/token-registry/repository/rwa-token.repository.js';
 import type { INavHistoryRepository } from '../../../../domain/nav-history/repository/nav-history.repository.js';
+import type { ITaxEventRepository } from '../../../../domain/tax-event/repository/tax-event.repository.js';
 import { ApplicationHttpError } from '../../../../core/errors.js';
 import { Surface } from '../../../../domain/agent/model/surface.enum.js';
 import { Tier } from '../../../../domain/agent/model/tier.enum.js';
@@ -41,6 +42,11 @@ export class ProposeBuyToolUseCase {
     private readonly getPolicyState: GetPolicyStateUseCase,
     private readonly confirmTokens: ConfirmTokenService,
     private readonly appendAudit: AppendAuditEventUseCase,
+    /** Optional — when wired, blocks fresh-wallet proposes that have
+     *  no cash-rail history (definitely 0 mhUSDC balance). When null
+     *  (legacy unit-test wiring), the gate is skipped and the
+     *  pre-existing behaviour is preserved. */
+    private readonly taxEventRepo: ITaxEventRepository | null = null,
   ) {}
 
   async execute(
@@ -66,6 +72,23 @@ export class ProposeBuyToolUseCase {
       throw ApplicationHttpError.conflict(
         `Token ${token.symbol} is not active (status=${token.status}).`,
       );
+    }
+
+    // Fresh-wallet gate: backend can't read the FHE-encrypted mhUSDC
+    // balance (privacy invariant), but absence of any cash-rail tax_event
+    // (Wrap / Unwrap / Transfer) is a hard "definitely zero balance"
+    // signal. Refuse the propose so the LLM can synthesise a "wrap
+    // first" reply rather than minting a confirm token the SDK would
+    // silent-fail. Skips when the repo wasn't injected (legacy unit
+    // tests) — production container always wires it.
+    if (this.taxEventRepo) {
+      const hasCashRail = await this.taxEventRepo.hasCashRailActivity(ctx.walletAddress);
+      if (!hasCashRail) {
+        throw new ApplicationHttpError(
+          409,
+          `INSUFFICIENT_MHUSDC: this wallet has no mhUSDC history yet. Wrap USDC into mhUSDC on the Cash page before buying ${token.symbol}.`,
+        );
+      }
     }
 
     const shares = BigInt(input.shares);

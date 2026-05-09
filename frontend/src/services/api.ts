@@ -827,8 +827,19 @@ export type AgentStreamEvent =
       result?: unknown
       error?: string
     }
+  | { type: 'suggestions'; items: AgentSuggestionItem[] }
   | { type: 'done'; finishReason: 'stop' | 'tool_loop_exhausted' | 'error' }
   | { type: 'error'; message: string }
+
+/** Backend-driven ActionCard chip — `label` drives the visible text
+ *  + the `handleAction` re-prompt; `variant` styles the chip. The
+ *  backend produces these from the most recent tool dispatch outcome
+ *  (see `infrastructure/agent/suggestion-builder.ts`) so the chips
+ *  reflect what actually happened on the turn. */
+export interface AgentSuggestionItem {
+  label: string
+  variant?: 'primary' | 'secondary' | 'ghost'
+}
 
 export interface AgentChatStreamRequest {
   message: string

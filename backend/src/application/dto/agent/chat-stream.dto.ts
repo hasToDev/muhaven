@@ -8,12 +8,14 @@ import { z } from 'zod';
  *   { type: 'text', delta: string }
  *   { type: 'tool_call', toolCallId, toolName, args: object }
  *   { type: 'tool_result', toolCallId, ok, action?: ActionDescriptor, error?: string }
+ *   { type: 'suggestions', items: Array<{ label: string; variant?: 'primary'|'secondary'|'ghost' }> }
  *   { type: 'done', finishReason: 'stop' | 'tool_loop_exhausted' | 'error' }
  *   { type: 'error', message: string }
  *
  * The frontend `useAgentChat` composable parses each event and routes:
  *   - `text` → push delta into the current agent bubble
  *   - `tool_result.action` → mount `<ConfirmModal :action="…" />`
+ *   - `suggestions` → drive the ActionCard chips below the agent reply
  *   - `done` → close the SSE stream
  *   - `error` → surface error toast + close
  */
@@ -34,6 +36,13 @@ export const AgentChatStreamDtoSchema = z
 
 export type AgentChatStreamDto = z.infer<typeof AgentChatStreamDtoSchema>;
 
+/** Frontend ActionCard chip shape — `label` drives the visible text +
+ *  the `handleAction` re-prompt; `variant` styles the chip. */
+export interface SuggestionItem {
+  label: string;
+  variant?: 'primary' | 'secondary' | 'ghost';
+}
+
 export type StreamEvent =
   | { type: 'meta'; model: string; sessionId: string }
   | { type: 'text'; delta: string }
@@ -46,5 +55,6 @@ export type StreamEvent =
       result?: unknown;
       error?: string;
     }
+  | { type: 'suggestions'; items: SuggestionItem[] }
   | { type: 'done'; finishReason: 'stop' | 'tool_loop_exhausted' | 'error' }
   | { type: 'error'; message: string };

@@ -99,7 +99,7 @@ export const useAgentStore = defineStore('agent', () => {
     if (useStreaming.value) {
       inflightAgentMessageId = agentMessage.id
       try {
-        const { text: finalText, actions, toolsCalled } = await chat.send({
+        const { text: finalText, actions, toolsCalled, suggestions } = await chat.send({
           message: text,
           history,
         })
@@ -116,8 +116,20 @@ export const useAgentStore = defineStore('agent', () => {
             "I'm not sure how to help with that yet. Try asking about your portfolio, yields, or a buy."
         }
         if (actions.length === 0) {
+          // Use backend-emitted context-aware suggestions when present
+          // (e.g. fresh wallet → "Wrap mhUSDC", successful quote →
+          // "Buy N TBILL1"). Fall back to static chips only when the
+          // backend didn't send any (legacy / non-Gemini path).
           agentMessage.cardType = 'action'
-          agentMessage.cardData = FALLBACK_RECOMMENDED_ACTIONS
+          agentMessage.cardData =
+            suggestions.length > 0
+              ? {
+                  title: 'Recommended Actions',
+                  description:
+                    'Pick one to keep exploring — the agent will respond based on your choice.',
+                  actions: suggestions,
+                }
+              : FALLBACK_RECOMMENDED_ACTIONS
         }
         return
       } catch (err) {

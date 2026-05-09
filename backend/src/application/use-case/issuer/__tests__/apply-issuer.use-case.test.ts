@@ -26,6 +26,7 @@ import type { IPortfolioRepository } from '../../../../domain/portfolio/reposito
 import type { ITaxEventRepository } from '../../../../domain/tax-event/repository/tax-event.repository.js';
 import { Portfolio } from '../../../../domain/portfolio/model/portfolio.js';
 import {
+  CASH_RAIL_EVENT_TYPES,
   INVESTOR_ACTIVITY_EVENT_TYPES,
   TaxEvent,
 } from '../../../../domain/tax-event/model/tax-event.js';
@@ -62,6 +63,14 @@ class StubTaxEventRepo implements ITaxEventRepository {
       (r) =>
         r.holderAddress.toLowerCase() === lower
         && INVESTOR_ACTIVITY_EVENT_TYPES.includes(r.eventType),
+    );
+  }
+  async hasCashRailActivity(addr: string): Promise<boolean> {
+    const lower = addr.toLowerCase();
+    return this.rows.some(
+      (r) =>
+        r.holderAddress.toLowerCase() === lower
+        && CASH_RAIL_EVENT_TYPES.includes(r.eventType),
     );
   }
   async aggregateCounts() {

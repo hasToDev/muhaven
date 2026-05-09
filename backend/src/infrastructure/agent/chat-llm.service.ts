@@ -10,6 +10,11 @@ import {
   type PromptArmorResult,
   type Violation,
 } from './safety/index.js';
+import {
+  buildSuggestions,
+  FALLBACK_SUGGESTIONS,
+  type SuggestionContext,
+} from './suggestion-builder.js';
 
 const logger = getLogger('chat-llm');
 
@@ -408,10 +413,22 @@ export class ChatLlmService implements IChatLlmService {
       sink({ type: 'text', delta: chunk });
     }
 
-    if (!toolCall) return;
+    if (!toolCall) {
+      // No tool fired. Emit fallback suggestions so the chat surface
+      // still has actionable chips below the reply.
+      sink({ type: 'suggestions', items: FALLBACK_SUGGESTIONS });
+      return;
+    }
 
     const toolCallId = `tc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     sink({ type: 'tool_call', toolCallId, toolName: toolCall.toolName, args: toolCall.args });
+    const suggestionCtx: SuggestionContext = {
+      lastTool: toolCall.toolName,
+      tokenSymbol:
+        typeof toolCall.args.tokenAddress === 'string'
+          ? null /* stub doesn't have a registry → omit */
+          : null,
+    };
     try {
       const result = await req.dispatchTool(toolCall.toolName, toolCall.args);
       const sanitisedResult = sanitiseToolResult(result);
@@ -422,6 +439,7 @@ export class ChatLlmService implements IChatLlmService {
         ok: true,
         result: sanitisedResult,
       });
+      suggestionCtx.lastResult = sanitisedResult;
       // Post-dispatch synthesis — without it the stub leaves the user
       // staring at the pre-tool sentence while the actual data (or the
       // empty-portfolio case) goes unannounced. Mirrors what the LLM
@@ -433,20 +451,22 @@ export class ChatLlmService implements IChatLlmService {
         }
       }
     } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
       sink({
         type: 'tool_result',
         toolCallId,
         toolName: toolCall.toolName,
         ok: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: errorMsg,
       });
-      const errorMsg = err instanceof Error ? err.message : String(err);
+      suggestionCtx.lastError = errorMsg;
       for (const chunk of chunkText(
         `\n\nThe ${toolCall.toolName} tool failed: ${errorMsg}.`,
       )) {
         sink({ type: 'text', delta: chunk });
       }
     }
+    sink({ type: 'suggestions', items: buildSuggestions(suggestionCtx) });
   }
 
   private async runGeminiLoop(
@@ -496,6 +516,12 @@ export class ChatLlmService implements IChatLlmService {
     // answer ("you hold no positions yet"). Without this loop the user
     // sees the tool fire but no result-aware reply.
     const model = getEnv().GEMINI_MODEL;
+    // Track the last tool dispatch outcome across turns so the
+    // suggestions emitted at the end reflect what actually happened
+    // (per `suggestion-builder.ts`). The frontend ActionCard reads
+    // these chips; they default to FALLBACK_SUGGESTIONS when no tool
+    // fires across the entire turn.
+    const suggestionCtx: SuggestionContext = {};
     for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
       const stream = await c.models.generateContentStream({
         model,
@@ -544,6 +570,15 @@ export class ChatLlmService implements IChatLlmService {
               // seeing or speaking the single-use confirm token.
               const llmVisible = stripPrivilegedActionFields(sanitisedResult);
               turnFunctionResponses.push({ name: fc.name, response: llmVisible });
+              // Latest-tool-wins for suggestion mapping — covers the
+              // common shape of one tool per turn. Multi-tool turns
+              // overwrite; that's fine because the user-facing chips
+              // should reflect the last thing they saw.
+              suggestionCtx.lastTool = fc.name;
+              suggestionCtx.lastResult = sanitisedResult;
+              suggestionCtx.lastError = undefined;
+              suggestionCtx.tokenSymbol =
+                typeof fc.args.tokenSymbol === 'string' ? fc.args.tokenSymbol : null;
             } catch (err) {
               const errorMsg = err instanceof Error ? err.message : String(err);
               sink({
@@ -560,6 +595,9 @@ export class ChatLlmService implements IChatLlmService {
                 name: fc.name,
                 response: { error: errorMsg },
               });
+              suggestionCtx.lastTool = fc.name;
+              suggestionCtx.lastError = errorMsg;
+              suggestionCtx.lastResult = undefined;
             }
           }
         }
@@ -567,6 +605,12 @@ export class ChatLlmService implements IChatLlmService {
 
       if (turnFunctionResponses.length === 0) {
         // No tools fired (or model produced text-only) — turn is done.
+        // Emit suggestions based on the most recent tool outcome (which
+        // may be from an earlier turn) or fallback if no tool ever fired.
+        sink({
+          type: 'suggestions',
+          items: suggestionCtx.lastTool ? buildSuggestions(suggestionCtx) : FALLBACK_SUGGESTIONS,
+        });
         return;
       }
 
@@ -590,6 +634,10 @@ export class ChatLlmService implements IChatLlmService {
       type: 'text',
       delta:
         '\n\nI\'ve reached my action budget for this turn. Ask me anything else and I\'ll pick up from here.',
+    });
+    sink({
+      type: 'suggestions',
+      items: suggestionCtx.lastTool ? buildSuggestions(suggestionCtx) : FALLBACK_SUGGESTIONS,
     });
   }
 }

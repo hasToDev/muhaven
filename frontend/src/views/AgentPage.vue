@@ -96,6 +96,23 @@ const latestAgentMessageId = computed(() => {
   return null
 })
 
+// Hide the empty agent placeholder bubble while we're still waiting on
+// the SSE stream. The store pushes a `text: ''` agent message at
+// send-time so the streamingText watcher has a target to mirror into,
+// but rendering it before any token / tool_call lands produces a
+// double bubble next to the typing indicator below. Surfaced
+// 2026-05-09 — operator wanted "1 line of dots, not an empty bubble +
+// dots". Once a delta or tool_call lands, msg.text / actions /
+// cardData populates and the bubble shows normally.
+const visibleMessages = computed(() =>
+  agentStore.messages.filter((m) => {
+    if (m.role === 'user') return true
+    return Boolean(m.text)
+      || Boolean(m.cardData)
+      || (Array.isArray(m.actions) && m.actions.length > 0)
+  }),
+)
+
 function sendMessage(text?: string) {
   const msg = text || input.value.trim()
   if (!msg) return
@@ -196,7 +213,7 @@ onMounted(() => {
 
         <!-- Messages -->
         <div
-          v-for="msg in agentStore.messages"
+          v-for="msg in visibleMessages"
           :key="msg.id"
           v-motion
           :initial="{ opacity: 0, y: 12 }"

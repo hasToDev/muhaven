@@ -152,7 +152,7 @@ describe('ChatLlmService.runStubLoop', () => {
     mockState.geminiKey = undefined;
   });
 
-  it('streams a deterministic synthesis after a successful portfolio dispatch', async () => {
+  it('streams a deterministic synthesis + context-aware suggestions after a successful portfolio dispatch', async () => {
     const service = new ChatLlmService();
     const { events, sink } = collectingSink();
     await service.streamChat(
@@ -177,6 +177,12 @@ describe('ChatLlmService.runStubLoop', () => {
     const types = events.map((e) => e.type);
     expect(types).toContain('tool_call');
     expect(types).toContain('tool_result');
+    expect(types).toContain('suggestions');
+    // Empty portfolio → wrap path.
+    const sugg = events.find(
+      (e): e is Extract<StreamEvent, { type: 'suggestions' }> => e.type === 'suggestions',
+    );
+    expect(sugg?.items.some((i) => /wrap/i.test(i.label))).toBe(true);
     expect(types[types.length - 1]).toBe('done');
 
     const text = streamText(events);

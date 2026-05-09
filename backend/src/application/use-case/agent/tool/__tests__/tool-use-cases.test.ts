@@ -29,6 +29,7 @@ import { parseDecimalToUsd6 } from '../quote.use-case.js';
 import type { IRwaTokenRepository } from '../../../../../domain/token-registry/repository/rwa-token.repository.js';
 import type { INavHistoryRepository } from '../../../../../domain/nav-history/repository/nav-history.repository.js';
 import type { IPortfolioRepository } from '../../../../../domain/portfolio/repository/portfolio.repository.js';
+import type { ITaxEventRepository } from '../../../../../domain/tax-event/repository/tax-event.repository.js';
 import { RwaToken, type AssetClass } from '../../../../../domain/token-registry/model/rwa-token.js';
 import { NavSnapshot } from '../../../../../domain/nav-history/model/nav-snapshot.js';
 import { YieldRecord } from '../../../../../domain/yield-history/model/yield-record.js';
@@ -408,6 +409,52 @@ describe('Wave 4 P2 — tool use cases', () => {
           NOW,
         ),
       ).rejects.toBeInstanceOf(ApplicationHttpError);
+    });
+
+    it('rejects fresh wallets with INSUFFICIENT_MHUSDC when no cash-rail history', async () => {
+      // Stub repo: holder has zero events.
+      const taxEventRepo: Pick<ITaxEventRepository, 'hasCashRailActivity'> = {
+        hasCashRailActivity: async () => false,
+      };
+      const uc = new ProposeBuyToolUseCase(
+        rwaTokenRepo,
+        navRepo,
+        getPolicy,
+        confirmTokens,
+        appendAudit,
+        taxEventRepo as ITaxEventRepository,
+      );
+      await expect(
+        uc.execute(
+          { userId: USER_ID, walletAddress: WALLET, surface: Surface.HavenBot },
+          { tokenAddress: TOKEN, shares: '100' },
+          NOW,
+        ),
+      ).rejects.toMatchObject({
+        statusCode: 409,
+        message: expect.stringContaining('INSUFFICIENT_MHUSDC'),
+      });
+    });
+
+    it('allows propose when cash-rail history exists (gate is best-effort)', async () => {
+      // Stub repo: holder has wrap activity.
+      const taxEventRepo: Pick<ITaxEventRepository, 'hasCashRailActivity'> = {
+        hasCashRailActivity: async () => true,
+      };
+      const uc = new ProposeBuyToolUseCase(
+        rwaTokenRepo,
+        navRepo,
+        getPolicy,
+        confirmTokens,
+        appendAudit,
+        taxEventRepo as ITaxEventRepository,
+      );
+      const desc = await uc.execute(
+        { userId: USER_ID, walletAddress: WALLET, surface: Surface.HavenBot },
+        { tokenAddress: TOKEN, shares: '100' },
+        NOW,
+      );
+      expect(desc.kind).toBe('buy');
     });
   });
 
