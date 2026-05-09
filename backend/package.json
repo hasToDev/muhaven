@@ -26,13 +26,14 @@
     "seed:demo-issuers": "tsx scripts/seed-demo-issuers.ts"
   },
   "dependencies": {
+    "@google/genai": "^2.0.1",
     "@openzeppelin/contracts": "^5",
     "drizzle-orm": "^0.40",
-    "pg": "^8",
-    "tsx": "^4",
     "jose": "^6",
+    "pg": "^8",
     "pino": "^9",
     "siwe": "^2",
+    "tsx": "^4",
     "viem": "^2",
     "zod": "^3.24",
     "zod-openapi": "^4"

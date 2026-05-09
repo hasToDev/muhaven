@@ -133,14 +133,11 @@ async function tryLoadGemini(): Promise<unknown | null> {
   const key = getEnv().GEMINI_API_KEY;
   if (!key) return null;
   try {
-    // Dynamic import — `@google/genai` is an optional dependency and may
-    // not be installed in dev/CI. The cast suppresses the type-level
-    // module resolution; the runtime branch handles the missing-package
-    // case via the catch block below.
-    const mod = (await import(
-      // @ts-ignore — optional peer dep; the import is guarded by env check above.
-      '@google/genai' as string
-    )) as {
+    // Dynamic import keeps the cold-start path lean — no SDK overhead
+    // when GEMINI_API_KEY is unset (the common case in dev / CI). The
+    // package is a hard dep since 2026-05-09; pre-2026-05-09 cold-start
+    // dev environments without the install fall through the catch.
+    const mod = (await import('@google/genai')) as {
       GoogleGenAI?: new (cfg: { apiKey: string }) => unknown;
     };
     if (!mod.GoogleGenAI) {
@@ -152,7 +149,7 @@ async function tryLoadGemini(): Promise<unknown | null> {
   } catch (err) {
     logger.warn(
       { err: err instanceof Error ? err.message : String(err) },
-      '@google/genai not installed — using stub fallback. Run `pnpm add @google/genai` in backend/ to enable real LLM.',
+      '@google/genai dynamic import failed — using stub fallback. Run `pnpm install` in backend/ if the package is missing.',
     );
     return null;
   }
