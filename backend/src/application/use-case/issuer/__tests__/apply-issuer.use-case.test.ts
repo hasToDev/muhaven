@@ -5,7 +5,14 @@
  *   - happy path: investor → issuer flip + JWT reissue
  *   - 409 ALREADY_APPROVED on double-click
  *   - 403 HAS_INVESTOR_ACTIVITY when wallet has any portfolio row
- *   - 403 HAS_INVESTOR_ACTIVITY when wallet has any tax_event row
+ *   - 403 HAS_INVESTOR_ACTIVITY when wallet has any RWA-related
+ *     tax_event row (Acquisition / Disposition / IncomeAccrual /
+ *     FeeEvent / Transfer)
+ *   - cash-rail tax_events (Wrap / Unwrap on MuHavenStable) do NOT
+ *     trigger HAS_INVESTOR_ACTIVITY — wrapping USDC is a payment-rail
+ *     step, not investor history. Regression for the issuer-onboarding
+ *     bug surfaced 2026-05-09 (fresh wallet wraps USDC then is locked
+ *     out of /apply-issuer).
  *   - 403 ISSUER_SUSPENDED guard
  */
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -18,7 +25,10 @@ import { User } from '../../../../domain/auth/model/user.js';
 import type { IPortfolioRepository } from '../../../../domain/portfolio/repository/portfolio.repository.js';
 import type { ITaxEventRepository } from '../../../../domain/tax-event/repository/tax-event.repository.js';
 import { Portfolio } from '../../../../domain/portfolio/model/portfolio.js';
-import { TaxEvent } from '../../../../domain/tax-event/model/tax-event.js';
+import {
+  INVESTOR_ACTIVITY_EVENT_TYPES,
+  TaxEvent,
+} from '../../../../domain/tax-event/model/tax-event.js';
 
 class StubPortfolioRepo implements IPortfolioRepository {
   rows: Portfolio[] = [];
@@ -45,6 +55,14 @@ class StubTaxEventRepo implements ITaxEventRepository {
     return this.rows
       .filter((r) => r.holderAddress.toLowerCase() === lower)
       .slice(0, limit);
+  }
+  async hasInvestorActivity(addr: string): Promise<boolean> {
+    const lower = addr.toLowerCase();
+    return this.rows.some(
+      (r) =>
+        r.holderAddress.toLowerCase() === lower
+        && INVESTOR_ACTIVITY_EVENT_TYPES.includes(r.eventType),
+    );
   }
   async aggregateCounts() {
     return {
@@ -175,6 +193,62 @@ describe('ApplyIssuerUseCase', () => {
       details: { code: 'HAS_INVESTOR_ACTIVITY', source: 'tax_events' },
     });
   });
+
+  it.each([
+    ['Disposition', 'Disposition'],
+    ['IncomeAccrual', 'IncomeAccrual'],
+    ['FeeEvent', 'FeeEvent'],
+    ['Transfer', 'Transfer'],
+  ] as const)(
+    'rejects with 403 HAS_INVESTOR_ACTIVITY when wallet has %s tax_event',
+    async (_label, eventType) => {
+      await taxEventRepo.saveMany([
+        new TaxEvent({
+          txHash: `0x${eventType}`,
+          logIndex: 0,
+          eventType,
+          holderAddress: WALLET,
+          tokenAddress: '0xToken',
+          blockNumber: '100',
+          blockTimestamp: new Date(),
+          navAtTime: null,
+          referenceId: null,
+          metadata: null,
+        }),
+      ]);
+      await expect(useCase.execute('user-1', PAYLOAD)).rejects.toMatchObject({
+        statusCode: 403,
+        details: { code: 'HAS_INVESTOR_ACTIVITY', source: 'tax_events' },
+      });
+    },
+  );
+
+  // Regression: cash-rail conversion (USDC↔mhUSDC) must NOT lock a
+  // fresh applicant out of issuer onboarding. The pre-fix gate caught
+  // any tax_event row, including Wrap, so wallets that funded mhUSDC
+  // before applying received a misleading "investor activity" 403.
+  it.each(['Wrap', 'Unwrap'] as const)(
+    'allows issuer onboarding when only cash-rail %s tax_event exists',
+    async (eventType) => {
+      await taxEventRepo.saveMany([
+        new TaxEvent({
+          txHash: `0x${eventType}`,
+          logIndex: 0,
+          eventType,
+          holderAddress: WALLET,
+          tokenAddress: null,
+          blockNumber: '100',
+          blockTimestamp: new Date(),
+          navAtTime: null,
+          referenceId: null,
+          metadata: { kind: eventType.toLowerCase() },
+        }),
+      ]);
+      const result = await useCase.execute('user-1', PAYLOAD);
+      expect(result.user.role).toBe('issuer');
+      expect(result.user.issuer_status).toBe('approved');
+    },
+  );
 
   it('rejects with 403 ISSUER_SUSPENDED for suspended users', async () => {
     await userRepo.save(

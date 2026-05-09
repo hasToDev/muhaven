@@ -1,4 +1,4 @@
-import { desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import type {
   AcquisitionsByToken,
   DailyCount,
@@ -6,7 +6,10 @@ import type {
   ITaxEventRepository,
   TaxEventCountsByType,
 } from '../../../domain/tax-event/repository/tax-event.repository.js';
-import { TaxEvent } from '../../../domain/tax-event/model/tax-event.js';
+import {
+  INVESTOR_ACTIVITY_EVENT_TYPES,
+  TaxEvent,
+} from '../../../domain/tax-event/model/tax-event.js';
 import type { TaxEventType } from '../../../domain/tax-event/model/tax-event.js';
 import { taxEvents } from './schema.js';
 import type { Db } from './db.js';
@@ -76,6 +79,20 @@ export class PgTaxEventRepository implements ITaxEventRepository {
       })
       .returning({ txHash: taxEvents.txHash });
     return inserted.length;
+  }
+
+  async hasInvestorActivity(holderAddress: string): Promise<boolean> {
+    const row = await this.db
+      .select({ one: sql<number>`1` })
+      .from(taxEvents)
+      .where(
+        and(
+          eq(sql`lower(${taxEvents.holderAddress})`, holderAddress.toLowerCase()),
+          inArray(taxEvents.eventType, INVESTOR_ACTIVITY_EVENT_TYPES),
+        ),
+      )
+      .limit(1);
+    return row.length > 0;
   }
 
   async findByHolder(holderAddress: string, limit: number): Promise<TaxEvent[]> {

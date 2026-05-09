@@ -18,6 +18,30 @@ export type TaxEventType =
   // event (sender + recipient), distinguished by `metadata.direction`.
   | 'Transfer';
 
+/**
+ * RWA-related tax-event types — what the `apply-issuer` HAS_INVESTOR_ACTIVITY
+ * gate considers "investor history". Cash-rail conversions
+ * (`Wrap`/`Unwrap` on MuHavenStable) are deliberately excluded:
+ * wrapping USDC into mhUSDC is a payment-rail step, not investor
+ * history, and a fresh applicant funding their first RWA buy must not
+ * be locked out of issuer onboarding by it.
+ *
+ * Single source of truth — both the SQL `inArray(...)` filter in
+ * `pg-tax-event.repository.ts` and the in-memory test stubs import
+ * this constant so adding a new `TaxEventType` enum value forces a
+ * deliberate include-or-exclude decision rather than silent drift.
+ */
+// Mutable array (not `readonly`) so Drizzle's `inArray(...)` overload
+// resolves cleanly. Treat it as immutable at the call sites — never
+// `.push()` here.
+export const INVESTOR_ACTIVITY_EVENT_TYPES: TaxEventType[] = [
+  'Acquisition',
+  'Disposition',
+  'IncomeAccrual',
+  'FeeEvent',
+  'Transfer',
+];
+
 export interface TaxEventProps {
   txHash: string;
   logIndex: number;

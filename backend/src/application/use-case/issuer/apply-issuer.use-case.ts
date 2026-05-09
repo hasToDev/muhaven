@@ -22,11 +22,16 @@ import type { SessionMetadata } from '../auth/verify-wallet.use-case.js';
  *
  * Guardrails:
  *   - Already approved (idempotency double-click): 409 ALREADY_APPROVED.
- *   - Active investor activity (any portfolio row OR any tax_event row
- *     keyed by the wallet): 403 HAS_INVESTOR_ACTIVITY. Same kernel
- *     rotating roles mid-flight breaks every audit trail; force the
- *     applicant to register a new kernel (matches Phase 9.A role-
- *     guardrail posture from `verify-wallet.use-case.ts`).
+ *   - Active investor activity (any portfolio row OR any RWA-related
+ *     tax_event row — Acquisition, Disposition, IncomeAccrual,
+ *     FeeEvent, Transfer — keyed by the wallet): 403
+ *     HAS_INVESTOR_ACTIVITY. Same kernel rotating roles mid-flight
+ *     breaks every audit trail; force the applicant to register a new
+ *     kernel (matches Phase 9.A role-guardrail posture from
+ *     `verify-wallet.use-case.ts`). Cash-rail markers (Wrap/Unwrap on
+ *     MuHavenStable) are deliberately NOT in the gate set — wrapping
+ *     USDC is a payment-rail step, not investor history, and a fresh
+ *     applicant who just funded their wallet must not be locked out.
  *   - Suspended: 403 ISSUER_SUSPENDED.
  */
 export class ApplyIssuerUseCase {
@@ -69,8 +74,10 @@ export class ApplyIssuerUseCase {
         { code: 'HAS_INVESTOR_ACTIVITY', source: 'portfolios' },
       );
     }
-    const taxEvents = await this.taxEventRepository.findByHolder(user.walletAddress, 1);
-    if (taxEvents.length > 0) {
+    const hasInvestorActivity = await this.taxEventRepository.hasInvestorActivity(
+      user.walletAddress,
+    );
+    if (hasInvestorActivity) {
       throw ApplicationHttpError.forbidden(
         'Wallet has investor activity; register a new kernel for issuer onboarding',
         { code: 'HAS_INVESTOR_ACTIVITY', source: 'tax_events' },

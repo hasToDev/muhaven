@@ -155,6 +155,109 @@ describeIfPg('PgTaxEventRepository · Wave 4 P9 aggregates (real postgres)', () 
     });
   });
 
+  describe('hasInvestorActivity', () => {
+    // Wave 4 follow-up — locks in the SQL-level cash-rail exclusion
+    // against a real pg enum. Unit-level stub coverage lives in
+    // `apply-issuer.use-case.test.ts`; this case proves the
+    // `inArray(eventType, INVESTOR_ACTIVITY_EVENT_TYPES)` filter
+    // actually reaches Postgres correctly. Regression for the
+    // 2026-05-09 issuer-onboarding bug (fresh wallet wraps USDC →
+    // locked out of /apply-issuer).
+    const HOLDER_LOWER = '0x2222222222222222222222222222222222222222';
+    const HOLDER_CHECK = '0x2222222222222222222222222222222222222222';
+
+    it('returns false for a holder with only cash-rail Wrap rows', async () => {
+      await repo.saveMany([
+        evt({
+          txHash: '0xw1',
+          eventType: 'Wrap',
+          holderAddress: HOLDER_LOWER,
+          tokenAddress: null,
+          metadata: { kind: 'wrap' },
+        }),
+      ]);
+
+      expect(await repo.hasInvestorActivity(HOLDER_LOWER)).toBe(false);
+    });
+
+    it('returns false for a holder with only Unwrap rows', async () => {
+      await repo.saveMany([
+        evt({
+          txHash: '0xu1',
+          eventType: 'Unwrap',
+          holderAddress: HOLDER_LOWER,
+          tokenAddress: null,
+          metadata: { kind: 'unwrap' },
+        }),
+      ]);
+
+      expect(await repo.hasInvestorActivity(HOLDER_LOWER)).toBe(false);
+    });
+
+    it('returns true when the holder has an RWA Acquisition alongside cash-rail Wrap rows', async () => {
+      await repo.saveMany([
+        evt({
+          txHash: '0xw1',
+          eventType: 'Wrap',
+          holderAddress: HOLDER_LOWER,
+          tokenAddress: null,
+        }),
+        evt({
+          txHash: '0xa1',
+          eventType: 'Acquisition',
+          holderAddress: HOLDER_LOWER,
+          tokenAddress: TBILL_LOWER,
+        }),
+      ]);
+
+      expect(await repo.hasInvestorActivity(HOLDER_LOWER)).toBe(true);
+    });
+
+    it.each(['Disposition', 'IncomeAccrual', 'FeeEvent', 'Transfer'] as const)(
+      'returns true when the holder has any %s row',
+      async (eventType) => {
+        await repo.saveMany([
+          evt({
+            txHash: `0x${eventType}`,
+            eventType,
+            holderAddress: HOLDER_LOWER,
+            tokenAddress: TBILL_LOWER,
+          }),
+        ]);
+
+        expect(await repo.hasInvestorActivity(HOLDER_LOWER)).toBe(true);
+      },
+    );
+
+    it('matches case-insensitively at the address boundary', async () => {
+      await repo.saveMany([
+        evt({
+          txHash: '0xa1',
+          eventType: 'Acquisition',
+          holderAddress: HOLDER_LOWER,
+          tokenAddress: TBILL_LOWER,
+        }),
+      ]);
+
+      expect(await repo.hasInvestorActivity(HOLDER_CHECK.toUpperCase())).toBe(true);
+    });
+
+    it('returns false for an unknown holder', async () => {
+      await repo.saveMany([
+        evt({
+          txHash: '0xa1',
+          eventType: 'Acquisition',
+          holderAddress: HOLDER_LOWER,
+          tokenAddress: TBILL_LOWER,
+        }),
+      ]);
+
+      expect(
+        await repo.hasInvestorActivity('0x9999999999999999999999999999999999999999'),
+      ).toBe(false);
+    });
+  });
+
   describe('dispositionsByKind', () => {
     it('extracts metadata->>kind via jsonb operator and groups for both totals + byDay', async () => {
       await repo.saveMany([

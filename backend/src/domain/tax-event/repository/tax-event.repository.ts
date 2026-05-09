@@ -52,6 +52,28 @@ export interface ITaxEventRepository {
   findByHolder(holderAddress: string, limit: number): Promise<TaxEvent[]>;
 
   /**
+   * Wave 4 follow-up — Phase 9.A `apply-issuer` guardrail. Returns true
+   * if the holder has any RWA-related tax_event row (Acquisition,
+   * Disposition, IncomeAccrual, FeeEvent, Transfer per
+   * `INVESTOR_ACTIVITY_EVENT_TYPES`). Cash-rail events (Wrap / Unwrap
+   * on MuHavenStable) are explicitly excluded — wrapping USDC into
+   * mhUSDC is a payment-rail step, not investor history, and a fresh
+   * user funding their first RWA buy must not be locked out of issuer
+   * onboarding by it.
+   *
+   * Implementation hint: SELECT 1 ... LIMIT 1 + IN (...) on event_type;
+   * caller only needs the boolean. Lower-case the holder at the SQL
+   * boundary per `feedback_address_case_at_repo_boundary` — note that
+   * wrapping `holder_address` in `lower(...)` makes the plain B-tree at
+   * `tax_events_holder_address_idx` unusable, so this is a sequential
+   * scan today. Acceptable for the apply-issuer one-shot path; if this
+   * method ever lands on a hot path, add a functional index on
+   * `lower(holder_address)` (one schema change benefits `findByHolder`
+   * too).
+   */
+  hasInvestorActivity(holderAddress: string): Promise<boolean>;
+
+  /**
    * Wave 4 P9 · public-metrics aggregations. All four read-only
    * methods return aggregate counts only — never per-investor or
    * cleartext amounts. Lower-case `token_address` at the SQL

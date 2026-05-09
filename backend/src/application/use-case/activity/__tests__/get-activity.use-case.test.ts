@@ -6,7 +6,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { randomUUID } from 'crypto';
 import { GetActivityUseCase } from '../get-activity.use-case.js';
-import { TaxEvent } from '../../../../domain/tax-event/model/tax-event.js';
+import {
+  INVESTOR_ACTIVITY_EVENT_TYPES,
+  TaxEvent,
+} from '../../../../domain/tax-event/model/tax-event.js';
 import type { ITaxEventRepository } from '../../../../domain/tax-event/repository/tax-event.repository.js';
 import type { IUserRepository } from '../../../../domain/auth/repository/user.repository.js';
 import { User } from '../../../../domain/auth/model/user.js';
@@ -25,6 +28,11 @@ class FakeTaxEventRepo implements ITaxEventRepository {
   async findByHolder(holderAddress: string, limit: number): Promise<TaxEvent[]> {
     const all = this.store.get(holderAddress.toLowerCase()) ?? [];
     return all.slice(0, limit);
+  }
+
+  async hasInvestorActivity(holderAddress: string): Promise<boolean> {
+    const all = this.store.get(holderAddress.toLowerCase()) ?? [];
+    return all.some((r) => INVESTOR_ACTIVITY_EVENT_TYPES.includes(r.eventType));
   }
 
   async aggregateCounts() {
