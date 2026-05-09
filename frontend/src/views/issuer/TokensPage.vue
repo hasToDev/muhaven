@@ -181,15 +181,13 @@ const selected = computed(() => {
           </div>
           <button
             type="button"
-            disabled
-            aria-disabled="true"
-            title="Coming soon — token issuance ships in a future release"
             class="btn-gold-sweep px-5 py-2.5 rounded-lg font-sans font-semibold text-[11px] tracking-[0.18em] uppercase
-                   flex items-center gap-2 cursor-not-allowed opacity-70"
+                   flex items-center gap-2 cursor-pointer"
+            data-testid="tokens-new-token-cta"
+            @click="router.push('/apply-issuer?skip-welcome')"
           >
             <Plus :size="13" :stroke-width="2.2" aria-hidden="true" />
             New token
-            <span class="ml-1 font-mono text-[9px] tracking-[0.2em] opacity-70">(soon)</span>
           </button>
         </div>
 

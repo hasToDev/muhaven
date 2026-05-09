@@ -28,6 +28,8 @@ import {
 import { useAuthStore } from '@/stores/auth'
 import { useAppStore } from '@/stores/app'
 import { useIssuerOnboardingStore } from '@/stores/issuer-onboarding'
+import { useIssuerTokensStore } from '@/stores/issuer-tokens'
+import { useIssuerInvestorsStore } from '@/stores/issuer-investors'
 import MButton from '@/components/ui/MButton.vue'
 import {
   Check, CheckCircle2, AlertTriangle, Lock, Loader2, Landmark, Clock, ExternalLink,
@@ -38,6 +40,23 @@ const router = useRouter()
 const authStore = useAuthStore()
 const appStore = useAppStore()
 const wizard = useIssuerOnboardingStore()
+const tokensStore = useIssuerTokensStore()
+const investorsStore = useIssuerInvestorsStore()
+
+// Phase 9.A · Expansion (F2). When the deploy stream lands a successful
+// finalize event, invalidate the issuer-side caches so the next
+// /tokens / /investors visit re-fetches and surfaces the new token.
+// Without this, `useIssuerTokensStore` keeps its `loaded=true` flag from
+// the wizard's initial mount (when the issuer had zero tokens) and the
+// /tokens page shows empty until sign-out / sign-in. The investors
+// store walks `issuer-tokens.rawTokens` so it shares the same staleness
+// — invalidate both. `issuer-distribution` is a per-token state machine
+// with no load-once gate (no action needed); `issuer-compliance`
+// composes reactively from `issuer-investors` so it cascades.
+function invalidateIssuerCaches() {
+  tokensStore.reset()
+  investorsStore.reset()
+}
 
 const STEP_LABELS: Array<{ idx: number; label: string }> = [
   { idx: 1, label: 'Welcome' },
@@ -241,6 +260,9 @@ function openStream(deployId: string) {
       if (event.step === 'finalize') {
         wizard.submitting = false
         closeStream()
+        if (event.status === 'succeeded') {
+          invalidateIssuerCaches()
+        }
       }
     },
     () => {
@@ -257,6 +279,12 @@ async function reattachDeploy(deployId: string) {
     wizard.applyStatusSnapshot(status)
     if (status.status === 'running') {
       openStream(deployId)
+    } else if (status.status === 'succeeded') {
+      // Re-hydration landed straight on a finished deploy (page reload
+      // after success-but-before-navigation): mirror the streamed-success
+      // path's cache invalidation so a subsequent /tokens visit picks up
+      // the new token.
+      invalidateIssuerCaches()
     }
   } catch {
     // The row might not exist any more (cleared cleanup); reset wizard.
@@ -271,6 +299,10 @@ async function pollOnce(deployId: string) {
     if (status.status === 'running') {
       // Try to reconnect the stream on the next tick.
       setTimeout(() => openStream(deployId), 2000)
+    } else if (status.status === 'succeeded') {
+      // SSE-drop-then-poll-snapshot path landed on a finished success:
+      // mirror the streamed path's cache invalidation here too.
+      invalidateIssuerCaches()
     }
   } catch {
     // Already finalised or transient — let the user retry manually.
