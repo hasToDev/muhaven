@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { ShieldCheck, Lock, X, Loader2, AlertTriangle, ExternalLink } from 'lucide-vue-next'
+import { useRouter } from 'vue-router'
+import { ShieldCheck, Lock, X, Loader2, AlertTriangle, ExternalLink, ArrowRight } from 'lucide-vue-next'
 import { agentToolsApi, type ActionDescriptor } from '@/services/api'
+
+const router = useRouter()
 
 /**
  * Wave 4 P2 — per-action confirmation modal with cleartext preview.
@@ -69,6 +72,34 @@ const isExpired = computed(() => {
 
 function close(): void {
   if (props.action) emit('cancel', props.action)
+}
+
+/**
+ * Detect the insufficient-mhUSDC error path so the modal can swap
+ * its primary CTA from "retry the same authorize" (which would just
+ * fail again the same way) to "wrap mhUSDC on /cash" (the actionable
+ * next step). Pattern-match on the runner's known error string from
+ * `useAgentActionRunner.runBuy` — the only error today that ships
+ * with that exact prefix. Other error types (NAV unavailable,
+ * expired, kernel deploy fail) keep the retry-via-Authorize CTA.
+ */
+const isInsufficientBalanceError = computed(() => {
+  if (status.value !== 'error') return false
+  return /Insufficient mhUSDC balance/i.test(errorMsg.value ?? '')
+})
+
+/**
+ * "Wrap mhUSDC" CTA on the insufficient-balance error state.
+ * Dismisses the modal AND navigates to /cash so the user can wrap
+ * USDC into mhUSDC. The propose-action is consumed (modal close
+ * removes it from the pending queue); the user is expected to come
+ * back to /agent with a balance and re-prompt the buy. Wave 5 may
+ * re-issue the propose automatically post-wrap, but today the
+ * flow is "navigate, wrap, return".
+ */
+function goToCash(): void {
+  if (props.action) emit('cancel', props.action)
+  router.push('/cash')
 }
 
 async function authorize(): Promise<void> {
@@ -422,7 +453,7 @@ const arbiscanUrl = computed(() =>
             }}
           </button>
           <button
-            v-if="status === 'idle' || status === 'error'"
+            v-if="status === 'idle' || (status === 'error' && !isInsufficientBalanceError)"
             type="button"
             @click="authorize"
             data-testid="agent-confirm-authorize-cta"
@@ -432,7 +463,23 @@ const arbiscanUrl = computed(() =>
             :disabled="isExpired"
           >
             <Lock :size="14" :stroke-width="2" />
-            <span>{{ isExpired ? 'Expired' : 'Authorize with passkey' }}</span>
+            <span>{{ isExpired ? 'Expired' : 'Authorize' }}</span>
+          </button>
+          <!-- Insufficient-balance specialised CTA — replaces the retry
+               Authorize button so the user isn't stuck clicking the
+               same "Authorize" that just refused. Navigates straight
+               to /cash to wrap USDC. -->
+          <button
+            v-else-if="status === 'error' && isInsufficientBalanceError"
+            type="button"
+            @click="goToCash"
+            data-testid="agent-confirm-wrap-cta"
+            class="btn-gold-sweep flex-1 py-3 px-4 rounded-xl font-sans text-sm font-semibold
+                   flex items-center justify-center gap-2 cursor-pointer
+                   transition-transform duration-150 active:scale-95"
+          >
+            <ArrowRight :size="14" :stroke-width="2" />
+            <span>Wrap mhUSDC</span>
           </button>
           <div
             v-else-if="status === 'awaiting' || status === 'submitting' || status === 'committing'"
