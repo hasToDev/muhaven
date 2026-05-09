@@ -5,6 +5,7 @@ import type {
   PortfolioSummaryDto,
   PortfolioSummaryResponseDto,
 } from '../../../dto/agent/tool.dto.js';
+import { parseDecimalToUsd6 } from './quote.use-case.js';
 
 /**
  * Wave 4 P2 — `muhaven_portfolio_summary` (read-side tool).
@@ -49,11 +50,24 @@ export class PortfolioSummaryToolUseCase {
 
     const enriched = filtered.map((p) => {
       const snap = navMap.get(p.tokenAddress) ?? null;
+      // Convert decimal-price NAV → 6dp base units for wire uniformity
+      // with `muhaven_quote` (response field is `lastKnownNavUsd6`).
+      // A malformed value (shouldn't happen — nav-worker controls the
+      // shape) falls back to null rather than throwing the whole
+      // portfolio call.
+      let lastKnownNavUsd6: string | null = null;
+      if (snap?.nav) {
+        try {
+          lastKnownNavUsd6 = parseDecimalToUsd6(snap.nav).toString();
+        } catch {
+          lastKnownNavUsd6 = null;
+        }
+      }
       return {
         tokenAddress: p.tokenAddress,
         tokenSymbol: p.tokenSymbol,
         encryptedBalanceHandle: null as string | null,
-        lastKnownNavUsd6: snap?.nav ?? null,
+        lastKnownNavUsd6,
         lastSyncedAt: p.lastSyncedAt?.toISOString() ?? null,
       };
     });

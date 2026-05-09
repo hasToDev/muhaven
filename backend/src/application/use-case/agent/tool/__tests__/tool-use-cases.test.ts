@@ -25,6 +25,7 @@ import {
   UnsealPositionToolUseCase,
   CommitToolActionUseCase,
 } from '../index.js';
+import { parseDecimalToUsd6 } from '../quote.use-case.js';
 import type { IRwaTokenRepository } from '../../../../../domain/token-registry/repository/rwa-token.repository.js';
 import type { INavHistoryRepository } from '../../../../../domain/nav-history/repository/nav-history.repository.js';
 import type { IPortfolioRepository } from '../../../../../domain/portfolio/repository/portfolio.repository.js';
@@ -111,11 +112,19 @@ function activeToken(): RwaToken {
   });
 }
 
-function navAt(navUsd6: bigint, ts: Date = NOW): NavSnapshot {
+/**
+ * Build a NavSnapshot fixture. `navDecimal` is the human-readable price
+ * the nav-worker writes to `token_nav_history.nav` (e.g. "1.0" for
+ * treasury par, "2400.5" for gold) — NOT the 6dp base-unit integer.
+ * The repo layer hands this string through unchanged; the agent / SDK
+ * layer is the one that converts to base units (see
+ * `parseDecimalToUsd6` in `quote.use-case.ts`).
+ */
+function navAt(navDecimal: string, ts: Date = NOW): NavSnapshot {
   return new NavSnapshot({
     id: 'nav_1',
     tokenAddress: TOKEN.toLowerCase(),
-    nav: navUsd6.toString(),
+    nav: navDecimal,
     source: 'test',
     sourceType: 'manual',
     sourceTimestamp: ts,
@@ -123,6 +132,35 @@ function navAt(navUsd6: bigint, ts: Date = NOW): NavSnapshot {
     createdAt: ts,
   });
 }
+
+describe('parseDecimalToUsd6', () => {
+  it('parses an integer decimal as 6-dp base units (1.0 → 1000000)', () => {
+    expect(parseDecimalToUsd6('1')).toBe(1_000_000n);
+    expect(parseDecimalToUsd6('1.0')).toBe(1_000_000n);
+    expect(parseDecimalToUsd6('1.000000')).toBe(1_000_000n);
+  });
+
+  it('parses fractional decimals (gold price) without precision drift', () => {
+    expect(parseDecimalToUsd6('2400.5')).toBe(2_400_500_000n);
+    expect(parseDecimalToUsd6('0.5')).toBe(500_000n);
+    // 6dp boundary — pads exactly.
+    expect(parseDecimalToUsd6('0.123456')).toBe(123_456n);
+  });
+
+  it('truncates (does NOT round) past 6dp to match fhERC-20 shares=integer floor', () => {
+    expect(parseDecimalToUsd6('0.1234567')).toBe(123_456n); // not 123_457n
+    expect(parseDecimalToUsd6('0.999999999')).toBe(999_999n); // not 1_000_000n
+  });
+
+  it('rejects malformed inputs', () => {
+    expect(() => parseDecimalToUsd6('')).toThrow();
+    expect(() => parseDecimalToUsd6('abc')).toThrow();
+    expect(() => parseDecimalToUsd6('1e6')).toThrow(); // scientific notation refused
+    expect(() => parseDecimalToUsd6('-1.0')).toThrow(); // negatives refused
+    expect(() => parseDecimalToUsd6('1.0.0')).toThrow();
+    expect(() => parseDecimalToUsd6(' 1.0 ')).toThrow(); // no whitespace handling
+  });
+});
 
 describe('Wave 4 P2 — tool use cases', () => {
   let stateRepo: MemoryAgentStateRepository;
@@ -146,7 +184,7 @@ describe('Wave 4 P2 — tool use cases', () => {
     navRepo = new StubNavHistoryRepo();
     portfolioRepo = new StubPortfolioRepo();
     rwaTokenRepo.tokens.set(TOKEN, activeToken());
-    navRepo.latest.set(TOKEN, navAt(1_000_000n)); // NAV = $1.00
+    navRepo.latest.set(TOKEN, navAt('1.0')); // NAV = $1.00 (decimal-price; matches nav-worker schema)
   });
 
   describe('PortfolioSummaryToolUseCase', () => {
@@ -218,6 +256,23 @@ describe('Wave 4 P2 — tool use cases', () => {
       expect(out.estimatedShares).toBe('500');
       expect(out.maxSharesHint).toBe('500');
       expect(out.tokenSymbol).toBe(TBILL_SYMBOL);
+      // Wire-shape: navUsd6 must be the 6-dp base-unit integer string,
+      // not the raw decimal price. Stub synthesiser does
+      // `(Number(navUsd6) / 1_000_000).toFixed(4)` — ensure that math
+      // produces "1.0000" not "0.000001" or NaN.
+      expect(out.navUsd6).toBe('1000000');
+    });
+
+    it('handles fractional NAV (gold price) without BigInt failure', async () => {
+      // 2026-05-09 regression — `BigInt("2400.5")` throws; the helper
+      // must convert "2400.5" → 2400500000n base units for the
+      // notional-divided-by-NAV math to produce "0 shares" cleanly.
+      navRepo.latest.set(TOKEN, navAt('2400.5'));
+      const uc = new QuoteToolUseCase(rwaTokenRepo, navRepo);
+      // $5000 notional / $2400.50 NAV ≈ 2 shares (floor).
+      const out = await uc.execute({ tokenAddress: TOKEN, notionalUsd6: '5000000000' });
+      expect(out.estimatedShares).toBe('2');
+      expect(out.navUsd6).toBe('2400500000');
     });
 
     it('rejects unregistered tokens', async () => {

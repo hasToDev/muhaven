@@ -4,6 +4,33 @@ import { ApplicationHttpError } from '../../../../core/errors.js';
 import type { QuoteDto, QuoteResponseDto } from '../../../dto/agent/tool.dto.js';
 
 /**
+ * Parse a decimal-price string ("1.000000", "2400.5", "1") into 6-dp
+ * base units (`1.0` → `1000000n`, `2400.5` → `2400500000n`). The
+ * `nav_history.nav` column is a Postgres NUMERIC populated by
+ * nav-worker as a human-readable price (FRED par = `1.0`, stooq XAUUSD
+ * = `2400.5` etc.); the agent / SDK / on-chain-oracle layer all work
+ * in 6-dp base units (1 USDC = `1000000`). Float arithmetic isn't
+ * safe here (subtle rounding on values like `0.123457`), so we
+ * string-parse + zero-pad the fractional part.
+ *
+ * Rejects: empty / non-numeric / negative / scientific notation. Truncates
+ * fractional precision past 6 decimals (no rounding — matches the
+ * fhERC-20 `decimals=0` floor convention used by `Subscription.purchase`).
+ */
+export function parseDecimalToUsd6(decimal: string): bigint {
+  const m = /^(\d+)(?:\.(\d+))?$/.exec(decimal);
+  if (!m) {
+    throw new Error(`Invalid decimal price: ${JSON.stringify(decimal)}`);
+  }
+  const intPart = m[1];
+  const fracPart = m[2] ?? '';
+  // Pad with trailing zeros to 6dp; truncate (NOT round) anything past
+  // 6dp so we never over-report buying power.
+  const fracPadded = (fracPart + '000000').slice(0, 6);
+  return BigInt(intPart + fracPadded);
+}
+
+/**
  * Wave 4 P2 — `muhaven_quote` (read-side tool).
  *
  * Returns NAV-derived purchase quote: cleartext notional → estimated
@@ -40,7 +67,19 @@ export class QuoteToolUseCase {
       );
     }
 
-    const navUsd6 = BigInt(snap.nav);
+    // `snap.nav` is a Postgres NUMERIC string written by nav-worker as
+    // a decimal price ("1.000000" for treasury par, "2400.5" for gold).
+    // Convert to 6dp base units before any BigInt arithmetic — `BigInt`
+    // doesn't accept fractional decimal strings (surfaced 2026-05-09 by
+    // AGENTIC_TEST_PLAN §1c step 4 against TBILL1's NAV of "1.000000").
+    let navUsd6: bigint;
+    try {
+      navUsd6 = parseDecimalToUsd6(snap.nav);
+    } catch (err) {
+      throw ApplicationHttpError.conflict(
+        `NAV for ${token.symbol} is malformed (${snap.nav}); quote unavailable. ${err instanceof Error ? err.message : ''}`,
+      );
+    }
     if (navUsd6 <= 0n) {
       throw ApplicationHttpError.conflict(
         `NAV for ${token.symbol} is non-positive (${snap.nav}); quote unavailable.`,
@@ -63,7 +102,10 @@ export class QuoteToolUseCase {
       tokenAddress,
       tokenSymbol: token.symbol,
       notionalUsd6: input.notionalUsd6,
-      navUsd6: snap.nav,
+      // Emit the base-unit integer string — matches the rest of the
+      // agent surface (1 mhUSDC = 1000000) and lets the stub
+      // synthesiser format `(navUsd6 / 1_000_000).toFixed(4)` correctly.
+      navUsd6: navUsd6.toString(),
       navAt,
       estimatedShares: estimatedShares.toString(),
       maxSharesHint: estimatedShares.toString(),

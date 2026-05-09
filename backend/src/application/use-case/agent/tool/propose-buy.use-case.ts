@@ -13,6 +13,7 @@ import type {
   ProposeBuyDto,
   BuyActionDescriptor,
 } from '../../../dto/agent/tool.dto.js';
+import { parseDecimalToUsd6 } from './quote.use-case.js';
 
 export interface ProposeBuyContext {
   userId: string;
@@ -82,18 +83,33 @@ export class ProposeBuyToolUseCase {
     if (!snap) {
       throw ApplicationHttpError.notFound(`No NAV snapshot for ${token.symbol}; cannot quote buy.`);
     }
-    const navUsd6 = BigInt(snap.nav);
+    // `snap.nav` is the decimal-price string the nav-worker writes
+    // ("1.0" / "2400.5"). Convert to 6dp base units before BigInt
+    // arithmetic — see `parseDecimalToUsd6` doc + 2026-05-09 fix.
+    let navUsd6: bigint;
+    try {
+      navUsd6 = parseDecimalToUsd6(snap.nav);
+    } catch (err) {
+      throw ApplicationHttpError.conflict(
+        `NAV for ${token.symbol} is malformed (${snap.nav}); cannot quote buy. ${err instanceof Error ? err.message : ''}`,
+      );
+    }
     if (navUsd6 <= 0n) {
       throw ApplicationHttpError.conflict(`NAV for ${token.symbol} non-positive (${snap.nav}).`);
     }
     const estimatedTotalUsd6 = (shares * navUsd6).toString();
+    // Pin the 6dp base-unit string in the action payload so the commit
+    // hash recovers byte-for-byte (R-3 replay defence) — must NOT use
+    // `snap.nav` here, which is decimal-price + would mismatch the
+    // ConfirmModal preview's navUsd6 (also 6dp base units).
+    const navUsd6String = navUsd6.toString();
 
     const actionPayload = {
       action: 'buy',
       tokenAddress,
       shares: shares.toString(),
       maxSharesHint: maxSharesHint.toString(),
-      navUsd6: snap.nav,
+      navUsd6: navUsd6String,
       // navAt pinned in the action hash so a stale-quote replay is
       // rejected at consume time (R-3 mitigation).
       navAt: (snap.sourceTimestamp ?? snap.fetchedAt).toISOString(),
@@ -125,13 +141,13 @@ export class ProposeBuyToolUseCase {
       toolCallId,
       confirmTokenId: issued.token,
       expiresAtSec: Math.floor(issued.expiresAt.getTime() / 1000),
-      summary: `Buy ${shares.toString()} ${token.symbol} (${displayUsd(estimatedTotalUsd6)} at NAV ${displayUsd(snap.nav)}).`,
+      summary: `Buy ${shares.toString()} ${token.symbol} (${displayUsd(estimatedTotalUsd6)} at NAV ${displayUsd(navUsd6String)}).`,
       preview: {
         tokenAddress,
         tokenSymbol: token.symbol,
         shares: shares.toString(),
         maxSharesHint: maxSharesHint.toString(),
-        navUsd6: snap.nav,
+        navUsd6: navUsd6String,
         // Must match the actionPayload's navAt exactly — the
         // ConfirmTokenService.consume hash equality check fails silently
         // otherwise (every buy commit would 403). See dto.ts for context.
