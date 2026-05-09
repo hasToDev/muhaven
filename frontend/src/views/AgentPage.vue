@@ -54,14 +54,16 @@ function onConfirmComplete(payload: {
   // Remove the action from the pending queue regardless of ok/fail —
   // the user has either authorized + (succeeded|failed) or cancelled.
   agentStore.consumePendingAction(payload.action.toolCallId)
-  // Defer modal close until status="success" / "deferred" so the user
-  // can see the receipt or follow-up CTA. The modal closes on Done tap.
-  if (!payload.ok && payload.error !== 'deferred') {
-    activeAction.value = null
-    if (payload.error) {
-      toast.error('Authorization failed', { description: payload.error })
-    }
-  }
+  // Modal stays mounted on every terminal state so the user can read
+  // the receipt / error / deferred CTA at their own pace and dismiss
+  // via the Done / Cancel button. The previous version dismissed the
+  // modal on error AND fired a toast — the toast auto-dismissed
+  // after a few seconds, hiding the actionable copy
+  // ("you have $5, need $100; wrap more first") before the user
+  // could read it. Surfaced 2026-05-09 from operator feedback on
+  // the runner balance gate.
+  // The toast still fires for non-error completions (success +
+  // deferred) so confirmations bubble up via the standard surface.
 }
 
 function onConfirmCancel(action: ActionDescriptor): void {
