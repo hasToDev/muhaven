@@ -30,6 +30,13 @@ const logger = getLogger('chat-llm');
 
 export type ChatHistoryMessage = { role: 'user' | 'agent'; text: string };
 
+export interface TokenCatalogEntry {
+  symbol: string;
+  address: string;
+  assetClass?: string;
+  status?: string;
+}
+
 export interface ChatStreamRequest {
   userId: string;
   walletAddress: string;
@@ -37,6 +44,13 @@ export interface ChatStreamRequest {
   currentTier: Tier;
   message: string;
   history: ChatHistoryMessage[];
+  /** Active RWA tokens registered on-chain at request time. Used to
+   *  enrich the system prompt with the symbol→address map so the LLM
+   *  can resolve "Quote 100 PUSDC of TBILL1" without prompting the
+   *  user for the address. Pulled from `IRwaTokenRepository.findAll`
+   *  in the route handler — kept on the request so the service stays
+   *  stateless + easy to mock in tests. */
+  tokenCatalog?: TokenCatalogEntry[];
   /** Tool dispatch callback. Returns the structured tool result that gets
    *  fed back into the next LLM turn. */
   dispatchTool: (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
@@ -105,6 +119,24 @@ YOUR CONSTRAINTS
 
 PRIVACY PRINCIPLE
 Your strategy, the user's strategy, and the encrypted state itself are private. Nobody else — not competitors, not MEV bots, not operator infra, not the LLM provider, not even you — can see the portfolio without an explicit user-signed permit.`;
+
+/**
+ * Build a "KNOWN TOKENS" addendum from the active RWA catalog. The
+ * planner LLM uses this to resolve "Quote 100 PUSDC of TBILL1" → a
+ * concrete `tokenAddress` without having to ask the user. The list
+ * comes from `IRwaTokenRepository` at request time so the section
+ * stays correct across staging vs prod redeployments (token
+ * addresses rotate per environment).
+ */
+function buildTokenCatalogSection(catalog: TokenCatalogEntry[] | undefined): string {
+  if (!catalog || catalog.length === 0) return '';
+  const lines = catalog.map((t) => {
+    const status = t.status && t.status !== 'active' ? ` [${t.status}]` : '';
+    const cls = t.assetClass ? ` (${t.assetClass})` : '';
+    return `- ${t.symbol}: ${t.address}${cls}${status}`;
+  });
+  return `\n\nKNOWN TOKENS (resolve symbol → tokenAddress without asking the user):\n${lines.join('\n')}\nWhen the user names a symbol (e.g. "TBILL1"), pass the matching address into tool calls. If the symbol is not in this list, ask the user for the address rather than guessing.`;
+}
 
 /**
  * Lazy-instantiate the Gemini client only when the key is set, so the
@@ -429,9 +461,11 @@ export class ChatLlmService implements IChatLlmService {
     // by the route handlers' Zod schemas.
     const tools = buildGeminiToolDeclarations();
     const contents = buildGeminiContents(req.history, req.message);
+    const catalogSection = buildTokenCatalogSection(req.tokenCatalog);
+    const promptWithCatalog = `${SYSTEM_PROMPT}${catalogSection}`;
     const systemInstruction = armorNudge
-      ? `${SYSTEM_PROMPT}\n\n${armorNudge}`
-      : SYSTEM_PROMPT;
+      ? `${promptWithCatalog}\n\n${armorNudge}`
+      : promptWithCatalog;
 
     // The @google/genai SDK is dynamically imported; we keep the call
     // surface narrow + use any-typed access to avoid pulling its types

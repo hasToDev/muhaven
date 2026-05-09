@@ -72,6 +72,23 @@ const handler = async (req: AuthenticatedRequest, res: VercelResponse): Promise<
     );
   const state = await stateUseCase.forSurface(authPayload.userId, Surface.HavenBot);
 
+  // Resolve the active RWA token catalog so the planner LLM can map
+  // user-spoken symbols ("TBILL1", "GOLD1") to concrete tokenAddress
+  // arguments without prompting the user. Uses the indexer's
+  // `rwa_tokens` table — same source as the public /metrics page —
+  // so the catalog tracks staging vs prod redeployments automatically.
+  // The repo read is one row per active token (low single-digit
+  // count today); negligible overhead per chat turn.
+  const allTokens = await container.rwaTokenRepo.findAll();
+  const tokenCatalog = allTokens
+    .filter((t) => t.status === 'active' || t.status === 'paused')
+    .map((t) => ({
+      symbol: t.symbol,
+      address: t.address,
+      assetClass: t.assetClass,
+      status: t.status,
+    }));
+
   // SSE headers.
   res.status(200);
   res.setHeader('Content-Type', 'text/event-stream');
@@ -107,6 +124,7 @@ const handler = async (req: AuthenticatedRequest, res: VercelResponse): Promise<
         currentTier: state.tier as Tier,
         message: dto.message,
         history: (dto.history ?? []).map((m) => ({ role: m.role, text: m.text })),
+        tokenCatalog,
         dispatchTool: async (toolName, args) => {
           // Dispatch via the same uniform dispatcher used by the per-tool
           // REST endpoints. The dispatcher re-parses args through the

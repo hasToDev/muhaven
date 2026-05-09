@@ -388,6 +388,68 @@ describe('ChatLlmService.runGeminiLoop', () => {
     expect(fr.functionResponse.response).toHaveProperty('error', 'repo offline');
   });
 
+  it('injects the tokenCatalog into the systemInstruction so symbols can resolve to addresses', async () => {
+    mockState.turns = [
+      [{ text: 'TBILL1 is at 0xaaaa…aaaa.' }],
+    ];
+
+    const service = new ChatLlmService();
+    const { sink } = collectingSink();
+    await service.streamChat(
+      {
+        userId: 'u_1',
+        walletAddress: '0xabc',
+        surface: 'havenbot' as Surface,
+        currentTier: 'advisory' as Tier,
+        message: 'Quote 100 PUSDC of TBILL1',
+        history: [],
+        tokenCatalog: [
+          { symbol: 'TBILL1', address: '0x' + 'aa'.repeat(20), assetClass: 'treasury', status: 'active' },
+          { symbol: 'GOLD1', address: '0x' + 'bb'.repeat(20), assetClass: 'other', status: 'paused' },
+        ],
+        dispatchTool: async () => ({}),
+      },
+      sink,
+    );
+
+    const callArg = generateContentStreamSpy.mock.calls[0][0] as {
+      config: { systemInstruction: string };
+    };
+    expect(callArg.config.systemInstruction).toContain('KNOWN TOKENS');
+    expect(callArg.config.systemInstruction).toContain('TBILL1: 0x' + 'aa'.repeat(20));
+    expect(callArg.config.systemInstruction).toContain('GOLD1: 0x' + 'bb'.repeat(20));
+    expect(callArg.config.systemInstruction).toContain('(treasury)');
+    // Paused status surfaces in [brackets] so the LLM can warn the user
+    // that the token is not currently quotable / buyable.
+    expect(callArg.config.systemInstruction).toContain('[paused]');
+  });
+
+  it('omits the KNOWN TOKENS section when no catalog is supplied', async () => {
+    mockState.turns = [
+      [{ text: 'OK.' }],
+    ];
+
+    const service = new ChatLlmService();
+    const { sink } = collectingSink();
+    await service.streamChat(
+      {
+        userId: 'u_1',
+        walletAddress: '0xabc',
+        surface: 'havenbot' as Surface,
+        currentTier: 'advisory' as Tier,
+        message: 'hi',
+        history: [],
+        dispatchTool: async () => ({}),
+      },
+      sink,
+    );
+
+    const callArg = generateContentStreamSpy.mock.calls[0][0] as {
+      config: { systemInstruction: string };
+    };
+    expect(callArg.config.systemInstruction).not.toContain('KNOWN TOKENS');
+  });
+
   it('returns single-turn when the model emits text only (no tool calls)', async () => {
     mockState.turns = [
       [{ text: 'Here are the read tools you can ask me about.' }],
