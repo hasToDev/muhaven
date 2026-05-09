@@ -413,11 +413,14 @@ function getToolDispatcher(): ToolDispatcher {
       confirmTokens,
       appendAudit,
       // Fresh-wallet gate — refuses propose_buy when the holder has
-      // never had a Wrap / Unwrap / Transfer event for mhUSDC (memory
-      // `feedback_user_facing_says_mhusdc`). Backend can't read FHE
-      // balance directly; this catches the most common new-user
-      // failure mode without a decrypt round-trip.
-      repos.taxEventRepo,
+      // never had a Wrap / Unwrap / Transfer event for mhUSDC. Backend
+      // can't read FHE balance directly; this catches the most common
+      // new-user failure mode without a decrypt round-trip. Repo lives
+      // on MuHavenRepositories (NOT Repositories — surfaced 2026-05-09
+      // when the gate silently no-op'd on staging because
+      // `repos.taxEventRepo` was undefined at runtime; TS's `null`
+      // default on the use-case ctor swallowed the type error).
+      muhaven.taxEventRepo,
     ),
     proposeClaim: new ProposeClaimToolUseCase(
       repos.yieldRecordRepo,

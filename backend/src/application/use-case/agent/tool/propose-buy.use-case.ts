@@ -42,11 +42,15 @@ export class ProposeBuyToolUseCase {
     private readonly getPolicyState: GetPolicyStateUseCase,
     private readonly confirmTokens: ConfirmTokenService,
     private readonly appendAudit: AppendAuditEventUseCase,
-    /** Optional — when wired, blocks fresh-wallet proposes that have
-     *  no cash-rail history (definitely 0 mhUSDC balance). When null
-     *  (legacy unit-test wiring), the gate is skipped and the
-     *  pre-existing behaviour is preserved. */
-    private readonly taxEventRepo: ITaxEventRepository | null = null,
+    /** When wired, blocks fresh-wallet proposes that have no cash-rail
+     *  history (definitely 0 mhUSDC balance). Pass `null` ONLY in
+     *  legacy unit tests that don't exercise the gate — production
+     *  container MUST pass the real repo. The param has no default
+     *  value on purpose: forgetting to wire it should be a TS error
+     *  at the call site, not a silent runtime no-op (surfaced
+     *  2026-05-09 when `repos.taxEventRepo` was undefined and the
+     *  default null swallowed the typo). */
+    private readonly taxEventRepo: ITaxEventRepository | null,
   ) {}
 
   async execute(

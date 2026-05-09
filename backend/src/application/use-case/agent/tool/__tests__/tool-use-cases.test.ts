@@ -309,6 +309,7 @@ describe('Wave 4 P2 — tool use cases', () => {
         getPolicy,
         confirmTokens,
         appendAudit,
+        null, // gate skipped — this case asserts the round-trip wire shape, not the gate.
       );
       const descriptor = await propose.execute(
         { userId: USER_ID, walletAddress: WALLET, surface: Surface.HavenBot },
@@ -346,6 +347,7 @@ describe('Wave 4 P2 — tool use cases', () => {
         getPolicy,
         confirmTokens,
         appendAudit,
+        null, // gate skipped — this case asserts the audit event, not the gate.
       );
       const out = await uc.execute(
         { userId: USER_ID, walletAddress: WALLET, surface: Surface.HavenBot },
@@ -384,6 +386,7 @@ describe('Wave 4 P2 — tool use cases', () => {
         getPolicy,
         confirmTokens,
         appendAudit,
+        null, // gate skipped — this case asserts the Paused tier rejection.
       );
       await expect(
         uc.execute(
@@ -401,6 +404,7 @@ describe('Wave 4 P2 — tool use cases', () => {
         getPolicy,
         confirmTokens,
         appendAudit,
+        null, // gate skipped — this case asserts the maxSharesHint guard.
       );
       await expect(
         uc.execute(
