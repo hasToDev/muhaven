@@ -27,7 +27,13 @@ export interface UseAgentChat {
   lastError: Ref<string | null>
   pendingActions: Ref<ActionDescriptor[]>
   consumePendingAction: (toolCallId: string) => ActionDescriptor | null
-  send: (req: AgentChatStreamRequest) => Promise<{ text: string; actions: ActionDescriptor[] }>
+  /** Returns the final accumulated text + any ActionDescriptors emitted +
+   * a count of tool_result events seen on this turn. Callers use the
+   * `toolsCalled` count to suppress the "I'm not sure how to help"
+   * fallback when a read tool ran but produced no synthesised text. */
+  send: (
+    req: AgentChatStreamRequest,
+  ) => Promise<{ text: string; actions: ActionDescriptor[]; toolsCalled: number }>
   abort: () => void
 }
 
@@ -71,7 +77,7 @@ export function useAgentChat(): UseAgentChat {
 
   async function send(
     req: AgentChatStreamRequest,
-  ): Promise<{ text: string; actions: ActionDescriptor[] }> {
+  ): Promise<{ text: string; actions: ActionDescriptor[]; toolsCalled: number }> {
     abort()
     activeController = new AbortController()
     streamingText.value = ''
@@ -79,14 +85,19 @@ export function useAgentChat(): UseAgentChat {
     isStreaming.value = true
 
     const turnActions: ActionDescriptor[] = []
+    const turnCounter = { tools: 0 }
 
     try {
       const { events } = await agentToolsApi.openChatStream(req, activeController)
       for await (const event of events) {
-        handleEvent(event, turnActions)
+        handleEvent(event, turnActions, turnCounter)
         if (event.type === 'done') break
       }
-      return { text: streamingText.value, actions: turnActions }
+      return {
+        text: streamingText.value,
+        actions: turnActions,
+        toolsCalled: turnCounter.tools,
+      }
     } catch (err) {
       const msg =
         err instanceof Error ? err.message : 'The agent stream failed. Please try again.'
@@ -98,7 +109,11 @@ export function useAgentChat(): UseAgentChat {
     }
   }
 
-  function handleEvent(event: AgentStreamEvent, turnActions: ActionDescriptor[]): void {
+  function handleEvent(
+    event: AgentStreamEvent,
+    turnActions: ActionDescriptor[],
+    turnCounter: { tools: number },
+  ): void {
     switch (event.type) {
       case 'meta':
         // Could surface `event.model` in the UI if useful; skip for now.
@@ -110,6 +125,7 @@ export function useAgentChat(): UseAgentChat {
         // No UI surface — the user only sees tool_result outcomes.
         break
       case 'tool_result':
+        turnCounter.tools += 1
         if (event.ok && event.result && isActionDescriptor(event.result)) {
           pendingActions.value.push(event.result)
           turnActions.push(event.result)
@@ -118,6 +134,9 @@ export function useAgentChat(): UseAgentChat {
           const note = `\n\n_(Tool ${event.toolName} failed: ${event.error})_`
           streamingText.value += note
         }
+        // Successful read-tool results (portfolio_summary, quote, etc.)
+        // are surfaced to the user via the backend's post-dispatch
+        // synthesis text; no UI surface needed for the raw result.
         break
       case 'error':
         lastError.value = event.message

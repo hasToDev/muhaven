@@ -115,6 +115,18 @@ Your strategy, the user's strategy, and the encrypted state itself are private. 
 let _geminiClient: unknown = null;
 let _geminiAttempted = false;
 
+/**
+ * Test-only reset hook. The lazy load + cached client are critical for
+ * production cold-start performance; in tests we need to flip between
+ * "no key (stub)" and "key + mock SDK (Gemini)" within a single suite.
+ * Exposed under a `__` prefix so it never trips IDE autocomplete on the
+ * non-test consumer side.
+ */
+export function __resetGeminiCacheForTests(): void {
+  _geminiClient = null;
+  _geminiAttempted = false;
+}
+
 async function tryLoadGemini(): Promise<unknown | null> {
   if (_geminiAttempted) return _geminiClient;
   _geminiAttempted = true;
@@ -179,6 +191,104 @@ function stubIntentClassifier(message: string): {
       'I can help with portfolio summaries, NAV quotes, buys, claims, rebalances, '
       + 'policy tier changes, or pausing the agent. What would you like to do?',
   };
+}
+
+/**
+ * Hard cap on round-trip turns inside `runGeminiLoop`. One turn is "stream
+ * model → dispatch any tool calls → re-stream with function responses".
+ * Three turns lets the model fix a wrong-arg call once + still synthesize
+ * a final answer; higher limits open a chain-call DoS surface (R-2).
+ */
+const MAX_TOOL_TURNS = 3;
+
+/**
+ * Strip privileged fields from an ActionDescriptor before re-feeding it to
+ * the LLM as a `functionResponse`. The LLM should be able to *describe*
+ * the proposed action ("here's a buy proposal for 100 PUSDC of TBILL1")
+ * without ever seeing or speaking the single-use confirm token (R-3) or
+ * the raw `sdkCall` wire-shape internals.
+ */
+function stripPrivilegedActionFields(value: unknown): unknown {
+  if (value == null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map((v) => stripPrivilegedActionFields(v));
+  const obj = value as Record<string, unknown>;
+  // Only ActionDescriptor-shaped objects carry confirmTokenId + sdkCall;
+  // leaving non-Action results untouched preserves read-tool richness
+  // (positions[], NAV, audit pages) for the synthesis turn.
+  const isActionDescriptor =
+    typeof obj.kind === 'string'
+    && typeof obj.toolCallId === 'string'
+    && typeof obj.confirmTokenId === 'string'
+    && typeof obj.sdkCall === 'object';
+  if (!isActionDescriptor) return obj;
+  const { confirmTokenId: _ct, sdkCall: _sdk, ...rest } = obj;
+  return rest;
+}
+
+/**
+ * Deterministic per-tool synthesis used by `runStubLoop` post-dispatch.
+ * Mirrors what the LLM would say after a successful read-tool call so the
+ * stub UX matches the agentic loop's UX. Returns null when no synthesis is
+ * appropriate (e.g. propose_* tools whose ConfirmModal is the next surface).
+ */
+export function summarizeStubToolResult(
+  toolName: ToolName,
+  result: unknown,
+): string | null {
+  if (result == null || typeof result !== 'object') return null;
+  const r = result as Record<string, unknown>;
+
+  switch (toolName) {
+    case 'muhaven_portfolio_summary': {
+      const total = typeof r.totalPositions === 'number' ? r.totalPositions : 0;
+      if (total === 0) {
+        return (
+          'You currently hold no RWA positions. Once you make your first deposit '
+          + 'and buy on the Cash page, your encrypted balances will appear here.'
+        );
+      }
+      const positions = Array.isArray(r.positions) ? r.positions : [];
+      const symbols = positions
+        .map((p) => (p as { tokenSymbol?: string }).tokenSymbol)
+        .filter((s): s is string => typeof s === 'string')
+        .join(', ');
+      const sigNote =
+        typeof (r.signals as { note?: string } | undefined)?.note === 'string'
+          ? ` ${(r.signals as { note: string }).note}`
+          : '';
+      return `You hold ${total} position${total === 1 ? '' : 's'}${symbols ? ` (${symbols})` : ''}.${sigNote}`;
+    }
+    case 'muhaven_quote': {
+      const symbol = typeof r.tokenSymbol === 'string' ? r.tokenSymbol : 'token';
+      const navUsd6 = typeof r.navUsd6 === 'string' ? r.navUsd6 : null;
+      const shares = typeof r.estimatedShares === 'string' ? r.estimatedShares : null;
+      if (!navUsd6 || !shares) return 'Quote returned, but the NAV or share estimate was unavailable.';
+      const navUsd = (Number(navUsd6) / 1_000_000).toFixed(4);
+      return `At a NAV of $${navUsd} per share, that buys roughly ${shares} ${symbol}.`;
+    }
+    case 'muhaven_unseal_position':
+      return 'Decrypt instruction prepared — the dashboard will perform the client-side reveal with your passkey permit.';
+    case 'muhaven_audit_query': {
+      const total = typeof r.totalCount === 'number' ? r.totalCount : null;
+      return total === null
+        ? 'Audit query returned. Open the audit page for the full list.'
+        : `Audit query matched ${total} entr${total === 1 ? 'y' : 'ies'} in the requested window.`;
+    }
+    // propose_* tools surface their preview through the ConfirmModal — no
+    // synthesis needed. The user sees the modal as the agent's "reply".
+    case 'muhaven_propose_buy':
+    case 'muhaven_propose_claim':
+    case 'muhaven_propose_rebalance':
+    case 'muhaven_set_policy':
+    case 'muhaven_pause':
+    case 'muhaven_propose_distribute_yield':
+    case 'muhaven_propose_kyc_add':
+    case 'muhaven_propose_kyc_remove':
+    case 'muhaven_propose_unpause_token':
+      return null;
+    default:
+      return null;
+  }
 }
 
 export class ChatLlmService implements IChatLlmService {
@@ -264,7 +374,7 @@ export class ChatLlmService implements IChatLlmService {
   ): Promise<void> {
     const { text, toolCall } = stubIntentClassifier(req.message);
 
-    // Fake-stream the text to keep the UX consistent with the LLM path.
+    // Fake-stream the pre-tool text so the UX matches the LLM path.
     for (const chunk of chunkText(text)) {
       sink({ type: 'text', delta: chunk });
     }
@@ -275,13 +385,24 @@ export class ChatLlmService implements IChatLlmService {
     sink({ type: 'tool_call', toolCallId, toolName: toolCall.toolName, args: toolCall.args });
     try {
       const result = await req.dispatchTool(toolCall.toolName, toolCall.args);
+      const sanitisedResult = sanitiseToolResult(result);
       sink({
         type: 'tool_result',
         toolCallId,
         toolName: toolCall.toolName,
         ok: true,
-        result: sanitiseToolResult(result),
+        result: sanitisedResult,
       });
+      // Post-dispatch synthesis — without it the stub leaves the user
+      // staring at the pre-tool sentence while the actual data (or the
+      // empty-portfolio case) goes unannounced. Mirrors what the LLM
+      // would say after seeing the function response.
+      const synthesised = summarizeStubToolResult(toolCall.toolName, sanitisedResult);
+      if (synthesised) {
+        for (const chunk of chunkText(`\n\n${synthesised}`)) {
+          sink({ type: 'text', delta: chunk });
+        }
+      }
     } catch (err) {
       sink({
         type: 'tool_result',
@@ -290,6 +411,12 @@ export class ChatLlmService implements IChatLlmService {
         ok: false,
         error: err instanceof Error ? err.message : String(err),
       });
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      for (const chunk of chunkText(
+        `\n\nThe ${toolCall.toolName} tool failed: ${errorMsg}.`,
+      )) {
+        sink({ type: 'text', delta: chunk });
+      }
     }
   }
 
@@ -330,55 +457,108 @@ export class ChatLlmService implements IChatLlmService {
       };
     };
     const c = client as AnyClient;
-    const stream = await c.models.generateContentStream({
-      model: 'gemini-2.0-flash',
-      contents,
-      config: {
-        systemInstruction,
-        tools,
-        toolConfig: { functionCallingConfig: { mode: 'AUTO' } },
-      },
-    });
 
-    for await (const chunk of stream) {
-      if (chunk.text) {
-        sink({ type: 'text', delta: chunk.text });
-      }
-      if (chunk.functionCalls) {
-        for (const fc of chunk.functionCalls) {
-          if (!isToolName(fc.name)) {
-            sink({
-              type: 'tool_result',
-              toolCallId: `tc_unknown_${Date.now()}`,
-              toolName: fc.name,
-              ok: false,
-              error: `Unknown tool: ${fc.name}`,
-            });
-            continue;
-          }
-          const toolCallId = `tc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-          sink({ type: 'tool_call', toolCallId, toolName: fc.name, args: fc.args });
-          try {
-            const result = await req.dispatchTool(fc.name, fc.args);
-            sink({
-              type: 'tool_result',
-              toolCallId,
-              toolName: fc.name,
-              ok: true,
-              result: sanitiseToolResult(result),
-            });
-          } catch (err) {
-            sink({
-              type: 'tool_result',
-              toolCallId,
-              toolName: fc.name,
-              ok: false,
-              error: err instanceof Error ? err.message : String(err),
-            });
+    // Agentic round-trip loop. Each turn the model can emit text + zero or
+    // more functionCalls; if any tools fire we dispatch them, append the
+    // model's call-turn + a synthetic user turn carrying the function
+    // responses, then re-stream so the model can synthesise a final
+    // answer ("you hold no positions yet"). Without this loop the user
+    // sees the tool fire but no result-aware reply.
+    for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
+      const stream = await c.models.generateContentStream({
+        model: 'gemini-2.0-flash',
+        contents,
+        config: {
+          systemInstruction,
+          tools,
+          toolConfig: { functionCallingConfig: { mode: 'AUTO' } },
+        },
+      });
+
+      const turnFunctionCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
+      const turnFunctionResponses: Array<{ name: string; response: unknown }> = [];
+
+      for await (const chunk of stream) {
+        if (chunk.text) {
+          sink({ type: 'text', delta: chunk.text });
+        }
+        if (chunk.functionCalls) {
+          for (const fc of chunk.functionCalls) {
+            if (!isToolName(fc.name)) {
+              sink({
+                type: 'tool_result',
+                toolCallId: `tc_unknown_${Date.now()}`,
+                toolName: fc.name,
+                ok: false,
+                error: `Unknown tool: ${fc.name}`,
+              });
+              continue;
+            }
+            const toolCallId = `tc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+            sink({ type: 'tool_call', toolCallId, toolName: fc.name, args: fc.args });
+            try {
+              const result = await req.dispatchTool(fc.name, fc.args);
+              const sanitisedResult = sanitiseToolResult(result);
+              sink({
+                type: 'tool_result',
+                toolCallId,
+                toolName: fc.name,
+                ok: true,
+                result: sanitisedResult,
+              });
+              turnFunctionCalls.push({ name: fc.name, args: fc.args });
+              // Strip privileged fields before re-feeding to the LLM so
+              // the model can describe a propose_buy preview without ever
+              // seeing or speaking the single-use confirm token.
+              const llmVisible = stripPrivilegedActionFields(sanitisedResult);
+              turnFunctionResponses.push({ name: fc.name, response: llmVisible });
+            } catch (err) {
+              const errorMsg = err instanceof Error ? err.message : String(err);
+              sink({
+                type: 'tool_result',
+                toolCallId,
+                toolName: fc.name,
+                ok: false,
+                error: errorMsg,
+              });
+              // Feed the failure back so the model can apologise + suggest
+              // a recovery rather than dropping the user mid-turn.
+              turnFunctionCalls.push({ name: fc.name, args: fc.args });
+              turnFunctionResponses.push({
+                name: fc.name,
+                response: { error: errorMsg },
+              });
+            }
           }
         }
       }
+
+      if (turnFunctionResponses.length === 0) {
+        // No tools fired (or model produced text-only) — turn is done.
+        return;
+      }
+
+      // Append the model's call turn and the synthetic tool-response turn,
+      // then loop. The Gemini @google/genai SDK accepts function responses
+      // as `role: 'user'` parts containing `functionResponse` (not
+      // `role: 'tool'` — that shape is for the older Vertex SDK).
+      contents.push({
+        role: 'model',
+        parts: turnFunctionCalls.map((fc) => ({ functionCall: fc })),
+      });
+      contents.push({
+        role: 'user',
+        parts: turnFunctionResponses.map((fr) => ({ functionResponse: fr })),
+      });
     }
+
+    // Hit the cap. Surface a polite tail so the chat doesn't end on a
+    // tool_result with no commentary; the user can re-prompt to continue.
+    sink({
+      type: 'text',
+      delta:
+        '\n\nI\'ve reached my action budget for this turn. Ask me anything else and I\'ll pick up from here.',
+    });
   }
 }
 
@@ -444,11 +624,24 @@ function chunkText(text: string, size = 32): string[] {
   return out;
 }
 
+/**
+ * Gemini content part — text, functionCall, or functionResponse. The
+ * @google/genai SDK accepts a heterogeneous mix per turn; we keep the
+ * type wide so the agentic round-trip in `runGeminiLoop` can append
+ * call-turn + response-turn parts without separate cast sites.
+ */
+type GeminiContentPart =
+  | { text: string }
+  | { functionCall: { name: string; args: Record<string, unknown> } }
+  | { functionResponse: { name: string; response: unknown } };
+
+type GeminiContent = { role: 'user' | 'model'; parts: GeminiContentPart[] };
+
 function buildGeminiContents(
   history: ChatHistoryMessage[],
   current: string,
-): Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> {
-  const out: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
+): GeminiContent[] {
+  const out: GeminiContent[] = [];
   for (const m of history) {
     out.push({
       role: m.role === 'user' ? 'user' : 'model',

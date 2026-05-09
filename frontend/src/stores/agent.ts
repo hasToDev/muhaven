@@ -90,10 +90,19 @@ export const useAgentStore = defineStore('agent', () => {
     if (useStreaming.value) {
       inflightAgentMessageId = agentMessage.id
       try {
-        const { text: finalText, actions } = await chat.send({ message: text, history })
+        const { text: finalText, actions, toolsCalled } = await chat.send({
+          message: text,
+          history,
+        })
         agentMessage.text = finalText
         agentMessage.actions = actions
-        if (!agentMessage.text && actions.length === 0) {
+        // Only fire the "I'm not sure how to help" fallback when the turn
+        // produced literally nothing — no synthesised text, no actions,
+        // and no successful tool dispatch. Read tools (portfolio_summary
+        // on an empty wallet, audit_query with zero hits) trip toolsCalled
+        // > 0 even when the LLM emits no closing text; in that case the
+        // backend already streamed a result-aware sentence.
+        if (!agentMessage.text && actions.length === 0 && toolsCalled === 0) {
           agentMessage.text =
             "I'm not sure how to help with that yet. Try asking about your portfolio, yields, or a buy."
         }
