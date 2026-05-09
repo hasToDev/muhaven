@@ -806,7 +806,17 @@ function buildGeminiToolDeclarations(): unknown[] {
             properties: {
               tokenAddress: { type: 'STRING' },
               investorAddress: { type: 'STRING' },
-              kycTier: { type: 'NUMBER', enum: [1, 2] },
+              // kycTier is a 1|2 union per `ProposeKycAddDtoSchema`, but
+              // Gemini's function-declaration schema requires `enum` values
+              // to be strings even when `type: 'NUMBER'` (per Google's
+              // protobuf spec — surfaced 2026-05-09 by a 400 from
+              // generativelanguage.googleapis.com). Drop the enum and let
+              // Zod's union literal catch out-of-range values server-side;
+              // the description tells the LLM what's valid.
+              kycTier: {
+                type: 'NUMBER',
+                description: 'KYC tier — 1 (retail) or 2 (accredited). Defaults to 1.',
+              },
             },
             required: ['tokenAddress', 'investorAddress'],
           },

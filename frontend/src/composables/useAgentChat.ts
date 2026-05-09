@@ -87,9 +87,11 @@ export function useAgentChat(): UseAgentChat {
     const turnActions: ActionDescriptor[] = []
     const turnCounter = { tools: 0 }
 
+    let release: (() => void) | null = null
     try {
-      const { events } = await agentToolsApi.openChatStream(req, activeController)
-      for await (const event of events) {
+      const opened = await agentToolsApi.openChatStream(req, activeController)
+      release = opened.release
+      for await (const event of opened.events) {
         handleEvent(event, turnActions, turnCounter)
         if (event.type === 'done') break
       }
@@ -104,6 +106,19 @@ export function useAgentChat(): UseAgentChat {
       lastError.value = msg
       throw err
     } finally {
+      // Actively release the underlying fetch reader so Chrome stops
+      // showing the SSE request as "pending" — without this the
+      // reactive flush that mounts ActionCard / ConfirmModal can stall
+      // until a network-tab click nudges the browser to process the
+      // connection state. `release()` aborts the in-flight fetch which
+      // closes the body stream client-side; the server has already
+      // ended the response by the time `done` fires, so the abort is
+      // a no-op on the wire but flips Chrome's bookkeeping.
+      try {
+        release?.()
+      } catch {
+        /* noop */
+      }
       isStreaming.value = false
       activeController = null
     }
