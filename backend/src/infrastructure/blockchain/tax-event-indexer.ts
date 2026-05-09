@@ -168,8 +168,71 @@ export class TaxEventIndexer {
       },
       'Starting TaxEventIndexer',
     );
+    // Pre-flight contract-existence probe: if any configured subscription
+    // address has no code on chain, the indexer is silently inert against
+    // it (eth_getLogs returns nothing). The most common cause is a stale
+    // .env after a redeploy — symptom is "tx confirmed but row never
+    // appears on /activity". Probe runs in the background so it never
+    // blocks the first tick; failures are warn-only.
+    void this.probeContractExistence();
     void this.tick();
     this.intervalHandle = setInterval(() => void this.tick(), intervalMs);
+  }
+
+  /**
+   * Phase 9.A · Option Z follow-up · staging-drift defence — `getCode` each
+   * configured indexer-subscription address. A `0x` (no-code) result means
+   * the env var is stale (typically after a fresh `pnpm run
+   * deploy:v2:testnet:stage` + `bash scripts/onboard-token.sh <symbol>
+   * stage` round) and the leg silently produces zero logs. Loud-warn so
+   * the operator catches this on container boot rather than at user-
+   * report time. RPC failures during the probe are tolerated — we'd
+   * rather start the indexer and let `tick()` surface chain issues than
+   * block boot on a flaky probe.
+   */
+  private async probeContractExistence(): Promise<void> {
+    const targets: Array<{ label: string; address: Address }> = [];
+    if (this.subscriptionAddress) {
+      targets.push({ label: 'subscription', address: this.subscriptionAddress });
+    }
+    for (const a of this.redemptionQueueAddresses) {
+      targets.push({ label: 'redemptionQueue', address: a });
+    }
+    for (const a of this.yieldSnapshotAddresses) {
+      targets.push({ label: 'yieldSnapshot', address: a });
+    }
+    if (this.muHavenStableAddress) {
+      targets.push({ label: 'muHavenStable', address: this.muHavenStableAddress });
+    }
+    for (const a of this.muHavenTokenAddresses) {
+      targets.push({ label: 'muHavenToken', address: a });
+    }
+    if (this.tokenRegistryAddress) {
+      targets.push({ label: 'tokenRegistry', address: this.tokenRegistryAddress });
+    }
+    if (targets.length === 0) return;
+
+    await Promise.all(
+      targets.map(async ({ label, address }) => {
+        try {
+          // `getCode` is the post-2.x viem name; `getBytecode` is the
+          // deprecated alias. Use the canonical name so we don't trip a
+          // future viem major-version removal.
+          const code = await this.client.getCode({ address });
+          if (!code || code === '0x') {
+            this.logger.warn(
+              { label, address },
+              'Configured indexer address has NO CODE on chain — env likely stale post-redeploy. Subscription leg will silently produce zero logs. Cross-check `deployments/arb-sepolia-v2*.json` and rotate the env var.',
+            );
+          }
+        } catch (err) {
+          this.logger.debug(
+            { err, label, address },
+            'Contract-existence probe failed (RPC error) — skipping; tick() will retry organically',
+          );
+        }
+      }),
+    );
   }
 
   stop(): void {

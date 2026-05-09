@@ -522,3 +522,259 @@ describe('TaxEventIndexer · IssuerUpdated dispatch (F1)', () => {
     expect(indexer.getStatus().lastProcessedBlock).toBe('105');
   });
 });
+
+/**
+ * Phase 9.A · Option Z follow-up — Transfer leg coverage. The transfer
+ * mapper had no unit tests at landing time (commit `8c7880a`); this suite
+ * exercises every branch of `fromTransferLog` so future regressions
+ * (protocol-filter drift, mint/burn skip, two-row insertion, metadata
+ * shape, missing amount handle) surface in CI rather than via the
+ * "transfer didn't appear in /activity" symptom on staging.
+ */
+
+const TOKEN_PROXY: Address = '0xe80a64C13759e9b823265e2691c7C481EaAaf6e2';
+const SUBSCRIPTION: Address = '0x6238d7f702F192dE4B84f7d9A38A4F569fc04466';
+const QUEUE: Address = '0x994989781f221b59985DD7b30eE10906b95fa2Be';
+const TREASURY: Address = '0x46a304002A7c02e387726af06d9C640B39D75064';
+const KERNEL_A: Address = '0xAaaaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAa';
+const KERNEL_B: Address = '0xBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBb';
+const ZERO_ADDR: Address = '0x0000000000000000000000000000000000000000';
+const AMOUNT_HANDLE: `0x${string}` =
+  '0x000000000000000000000000000000000000000000000000000000000000002a';
+
+function transferLog(opts: {
+  from: Address;
+  to: Address;
+  amount?: `0x${string}`;
+  txHash?: `0x${string}`;
+  blockNumber?: bigint;
+  logIndex?: number;
+  address?: Address;
+}) {
+  return {
+    eventName: 'Transfer',
+    args: {
+      from: opts.from,
+      to: opts.to,
+      amount: opts.amount ?? AMOUNT_HANDLE,
+    },
+    transactionHash: opts.txHash ?? '0xTransferTx',
+    blockNumber: opts.blockNumber ?? 102n,
+    logIndex: opts.logIndex ?? 0,
+    address: opts.address ?? TOKEN_PROXY,
+  } as any;
+}
+
+describe('TaxEventIndexer · Transfer dispatch (Option Z follow-up)', () => {
+  let taxEventRepo: ITaxEventRepository;
+  let rwaTokenRepo: ReturnType<typeof fakeRwaTokenRepo>;
+
+  beforeEach(() => {
+    taxEventRepo = emptyTaxEventRepo();
+    rwaTokenRepo = fakeRwaTokenRepo();
+  });
+
+  function transferIndexerConfig(overrides: Record<string, unknown> = {}) {
+    return defaultIndexerConfig({
+      muHavenTokenAddresses: [TOKEN_PROXY],
+      protocolFilterAddresses: [SUBSCRIPTION, QUEUE, TREASURY],
+      ...overrides,
+    });
+  }
+
+  function clientWithTransferLogs(logs: any[]) {
+    let blockCallCount = 0;
+    return createMockClient({
+      getBlockNumber: vi.fn().mockImplementation(() => {
+        blockCallCount++;
+        return Promise.resolve(blockCallCount === 1 ? 100n : 105n);
+      }),
+      getLogs: vi.fn().mockImplementation((params: any) => {
+        const addrs = Array.isArray(params.address) ? params.address : [params.address];
+        if (addrs.some((a: string) => a?.toLowerCase() === TOKEN_PROXY.toLowerCase())) {
+          return Promise.resolve(logs);
+        }
+        return Promise.resolve([]);
+      }),
+    });
+  }
+
+  it('inserts TWO rows (sender + recipient) for a kernel→kernel P2P transfer', async () => {
+    const client = clientWithTransferLogs([
+      transferLog({ from: KERNEL_A, to: KERNEL_B }),
+    ]);
+
+    const indexer = new TaxEventIndexer(taxEventRepo, transferIndexerConfig(), client);
+    await indexer.tick();
+    await indexer.tick();
+
+    expect(taxEventRepo.saveMany).toHaveBeenCalledOnce();
+    const events = (taxEventRepo.saveMany as any).mock.calls[0][0];
+    expect(events).toHaveLength(2);
+
+    // Sender-keyed row.
+    const sender = events.find((e: any) => e.holderAddress === KERNEL_A);
+    expect(sender).toBeDefined();
+    expect(sender.eventType).toBe('Transfer');
+    expect(sender.tokenAddress).toBe(TOKEN_PROXY);
+    expect(sender.metadata).toMatchObject({
+      kind: 'transfer',
+      direction: 'outbound',
+      counterparty: KERNEL_B,
+      encrypted_amount_handle: AMOUNT_HANDLE,
+    });
+
+    // Recipient-keyed row.
+    const recipient = events.find((e: any) => e.holderAddress === KERNEL_B);
+    expect(recipient).toBeDefined();
+    expect(recipient.eventType).toBe('Transfer');
+    expect(recipient.tokenAddress).toBe(TOKEN_PROXY);
+    expect(recipient.metadata).toMatchObject({
+      kind: 'transfer',
+      direction: 'inbound',
+      counterparty: KERNEL_A,
+      encrypted_amount_handle: AMOUNT_HANDLE,
+    });
+
+    // Both rows share (txHash, logIndex) — the PK widening to include
+    // holderAddress is what lets them coexist.
+    expect(sender.txHash).toBe(recipient.txHash);
+    expect(sender.logIndex).toBe(recipient.logIndex);
+  });
+
+  it('skips mints (from == 0) — covered by Subscription.Purchased', async () => {
+    const client = clientWithTransferLogs([
+      transferLog({ from: ZERO_ADDR, to: KERNEL_B }),
+    ]);
+
+    const indexer = new TaxEventIndexer(taxEventRepo, transferIndexerConfig(), client);
+    await indexer.tick();
+    await indexer.tick();
+
+    expect(taxEventRepo.saveMany).not.toHaveBeenCalled();
+  });
+
+  it('skips burns (to == 0) — covered by Redeemed / QueueClaimed', async () => {
+    const client = clientWithTransferLogs([
+      transferLog({ from: KERNEL_A, to: ZERO_ADDR }),
+    ]);
+
+    const indexer = new TaxEventIndexer(taxEventRepo, transferIndexerConfig(), client);
+    await indexer.tick();
+    await indexer.tick();
+
+    expect(taxEventRepo.saveMany).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['from is subscription', SUBSCRIPTION, KERNEL_B],
+    ['to is subscription', KERNEL_A, SUBSCRIPTION],
+    ['from is queue', QUEUE, KERNEL_B],
+    ['to is queue', KERNEL_A, QUEUE],
+    ['from is treasury', TREASURY, KERNEL_B],
+    ['to is treasury', KERNEL_A, TREASURY],
+  ] as const)(
+    'skips protocol-mediated moves — %s',
+    async (_label, from, to) => {
+      const client = clientWithTransferLogs([transferLog({ from, to })]);
+      const indexer = new TaxEventIndexer(taxEventRepo, transferIndexerConfig(), client);
+      await indexer.tick();
+      await indexer.tick();
+      expect(taxEventRepo.saveMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it('protocol-filter check is case-insensitive at the address boundary', async () => {
+    const upper = TREASURY.toUpperCase() as Address;
+    // Filter contains the checksummed address, log carries upper-case from.
+    // Both legs lower() at the comparison so the skip still fires.
+    const client = clientWithTransferLogs([
+      transferLog({ from: upper, to: KERNEL_B }),
+    ]);
+
+    const indexer = new TaxEventIndexer(taxEventRepo, transferIndexerConfig(), client);
+    await indexer.tick();
+    await indexer.tick();
+
+    expect(taxEventRepo.saveMany).not.toHaveBeenCalled();
+  });
+
+  it('falls back to encrypted_amount_handle: null when amount arg missing', async () => {
+    const log = transferLog({ from: KERNEL_A, to: KERNEL_B });
+    delete (log.args as any).amount;
+    const client = clientWithTransferLogs([log]);
+
+    const indexer = new TaxEventIndexer(taxEventRepo, transferIndexerConfig(), client);
+    await indexer.tick();
+    await indexer.tick();
+
+    expect(taxEventRepo.saveMany).toHaveBeenCalledOnce();
+    const events = (taxEventRepo.saveMany as any).mock.calls[0][0];
+    expect(events).toHaveLength(2);
+    for (const e of events) {
+      expect((e.metadata as any).encrypted_amount_handle).toBeNull();
+    }
+  });
+
+  it('handles a mixed batch — Transfer + IssuerUpdated land in one chunk', async () => {
+    // Two registry hits + one Transfer. Cursor should advance, both legs fire.
+    let blockCallCount = 0;
+    const client = createMockClient({
+      getBlockNumber: vi.fn().mockImplementation(() => {
+        blockCallCount++;
+        return Promise.resolve(blockCallCount === 1 ? 100n : 105n);
+      }),
+      getLogs: vi.fn().mockImplementation((params: any) => {
+        const addrs = Array.isArray(params.address) ? params.address : [params.address];
+        if (addrs.some((a: string) => a?.toLowerCase() === TOKEN_PROXY.toLowerCase())) {
+          return Promise.resolve([transferLog({ from: KERNEL_A, to: KERNEL_B })]);
+        }
+        if (addrs.some((a: string) => a?.toLowerCase() === REGISTRY_ADDR.toLowerCase())) {
+          return Promise.resolve([issuerUpdatedLog({ blockNumber: 101n })]);
+        }
+        return Promise.resolve([]);
+      }),
+    });
+
+    const handler = new TokenRegistryHandler(rwaTokenRepo);
+    const indexer = new TaxEventIndexer(
+      taxEventRepo,
+      transferIndexerConfig({ tokenRegistryAddress: REGISTRY_ADDR }),
+      client,
+      handler,
+    );
+    await indexer.tick();
+    await indexer.tick();
+
+    expect(rwaTokenRepo.updateIssuer).toHaveBeenCalledOnce();
+    expect(taxEventRepo.saveMany).toHaveBeenCalledOnce();
+    const events = (taxEventRepo.saveMany as any).mock.calls[0][0];
+    expect(events).toHaveLength(2);
+    expect(events.every((e: any) => e.eventType === 'Transfer')).toBe(true);
+  });
+
+  it('does NOT subscribe to Transfer logs when muHavenTokenAddresses is empty', async () => {
+    const client = clientWithTransferLogs([
+      transferLog({ from: KERNEL_A, to: KERNEL_B }),
+    ]);
+
+    const indexer = new TaxEventIndexer(
+      taxEventRepo,
+      defaultIndexerConfig({ muHavenTokenAddresses: [], protocolFilterAddresses: [] }),
+      client,
+    );
+    await indexer.tick();
+    await indexer.tick();
+
+    // Neither getLogs targeted the token proxy nor saveMany fired. The
+    // empty-array path pushes Promise.resolve([]) instead of issuing a
+    // request, so the operator-visible "muHavenTokens: 0" log is the only
+    // signal that the leg is inert.
+    const calls = (client.getLogs as any).mock.calls;
+    for (const [params] of calls) {
+      const addrs = Array.isArray(params.address) ? params.address : [params.address];
+      expect(addrs.some((a: string) => a?.toLowerCase() === TOKEN_PROXY.toLowerCase())).toBe(false);
+    }
+    expect(taxEventRepo.saveMany).not.toHaveBeenCalled();
+  });
+});
