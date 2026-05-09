@@ -208,9 +208,10 @@ const EnvSchema = z.object({
   // back to a deterministic intent classifier that emits the same SSE
   // wire shape so the UI keeps working in dev/CI without a key.
   GEMINI_API_KEY: z.string().optional(),
-  // Model selector — default `gemini-2.0-flash`. Smaller / cheaper than
-  // `pro`, fast enough for the ~6-min onboarding budget.
-  GEMINI_MODEL: z.string().default('gemini-2.0-flash'),
+  // Model selector — default `gemini-2.5-flash` (current Flash tier as
+  // of 2026-05-09; `gemini-2.0-flash` was retired for new users). Smaller
+  // / cheaper than `pro`, fast enough for the ~6-min onboarding budget.
+  GEMINI_MODEL: z.string().default('gemini-2.5-flash'),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

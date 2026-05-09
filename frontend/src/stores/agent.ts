@@ -79,13 +79,22 @@ export const useAgentStore = defineStore('agent', () => {
       timestamp: new Date(),
     })
 
-    const agentMessage: AgentMessage = {
-      id: nextId++,
+    // Push a plain object then re-fetch the reactive proxy by id. Vue 3's
+    // ref<Array<Object>> wraps each pushed element with a Proxy, but the
+    // local `agentMessage` reference returned from a literal still points
+    // at the plain object — mutations on it BYPASS the Proxy's set trap,
+    // so the post-stream `agentMessage.text = finalText` etc. would NOT
+    // trigger a re-render until some unrelated event flushed Vue's
+    // scheduler (caught 2026-05-09 — operator saw ActionCard mount only
+    // after clicking the SSE response in the network tab).
+    const agentMessageId = nextId++
+    messages.value.push({
+      id: agentMessageId,
       role: 'agent',
       text: '',
       timestamp: new Date(),
-    }
-    messages.value.push(agentMessage)
+    })
+    const agentMessage = messages.value.find((m) => m.id === agentMessageId)!
 
     if (useStreaming.value) {
       inflightAgentMessageId = agentMessage.id

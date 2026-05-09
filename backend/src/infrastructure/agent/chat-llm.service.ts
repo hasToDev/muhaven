@@ -328,7 +328,7 @@ export class ChatLlmService implements IChatLlmService {
       return;
     }
 
-    sink({ type: 'meta', model: 'gemini-2.0-flash', sessionId });
+    sink({ type: 'meta', model: getEnv().GEMINI_MODEL, sessionId });
     let geminiEmittedAny = false;
     const guardedSink = (event: StreamEvent): void => {
       if (
@@ -461,9 +461,10 @@ export class ChatLlmService implements IChatLlmService {
     // responses, then re-stream so the model can synthesise a final
     // answer ("you hold no positions yet"). Without this loop the user
     // sees the tool fire but no result-aware reply.
+    const model = getEnv().GEMINI_MODEL;
     for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
       const stream = await c.models.generateContentStream({
-        model: 'gemini-2.0-flash',
+        model,
         contents,
         config: {
           systemInstruction,
