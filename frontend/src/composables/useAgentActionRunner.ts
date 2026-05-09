@@ -109,6 +109,49 @@ async function runBuy(action: ActionDescriptor): Promise<string> {
   const shares = BigInt(String(action.preview.shares))
   const maxSharesHint = BigInt(String(action.preview.maxSharesHint))
 
+  // Client-side mhUSDC balance gate. Backend's propose_buy checks
+  // *presence* of cash-rail history (catches fresh wallets); the
+  // *amount* check has to happen client-side because the mhUSDC
+  // balance is FHE-encrypted on `MuHavenStable._balances[user]` and
+  // only the user's permit can decrypt it. Without this gate, a
+  // user with 5 mhUSDC asking for a 100 mhUSDC buy gets a
+  // ConfirmModal, signs, pays gas, and the on-chain
+  // Subscription.purchase reverts/silent-fails — wasted gas + ugly
+  // UX. Surfaced 2026-05-09 from operator feedback.
+  const estimatedTotalUsd6Raw = action.preview.estimatedTotalUsd6
+  if (typeof estimatedTotalUsd6Raw === 'string' && /^\d+$/.test(estimatedTotalUsd6Raw)) {
+    const needed = BigInt(estimatedTotalUsd6Raw)
+    const { useWalletStore } = await import('@/stores/wallet')
+    const { usePortfolioStore } = await import('@/stores/portfolio')
+    const wallet = useWalletStore()
+    const portfolio = usePortfolioStore()
+    const walletAddress = wallet.address as `0x${string}` | null
+    if (walletAddress) {
+      // Decrypt the mhUSDC balance if we don't have a fresh value
+      // already cached. The store's decryptPusdc() handles the cofhe
+      // permit + handle-fetch in one call; no-ops if already decrypting.
+      if (portfolio.pusdcConfidentialBalance === null) {
+        try {
+          await portfolio.decryptPusdc(walletAddress)
+        } catch (err) {
+          // Decrypt failure shouldn't block the buy — fall through
+          // to the on-chain silent-fail path with a console warn so
+          // operators can diagnose. Matches `decryptPusdc`'s own
+          // failure semantics (cached null + error surfaced separately).
+          console.warn('[runBuy] mhUSDC decrypt failed; proceeding without balance gate:', err)
+        }
+      }
+      const have = portfolio.pusdcConfidentialBalance
+      if (have !== null && have < needed) {
+        const haveUsd = (Number(have) / 1_000_000).toFixed(2)
+        const needUsd = (Number(needed) / 1_000_000).toFixed(2)
+        throw new AgentActionRunnerError(
+          `Insufficient mhUSDC balance: you have $${haveUsd} but this purchase needs $${needUsd}. Wrap more USDC into mhUSDC on the Cash page first.`,
+        )
+      }
+    }
+  }
+
   // Pre-flight operator grant — same posture as TradePage (idempotent
   // long-expiry). Wave 5 may cache the operator-set state across
   // surfaces; today we re-grant per session which is a single passkey

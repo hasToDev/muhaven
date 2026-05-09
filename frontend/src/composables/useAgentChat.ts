@@ -160,14 +160,16 @@ export function useAgentChat(): UseAgentChat {
         if (event.ok && event.result && isActionDescriptor(event.result)) {
           pendingActions.value.push(event.result)
           turnActions.push(event.result)
-        } else if (!event.ok && event.error) {
-          // Append a user-visible note so the chat reflects the failure.
-          const note = `\n\n_(Tool ${event.toolName} failed: ${event.error})_`
-          streamingText.value += note
         }
-        // Successful read-tool results (portfolio_summary, quote, etc.)
-        // are surfaced to the user via the backend's post-dispatch
-        // synthesis text; no UI surface needed for the raw result.
+        // Failures are NOT echoed verbatim into the chat anymore —
+        // the backend's agentic loop feeds the structured error back
+        // to the LLM as a `functionResponse`, and the LLM synthesises
+        // a polite human-readable apology in its next-turn text. The
+        // raw `_(Tool X failed: ...)_` dump used to double-render the
+        // same content (and leaked structured error codes like
+        // INSUFFICIENT_MHUSDC into the user-facing copy). Removed
+        // 2026-05-09 from operator feedback. Successful read-tool
+        // results similarly surface via the synthesis text.
         break
       case 'suggestions':
         turnSuggestions.items = event.items
