@@ -215,17 +215,81 @@ export async function openKeystore(
   let entry: unknown;
   try {
     entry = new Entry(KEYRING_SERVICE, KEYRING_ACCOUNT);
-    // probe read; ignore content
+    // Probe read — and validate the shape if present. A corrupted record
+    // (wrong-version JSON, partial write from a prior broker, or a value
+    // some other tool stored under the same KEYRING_SERVICE+ACCOUNT pair)
+    // would otherwise pass the probe and surface only at the first MCP
+    // call as `keystore_unavailable`. See MCP_PUBLISH_READINESS.md §2.3
+    // (H-3).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (entry as any).getPassword();
+    const raw = (entry as any).getPassword();
+    if (raw && typeof raw === 'string') {
+      // parseRecord throws KeystoreError('malformed_record') on bad JSON;
+      // returns null on JSON-but-wrong-shape (no jwt field). Both are
+      // 'corrupted' for our purposes — fall back to the file backend so
+      // `muhaven-broker login` can re-mint cleanly without the operator
+      // first having to manually clear the OS keychain entry.
+      const parsed = parseRecord(raw);
+      if (parsed === null) {
+        return {
+          keystore: new FileKeystore(filePath),
+          fallbackReason:
+            'OS keychain held a record that did not contain a recognizable JWT — falling back to file. ' +
+            'Run `muhaven-broker logout` if you want to clean it up.',
+        };
+      }
+    }
   } catch (err) {
+    // Distinguish parseRecord throws (malformed_record — bad JSON in the
+    // OS keychain slot) from getPassword throws (Secret Service down,
+    // DPAPI permission issue, etc.) so the doctor diagnostic can be
+    // specific.
+    const isMalformed = err instanceof KeystoreError && err.code === 'malformed_record';
     return {
       keystore: new FileKeystore(filePath),
-      fallbackReason: `OS keychain probe failed: ${asMessage(err)}`,
+      fallbackReason: isMalformed
+        ? `OS keychain held a malformed JWT record — falling back to file. ${asMessage(err)}`
+        : `OS keychain probe failed: ${asMessage(err)}`,
     };
   }
 
   return { keystore: new OsKeystore(entry), fallbackReason: null };
 }
 
-export const __INTERNAL_FOR_TESTS = { FileKeystore, OsKeystore, parseRecord };
+/**
+ * Test-only entrypoint. Bypasses the dynamic `@napi-rs/keyring` import
+ * so unit tests can inject a fake Entry that returns canned probe values
+ * (malformed JSON / wrong-shape JSON / empty / valid). Mirrors the live
+ * probe path in `openKeystore` exactly — keep them in sync.
+ */
+export async function openKeystoreForTest(
+  mockEntry: { getPassword: () => unknown; setPassword?: (v: string) => void; deletePassword?: () => void },
+  options: OpenKeystoreOptions = {},
+): Promise<{ keystore: IKeystore; fallbackReason: string | null }> {
+  const filePath = options.filePath ?? FileKeystore.defaultPath();
+  try {
+    const raw = mockEntry.getPassword();
+    if (raw && typeof raw === 'string') {
+      const parsed = parseRecord(raw);
+      if (parsed === null) {
+        return {
+          keystore: new FileKeystore(filePath),
+          fallbackReason:
+            'OS keychain held a record that did not contain a recognizable JWT — falling back to file. ' +
+            'Run `muhaven-broker logout` if you want to clean it up.',
+        };
+      }
+    }
+  } catch (err) {
+    const isMalformed = err instanceof KeystoreError && err.code === 'malformed_record';
+    return {
+      keystore: new FileKeystore(filePath),
+      fallbackReason: isMalformed
+        ? `OS keychain held a malformed JWT record — falling back to file. ${asMessage(err)}`
+        : `OS keychain probe failed: ${asMessage(err)}`,
+    };
+  }
+  return { keystore: new OsKeystore(mockEntry), fallbackReason: null };
+}
+
+export const __INTERNAL_FOR_TESTS = { FileKeystore, OsKeystore, parseRecord, openKeystoreForTest };

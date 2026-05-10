@@ -244,6 +244,32 @@ export async function runDoctor(): Promise<number> {
   const { keystore, fallbackReason } = await openKeystore();
   print(`Keystore backend  : ${keystore.backend}${fallbackReason ? ` (fell back: ${fallbackReason})` : ''}`);
 
+  // H-3 follow-on: round-trip a sentinel through the keystore so the
+  // doctor catches a write-fails-but-read-succeeds asymmetry that the
+  // probe alone wouldn't. Non-destructive: if the operator is already
+  // logged in we restore the original record afterwards instead of
+  // forcing a re-login. Sentinel JWT is intentionally malformed
+  // (`__doctor_sentinel__.x.y`) so even if `clear()` silently fails
+  // the broker would never accept it as a real JWT.
+  try {
+    const original = await keystore.get();
+    const sentinel = { jwt: '__doctor_sentinel__.x.y', expiresAtSec: null, storedAtSec: 0 };
+    await keystore.set(sentinel);
+    const read = await keystore.get();
+    if (original) {
+      await keystore.set(original);
+    } else {
+      await keystore.clear();
+    }
+    if (read?.jwt !== sentinel.jwt) {
+      print(`Keystore round-trip: FAILED (wrote sentinel, read back ${read?.jwt ?? 'null'})`);
+    } else {
+      print(`Keystore round-trip: ok`);
+    }
+  } catch (err) {
+    print(`Keystore round-trip: FAILED (${err instanceof Error ? err.message : String(err)})`);
+  }
+
   // Probe broker reachability.
   const config = loadMcpConfig();
   const broker = new BrokerClient({

@@ -3,6 +3,21 @@
   "version": "0.1.0",
   "description": "MuHaven MCP server — read/position/policy toolsets bridging Claude Desktop / Cursor / Claude Code to the MuHaven backend, with a sibling muhaven-broker daemon holding the session-key private half over a local IPC socket",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hasToDev/muhaven.git",
+    "directory": "packages/mcp"
+  },
+  "bugs": {
+    "url": "https://github.com/hasToDev/muhaven/issues"
+  },
+  "homepage": "https://github.com/hasToDev/muhaven/tree/master/packages/mcp",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/",
+    "provenance": true
+  },
+  "sideEffects": false,
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -16,7 +31,8 @@
       "types": "./dist/broker.d.ts",
       "import": "./dist/broker.js",
       "require": "./dist/broker.cjs"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "bin": {
     "muhaven-mcp": "./bin/muhaven-mcp.cjs",
@@ -31,7 +47,7 @@
   ],
   "scripts": {
     "build": "tsup",
-    "dev": "tsup --watch",
+    "dev": "MUHAVEN_DEV_BUILD=1 tsup --watch",
     "clean": "rimraf dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
