@@ -199,7 +199,7 @@ onMounted(() => {
               class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool font-semibold mb-2 block
                      opacity-60 group-hover:opacity-100 transition-opacity"
             >
-              Agent · System Initialization
+              HavenBot
             </span>
             <div
               class="relative overflow-hidden rounded-2xl rounded-tl-sm pl-5 pr-4 py-3.5
@@ -241,7 +241,7 @@ onMounted(() => {
                 msg.role === 'user' ? 'text-right' : 'text-left',
               ]"
             >
-              {{ msg.role === 'user' ? 'User · Request' : 'Agent · Response' }}
+              {{ msg.role === 'user' ? 'You' : 'HavenBot' }}
             </span>
             <div
               :class="cn(
@@ -287,20 +287,64 @@ onMounted(() => {
           </div>
         </div>
 
-        <!-- Typing indicator -->
-        <div v-if="agentStore.isTyping" class="flex justify-start gap-6 w-full">
-          <div class="w-10 h-10 rounded-xl bg-mist dark:bg-[#171717] border border-haze dark:border-white/10 flex items-center justify-center flex-shrink-0">
+        <!-- Typing indicator — "Sealed Channel" loading state.
+             Four coordinated motions: avatar ring breathe + bubble
+             ring pulse + left-bar vertical shimmer + dot pulse-and-
+             glow. Eyebrow label matches the settled-message labels so
+             the indicator feels like a first-class HavenBot moment.
+             Wrapper carries role/aria-live so screen readers announce
+             the wait politely. Reduced-motion freezes animations to a
+             visible mid-state via global.css. -->
+        <div
+          v-if="agentStore.isTyping"
+          role="status"
+          aria-live="polite"
+          aria-label="HavenBot is thinking"
+          class="flex justify-start gap-6 w-full"
+        >
+          <div
+            class="w-10 h-10 rounded-xl bg-mist dark:bg-[#171717]
+                   border border-haze dark:border-white/10
+                   flex items-center justify-center flex-shrink-0
+                   havenbot-avatar-breathe"
+          >
             <Sparkles :size="15" :stroke-width="1.8" class="text-compute dark:text-signal" />
           </div>
-          <div
-            class="relative overflow-hidden bg-mist/40 dark:bg-[#0d0e10]
-                   border border-haze dark:border-white/5 rounded-2xl rounded-tl-sm
-                   py-3 pl-5 pr-4 flex items-center gap-2 shadow-2xl"
-          >
-            <span aria-hidden="true" class="absolute top-0 bottom-0 left-0 w-1.5 bg-gold/60 dark:bg-signal/60" />
-            <span class="w-1.5 h-1.5 bg-compute dark:bg-signal rounded-full animate-bounce" style="animation-delay: 0ms" />
-            <span class="w-1.5 h-1.5 bg-compute dark:bg-signal rounded-full animate-bounce" style="animation-delay: 150ms" />
-            <span class="w-1.5 h-1.5 bg-compute dark:bg-signal rounded-full animate-bounce" style="animation-delay: 300ms" />
+          <div class="flex-1 min-w-0">
+            <span
+              class="font-sans text-[10px] uppercase tracking-[0.22em] font-semibold
+                     mb-2 block"
+            >
+              <span class="text-cool">HavenBot</span>
+              <span class="text-cool/40 mx-1">·</span>
+              <span class="text-gold dark:text-signal">Thinking</span>
+            </span>
+            <div
+              class="relative overflow-hidden bg-mist/40 dark:bg-[#0d0e10]
+                     border border-haze dark:border-white/5 rounded-2xl rounded-tl-sm
+                     py-3.5 pl-6 pr-5 inline-flex items-center gap-2.5 shadow-2xl
+                     havenbot-bubble-pulse"
+            >
+              <span
+                aria-hidden="true"
+                class="absolute top-0 bottom-0 left-0 w-[3px] havenbot-shimmer-vert dark:opacity-90"
+              />
+              <span
+                class="w-2 h-2 bg-gold dark:bg-signal rounded-full
+                       havenbot-dot-pulse shadow-[0_0_8px_currentColor]"
+                style="animation-delay: 0ms"
+              />
+              <span
+                class="w-2 h-2 bg-gold dark:bg-signal rounded-full
+                       havenbot-dot-pulse shadow-[0_0_8px_currentColor]"
+                style="animation-delay: 200ms"
+              />
+              <span
+                class="w-2 h-2 bg-gold dark:bg-signal rounded-full
+                       havenbot-dot-pulse shadow-[0_0_8px_currentColor]"
+                style="animation-delay: 400ms"
+              />
+            </div>
           </div>
         </div>
       </div>

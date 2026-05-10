@@ -5,7 +5,7 @@ import { useAuth, RoleMismatchError } from '@/composables/useAuth'
 import { useHomeTarget } from '@/composables/useHomeTarget'
 import { cn } from '@/lib/utils'
 import MButton from '@/components/ui/MButton.vue'
-import { Shield, Fingerprint, Loader2, AlertCircle, CheckCircle2, BadgeCheck } from 'lucide-vue-next'
+import { Shield, Fingerprint, Loader2, AlertCircle, CheckCircle2, BadgeCheck, ArrowRight } from 'lucide-vue-next'
 import { demoApi, type UserRole } from '@/services/api'
 import { IdentityRegistryClient } from '@muhaven/sdk'
 import { v35Addresses, isZeroAddress } from '@/contracts/addresses'
@@ -205,28 +205,163 @@ function skipWhitelist() {
   setTimeout(redirectToDashboard, 300)
 }
 
-function toggleMode() {
+/**
+ * Mode toggle — flips between login and register. Always clears the
+ * inline error + passkey-name input so stale state from the prior
+ * mode never leaks into the new form.
+ */
+function toggleMode(): void {
   mode.value = mode.value === 'login' ? 'register' : 'login'
   localError.value = null
   username.value = ''
 }
+
+/**
+ * Smooth collapse transition for register-mode-only fields (role
+ * selector + username). The prior `<transition>`-with-class pattern
+ * used a static `max-h` ceiling that almost always overshot the
+ * actual element height — the leave animation would spend the first
+ * ~20% of its duration with nothing visibly changing while max-h
+ * dropped from the ceiling down to the real content height, then
+ * jump-collapse the rest. The `mb-6` margin-bottom outside the
+ * transitioning element also popped out discretely on unmount,
+ * adding a final "click."
+ *
+ * These hooks measure `scrollHeight` at leave time + animate height
+ * + margin-bottom + opacity together from real values down to 0
+ * (and reverse on enter). Surfaced 2026-05-10 from operator feedback
+ * on the Sign In ↔ Create Account toggle pacing.
+ */
+const ENTER_DURATION = 500
+const LEAVE_DURATION = 400
+
+function onCollapseBeforeEnter(el: Element): void {
+  const e = el as HTMLElement
+  e.style.height = '0px'
+  e.style.marginBottom = '0px'
+  e.style.opacity = '0'
+  e.style.overflow = 'hidden'
+}
+
+function onCollapseEnter(el: Element, done: () => void): void {
+  const e = el as HTMLElement
+  // Capture the natural height + the natural margin-bottom (set by
+  // the element's class — `mb-6` = 24px). We animate both up from 0
+  // to the natural values, then clear the inline styles so the
+  // element resumes responsive layout.
+  const naturalMb = getNaturalMarginBottom(e)
+  const naturalH = e.scrollHeight
+  // Reflow after the before-enter zeros are applied, then animate.
+  requestAnimationFrame(() => {
+    e.style.transition = `height ${ENTER_DURATION}ms ease-out, margin-bottom ${ENTER_DURATION}ms ease-out, opacity ${ENTER_DURATION}ms ease-out`
+    e.style.height = `${naturalH}px`
+    e.style.marginBottom = `${naturalMb}px`
+    e.style.opacity = '1'
+    const cleanup = (ev: TransitionEvent): void => {
+      if (ev.propertyName !== 'height') return
+      e.removeEventListener('transitionend', cleanup as EventListener)
+      e.style.transition = ''
+      e.style.height = ''
+      e.style.marginBottom = ''
+      e.style.opacity = ''
+      e.style.overflow = ''
+      done()
+    }
+    e.addEventListener('transitionend', cleanup as EventListener)
+  })
+}
+
+function onCollapseLeave(el: Element, done: () => void): void {
+  const e = el as HTMLElement
+  const currentH = e.scrollHeight
+  const currentMb = getNaturalMarginBottom(e)
+  // Lock the current rendered height + margin to inline styles so
+  // the transition has a concrete starting point (without this the
+  // browser would treat `auto` as the from-value and skip the
+  // animation entirely).
+  e.style.height = `${currentH}px`
+  e.style.marginBottom = `${currentMb}px`
+  e.style.overflow = 'hidden'
+  // Force reflow so the inline styles register before we change them.
+  void e.offsetHeight
+  e.style.transition = `height ${LEAVE_DURATION}ms ease-in, margin-bottom ${LEAVE_DURATION}ms ease-in, opacity ${LEAVE_DURATION}ms ease-in`
+  e.style.height = '0px'
+  e.style.marginBottom = '0px'
+  e.style.opacity = '0'
+  const cleanup = (ev: TransitionEvent): void => {
+    if (ev.propertyName !== 'height') return
+    e.removeEventListener('transitionend', cleanup as EventListener)
+    done()
+  }
+  e.addEventListener('transitionend', cleanup as EventListener)
+}
+
+/**
+ * Read the element's class-defined margin-bottom by temporarily
+ * clearing any inline override. Falls back to 0 when no margin is
+ * set or the value can't be parsed.
+ */
+function getNaturalMarginBottom(el: HTMLElement): number {
+  const inline = el.style.marginBottom
+  el.style.marginBottom = ''
+  const computed = parseFloat(getComputedStyle(el).marginBottom) || 0
+  if (inline !== '') el.style.marginBottom = inline
+  return computed
+}
+
 </script>
 
 <template>
-  <div class="min-h-screen flex items-center justify-center px-4 py-12">
+  <div class="relative min-h-screen flex items-center justify-center px-4 py-12 overflow-hidden">
+    <!-- Ambient gradient — lg+ only.
+         Two static amber bloom orbs in opposite corners + a thin
+         horizon hairline behind the card. Pure CSS gradient, no
+         motion. Opacity tuned low so the card stays the visual
+         subject (the orbs add warm depth without competing for
+         attention against the card's accents). sm/md keeps the
+         bare centered card. -->
+    <div
+      class="absolute inset-0 pointer-events-none hidden lg:block"
+      aria-hidden="true"
+    >
+      <!-- Bloom orb — top-left, gold -->
+      <div
+        class="absolute -top-[12%] -left-[14%] w-[720px] h-[720px] rounded-full
+               bg-gold/10 dark:bg-gold/5 blur-3xl"
+      />
+      <!-- Bloom orb — bottom-right, signal -->
+      <div
+        class="absolute -bottom-[12%] -right-[14%] w-[720px] h-[720px] rounded-full
+               bg-signal/10 dark:bg-signal/5 blur-3xl"
+      />
+      <!-- Horizon hairline -->
+      <div
+        class="absolute top-1/2 inset-x-0 h-px
+               bg-gradient-to-r from-transparent via-gold/20 dark:via-signal/15 to-transparent"
+      />
+    </div>
+
     <div
       v-motion
-      :initial="{ opacity: 0, y: 24, scale: 0.97 }"
-      :enter="{ opacity: 1, y: 0, scale: 1, transition: { duration: 500, ease: 'easeOut' } }"
-      class="w-full max-w-md"
+      :initial="{ opacity: 0 }"
+      :enter="{ opacity: 1, transition: { duration: 600, ease: 'easeOut' } }"
+      class="relative z-10 w-full max-w-md"
     >
-      <!-- Glass card -->
+      <!-- Glass card.
+           Shadow tuned to live alongside the ambient corner-orb gradient
+           without competing with it: warm brown tint in light mode,
+           deeper black in dark mode, both with a small negative spread
+           so the shadow stays tight to the card silhouette and doesn't
+           bleed into the corners. Sits between the original
+           `shadow-elevated` (too heavy) and the first softened pass
+           (too light) — visible card lift without slamming the canvas. -->
       <div
         :class="cn(
           'relative overflow-hidden rounded-2xl',
           'bg-white/80 dark:bg-midnight-mid/80 backdrop-blur-xl',
           'ring-1 ring-haze dark:ring-white/8',
-          'shadow-elevated',
+          'shadow-[0_18px_42px_-10px_rgba(63,46,12,0.26)]',
+          'dark:shadow-[0_22px_52px_-12px_rgba(0,0,0,0.62)]',
         )"
       >
         <!-- Subtle gradient accent at top -->
@@ -389,41 +524,49 @@ function toggleMode() {
                    wallet's registered role is the source of truth (server
                    returns ROLE_MISMATCH if the submitted role disagrees).
                    Showing the selector on login would let users assume
-                   they can change roles silently. -->
-              <div
-                v-if="isRegister"
-                v-motion
-                :initial="{ opacity: 0, y: 8 }"
-                :enter="{ opacity: 1, y: 0, transition: { delay: 200, duration: 400 } }"
-                class="mb-6"
+                   they can change roles silently.
+                   Mode-flip animation: same `<transition>` shape as the
+                   username input below — both collapse together when
+                   flipping to login, both expand together when flipping
+                   to register. The prior `v-motion`-only setup hard-
+                   popped on leave (no fade) and slow-staggered on enter
+                   (200ms delay), causing the visible jank when toggling
+                   modes. Surfaced 2026-05-10 from operator feedback. -->
+              <transition
+                :css="false"
+                @before-enter="onCollapseBeforeEnter"
+                @enter="onCollapseEnter"
+                @leave="onCollapseLeave"
               >
-                <label class="block text-xs font-sans font-medium text-cool mb-2 uppercase tracking-wider">
-                  I am an
-                </label>
-                <div class="flex bg-mist dark:bg-midnight/60 rounded-lg p-0.5 border border-haze dark:border-white/8">
-                  <button
-                    v-for="r in (['investor', 'issuer'] as const)"
-                    :key="r"
-                    @click="selectedRole = r"
-                    :data-testid="`auth-role-${r}`"
-                    :class="cn(
-                      'flex-1 px-4 py-2.5 text-sm font-sans font-medium rounded-md transition-all duration-200 capitalize cursor-pointer',
-                      selectedRole === r
-                        ? 'bg-white dark:bg-midnight shadow-sm text-compute'
-                        : 'text-cool hover:text-midnight dark:hover:text-white',
-                    )"
+                <div v-if="isRegister" class="mb-6">
+                  <label class="block text-xs font-sans font-medium text-cool mb-2 uppercase tracking-wider">
+                    I am an
+                  </label>
+                  <div class="flex bg-mist dark:bg-midnight/60 rounded-lg p-0.5 border border-haze dark:border-white/8">
+                    <button
+                      v-for="r in (['investor', 'issuer'] as const)"
+                      :key="r"
+                      @click="selectedRole = r"
+                      :data-testid="`auth-role-${r}`"
+                      :class="cn(
+                        'flex-1 px-4 py-2.5 text-sm font-sans font-medium rounded-md transition-all duration-200 capitalize cursor-pointer',
+                        selectedRole === r
+                          ? 'bg-white dark:bg-midnight shadow-sm text-compute'
+                          : 'text-cool hover:text-midnight dark:hover:text-white',
+                      )"
+                    >
+                      {{ r }}
+                    </button>
+                  </div>
+                  <p
+                    data-testid="auth-role-lock-hint"
+                    class="mt-2 font-sans text-[11px] text-cool italic leading-relaxed"
                   >
-                    {{ r }}
-                  </button>
+                    Choose carefully — this passkey can't switch roles later.
+                    Create a separate passkey if you need both.
+                  </p>
                 </div>
-                <p
-                  data-testid="auth-role-lock-hint"
-                  class="mt-2 font-sans text-[11px] text-cool italic leading-relaxed"
-                >
-                  Choose carefully — this passkey can't switch roles later.
-                  Create a separate passkey if you need both.
-                </p>
-              </div>
+              </transition>
 
               <!-- Login mode intentionally renders no role-hint card.
                    The role selector is hidden (server-side source of
@@ -435,14 +578,12 @@ function toggleMode() {
 
               <!-- Username (register mode only) -->
               <transition
-                enter-active-class="transition-all duration-300 ease-out"
-                leave-active-class="transition-all duration-200 ease-in"
-                enter-from-class="opacity-0 -translate-y-2 max-h-0"
-                enter-to-class="opacity-100 translate-y-0 max-h-24"
-                leave-from-class="opacity-100 translate-y-0 max-h-24"
-                leave-to-class="opacity-0 -translate-y-2 max-h-0"
+                :css="false"
+                @before-enter="onCollapseBeforeEnter"
+                @enter="onCollapseEnter"
+                @leave="onCollapseLeave"
               >
-                <div v-if="isRegister" class="mb-6 overflow-hidden">
+                <div v-if="isRegister" class="mb-6">
                   <label
                     for="username"
                     class="block text-xs font-sans font-medium text-cool mb-2 uppercase tracking-wider"
@@ -484,23 +625,76 @@ function toggleMode() {
                   @click="handleAuth"
                 >
                   <Fingerprint :size="18" />
-                  {{ isRegister ? 'Create Account' : 'Sign In' }}
+                  <!-- Cross-fade the label so the text doesn't snap on
+                       mode flip while the form below is still animating.
+                       `mode="out-in"` runs leave → enter sequentially;
+                       `:key="mode"` makes Vue treat the two strings as
+                       different elements. The icon stays put. -->
+                  <Transition
+                    mode="out-in"
+                    enter-active-class="transition-opacity duration-200 ease-out"
+                    leave-active-class="transition-opacity duration-150 ease-in"
+                    enter-from-class="opacity-0"
+                    leave-to-class="opacity-0"
+                  >
+                    <span :key="mode">{{ isRegister ? 'Create Account' : 'Sign In' }}</span>
+                  </Transition>
                 </MButton>
               </div>
 
-              <!-- Mode toggle -->
+              <!-- Mode toggle — split-emphasis pattern.
+                   Question half ("New here?" / "Already have an account?")
+                   stays muted because it's contextual; the action half
+                   ("Create account →" / "Sign in →") carries the
+                   gold/signal accent + semibold weight + underline +
+                   nudge-on-hover so the user immediately sees the
+                   alternative action. A thin divider above separates
+                   it from the CTA so the toggle reads as its own
+                   navigation lever rather than a footnote. -->
               <div
                 v-motion
                 :initial="{ opacity: 0 }"
                 :enter="{ opacity: 1, transition: { delay: 400, duration: 400 } }"
-                class="text-center"
+                class="mt-7 pt-5 border-t border-haze/70 dark:border-white/5"
               >
                 <button
+                  type="button"
                   @click="toggleMode"
                   data-testid="auth-mode-toggle"
-                  class="text-xs font-sans text-cool hover:text-compute transition-colors duration-200 cursor-pointer"
+                  class="group w-full text-center cursor-pointer
+                         font-sans text-sm flex items-center justify-center gap-1.5
+                         transition-colors duration-200"
                 >
-                  {{ isRegister ? 'Already have an account? Sign in' : 'New here? Create account' }}
+                  <!-- Cross-fade entire toggle content on mode flip so
+                       the question + action text don't snap while the
+                       form above is animating. Wrapped span carries the
+                       layout (flex + gap) so the cross-fade child stays
+                       a single keyed element. -->
+                  <Transition
+                    mode="out-in"
+                    enter-active-class="transition-opacity duration-200 ease-out"
+                    leave-active-class="transition-opacity duration-150 ease-in"
+                    enter-from-class="opacity-0"
+                    leave-to-class="opacity-0"
+                  >
+                    <span :key="mode" class="inline-flex items-center gap-1.5">
+                      <span class="text-cool">
+                        {{ isRegister ? 'Already have an account?' : 'New here?' }}
+                      </span>
+                      <span
+                        class="font-semibold text-compute dark:text-signal underline decoration-compute/40 dark:decoration-signal/40
+                               underline-offset-4 group-hover:decoration-compute dark:group-hover:decoration-signal
+                               inline-flex items-center gap-1 transition-all duration-200"
+                      >
+                        {{ isRegister ? 'Sign in' : 'Create account' }}
+                        <ArrowRight
+                          :size="14"
+                          :stroke-width="2"
+                          class="transition-transform duration-200 group-hover:translate-x-0.5"
+                        />
+                      </span>
+                    </span>
+                  </Transition>
                 </button>
               </div>
             </div>

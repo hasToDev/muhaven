@@ -150,7 +150,7 @@ onBeforeUnmount(() => {
         </h1>
       </div>
       <p class="font-accent italic text-[13px] text-cool tracking-wide pl-[2.875rem] -mt-0.5">
-        Institutional Vault
+        Confidential by design
       </p>
     </RouterLink>
 
