@@ -19,6 +19,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { CheckCircle2, XCircle, AlertTriangle } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 import {
   ApiError,
@@ -125,6 +126,12 @@ async function handleDeny(): Promise<void> {
 
 <template>
   <div class="link-page" :data-phase="phase" data-testid="link-page">
+    <!-- Ambient amber backdrop — pure decoration, hidden from a11y tree -->
+    <div class="page-glow" aria-hidden="true">
+      <div class="glow glow-amber" />
+      <div class="glow glow-cipher" />
+    </div>
+
     <main class="card" role="main" aria-labelledby="link-title">
       <header class="card-header">
         <h1 id="link-title">Link a device to MuHaven</h1>
@@ -161,10 +168,10 @@ async function handleDeny(): Promise<void> {
         </dl>
 
         <p class="warn">
-          <strong>Only authorize</strong> if YOU just initiated this on a device you own and the
-          process / hostname / OS above match. Authorizing grants the device
-          <code>mcp.read.*</code> + <code>mcp.propose.*</code> scopes — read-only data access plus
-          the ability to propose (NOT execute) trades.
+          <strong>Only authorize</strong> if you started this and the device fingerprint above is yours.
+        </p>
+        <p class="scopes">
+          Grants <code>mcp.read.*</code> + <code>mcp.propose.*</code> — read-only data plus action proposals (no auto-execution).
         </p>
         <div class="row">
           <button
@@ -173,7 +180,7 @@ async function handleDeny(): Promise<void> {
             data-testid="link-authorize-cta"
             @click="handleAuthorize"
           >
-            Authorize with my passkey session
+            Authorize
           </button>
           <button
             class="btn btn-ghost"
@@ -192,23 +199,32 @@ async function handleDeny(): Promise<void> {
       </section>
 
       <!-- Success -->
-      <section v-else-if="phase === 'success'" class="actions success" data-testid="link-phase-success">
-        <h2>Linked.</h2>
+      <section v-else-if="phase === 'success'" class="actions terminal success" data-testid="link-phase-success">
+        <div class="terminal-icon" aria-hidden="true">
+          <CheckCircle2 :size="44" :stroke-width="1.75" />
+        </div>
+        <h2>Device linked</h2>
         <p>
           The device above has been authorized. You can close this tab — your terminal
-          should report success within a few seconds.
+          will report success within a few seconds.
         </p>
       </section>
 
       <!-- Denied -->
-      <section v-else-if="phase === 'denied'" class="actions denied" data-testid="link-phase-denied">
-        <h2>Denied.</h2>
+      <section v-else-if="phase === 'denied'" class="actions terminal denied" data-testid="link-phase-denied">
+        <div class="terminal-icon" aria-hidden="true">
+          <XCircle :size="44" :stroke-width="1.75" />
+        </div>
+        <h2>Request denied</h2>
         <p>This authorization request has been recorded as denied. You can close this tab.</p>
       </section>
 
       <!-- Error -->
-      <section v-else-if="phase === 'error'" class="actions error" data-testid="link-phase-error">
-        <h2>Something went wrong.</h2>
+      <section v-else-if="phase === 'error'" class="actions terminal error" data-testid="link-phase-error">
+        <div class="terminal-icon" aria-hidden="true">
+          <AlertTriangle :size="44" :stroke-width="1.75" />
+        </div>
+        <h2>Something went wrong</h2>
         <p data-testid="link-error-message">{{ errorMessage }}</p>
       </section>
     </main>
@@ -217,19 +233,68 @@ async function handleDeny(): Promise<void> {
 
 <style scoped>
 .link-page {
+  position: relative;
   min-height: 100vh;
   display: grid;
   place-items: center;
   padding: 24px;
+  isolation: isolate;
+}
+
+/* Ambient amber bloom — purely decorative; canvas behind the card. */
+.page-glow {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: -1;
+  overflow: hidden;
+}
+
+.glow {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(120px);
+  opacity: 0.55;
+}
+
+.glow-amber {
+  width: 640px;
+  height: 640px;
+  top: -180px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: radial-gradient(circle, rgba(255, 186, 32, 0.22) 0%, rgba(184, 134, 11, 0.06) 55%, transparent 75%);
+}
+
+.glow-cipher {
+  width: 480px;
+  height: 480px;
+  bottom: -160px;
+  right: -120px;
+  background: radial-gradient(circle, rgba(255, 220, 161, 0.16) 0%, transparent 70%);
 }
 
 .card {
+  position: relative;
   width: 100%;
   max-width: 540px;
-  border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
-  border-radius: 16px;
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.08));
+  border-radius: 18px;
   padding: 32px;
-  background: color-mix(in srgb, currentColor 4%, transparent);
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255, 186, 32, 0.04) 0%,
+      rgba(28, 29, 32, 0.6) 30%,
+      rgba(28, 29, 32, 0.7) 100%
+    ),
+    var(--color-surface, rgba(28, 29, 32, 0.85));
+  box-shadow:
+    0 24px 70px rgba(0, 0, 0, 0.45),
+    0 1px 0 rgba(255, 186, 32, 0.08) inset,
+    0 -1px 0 rgba(0, 0, 0, 0.3) inset;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
 
 .card-header h1 {
@@ -240,13 +305,13 @@ async function handleDeny(): Promise<void> {
 
 .subtitle {
   margin: 0 0 24px;
-  opacity: 0.75;
+  color: var(--color-text-muted, #b3a98e);
   font-size: 0.95rem;
 }
 
 .code-block {
   border-radius: 12px;
-  border: 1px dashed color-mix(in srgb, currentColor 20%, transparent);
+  border: 1px dashed var(--color-border, rgba(255, 255, 255, 0.12));
   padding: 20px;
   text-align: center;
   margin-bottom: 24px;
@@ -257,12 +322,12 @@ async function handleDeny(): Promise<void> {
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  opacity: 0.6;
+  color: var(--color-text-muted, #b3a98e);
   margin-bottom: 8px;
 }
 
 .code-value {
-  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-family: 'DM Mono', 'JetBrains Mono', ui-monospace, monospace;
   font-size: 2rem;
   font-weight: 600;
   letter-spacing: 0.12em;
@@ -272,7 +337,7 @@ async function handleDeny(): Promise<void> {
   margin-top: 12px;
   margin-bottom: 0;
   font-size: 0.85rem;
-  opacity: 0.7;
+  color: var(--color-text-muted, #b3a98e);
 }
 
 .actions {
@@ -285,25 +350,105 @@ async function handleDeny(): Promise<void> {
   font-weight: 600;
 }
 
-.actions.success h2,
-.actions.denied h2 {
-  font-size: 1.1rem;
-  margin: 0 0 8px;
+/* Terminal states (success / denied / error) — center-stack the icon, headline, and copy
+   so the result reads as a single moment, not as continuation of the form. */
+.terminal {
+  text-align: center;
+  padding: 16px 8px 8px;
+  animation: terminal-rise 320ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-.actions.error h2 {
-  font-size: 1rem;
-  margin: 0 0 8px;
-  color: #b00020;
+.terminal h2 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 8px 0 10px;
+  letter-spacing: -0.01em;
+}
+
+.terminal p {
+  font-size: 0.95rem;
+  color: var(--color-text-muted, #b3a98e);
+  line-height: 1.55;
+  margin: 0 auto;
+  max-width: 38ch;
+}
+
+.terminal-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 80px;
+  height: 80px;
+  border-radius: 9999px;
+  margin-bottom: 4px;
+}
+
+.terminal.success .terminal-icon {
+  color: #4ade80;
+  background: radial-gradient(circle, rgba(74, 222, 128, 0.18) 0%, rgba(74, 222, 128, 0.04) 60%, transparent 80%);
+  box-shadow: 0 0 0 1px rgba(74, 222, 128, 0.25), 0 12px 30px rgba(74, 222, 128, 0.18);
+}
+
+.terminal.success h2 {
+  color: #4ade80;
+}
+
+.terminal.denied .terminal-icon {
+  color: #fca5a5;
+  background: radial-gradient(circle, rgba(252, 165, 165, 0.16) 0%, rgba(252, 165, 165, 0.04) 60%, transparent 80%);
+  box-shadow: 0 0 0 1px rgba(252, 165, 165, 0.22), 0 12px 30px rgba(252, 165, 165, 0.14);
+}
+
+.terminal.denied h2 {
+  color: #fca5a5;
+}
+
+.terminal.error .terminal-icon {
+  color: #f87171;
+  background: radial-gradient(circle, rgba(248, 113, 113, 0.18) 0%, rgba(248, 113, 113, 0.04) 60%, transparent 80%);
+  box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.25), 0 12px 30px rgba(248, 113, 113, 0.18);
+}
+
+.terminal.error h2 {
+  color: #f87171;
+  font-size: 1.35rem;
+}
+
+@keyframes terminal-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .terminal {
+    animation: none;
+  }
 }
 
 .warn {
-  background: color-mix(in srgb, gold 20%, transparent);
-  border-left: 3px solid gold;
+  background: rgba(184, 134, 11, 0.12);
+  border-left: 3px solid #b8860b;
   padding: 12px 14px;
   border-radius: 6px;
   font-size: 0.9rem;
-  margin: 16px 0;
+  margin: 16px 0 8px;
+}
+
+.scopes {
+  margin: 0 0 16px;
+  font-size: 0.8rem;
+  color: var(--color-text-muted, #b3a98e);
+  line-height: 1.5;
+}
+
+.scopes code {
+  font-size: 0.78rem;
 }
 
 .row {
@@ -313,22 +458,26 @@ async function handleDeny(): Promise<void> {
 }
 
 .btn {
+  flex: 1;
   font-size: 0.95rem;
   padding: 12px 18px;
   border-radius: 10px;
   border: 1px solid transparent;
   cursor: pointer;
-  font-weight: 500;
+  font-weight: 600;
+  font-family: inherit;
 }
 
 .btn-primary {
-  background: currentColor;
-  color: canvas;
+  background: linear-gradient(135deg, #ffba20 0%, #b8860b 100%);
+  color: #121315;
+  border: none;
 }
 
 .btn-ghost {
   background: transparent;
-  border-color: color-mix(in srgb, currentColor 25%, transparent);
+  color: var(--color-text-muted, #b3a98e);
+  border-color: var(--color-border, rgba(255, 255, 255, 0.08));
 }
 
 .meta-list {
@@ -339,12 +488,17 @@ async function handleDeny(): Promise<void> {
 }
 
 .meta-list dt {
-  opacity: 0.7;
+  color: var(--color-text-muted, #b3a98e);
   font-size: 0.85rem;
 }
 
 .meta-list dd {
   margin: 0;
   font-size: 0.9rem;
+}
+
+.meta-list code,
+.code-block code {
+  font-family: 'DM Mono', 'JetBrains Mono', ui-monospace, monospace;
 }
 </style>

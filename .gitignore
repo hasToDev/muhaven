@@ -54,3 +54,6 @@ development/
 *.bak
 
 scripts/deploy-homelab.sh
+
+# Project-scoped MCP server config — operator-local; embeds dev URLs + keyring choice.
+.mcp.json

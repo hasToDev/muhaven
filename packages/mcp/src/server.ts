@@ -237,4 +237,17 @@ export async function runMcpStdioCli(opts: RunMcpStdioCliOptions = {}): Promise<
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+
+  // bin/muhaven-mcp.cjs wraps this in `.then(() => process.exit(0))`. The
+  // SDK's StdioServerTransport.connect resolves the moment the transport
+  // is wired up — it does NOT block until the host closes stdin — so
+  // returning here would tear the subprocess down before the host (Claude
+  // Desktop / Cursor / Claude Code) sends its first JSON-RPC frame. Park
+  // until the host closes stdin (clean shutdown) or sends SIGTERM.
+  await new Promise<void>((resolve) => {
+    process.stdin.once('end', resolve);
+    process.stdin.once('close', resolve);
+    process.once('SIGINT', resolve);
+    process.once('SIGTERM', resolve);
+  });
 }

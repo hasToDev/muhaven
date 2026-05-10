@@ -55,7 +55,11 @@
     { "name": "muhaven.issuer.kyc_add", "description": "Propose adding an investor to the ERC-3643 whitelist. Issuer-only.", "sensitive": true },
     { "name": "muhaven.issuer.kyc_remove", "description": "Propose removing an investor from the ERC-3643 whitelist. Issuer-only.", "sensitive": true },
     { "name": "muhaven.issuer.unpause_token", "description": "Propose set-NAV-and-unpause for a freshly-deployed token. Issuer-only.", "sensitive": true },
-    { "name": "muhaven.issuer.audit_query", "description": "Read your own tiered-autonomy audit log (issuer-self).", "sensitive": false }
+    { "name": "muhaven.issuer.audit_query", "description": "Read your own tiered-autonomy audit log (issuer-self).", "sensitive": false },
+    { "name": "muhaven.read.protection_coverage", "description": "Read the on-chain DefaultProtection coverage state for a token (P11).", "sensitive": false },
+    { "name": "muhaven.read.kyc_attestation", "description": "Read the KYC attestation registry status for an investor (P11).", "sensitive": false },
+    { "name": "muhaven.governance.propose", "description": "Propose an EncryptedGovernance vote. Returns unsigned UserOp (P11).", "sensitive": true },
+    { "name": "muhaven.governance.cast_vote", "description": "Cast an encrypted vote on an open proposal. Returns unsigned UserOp (P11; runner deferred to Wave 5).", "sensitive": true }
   ],
   "user_config": [
     {

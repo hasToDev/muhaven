@@ -5,13 +5,17 @@ Context Protocol server installable in Claude Desktop / Cursor / Claude Code.
 
 ## What it does
 
-13 tools across three groups:
+22 tools across five groups (P3 + P7 + P11):
 
 | Group | Tools | Description |
 |---|---|---|
-| `muhaven.read.*` | `portfolio` · `yields` · `distribution` · `tokens` · `audit` | Read your encrypted-balance portfolio + yield history + audit log |
+| `muhaven.read.*` | `portfolio` · `yields` · `distribution` · `tokens` · `audit` · `protection_coverage` · `kyc_attestation` | Read your encrypted-balance portfolio, yield history, audit log, and P11 governance/KYC state |
 | `muhaven.position.*` | `buy` · `sell` · `claim` · `rebalance` | **Propose** trades — returns unsigned UserOps + broker signature; never auto-submits |
 | `muhaven.policy.*` | `set_tier` · `pause` · `audit_export` · `session_key_status` | Manage the tiered-autonomy state machine |
+| `muhaven.issuer.*` | `distribute_yield` · `kyc_add` · `kyc_remove` · `unpause_token` · `audit_query` | Issuer-side: distribute yield, manage KYC whitelist, NAV-set+unpause, query own audit trail |
+| `muhaven.governance.*` | `propose` · `cast_vote` | P11 encrypted-governance ceremony (cast-vote frontend runner deferred to Wave 5) |
+
+`MUHAVEN_READ_ONLY=true` exposes only the 7 `muhaven.read.*` tools.
 
 ## Architecture (one paragraph)
 
@@ -46,7 +50,11 @@ once the package is linked.
 ## Setup (end-user, post-MCPB-publish)
 
 1. **Install the MCPB package** in your host (Claude Desktop / Cursor / Claude Code).
-2. **Mint a session key** via the MuHaven dashboard (`https://muhaven.hasto.dev/settings/policy → Generate session key for MCP`). Copy the 0x-prefixed 32-byte hex string.
+2. **Provision a session key.** This is the private half the broker holds for signing UserOps. The dashboard-side mint UI is a Wave 5 deliverable — until then, generate one yourself:
+   ```bash
+   node -e "console.log('0x' + require('crypto').randomBytes(32).toString('hex'))"
+   ```
+   The corresponding kernel session key install on-chain runs through the dashboard `/agent/policy/transition` flow (one-time per tier). For read-only smokes you can skip the install — the broker only needs the private half to start.
 3. **Start the broker daemon.** Set `MUHAVEN_BROKER_SESSION_KEY=0x…` and run:
    ```bash
    muhaven-broker
@@ -58,6 +66,8 @@ once the package is linked.
    ```
    The broker prints a URL like `https://muhaven.hasto.dev/link?code=ABCD-1234` and (when not run with `--no-launch-browser`) opens it. Sign in with your passkey on the dashboard, verify the device fingerprint shown on the `/link` page, click **Authorize**. The CLI exits with success when the JWT lands in your keystore.
 5. **Use any MCP tool** from your host LLM. First call may take a moment as the broker fetches the JWT from the keystore.
+
+> **Windows / WSL2 / devcontainer / SSH-remote operators:** export `MUHAVEN_KEYRING=file` to skip the OS-keychain probe and use the file-backed keystore at `~/.muhaven/jwt.json`. The keychain backend depends on `@napi-rs/keyring` which needs platform-specific build prerequisites; the file fallback works everywhere.
 
 ## Hardening invariants (`THREAT_MODEL_P0.md` aligned)
 

@@ -354,4 +354,9 @@ export async function runBrokerDaemonCli(): Promise<void> {
   };
   process.on('SIGINT', () => void shutdown());
   process.on('SIGTERM', () => void shutdown());
+
+  // bin/muhaven-broker.cjs wraps this call in `.then(code => process.exit(code))`,
+  // which would fire the moment we resolve. Park forever so the only escape
+  // is the SIGINT/SIGTERM-driven shutdown() above (or process.kill from outside).
+  await new Promise<never>(() => {});
 }
