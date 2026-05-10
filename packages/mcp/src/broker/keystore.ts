@@ -292,4 +292,8 @@ export async function openKeystoreForTest(
   return { keystore: new OsKeystore(mockEntry), fallbackReason: null };
 }
 
-export const __INTERNAL_FOR_TESTS = { FileKeystore, OsKeystore, parseRecord, openKeystoreForTest };
+// `openKeystoreForTest` is exported at module scope above — tests should
+// import it directly. `__INTERNAL_FOR_TESTS` only exposes class symbols
+// that are otherwise un-exported, so callers can construct mocks at the
+// class level when the public API isn't enough.
+export const __INTERNAL_FOR_TESTS = { FileKeystore, OsKeystore, parseRecord };

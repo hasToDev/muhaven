@@ -106,7 +106,8 @@ Workstream H)
 ### Distribution
 
 - Published via npm OIDC + Sigstore provenance attestations from the
-  `mcp-publish.yml` workflow (Workstream D, lands separately).
+  `.github/workflows/mcp-publish.yml` workflow (tag-driven on
+  `mcp-v*`; manual `workflow_dispatch` available for recovery).
 - Tarball + `.sigstore` bundle uploaded as workflow artifacts and as
   files on the `mcp-v0.1.0` GitHub Release.
 - Verify locally with:

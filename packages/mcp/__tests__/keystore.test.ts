@@ -20,14 +20,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { __INTERNAL_FOR_TESTS } from '../src/broker/keystore.js';
-
-const { openKeystoreForTest } = __INTERNAL_FOR_TESTS as {
-  openKeystoreForTest: (
-    mock: { getPassword: () => unknown; setPassword?: (v: string) => void; deletePassword?: () => void },
-    options?: { filePath?: string },
-  ) => Promise<{ keystore: { backend: 'os' | 'file' }; fallbackReason: string | null }>;
-};
+import { openKeystoreForTest } from '../src/broker/keystore.js';
 
 const tempDirs: string[] = [];
 

