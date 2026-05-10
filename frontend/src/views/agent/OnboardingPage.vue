@@ -434,8 +434,14 @@ const progressPercent = computed(() => {
               <p class="font-sans text-sm text-cool leading-relaxed">
                 {{ STEPS[2].description }}
               </p>
+              <!-- Prescribed onboarding amount — informational only, shown
+                   while the first-buy step is still pending. Hidden on
+                   the celebrate path so a returning investor with a
+                   different (2 / 17 / etc.) position size doesn't read
+                   "50 shares of TBILL1 — Done" as a claim about their
+                   actual holding. -->
               <p
-                v-if="targetTokenAddress"
+                v-if="targetTokenAddress && !firstBuyDone"
                 class="mt-2 font-mono text-xs text-cool"
               >
                 {{ FIRST_BUY_AMOUNT }} shares of {{ targetTokenSymbol }}

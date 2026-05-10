@@ -83,6 +83,16 @@ const TOOL_NAMES = [
   'muhaven_propose_kyc_remove',
   'muhaven_propose_unpause_token',
   'muhaven_audit_query',
+  // Wave 4 P11 — protection / governance / KYC tools (ADR-9). Read tools
+  // surface on-chain proxy state to the LLM; propose tools mint an
+  // ActionDescriptor that the ConfirmModal handles. The cast_encrypted_vote
+  // runner branch is deferred to Wave 5 (encrypt-vote SDK helper not yet
+  // published) — backend propose path is live so the LLM can still reach it
+  // and the modal will surface the deferred state.
+  'muhaven_check_protection_coverage',
+  'muhaven_explain_kyc_attestation',
+  'muhaven_propose_governance_vote',
+  'muhaven_cast_encrypted_vote',
 ] as const;
 
 type ToolName = (typeof TOOL_NAMES)[number];
@@ -114,6 +124,14 @@ YOUR CAPABILITIES (issuer-only write tools — tier-gated, requires approved iss
 
 YOUR CAPABILITIES (issuer-only read tools)
 - muhaven_audit_query(surface?, eventTypes?, since?, until?, cursor?, limit?): Read your own tiered-autonomy audit log.
+
+YOUR CAPABILITIES (protection / governance / KYC — read tools, no policy gate)
+- muhaven_check_protection_coverage(tokenAddress): Read on-chain DefaultProtection state for a token. Returns status (no_protection / inactive / active / triggered / distributing / completed / not_deployed) + reserveRateBps + a cleartext explanation. Backend never decrypts the encrypted reserve handle.
+- muhaven_explain_kyc_attestation(investorAddress?): Describe the cross-chain KYC attestation flow + the attestation registry's public state. Defaults to the calling user's wallet.
+
+YOUR CAPABILITIES (governance write tools — tier-gated)
+- muhaven_propose_governance_vote(tokenAddress, proposalType): Open an EncryptedGovernance proposal (Wave 4 supports proposalType=0 TRIGGER_PROTECTION; type=1 reserved for Wave 5).
+- muhaven_cast_encrypted_vote(proposalId, voteYes): Cast an encrypted yes/no vote on an existing proposal. The SDK encrypts the vote client-side; the agent never sees the encrypted handle. Wave 4: backend propose works, frontend runner deferred to Wave 5.
 
 YOUR CONSTRAINTS
 - NEVER bypass the policy gate. NEVER call signing endpoints directly.
@@ -325,6 +343,23 @@ export function summarizeStubToolResult(
         ? 'Audit query returned. Open the audit page for the full list.'
         : `Audit query matched ${total} entr${total === 1 ? 'y' : 'ies'} in the requested window.`;
     }
+    case 'muhaven_check_protection_coverage': {
+      // The use-case already builds a cleartext, narrative `explanation`
+      // for every status branch (not_deployed / no_protection / inactive /
+      // active / triggered / distributing / completed). Re-using it keeps
+      // the stub UX aligned with what Gemini would emit if it picked up
+      // the same tool result.
+      const explanation = typeof r.explanation === 'string' ? r.explanation : null;
+      if (explanation) return explanation;
+      const status = typeof r.status === 'string' ? r.status : 'unknown';
+      return `Protection coverage status: ${status}.`;
+    }
+    case 'muhaven_explain_kyc_attestation': {
+      const narrative = typeof r.narrative === 'string' ? r.narrative : null;
+      if (narrative) return narrative;
+      const status = typeof r.status === 'string' ? r.status : 'unknown';
+      return `KYC attestation registry status: ${status}.`;
+    }
     // propose_* tools surface their preview through the ConfirmModal — no
     // synthesis needed. The user sees the modal as the agent's "reply".
     case 'muhaven_propose_buy':
@@ -336,6 +371,8 @@ export function summarizeStubToolResult(
     case 'muhaven_propose_kyc_add':
     case 'muhaven_propose_kyc_remove':
     case 'muhaven_propose_unpause_token':
+    case 'muhaven_propose_governance_vote':
+    case 'muhaven_cast_encrypted_vote':
       return null;
     default:
       return null;
@@ -986,6 +1023,68 @@ function buildGeminiToolDeclarations(): unknown[] {
               cursor: { type: 'STRING' },
               limit: { type: 'NUMBER' },
             },
+          },
+        },
+        // ── Wave 4 P11 — protection / governance / KYC tools (ADR-9) ──
+        {
+          name: 'muhaven_check_protection_coverage',
+          description:
+            'Read on-chain DefaultProtection state for an RWA token. Returns status (no_protection / inactive / active / triggered / distributing / completed / not_deployed), reserveRateBps, issuerAddress, and a cleartext explanation. Backend never decrypts the encrypted reserve handle.',
+          parameters: {
+            type: 'OBJECT',
+            properties: {
+              tokenAddress: {
+                type: 'STRING',
+                description: '0x-prefixed 40-hex RWA token address (resolve symbols like TBILL1 via the KNOWN TOKENS list).',
+              },
+            },
+            required: ['tokenAddress'],
+          },
+        },
+        {
+          name: 'muhaven_explain_kyc_attestation',
+          description:
+            'Explain the cross-chain KYC attestation flow + read the public KYCAttestationRegistry state (jurisdictionHash, defaultValidityPeriodSec, attestationSigner). Defaults to the calling user\'s wallet when investorAddress is omitted.',
+          parameters: {
+            type: 'OBJECT',
+            properties: {
+              investorAddress: {
+                type: 'STRING',
+                description: 'Optional 0x-prefixed 40-hex investor address. Defaults to the calling user.',
+              },
+            },
+          },
+        },
+        {
+          name: 'muhaven_propose_governance_vote',
+          description:
+            'Open an EncryptedGovernance proposal for a token. proposalType=0 = TRIGGER_PROTECTION (Wave 4 supported); proposalType=1 reserved for Wave 5. Returns an ActionDescriptor the user authorizes in the ConfirmModal.',
+          parameters: {
+            type: 'OBJECT',
+            properties: {
+              tokenAddress: { type: 'STRING' },
+              proposalType: {
+                type: 'NUMBER',
+                description: 'Encoded proposal type — 0 (TRIGGER_PROTECTION) or 1 (reserved Wave 5).',
+              },
+            },
+            required: ['tokenAddress', 'proposalType'],
+          },
+        },
+        {
+          name: 'muhaven_cast_encrypted_vote',
+          description:
+            'Cast an encrypted yes/no vote on an existing EncryptedGovernance proposal. The SDK encrypts client-side. Wave 4: backend propose works; the frontend runner is deferred to Wave 5 once the encrypt-vote SDK helper ships.',
+          parameters: {
+            type: 'OBJECT',
+            properties: {
+              proposalId: {
+                type: 'STRING',
+                description: 'Positive-integer proposal id minted by EncryptedGovernance.createProposal.',
+              },
+              voteYes: { type: 'BOOLEAN' },
+            },
+            required: ['proposalId', 'voteYes'],
           },
         },
       ],
