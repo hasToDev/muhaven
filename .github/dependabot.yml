@@ -1,0 +1,39 @@
+version: 2
+updates:
+  # @muhaven/mcp publishable package — runtime + dev grouped to keep PR
+  # noise low at 4 direct + ~10 dev deps. See development/DEV_WAVE_4/
+  # MCP_PUBLISH_READINESS.md §11 decision 10 for the rationale on
+  # Dependabot vs Renovate.
+  - package-ecosystem: pnpm
+    directory: /packages/mcp
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Jakarta
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - mcp
+    groups:
+      mcp-runtime:
+        patterns:
+          - "@modelcontextprotocol/*"
+          - "viem"
+          - "zod"
+          - "@napi-rs/keyring"
+      mcp-dev:
+        dependency-type: development
+
+  # GitHub Actions used by the MCP publish + scan workflows (cosign
+  # installer, setup-node, action-gh-release, ...). Weekly cadence is
+  # enough — supply-chain CVEs in actions land via the GitHub Security
+  # advisory feed faster than Dependabot can open a PR anyway, but the
+  # weekly cadence keeps non-critical bumps current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - ci

@@ -14,7 +14,6 @@
   "homepage": "https://muhaven.app",
   "documentation": "https://github.com/hasToDev/muhaven/blob/master/packages/mcp/README.md",
   "support": "https://github.com/hasToDev/muhaven/issues",
-  "icon": "icon.png",
   "license": "MIT",
   "keywords": ["fhe", "fhenix", "rwa", "claude", "mcp", "muhaven"],
   "compatibility": {

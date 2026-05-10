@@ -23,14 +23,24 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     },
     "./broker": {
-      "types": "./dist/broker.d.ts",
-      "import": "./dist/broker.js",
-      "require": "./dist/broker.cjs"
+      "import": {
+        "types": "./dist/broker.d.ts",
+        "default": "./dist/broker.js"
+      },
+      "require": {
+        "types": "./dist/broker.d.cts",
+        "default": "./dist/broker.cjs"
+      }
     },
     "./package.json": "./package.json"
   },
@@ -43,7 +53,9 @@
     "bin",
     "manifest.json",
     "tool-hashes.json",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsup",
@@ -71,7 +83,8 @@
     "vitest": "^3.0.0"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
   },
   "keywords": [
     "mcp",
@@ -81,7 +94,10 @@
     "fhenix",
     "muhaven",
     "rwa",
-    "claude"
+    "claude",
+    "agentic",
+    "web3",
+    "erc-3643"
   ],
   "license": "MIT"
 }
