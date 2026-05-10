@@ -4,7 +4,6 @@ import {
   OpenClawIntentKind,
   type OpenClawIntentPayload,
   OpenClawIntentTier,
-  classifyTier,
 } from '../../../../domain/agent/model/openclaw-intent.js';
 import type { ITelegramLinkRepository } from '../../../../domain/agent/repository/telegram-link.repository.js';
 import { CreateOpenClawIntentUseCase } from './create-intent.use-case.js';
@@ -201,7 +200,11 @@ export class MintAndDeliverOpenClawIntentUseCase {
       return { delivered: false };
     }
 
-    const tier = classifyTier(input.amountUsd6);
+    // The intent's tier comes from CreateOpenClawIntentUseCase which
+    // honors the (env-overridable) tier thresholds wired in the container
+    // — re-classifying here would re-derive against the defaults and
+    // surface as a tier mismatch under a staging-only ceiling override.
+    const tier = result.intent.tier;
     const notification: BotIntentNotification = {
       telegramChatId: active.telegramChatId,
       intent: {

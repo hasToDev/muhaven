@@ -181,6 +181,21 @@ const EnvSchema = z.object({
    *  the grant-submission window — when unset, the use-case falls back
    *  to the LoggingIssuerChannelTransport (events log + drop). */
   TELEGRAM_BOT_WORKER_URL: z.string().optional(),
+  /** STAGING-ONLY tier-threshold overrides for the OpenClaw three-tier
+   *  classifier (Wave 4 P4). The default ceilings are
+   *  `OpenClawIntentTier.{Inline≤200, MiniAppOtp≤5000, PasskeyDeeplink>5000}`
+   *  USDC. The staging walkthrough exercises mid-tier (Mini App + OTP)
+   *  with a 2 mhUSDC test amount that would otherwise classify as
+   *  inline; setting `OPENCLAW_TIER_INLINE_MAX_USD6=0` lowers the inline
+   *  ceiling so even sub-dollar amounts route to mid-tier. The
+   *  `classifyTier` validator REJECTS overrides ABOVE the regulatory
+   *  caps — only LOWERING is supported. Production deploys MUST leave
+   *  both unset (defaults apply). Both env values are USDC 6-decimal
+   *  units serialised as strings (the schema parses to `bigint` via the
+   *  use-case's z.string().transform(BigInt) wrapper, but the env-time
+   *  contract is just a numeric string). */
+  OPENCLAW_TIER_INLINE_MAX_USD6: z.string().regex(/^\d+$/).optional(),
+  OPENCLAW_TIER_MINI_APP_MAX_USD6: z.string().regex(/^\d+$/).optional(),
 
   // ── Wave 4 Phase P5 — Hosted checkout `pay.muhaven.app` ────────────
   // Public base URL the checkout page is hosted at — used to build the

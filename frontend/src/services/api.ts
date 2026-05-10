@@ -1096,3 +1096,70 @@ export const publicMetricsApi = {
     return request<PublicMetricsDto>('/public/metrics')
   },
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Wave 4 P4 — OpenClaw intent SSE events (back-to-dashboard auto-fire)
+// ─────────────────────────────────────────────────────────────────────
+
+export type OpenClawIntentEventType =
+  | 'open'
+  | 'intent_confirmed'
+  | 'intent_consumed'
+  | 'intent_denied'
+
+export interface OpenClawIntentSseEvent {
+  type: OpenClawIntentEventType
+  intentId?: string
+  payload?: {
+    kind: 'buy' | 'claim'
+    tier: 'inline' | 'mini_app_otp' | 'passkey_deeplink'
+    source?: 'telegram_inline' | 'mini_app' | 'dashboard_passkey'
+    tokenAddress: string
+    amountUsd6: string
+  }
+}
+
+export const openclawIntentEventsApi = {
+  /**
+   * Open the per-user SSE channel for OpenClaw intent state changes.
+   * Mirrors `agentToolsApi.openChatStream`'s shape but uses the native
+   * `EventSource` because the connection is GET-only + long-lived.
+   *
+   * Auth via `?access_token=…` query param — EventSource cannot set
+   * Authorization headers. Bounded by JWT TTL + per-user fan-out scope
+   * (a stolen URL only reveals the victim's own intent state changes).
+   *
+   * Returns the EventSource directly so callers can `addEventListener`
+   * + `close()` on lifecycle. Caller is responsible for closing.
+   */
+  open(
+    onEvent: (evt: OpenClawIntentSseEvent) => void,
+    onError?: (err: Event) => void,
+  ): EventSource | null {
+    const tokens = getStoredTokens()
+    const token = tokens?.access_token
+    if (!token) return null
+    const url = `${BASE_URL}/agent/openclaw/intent/events?access_token=${encodeURIComponent(token)}`
+    const es = new EventSource(url)
+    const handler = (raw: MessageEvent) => {
+      if (typeof raw.data !== 'string' || raw.data.length === 0) return
+      try {
+        const data = JSON.parse(raw.data) as OpenClawIntentSseEvent
+        onEvent(data)
+      } catch {
+        // Heartbeat lines start with `:` and don't fire as `message`,
+        // so we never reach here on a heartbeat. JSON parse failures
+        // on a real event are silently dropped — the next event is
+        // just a few seconds away.
+      }
+    }
+    // Backend emits `open` once on subscribe, then per-state-flip
+    // `intent_*` events. Listen on every named event we care about.
+    es.addEventListener('open', handler as EventListener)
+    es.addEventListener('intent_confirmed', handler as EventListener)
+    es.addEventListener('intent_consumed', handler as EventListener)
+    es.addEventListener('intent_denied', handler as EventListener)
+    if (onError) es.addEventListener('error', onError)
+    return es
+  },
+}

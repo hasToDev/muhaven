@@ -20,7 +20,11 @@ import { getEnv } from '../../../../../src/core/config.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 const auditUseCase = new AppendAuditEventUseCase(container.agentAuditRepo);
-const denyUseCase = new DenyOpenClawIntentUseCase(container.openclawIntentRepo, auditUseCase);
+const denyUseCase = new DenyOpenClawIntentUseCase(
+  container.openclawIntentRepo,
+  auditUseCase,
+  container.openClawIntentEventsChannel,
+);
 
 const handler = createHandler({
   operationName: 'DenyOpenClawIntent',

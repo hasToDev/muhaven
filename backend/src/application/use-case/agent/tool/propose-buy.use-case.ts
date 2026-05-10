@@ -175,10 +175,13 @@ export class ProposeBuyToolUseCase {
     // Wave 4 P4 — parallel-deliver to Telegram if the user is linked.
     // Fire-and-forget: never await (or, if awaited, errors swallowed) —
     // propose-buy MUST NOT fail because the bot worker is down. The
-    // dashboard ConfirmModal flow continues regardless.
+    // dashboard ConfirmModal flow continues regardless. When delivery
+    // succeeds, capture the openClawIntentId so the descriptor can
+    // surface it for the SSE auto-fire correlation.
+    let openClawIntentId: string | undefined;
     if (this.mintAndDeliverIntent) {
       try {
-        await this.mintAndDeliverIntent.execute({
+        const delivery = await this.mintAndDeliverIntent.execute({
           userId: ctx.userId,
           kind: OpenClawIntentKind.Buy,
           amountUsd6: BigInt(estimatedTotalUsd6),
@@ -195,6 +198,9 @@ export class ProposeBuyToolUseCase {
           },
           now,
         });
+        if (delivery.delivered && delivery.intentId) {
+          openClawIntentId = delivery.intentId;
+        }
       } catch (err) {
         getLogger('propose-buy').warn(
           { err: err instanceof Error ? err.message : String(err), userId: ctx.userId },
@@ -217,6 +223,7 @@ export class ProposeBuyToolUseCase {
         shares: shares.toString(),
         maxSharesHint: maxSharesHint.toString(),
         navUsd6: navUsd6String,
+        ...(openClawIntentId ? { openClawIntentId } : {}),
         // Must match the actionPayload's navAt exactly — the
         // ConfirmTokenService.consume hash equality check fails silently
         // otherwise (every buy commit would 403). See dto.ts for context.

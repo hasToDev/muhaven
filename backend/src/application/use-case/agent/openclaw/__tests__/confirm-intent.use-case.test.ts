@@ -360,3 +360,115 @@ describe('AuditEvents — confirm path', () => {
     expect((evt.metadata as { intentId?: string }).intentId).toBe(r.intent.intentId);
   });
 });
+
+// ── Wave 4 P4 — SSE channel publish hook (back-to-dashboard auto-fire) ──
+
+describe('ConfirmOpenClawIntentUseCase — SSE channel publish', () => {
+  it('publishes intent_confirmed to the events channel after audit-row lands', async () => {
+    const intentRepo = new MemoryOpenClawIntentRepository();
+    const auditRepo = new MemoryAgentAuditRepository();
+    const append = new AppendAuditEventUseCase(auditRepo);
+    const create = new CreateOpenClawIntentUseCase(intentRepo);
+    const published: Array<{
+      type: string;
+      userId: string;
+      intentId: string;
+      payload: { kind: string; tier: string; source?: string; tokenAddress: string; amountUsd6: string };
+    }> = [];
+    const channel = {
+      publish: (e: typeof published[number]) => {
+        published.push(e);
+        return 1;
+      },
+    } as unknown as import(
+      '../../../../../infrastructure/agent/openclaw-intent-events.channel.js'
+    ).OpenClawIntentEventsChannel;
+    const confirm = new ConfirmOpenClawIntentUseCase(intentRepo, append, channel);
+
+    const minted = await create.execute({
+      userId: 'u1',
+      kind: OpenClawIntentKind.Buy,
+      amountUsd6: 50_000_000n,
+      payload: { token: TOKEN, summary: 'Buy $50' },
+      now: NOW,
+    });
+    await confirm.execute({
+      intentId: minted.intent.intentId,
+      userId: 'u1',
+      source: 'telegram_inline',
+      now: TWO_MIN_LATER,
+    });
+
+    expect(published).toHaveLength(1);
+    const evt = published[0]!;
+    expect(evt.type).toBe('intent_confirmed');
+    expect(evt.userId).toBe('u1');
+    expect(evt.intentId).toBe(minted.intent.intentId);
+    expect(evt.payload.kind).toBe('buy');
+    expect(evt.payload.tier).toBe('inline');
+    expect(evt.payload.source).toBe('telegram_inline');
+    expect(evt.payload.tokenAddress).toBe(TOKEN);
+    expect(evt.payload.amountUsd6).toBe('50000000');
+  });
+
+  it('does NOT publish when the channel is null (legacy ctor path)', async () => {
+    const intentRepo = new MemoryOpenClawIntentRepository();
+    const auditRepo = new MemoryAgentAuditRepository();
+    const append = new AppendAuditEventUseCase(auditRepo);
+    const create = new CreateOpenClawIntentUseCase(intentRepo);
+    // No channel — equivalent to the legacy 2-arg ctor.
+    const confirm = new ConfirmOpenClawIntentUseCase(intentRepo, append);
+    const minted = await create.execute({
+      userId: 'u1',
+      kind: OpenClawIntentKind.Buy,
+      amountUsd6: 50_000_000n,
+      payload: { token: TOKEN, summary: 'Buy $50' },
+      now: NOW,
+    });
+    // Just exercises the no-channel path without throwing.
+    await expect(
+      confirm.execute({
+        intentId: minted.intent.intentId,
+        userId: 'u1',
+        now: TWO_MIN_LATER,
+      }),
+    ).resolves.toMatchObject({ status: OpenClawIntentStatus.Confirmed });
+  });
+});
+
+describe('DenyOpenClawIntentUseCase — SSE channel publish', () => {
+  it('publishes intent_denied after audit-row lands', async () => {
+    const intentRepo = new MemoryOpenClawIntentRepository();
+    const auditRepo = new MemoryAgentAuditRepository();
+    const append = new AppendAuditEventUseCase(auditRepo);
+    const create = new CreateOpenClawIntentUseCase(intentRepo);
+    const published: Array<{ type: string; userId: string; intentId: string }> = [];
+    const channel = {
+      publish: (e: typeof published[number]) => {
+        published.push(e);
+        return 1;
+      },
+    } as unknown as import(
+      '../../../../../infrastructure/agent/openclaw-intent-events.channel.js'
+    ).OpenClawIntentEventsChannel;
+    const deny = new DenyOpenClawIntentUseCase(intentRepo, append, channel);
+
+    const minted = await create.execute({
+      userId: 'u1',
+      kind: OpenClawIntentKind.Buy,
+      amountUsd6: 50_000_000n,
+      payload: { token: TOKEN, summary: 'Buy $50' },
+      now: NOW,
+    });
+    await deny.execute({
+      intentId: minted.intent.intentId,
+      userId: 'u1',
+      reason: 'user_denied',
+      now: TWO_MIN_LATER,
+    });
+
+    expect(published).toHaveLength(1);
+    expect(published[0]!.type).toBe('intent_denied');
+    expect(published[0]!.intentId).toBe(minted.intent.intentId);
+  });
+});

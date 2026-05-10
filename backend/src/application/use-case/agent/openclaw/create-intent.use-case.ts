@@ -2,11 +2,13 @@ import { createHash, randomBytes, randomInt } from 'node:crypto';
 import { ApplicationHttpError } from '../../../../core/errors.js';
 import {
   classifyTier,
+  DEFAULT_TIER_THRESHOLDS,
   OpenClawIntent,
   OpenClawIntentKind,
   type OpenClawIntentPayload,
   OpenClawIntentStatus,
   OpenClawIntentTier,
+  type TierThresholds,
 } from '../../../../domain/agent/model/openclaw-intent.js';
 import type { IOpenClawIntentRepository } from '../../../../domain/agent/repository/openclaw-intent.repository.js';
 
@@ -56,13 +58,23 @@ export interface CreateOpenClawIntentResult {
  * the LLM-emitted intent matches what the user is approving.
  */
 export class CreateOpenClawIntentUseCase {
-  constructor(private readonly intentRepo: IOpenClawIntentRepository) {}
+  constructor(
+    private readonly intentRepo: IOpenClawIntentRepository,
+    /** STAGING-ONLY tier-threshold override. Container reads
+     *  `OPENCLAW_TIER_INLINE_MAX_USD6` + `OPENCLAW_TIER_MINI_APP_MAX_USD6`
+     *  env vars and threads them in. Production passes undefined → uses
+     *  `DEFAULT_TIER_THRESHOLDS` ($200 / $5,000). The validator inside
+     *  `classifyTier` rejects ceilings ABOVE the regulatory caps — only
+     *  lowering is supported (e.g., for the §4 walkthrough's 2 mhUSDC
+     *  test amount routing to mid-tier). */
+    private readonly tierThresholds: TierThresholds = DEFAULT_TIER_THRESHOLDS,
+  ) {}
 
   async execute(input: CreateOpenClawIntentInput): Promise<CreateOpenClawIntentResult> {
     if (input.amountUsd6 < 0n) {
       throw ApplicationHttpError.badRequest('amountUsd6 must be non-negative');
     }
-    const tier = classifyTier(input.amountUsd6);
+    const tier = classifyTier(input.amountUsd6, this.tierThresholds);
     const ttlSec = TIER_TTL_SEC[tier];
     const now = input.now ?? new Date();
     const expiresAt = new Date(now.getTime() + ttlSec * 1000);

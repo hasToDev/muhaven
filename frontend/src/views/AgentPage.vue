@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils'
 import ActionCard from '@/components/agent/ActionCard.vue'
 import ConfirmModal from '@/components/agent/ConfirmModal.vue'
 import { runAgentAction } from '@/composables/useAgentActionRunner'
+import { useOpenClawIntentEvents } from '@/composables/useOpenClawIntentEvents'
 import type { ActionDescriptor } from '@/services/api'
 import { toast } from 'vue-sonner'
 import {
@@ -44,6 +45,63 @@ async function onAuthorize(action: ActionDescriptor): Promise<void> {
     toast.info('Continue on the next page', { description: result.reason })
   }
 }
+
+// ── Wave 4 P4 — back-to-dashboard auto-fire on Telegram confirm ─────
+//
+// When the open ConfirmModal carries an `openClawIntentId` (set by
+// `propose-buy.use-case` when the user has linked Telegram), an
+// `intent_confirmed` SSE event for that id auto-fires the runner so the
+// user doesn't need to walk back to the dashboard tab and re-click
+// Authorize — the kernel session-key signs the on-chain leg in this
+// already-open tab. `intent_denied` closes the modal politely. Other
+// events (different intent, different tier, different action kind) are
+// ignored.
+//
+// Wave 4 limitation pinned in the runbook: this is single-process MVP
+// (one backend replica → in-memory EventEmitter). Multi-replica deploys
+// (Wave 5) need Redis pub/sub.
+const intentEvents = useOpenClawIntentEvents({
+  onEvent: (evt) => {
+    if (evt.type !== 'intent_confirmed' && evt.type !== 'intent_denied') return
+    const action = activeAction.value
+    if (!action) return
+    if (action.kind !== 'buy') return
+    const openClawIntentId = action.preview.openClawIntentId
+    if (!openClawIntentId || openClawIntentId !== evt.intentId) return
+    if (evt.type === 'intent_confirmed') {
+      // Surface to operator that the cross-surface confirm landed
+      // BEFORE we fire on-chain — it makes the auto-fire less magical.
+      const sourceLabel =
+        evt.payload?.source === 'telegram_inline'
+          ? 'Telegram'
+          : evt.payload?.source === 'mini_app'
+            ? 'Telegram Mini App'
+            : 'cross-surface'
+      toast.info(`Confirmed via ${sourceLabel}`, {
+        description: 'Authorizing the on-chain leg from this tab…',
+      })
+      // Reuse the same path the manual Authorize button takes — the
+      // ConfirmModal flips status='awaiting' → runner → reportResult.
+      // The runner's commit POST closes the audit loop with the same
+      // confirmTokenId the dashboard already holds.
+      void onAuthorize(action)
+    } else {
+      // intent_denied — clear the modal + audit-row already lands on
+      // the backend side; no commit POST fires from here.
+      toast.info('Denied via Telegram', {
+        description: 'Nothing was submitted on-chain.',
+      })
+      onConfirmCancel(action)
+    }
+  },
+  onError: (err) => {
+    // Transient drops auto-reconnect. A persistent 401 / 403 means the
+    // JWT expired between subscribe-time and now; the next `/me` poll
+    // refreshes it and AgentPage's mount hook will re-invoke `start()`
+    // on next route entry.
+    console.warn('[openclaw-intent-events] sse error', err)
+  },
+})
 
 function onConfirmComplete(payload: {
   action: ActionDescriptor
@@ -153,6 +211,11 @@ onMounted(() => {
     input.value = prompt
   }
   scrollToBottom()
+  // Subscribe to OpenClaw intent events so a Telegram-confirmed mid-tier
+  // intent can auto-fire the on-chain leg without the operator coming
+  // back here and re-clicking Authorize. composable's onUnmounted hook
+  // closes the EventSource on route navigation.
+  intentEvents.start()
 })
 </script>
 

@@ -10,6 +10,7 @@ import { Surface } from '../../../../domain/agent/model/surface.enum.js';
 import { AuditEventType } from '../../../../domain/agent/model/audit-event-type.enum.js';
 import { ActionId } from '../../../../domain/agent/model/action-id.enum.js';
 import { OpenClawIntentKind } from '../../../../domain/agent/model/openclaw-intent.js';
+import type { OpenClawIntentEventsChannel } from '../../../../infrastructure/agent/openclaw-intent-events.channel.js';
 
 export interface ConfirmOpenClawIntentInput {
   intentId: string;
@@ -78,6 +79,13 @@ export class ConfirmOpenClawIntentUseCase {
   constructor(
     private readonly intentRepo: IOpenClawIntentRepository,
     private readonly appendAudit: AppendAuditEventUseCase,
+    /** Wave 4 P4 — optional SSE fan-out for the dashboard auto-fire UX.
+     *  When wired (via container), publishes an `intent_confirmed` event
+     *  after the audit row lands so any open `/agent` tab for the same
+     *  user receives the event and the runner auto-fires the on-chain
+     *  leg without the user re-clicking Authorize. Pass `null` to
+     *  disable (default; legacy unit tests). */
+    private readonly intentEventsChannel: OpenClawIntentEventsChannel | null = null,
   ) {}
 
   async execute(input: ConfirmOpenClawIntentInput): Promise<OpenClawIntent> {
@@ -142,6 +150,29 @@ export class ConfirmOpenClawIntentUseCase {
       now,
     });
 
+    // Wave 4 P4 — fan out to any open dashboard SSE subscriber for this
+    // user. The dashboard runner listens on the `intent_confirmed` event
+    // and auto-fires the on-chain leg if the open ConfirmModal's
+    // openClawIntentId matches. Best-effort: subscribers may have died
+    // between subscribe and now (publish swallows write failures + sweeps
+    // the dead subscriber). Privacy posture: payload carries cleartext
+    // the user already saw the LLM emit at propose time — never the
+    // confirm-token, never the OTP, never an encrypted handle.
+    if (this.intentEventsChannel) {
+      this.intentEventsChannel.publish({
+        type: 'intent_confirmed',
+        userId: input.userId,
+        intentId: confirmed.intentId,
+        payload: {
+          kind: confirmed.kind,
+          tier: confirmed.tier,
+          ...(input.source ? { source: input.source } : {}),
+          tokenAddress: confirmed.payload.token,
+          amountUsd6: confirmed.amountUsd6.toString(),
+        },
+      });
+    }
+
     return confirmed;
   }
 }
@@ -150,6 +181,10 @@ export class DenyOpenClawIntentUseCase {
   constructor(
     private readonly intentRepo: IOpenClawIntentRepository,
     private readonly appendAudit: AppendAuditEventUseCase,
+    /** Wave 4 P4 — optional SSE fan-out (parallels the confirm path).
+     *  Lets the open dashboard tab auto-close the ConfirmModal when the
+     *  user denies from Telegram. */
+    private readonly intentEventsChannel: OpenClawIntentEventsChannel | null = null,
   ) {}
 
   async execute(input: DenyOpenClawIntentInput): Promise<OpenClawIntent> {
@@ -182,6 +217,19 @@ export class DenyOpenClawIntentUseCase {
       },
       now,
     });
+    if (this.intentEventsChannel) {
+      this.intentEventsChannel.publish({
+        type: 'intent_denied',
+        userId: input.userId,
+        intentId: denied.intentId,
+        payload: {
+          kind: denied.kind,
+          tier: denied.tier,
+          tokenAddress: denied.payload.token,
+          amountUsd6: denied.amountUsd6.toString(),
+        },
+      });
+    }
     return denied;
   }
 }

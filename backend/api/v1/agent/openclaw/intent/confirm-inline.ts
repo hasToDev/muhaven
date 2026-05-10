@@ -45,7 +45,11 @@ const ConfirmInlineDtoSchema = z
 const intentRepo = container.openclawIntentRepo;
 const linkRepo = container.telegramLinkRepo;
 const auditUseCase = new AppendAuditEventUseCase(container.agentAuditRepo);
-const confirmUseCase = new ConfirmOpenClawIntentUseCase(intentRepo, auditUseCase);
+const confirmUseCase = new ConfirmOpenClawIntentUseCase(
+  intentRepo,
+  auditUseCase,
+  container.openClawIntentEventsChannel,
+);
 
 const handler = createHandler({
   operationName: 'ConfirmOpenClawIntentInline',

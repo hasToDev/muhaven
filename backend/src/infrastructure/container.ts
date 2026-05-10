@@ -132,6 +132,11 @@ import {
   type IBotIntentTransport,
 } from '../application/use-case/agent/openclaw/notify-intent-to-bot.use-case.js';
 import { CreateOpenClawIntentUseCase } from '../application/use-case/agent/openclaw/create-intent.use-case.js';
+import {
+  DEFAULT_TIER_THRESHOLDS,
+  type TierThresholds,
+} from '../domain/agent/model/openclaw-intent.js';
+import { OpenClawIntentEventsChannel } from './agent/openclaw-intent-events.channel.js';
 import { GetPublicMetricsUseCase } from '../application/use-case/metrics/get-public-metrics.use-case.js';
 
 interface Repositories {
@@ -563,12 +568,46 @@ function getBotIntentTransport(): IBotIntentTransport {
   return _botIntentTransport;
 }
 
+// ── Wave 4 P4 — OpenClaw intent SSE channel singleton ──────────────
+//
+// In-process EventEmitter shape (see infra/agent/openclaw-intent-events.
+// channel.ts NatSpec). Single-replica MVP — Wave 5 multi-replica deploys
+// need Redis pub/sub. Container wires this once + injects into both
+// confirm + deny use-cases AND exposes via `container.openClawIntent-
+// EventsChannel` so the new SSE route handler can subscribe to it.
+let _openClawIntentEventsChannel: OpenClawIntentEventsChannel | null = null;
+function getOpenClawIntentEventsChannel(): OpenClawIntentEventsChannel {
+  if (!_openClawIntentEventsChannel) {
+    _openClawIntentEventsChannel = new OpenClawIntentEventsChannel();
+  }
+  return _openClawIntentEventsChannel;
+}
+
+function resolveTierThresholds(): TierThresholds {
+  const env = getEnv();
+  const inlineOverride = env.OPENCLAW_TIER_INLINE_MAX_USD6;
+  const miniAppOverride = env.OPENCLAW_TIER_MINI_APP_MAX_USD6;
+  if (!inlineOverride && !miniAppOverride) return DEFAULT_TIER_THRESHOLDS;
+  // STAGING-ONLY override path. The env var only carries the staging
+  // ceiling; the production cap is enforced inside `classifyTier` (it
+  // throws if the override exceeds DEFAULT_TIER_THRESHOLDS). Fall back
+  // to the default for any leg the operator didn't override — letting
+  // the operator drop ONLY the inline ceiling without also re-stating
+  // the mid-tier ceiling.
+  return {
+    inlineMaxUsd6: inlineOverride ? BigInt(inlineOverride) : DEFAULT_TIER_THRESHOLDS.inlineMaxUsd6,
+    miniAppMaxUsd6: miniAppOverride
+      ? BigInt(miniAppOverride)
+      : DEFAULT_TIER_THRESHOLDS.miniAppMaxUsd6,
+  };
+}
+
 let _mintAndDeliverIntent: MintAndDeliverOpenClawIntentUseCase | null = null;
 function getMintAndDeliverIntent(): MintAndDeliverOpenClawIntentUseCase {
   if (_mintAndDeliverIntent) return _mintAndDeliverIntent;
   const agentRepos = getAgentRepos();
   _mintAndDeliverIntent = new MintAndDeliverOpenClawIntentUseCase(
-    new CreateOpenClawIntentUseCase(agentRepos.openclawIntentRepo),
+    new CreateOpenClawIntentUseCase(agentRepos.openclawIntentRepo, resolveTierThresholds()),
     agentRepos.telegramLinkRepo,
     getBotIntentTransport(),
   );
@@ -674,6 +713,9 @@ export const container = {
   },
   get checkoutSseChannel() {
     return checkoutSseChannel;
+  },
+  get openClawIntentEventsChannel() {
+    return getOpenClawIntentEventsChannel();
   },
   get webhookDispatcher() {
     return getWebhookDispatcher();

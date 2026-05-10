@@ -277,6 +277,16 @@ export interface BuyActionDescriptor extends ActionDescriptorBase {
      *  commit (action hashes would never match). */
     navAt: string;
     estimatedTotalUsd6: string;
+    /** Wave 4 P4 — when the user has linked Telegram, propose-buy
+     *  parallel-mints an OpenClawIntent and pings the bot worker. The
+     *  intent's id is surfaced here so the dashboard's open ConfirmModal
+     *  can correlate the SSE `intent_confirmed` event back to itself
+     *  and auto-fire the on-chain leg without the operator re-clicking
+     *  Authorize on the dashboard. Absent when the user has NOT linked
+     *  Telegram or when the bot delivery failed (Telegram outage falls
+     *  back silently — the dashboard still works without auto-fire).
+     */
+    openClawIntentId?: string;
   };
 }
 

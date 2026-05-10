@@ -76,12 +76,54 @@ export type OpenClawIntentStatus =
 export const TIER_INLINE_MAX_USD6 = 200_000_000n; // $200
 export const TIER_MINI_APP_MAX_USD6 = 5_000_000_000n; // $5,000
 
-export function classifyTier(amountUsd6: bigint): OpenClawIntentTier {
+export interface TierThresholds {
+  /** Upper bound (inclusive) for the inline tier in USDC 6-decimal units. */
+  inlineMaxUsd6: bigint;
+  /** Upper bound (inclusive) for the mini_app_otp tier in USDC 6-decimal units. */
+  miniAppMaxUsd6: bigint;
+}
+
+export const DEFAULT_TIER_THRESHOLDS: TierThresholds = {
+  inlineMaxUsd6: TIER_INLINE_MAX_USD6,
+  miniAppMaxUsd6: TIER_MINI_APP_MAX_USD6,
+};
+
+/**
+ * Classify an intent's tier from its amount.
+ *
+ * Optional `thresholds` parameter is a STAGING-ONLY override surface
+ * (env vars `OPENCLAW_TIER_INLINE_MAX_USD6` + `OPENCLAW_TIER_MINI_APP_MAX_USD6`
+ * read at container boot, threaded into `CreateOpenClawIntentUseCase`).
+ * Production deploys MUST leave the defaults; the regulator-anchored
+ * ceilings are the upper bound of investor protection. Lowering them in
+ * staging is the supported case (e.g., 2 mhUSDC → mid-tier so the OTP
+ * surface can be exercised against tiny test amounts) — RAISING them
+ * past the defaults is rejected.
+ */
+export function classifyTier(
+  amountUsd6: bigint,
+  thresholds: TierThresholds = DEFAULT_TIER_THRESHOLDS,
+): OpenClawIntentTier {
   if (amountUsd6 < 0n) {
     throw new Error('intent amount must be non-negative');
   }
-  if (amountUsd6 <= TIER_INLINE_MAX_USD6) return OpenClawIntentTier.Inline;
-  if (amountUsd6 <= TIER_MINI_APP_MAX_USD6) return OpenClawIntentTier.MiniAppOtp;
+  if (thresholds.inlineMaxUsd6 > TIER_INLINE_MAX_USD6) {
+    throw new Error(
+      `inline tier ceiling override (${thresholds.inlineMaxUsd6}) exceeds the regulatory cap (${TIER_INLINE_MAX_USD6}); staging may LOWER the ceiling, never raise it`,
+    );
+  }
+  if (thresholds.miniAppMaxUsd6 > TIER_MINI_APP_MAX_USD6) {
+    throw new Error(
+      `mini_app_otp tier ceiling override (${thresholds.miniAppMaxUsd6}) exceeds the regulatory cap (${TIER_MINI_APP_MAX_USD6}); staging may LOWER the ceiling, never raise it`,
+    );
+  }
+  if (thresholds.inlineMaxUsd6 > thresholds.miniAppMaxUsd6) {
+    throw new Error(
+      `inline ceiling (${thresholds.inlineMaxUsd6}) must be ≤ mini_app_otp ceiling (${thresholds.miniAppMaxUsd6})`,
+    );
+  }
+  if (amountUsd6 <= thresholds.inlineMaxUsd6) return OpenClawIntentTier.Inline;
+  if (amountUsd6 <= thresholds.miniAppMaxUsd6) return OpenClawIntentTier.MiniAppOtp;
   return OpenClawIntentTier.PasskeyDeeplink;
 }
 

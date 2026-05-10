@@ -27,7 +27,11 @@ const DenyInlineDtoSchema = z
 const intentRepo = container.openclawIntentRepo;
 const linkRepo = container.telegramLinkRepo;
 const auditUseCase = new AppendAuditEventUseCase(container.agentAuditRepo);
-const denyUseCase = new DenyOpenClawIntentUseCase(intentRepo, auditUseCase);
+const denyUseCase = new DenyOpenClawIntentUseCase(
+  intentRepo,
+  auditUseCase,
+  container.openClawIntentEventsChannel,
+);
 
 const handler = createHandler({
   operationName: 'DenyOpenClawIntentInline',

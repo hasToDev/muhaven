@@ -140,4 +140,74 @@ describe('CreateOpenClawIntentUseCase', () => {
     expect(found?.telegramChatId).toBe('12345');
     expect(found?.otp).toBe(r.otp);
   });
+
+  // ── Tier-threshold override (staging-only knob) ──────────────────────
+
+  describe('tier-threshold override', () => {
+    it('routes a $2 amount to MiniAppOtp when inline ceiling is lowered to 0', async () => {
+      const lowered = new CreateOpenClawIntentUseCase(repo, {
+        inlineMaxUsd6: 0n,
+        miniAppMaxUsd6: 5_000_000_000n,
+      });
+      const r = await lowered.execute({
+        userId: 'u1',
+        kind: OpenClawIntentKind.Buy,
+        amountUsd6: 2_000_000n,
+        payload: { token: '0x1111111111111111111111111111111111111111', summary: 'Buy $2' },
+        now: NOW,
+      });
+      expect(r.intent.tier).toBe(OpenClawIntentTier.MiniAppOtp);
+      // OTP minted because mid-tier is the OTP-bearing tier.
+      expect(r.otp).toMatch(/^\d{6}$/);
+    });
+
+    it('rejects an inline ceiling that exceeds the regulatory cap', () => {
+      const raised = new CreateOpenClawIntentUseCase(repo, {
+        inlineMaxUsd6: 10_000_000_000n, // $10K — above the $200 regulator cap
+        miniAppMaxUsd6: 20_000_000_000n,
+      });
+      // The validator runs inside `classifyTier` on first execute() call.
+      return expect(
+        raised.execute({
+          userId: 'u1',
+          kind: OpenClawIntentKind.Buy,
+          amountUsd6: 50_000_000n,
+          payload: { token: '0x1111111111111111111111111111111111111111', summary: 'Buy $50' },
+          now: NOW,
+        }),
+      ).rejects.toThrow(/inline tier ceiling override.*exceeds the regulatory cap/);
+    });
+
+    it('rejects a mini-app ceiling that exceeds the regulatory cap', () => {
+      const raised = new CreateOpenClawIntentUseCase(repo, {
+        inlineMaxUsd6: 100_000_000n, // $100 (legal)
+        miniAppMaxUsd6: 100_000_000_000n, // $100K (illegal)
+      });
+      return expect(
+        raised.execute({
+          userId: 'u1',
+          kind: OpenClawIntentKind.Buy,
+          amountUsd6: 50_000_000n,
+          payload: { token: '0x1111111111111111111111111111111111111111', summary: 'Buy $50' },
+          now: NOW,
+        }),
+      ).rejects.toThrow(/mini_app_otp tier ceiling override.*exceeds the regulatory cap/);
+    });
+
+    it('rejects an inline ceiling above the mini-app ceiling', () => {
+      const inverted = new CreateOpenClawIntentUseCase(repo, {
+        inlineMaxUsd6: 100_000_000n, // $100
+        miniAppMaxUsd6: 50_000_000n, // $50
+      });
+      return expect(
+        inverted.execute({
+          userId: 'u1',
+          kind: OpenClawIntentKind.Buy,
+          amountUsd6: 25_000_000n,
+          payload: { token: '0x1111111111111111111111111111111111111111', summary: 'Buy' },
+          now: NOW,
+        }),
+      ).rejects.toThrow(/inline ceiling.*must be ≤ mini_app_otp ceiling/);
+    });
+  });
 });
