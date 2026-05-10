@@ -133,6 +133,7 @@ import {
 } from '../application/use-case/agent/openclaw/notify-intent-to-bot.use-case.js';
 import { CreateOpenClawIntentUseCase } from '../application/use-case/agent/openclaw/create-intent.use-case.js';
 import {
+  classifyTier,
   DEFAULT_TIER_THRESHOLDS,
   type TierThresholds,
 } from '../domain/agent/model/openclaw-intent.js';
@@ -594,12 +595,21 @@ function resolveTierThresholds(): TierThresholds {
   // to the default for any leg the operator didn't override — letting
   // the operator drop ONLY the inline ceiling without also re-stating
   // the mid-tier ceiling.
-  return {
+  const thresholds: TierThresholds = {
     inlineMaxUsd6: inlineOverride ? BigInt(inlineOverride) : DEFAULT_TIER_THRESHOLDS.inlineMaxUsd6,
     miniAppMaxUsd6: miniAppOverride
       ? BigInt(miniAppOverride)
       : DEFAULT_TIER_THRESHOLDS.miniAppMaxUsd6,
   };
+  // Boot-time validation: trigger `classifyTier`'s ceiling + ordering
+  // checks once HERE so a misconfigured staging fails LOUD on first
+  // call to `getMintAndDeliverIntent()` (which lands at first
+  // `/api/v1/agent/tools/propose-buy` request → backend logs a clear
+  // error vs. a silent 500 deep inside the propose flow). Pass `0n` —
+  // amount-side checks pass for any valid threshold combination, so
+  // this isolates threshold-validation from amount-classification.
+  classifyTier(0n, thresholds);
+  return thresholds;
 }
 
 let _mintAndDeliverIntent: MintAndDeliverOpenClawIntentUseCase | null = null;

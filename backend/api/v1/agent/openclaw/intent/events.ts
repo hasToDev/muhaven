@@ -1,7 +1,6 @@
 import { container } from '../../../../../src/infrastructure/container.js';
 import { withCors } from '../../../../../src/interface/middleware/with-cors.js';
 import { withRateLimit } from '../../../../../src/interface/middleware/with-rate-limit.js';
-import { JwtService } from '../../../../../src/infrastructure/auth/jwt.service.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 /**
@@ -37,8 +36,6 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
  * NEVER the OTP, NEVER the confirm-token, NEVER an encrypted handle.
  */
 
-const jwtService = new JwtService();
-
 const handler = async (req: VercelRequest, res: VercelResponse): Promise<void> => {
   if (req.method !== 'GET') {
     res.status(405);
@@ -64,7 +61,7 @@ const handler = async (req: VercelRequest, res: VercelResponse): Promise<void> =
   }
   let userId: string;
   try {
-    const claims = await jwtService.verifyAccessToken(tokenRaw);
+    const claims = await container.jwtService.verifyAccessToken(tokenRaw);
     userId = claims.sub;
   } catch {
     res.status(401);

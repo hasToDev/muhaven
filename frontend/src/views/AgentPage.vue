@@ -60,15 +60,78 @@ async function onAuthorize(action: ActionDescriptor): Promise<void> {
 // Wave 4 limitation pinned in the runbook: this is single-process MVP
 // (one backend replica → in-memory EventEmitter). Multi-replica deploys
 // (Wave 5) need Redis pub/sub.
+
+// Cross-tab fire-lock: prevent two open dashboard tabs from BOTH
+// auto-firing `Subscription.purchase` for the same intent (would fire
+// the on-chain tx twice + drain mhUSDC twice + waste gas; only the
+// first commit POST would succeed because the confirm-token is
+// single-use, but the on-chain leg already fired before that). This is
+// best-effort dedupe via localStorage — the practical race window
+// (sub-millisecond) is small enough that a check-then-set is reliable
+// for the SSE-arrival-in-multiple-tabs scenario.
+const FIRE_LOCK_TTL_MS = 90_000
+const FIRE_LOCK_KEY_PREFIX = 'muhaven-openclaw-firelock:'
+const TAB_ID =
+  typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `tab_${Math.random().toString(36).slice(2)}_${Date.now()}`
+
+function tryAcquireFireLock(intentId: string): boolean {
+  const key = `${FIRE_LOCK_KEY_PREFIX}${intentId}`
+  try {
+    const raw = localStorage.getItem(key)
+    if (raw) {
+      try {
+        const claim = JSON.parse(raw) as { tabId: string; ts: number }
+        if (Date.now() - claim.ts < FIRE_LOCK_TTL_MS) {
+          // Active claim — back off regardless of which tab claimed it.
+          // (Same-tab dedupe matters too: a bot worker retry could
+          // publish the same `intent_confirmed` twice for one intent;
+          // the second dispatch must NOT fire `Subscription.purchase`
+          // again. The tabId field below is for forensic logging only,
+          // not for gating.)
+          return false
+        }
+      } catch {
+        // Malformed payload — overwrite.
+      }
+    }
+    localStorage.setItem(key, JSON.stringify({ tabId: TAB_ID, ts: Date.now() }))
+    return true
+  } catch {
+    // localStorage may throw in incognito / strict-storage modes; cross-
+    // tab dedupe is best-effort, so fall through to fire on this tab
+    // (single-tab user → no race to dedupe; multi-tab user in a
+    // restricted-storage browser is a rare combination).
+    return true
+  }
+}
+
 const intentEvents = useOpenClawIntentEvents({
   onEvent: (evt) => {
     if (evt.type !== 'intent_confirmed' && evt.type !== 'intent_denied') return
     const action = activeAction.value
     if (!action) return
     if (action.kind !== 'buy') return
-    const openClawIntentId = action.preview.openClawIntentId
-    if (!openClawIntentId || openClawIntentId !== evt.intentId) return
+    // `action.preview` is typed as `Record<string, unknown>` upstream
+    // (the frontend ActionDescriptor isn't a per-kind discriminated
+    // union yet), so explicitly narrow to `string` before comparing
+    // against `evt.intentId`. The backend always emits this field as a
+    // string (or omits it entirely) per the BuyActionDescriptor wire
+    // shape — the typeof guard is defense-in-depth against a future
+    // backend bug, not a real expected runtime branch.
+    const openClawIntentIdRaw = action.preview.openClawIntentId
+    if (typeof openClawIntentIdRaw !== 'string' || openClawIntentIdRaw.length === 0) return
+    const openClawIntentId: string = openClawIntentIdRaw
+    if (openClawIntentId !== evt.intentId) return
     if (evt.type === 'intent_confirmed') {
+      // Acquire the cross-tab fire-lock BEFORE any toast / runner call
+      // so a losing tab is silent (no misleading "Authorizing…" toast,
+      // no on-chain tx fired). The winning tab proceeds with the
+      // toast + onAuthorize call.
+      if (!tryAcquireFireLock(openClawIntentId)) {
+        return
+      }
       // Surface to operator that the cross-surface confirm landed
       // BEFORE we fire on-chain — it makes the auto-fire less magical.
       const sourceLabel =
