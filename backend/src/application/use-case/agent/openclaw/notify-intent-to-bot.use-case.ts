@@ -225,16 +225,25 @@ export class MintAndDeliverOpenClawIntentUseCase {
       },
       ...(result.otp ? { otp: result.otp } : {}),
     };
-    try {
-      await this.transport.notify(notification);
-    } catch (err) {
-      // Defensive: the transport already swallows; this catch is a
-      // belt-and-braces against a future transport that throws.
+    // Fire-and-forget: the intent is already persisted in DB above;
+    // transport delivery is best-effort. Do NOT await — propose-buy
+    // would otherwise block for up to the transport's timeout (5s for
+    // HttpBotIntentTransport) when the bot worker is down. The
+    // ConfirmModal needs to mount fast on the dashboard regardless of
+    // Telegram availability; SSE auto-fire still works whenever the
+    // transport eventually delivers + the user confirms in Telegram.
+    //
+    // The .catch() swallows any rethrow from a future transport that
+    // doesn't internally swallow — defense-in-depth so an unhandled
+    // promise rejection never bubbles up to Node's
+    // `unhandledRejection` (which would crash the process under
+    // `--unhandled-rejections=strict`).
+    void this.transport.notify(notification).catch((err) => {
       lg().warn(
         { err: err instanceof Error ? err.message : String(err) },
         'bot intent notify rethrow swallowed',
       );
-    }
+    });
     return {
       delivered: true,
       tier,

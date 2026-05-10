@@ -1,5 +1,10 @@
 import { onUnmounted, ref } from 'vue'
-import { openclawIntentEventsApi, type OpenClawIntentSseEvent } from '@/services/api'
+import {
+  AUTH_TOKENS_ROTATED_EVENT,
+  TOKEN_KEY,
+  openclawIntentEventsApi,
+  type OpenClawIntentSseEvent,
+} from '@/services/api'
 
 /**
  * Wave 4 P4 — composable wrapping the OpenClaw intent SSE channel.
@@ -41,8 +46,14 @@ export function useOpenClawIntentEvents(opts: UseOpenClawIntentEventsOpts): {
 } {
   const isOpen = ref(false)
   let es: EventSource | null = null
+  // Track whether `start()` has ever been called so the JWT-rotation
+  // listener doesn't open an EventSource for a page that never asked
+  // for one in the first place (e.g., a non-/agent page that imported
+  // the composable but never mounted).
+  let started = false
 
   function start(): void {
+    started = true
     if (es) return
     es = openclawIntentEventsApi.open((evt) => {
       // Backend emits `open` once after subscribe handshake — flag the
@@ -70,7 +81,48 @@ export function useOpenClawIntentEvents(opts: UseOpenClawIntentEventsOpts): {
     isOpen.value = false
   }
 
-  onUnmounted(stop)
+  // JWT-rotation handling: the access token is encoded into the
+  // EventSource URL via `?access_token=…` (browser EventSource cannot
+  // set custom headers). When `setStoredTokens` writes a fresh JWT to
+  // `localStorage` (silent refresh on a 401, login flow, etc.), the
+  // existing EventSource holds the now-stale URL — its native auto-
+  // reconnect will 401 indefinitely. The fix: listen for the
+  // same-tab `muhaven:auth-tokens-rotated` event AND the cross-tab
+  // `storage` event (both fire on rotation paths) and tear down +
+  // reopen the EventSource so the next `openclawIntentEventsApi.open`
+  // call reads the freshest token from localStorage. Without this,
+  // a >1h dashboard session silently loses SSE on the first reconnect
+  // after the JWT TTL elapses.
+  function reopenOnRotation(): void {
+    if (!started) return
+    if (!es) {
+      // Not currently subscribed (e.g., page mounted without auth);
+      // a future `start()` will use the rotated token naturally.
+      return
+    }
+    stop()
+    start()
+  }
+
+  function onStorageEvent(evt: StorageEvent): void {
+    // Cross-tab rotation: `storage` fires in OTHER tabs when the
+    // origin's localStorage changes. Filter on the auth-tokens key
+    // to avoid restarting on unrelated localStorage writes.
+    if (evt.key === TOKEN_KEY) reopenOnRotation()
+  }
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener(AUTH_TOKENS_ROTATED_EVENT, reopenOnRotation)
+    window.addEventListener('storage', onStorageEvent)
+  }
+
+  onUnmounted(() => {
+    if (typeof window !== 'undefined') {
+      window.removeEventListener(AUTH_TOKENS_ROTATED_EVENT, reopenOnRotation)
+      window.removeEventListener('storage', onStorageEvent)
+    }
+    stop()
+  })
 
   return { isOpen, start, stop }
 }

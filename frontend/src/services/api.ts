@@ -5,7 +5,7 @@
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://nagreg.hasto.dev/api/v1'
 
-const TOKEN_KEY = 'muhaven-auth-tokens'
+export const TOKEN_KEY = 'muhaven-auth-tokens'
 
 // ── Auth API types ──────────────────────────────────────────────────
 
@@ -50,8 +50,25 @@ export function getStoredTokens(): StoredTokens | null {
   }
 }
 
+/**
+ * Custom DOM event fired AFTER `setStoredTokens` writes a fresh token
+ * payload to `localStorage`. Long-lived primitives that ride along with
+ * a JWT (e.g., the `EventSource` opened by `openclawIntentEventsApi.open`,
+ * which encodes `?access_token=…` in the URL and cannot rotate the
+ * token mid-connection) listen for this event and tear down + reopen
+ * with the latest token. Cross-tab rotation also triggers this on
+ * receivers via the native `storage` event, but same-tab rotation does
+ * NOT fire `storage` per the spec — hence this explicit dispatch.
+ */
+export const AUTH_TOKENS_ROTATED_EVENT = 'muhaven:auth-tokens-rotated'
+
 export function setStoredTokens(tokens: StoredTokens): void {
   localStorage.setItem(TOKEN_KEY, JSON.stringify(tokens))
+  // Same-tab listeners — `storage` event is cross-tab only by spec.
+  // A no-op when `window` is undefined (SSR / Node test environments).
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(AUTH_TOKENS_ROTATED_EVENT))
+  }
 }
 
 export function clearStoredTokens(): void {
