@@ -1,13 +1,13 @@
 {
   "name": "muhaven-frontend",
-  "version": "0.3.21",
+  "version": "0.3.22",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
     "dev:stage": "vite --mode stage",
-    "build": "vite build && cp dist/index.html dist/404.html && node scripts/deploy-to-muhaven-web.mjs",
-    "build:stage": "vite build --mode stage && cp dist/index.html dist/404.html && MUHAVEN_WEB_TARGET_DIR=../../muhaven-web-stage node scripts/deploy-to-muhaven-web.mjs",
+    "build": "vite build && cp dist/index.html dist/404.html && MODE=prod node scripts/bundle-telegram-mini-app.mjs && node scripts/deploy-to-muhaven-web.mjs",
+    "build:stage": "vite build --mode stage && cp dist/index.html dist/404.html && MODE=stage node scripts/bundle-telegram-mini-app.mjs && MUHAVEN_WEB_TARGET_DIR=../../muhaven-web-stage node scripts/deploy-to-muhaven-web.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

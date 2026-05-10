@@ -125,6 +125,13 @@ import {
   HttpIssuerChannelTransport,
   type IIssuerChannelTransport,
 } from '../application/use-case/agent/openclaw/publish-issuer-channel-event.use-case.js';
+import {
+  HttpBotIntentTransport,
+  LoggingBotIntentTransport,
+  MintAndDeliverOpenClawIntentUseCase,
+  type IBotIntentTransport,
+} from '../application/use-case/agent/openclaw/notify-intent-to-bot.use-case.js';
+import { CreateOpenClawIntentUseCase } from '../application/use-case/agent/openclaw/create-intent.use-case.js';
 import { GetPublicMetricsUseCase } from '../application/use-case/metrics/get-public-metrics.use-case.js';
 
 interface Repositories {
@@ -421,6 +428,12 @@ function getToolDispatcher(): ToolDispatcher {
       // `repos.taxEventRepo` was undefined at runtime; TS's `null`
       // default on the use-case ctor swallowed the type error).
       muhaven.taxEventRepo,
+      // Wave 4 P4 — fire-and-forget Telegram delivery when the user is
+      // linked. Falls back to LoggingBotIntentTransport when
+      // TELEGRAM_BOT_WORKER_URL / SERVICE_SECRET aren't wired, so the
+      // call is always safe to invoke. Errors are swallowed inside the
+      // use-case — dashboard ConfirmModal flow continues regardless.
+      getMintAndDeliverIntent(),
     ),
     proposeClaim: new ProposeClaimToolUseCase(
       repos.yieldRecordRepo,
@@ -523,6 +536,43 @@ function getPublishIssuerChannelEvent(): PublishIssuerChannelEventUseCase {
     getIssuerChannelTransport(),
   );
   return _publishIssuerChannelEvent;
+}
+
+// ── Wave 4 P4 — backend → telegram-bot intent push ──────────────────
+//
+// Mirrors the issuer-channel transport pattern: when the operator has
+// wired both `TELEGRAM_BOT_WORKER_URL` AND `TELEGRAM_BOT_SERVICE_SECRET`,
+// we POST to the bot worker's `/intent/notify`. Otherwise we fall back
+// to a logging transport so the use-case is callable in dev / staging
+// pre-BotFather. The propose-buy use-case treats the call as
+// fire-and-forget — failures NEVER block the dashboard ConfirmModal flow.
+let _botIntentTransport: IBotIntentTransport | null = null;
+function getBotIntentTransport(): IBotIntentTransport {
+  if (_botIntentTransport) return _botIntentTransport;
+  const env = getEnv();
+  const workerUrl = env.TELEGRAM_BOT_WORKER_URL;
+  const secret = env.TELEGRAM_BOT_SERVICE_SECRET;
+  if (workerUrl && secret) {
+    _botIntentTransport = new HttpBotIntentTransport({
+      botWorkerUrl: workerUrl,
+      serviceSecret: secret,
+    });
+  } else {
+    _botIntentTransport = new LoggingBotIntentTransport();
+  }
+  return _botIntentTransport;
+}
+
+let _mintAndDeliverIntent: MintAndDeliverOpenClawIntentUseCase | null = null;
+function getMintAndDeliverIntent(): MintAndDeliverOpenClawIntentUseCase {
+  if (_mintAndDeliverIntent) return _mintAndDeliverIntent;
+  const agentRepos = getAgentRepos();
+  _mintAndDeliverIntent = new MintAndDeliverOpenClawIntentUseCase(
+    new CreateOpenClawIntentUseCase(agentRepos.openclawIntentRepo),
+    agentRepos.telegramLinkRepo,
+    getBotIntentTransport(),
+  );
+  return _mintAndDeliverIntent;
 }
 
 // ── Wave 4 P9 — public metrics aggregator ──────────────────────────

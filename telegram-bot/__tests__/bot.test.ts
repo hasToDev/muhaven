@@ -361,8 +361,11 @@ describe('BotHandler.buildIntentKeyboard', () => {
   it('renders mini-app tier with web_app button + Deny callback', () => {
     const kb = handler.buildIntentKeyboard({ intentId: 'oci_AAAAAAAAAAAAAAAAAAAAAAAAAA', tier: 'mini_app_otp' });
     const flat = kb.inline_keyboard.flat();
+    // Trailing slash before `?` so Cloudflare Pages performs directory-
+    // index lookup on `/telegram-mini-app/` (otherwise Pages 404s into
+    // the SPA's catch-all `404.html` instead of serving the Mini App).
     expect(flat.find((b) => b.web_app)?.web_app?.url).toContain(
-      'https://muhaven.hasto.dev/telegram-mini-app?intent=oci_AAAAAAAAAAAAAAAAAAAAAAAAAA',
+      'https://muhaven.hasto.dev/telegram-mini-app/?intent=oci_AAAAAAAAAAAAAAAAAAAAAAAAAA',
     );
     expect(flat.find((b) => b.callback_data?.startsWith('dny:'))).toBeDefined();
   });

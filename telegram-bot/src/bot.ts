@@ -251,11 +251,22 @@ export class BotHandler {
         ];
       }
       return [
-        answerCallback(cb.id, 'Confirmed. Submitting on-chain.', false),
+        answerCallback(cb.id, 'Confirmed. Authorizing on-chain.', false),
         editMarkup(chatId, messageId, undefined),
         sendText(
           chatId,
-          '✅ Intent confirmed\\. The MuHaven backend is submitting your transaction; you will see the result in the dashboard activity feed within a few seconds\\.',
+          // Wave 4 P4 — Telegram confirmation marks the intent confirmed
+          // in the audit log; the on-chain leg fires from the dashboard
+          // runner whenever the user re-opens the dashboard. (The on-chain
+          // `Subscription.purchase` requires the user's ZeroDev kernel +
+          // session-key signer; backend never holds the key.) Wave 5 will
+          // wire SSE notification back to a tab that is already open so
+          // the dashboard auto-fires when the Telegram confirm lands.
+          [
+            '✅ Intent confirmed\\.',
+            '',
+            'Open the MuHaven dashboard to authorize the on\\-chain leg with your passkey \\(the agent surface marks the intent confirmed; the dashboard runner fires the actual transaction\\)\\.',
+          ].join('\n'),
         ),
       ];
     }
@@ -350,7 +361,12 @@ export class BotHandler {
       };
     }
     if (intent.tier === 'mini_app_otp') {
-      const url = `${this.opts.miniAppUrl}?intent=${encodeURIComponent(intent.intentId)}`;
+      // Trailing slash before `?` so Cloudflare Pages performs directory-
+      // index lookup on `/telegram-mini-app/`. Without it, Pages tries to
+      // serve a literal file at `/telegram-mini-app` (no extension), 404s,
+      // and falls back to the SPA's `404.html` — which renders the Vue
+      // dashboard wrapped around the Mini App's content (broken).
+      const url = `${this.opts.miniAppUrl}/?intent=${encodeURIComponent(intent.intentId)}`;
       return {
         inline_keyboard: [
           [{ text: '🔒 Open Mini App', web_app: { url } }],

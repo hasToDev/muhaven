@@ -7,9 +7,12 @@ import { Surface } from '../../../../domain/agent/model/surface.enum.js';
 import { Tier } from '../../../../domain/agent/model/tier.enum.js';
 import { ActionId } from '../../../../domain/agent/model/action-id.enum.js';
 import { AuditEventType } from '../../../../domain/agent/model/audit-event-type.enum.js';
+import { OpenClawIntentKind } from '../../../../domain/agent/model/openclaw-intent.js';
+import { getLogger } from '../../../../core/logger.js';
 import type { GetPolicyStateUseCase } from '../policy/get-policy-state.use-case.js';
 import type { ConfirmTokenService } from '../policy/confirm-token.service.js';
 import type { AppendAuditEventUseCase } from '../policy/append-audit-event.use-case.js';
+import type { MintAndDeliverOpenClawIntentUseCase } from '../openclaw/notify-intent-to-bot.use-case.js';
 import type {
   ProposeBuyDto,
   BuyActionDescriptor,
@@ -51,6 +54,14 @@ export class ProposeBuyToolUseCase {
      *  2026-05-09 when `repos.taxEventRepo` was undefined and the
      *  default null swallowed the typo). */
     private readonly taxEventRepo: ITaxEventRepository | null,
+    /** Wave 4 P4 — fire-and-forget OpenClaw intent mint + Telegram bot
+     *  push. When the user has linked Telegram, this mints an
+     *  OpenClawIntent (parallel to the dashboard ConfirmModal flow)
+     *  and notifies the bot worker so the user sees an inline-keyboard
+     *  preview in their chat. Failures are logged + swallowed by the
+     *  use-case itself — propose-buy MUST NOT fail because Telegram
+     *  is down. Pass `null` to disable (default; legacy tests). */
+    private readonly mintAndDeliverIntent: MintAndDeliverOpenClawIntentUseCase | null = null,
   ) {}
 
   async execute(
@@ -160,6 +171,37 @@ export class ProposeBuyToolUseCase {
         confirmTokenId: issued.token,
       },
     });
+
+    // Wave 4 P4 — parallel-deliver to Telegram if the user is linked.
+    // Fire-and-forget: never await (or, if awaited, errors swallowed) —
+    // propose-buy MUST NOT fail because the bot worker is down. The
+    // dashboard ConfirmModal flow continues regardless.
+    if (this.mintAndDeliverIntent) {
+      try {
+        await this.mintAndDeliverIntent.execute({
+          userId: ctx.userId,
+          kind: OpenClawIntentKind.Buy,
+          amountUsd6: BigInt(estimatedTotalUsd6),
+          payload: {
+            token: tokenAddress as `0x${string}`,
+            summary: `Buy ${shares.toString()} ${token.symbol} (~${displayUsd(estimatedTotalUsd6)})`,
+            // RwaToken doesn't carry an OnchainID-resolved label today;
+            // fall back to the token name so the Telegram preview reads
+            // "Buy 50 TBILL1" / "Issuer: TBILL Token" rather than blank.
+            // Wave 5: replace with a real OnchainID claim resolver once
+            // ERC-3643 issuer claims are wired (see ChainedIssuerLabel-
+            // Resolver in the checkout/ stack for the pattern).
+            issuerLabel: token.name,
+          },
+          now,
+        });
+      } catch (err) {
+        getLogger('propose-buy').warn(
+          { err: err instanceof Error ? err.message : String(err), userId: ctx.userId },
+          'mintAndDeliverIntent threw — telegram delivery skipped (dashboard flow unaffected)',
+        );
+      }
+    }
 
     const toolCallId = `tc_${randomUUID()}`;
 

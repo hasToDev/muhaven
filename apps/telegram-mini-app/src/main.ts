@@ -35,11 +35,20 @@ import { formatUsd, isValidIntentId, isValidOtp } from './format.js';
 import { createMiniAppApi, type IntentSummary } from './api.js';
 
 const BACKEND_BASE_URL = (() => {
-  // Allow override via meta tag for staging swaps.
+  // 1. Runtime override via meta tag — operator can edit a deployed
+  //    `index.html` to swap backends without rebuilding (useful for
+  //    a same-dist multi-tenant deploy).
   const meta = document.querySelector('meta[name="muhaven-backend"]');
   if (meta && meta.getAttribute('content')) return meta.getAttribute('content')!;
-  // Default to the production homelab — Mini Apps run behind an HTTPS
-  // origin that Telegram enforces, so http://backend:3000 isn't reachable.
+  // 2. Build-time override via Vite `--mode` env var. `bun run build:stage`
+  //    in this package reads `.env.stage` and replaces `VITE_MUHAVEN_BACKEND_URL`
+  //    at compile time. Values prefixed with `VITE_` are the only ones
+  //    exposed to the client per Vite's security policy.
+  const buildTime = (import.meta.env as Record<string, string | undefined>)
+    .VITE_MUHAVEN_BACKEND_URL;
+  if (buildTime && buildTime.length > 0) return buildTime;
+  // 3. Default to the production homelab — Mini Apps run behind an HTTPS
+  //    origin that Telegram enforces, so `http://backend:3000` isn't reachable.
   return 'https://nagreg.hasto.dev';
 })();
 

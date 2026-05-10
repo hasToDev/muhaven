@@ -20,6 +20,12 @@ import { loadConfig } from './config.js';
 import { TelegramApi } from './telegram-api.js';
 import { BackendClient } from './backend-client.js';
 import { BotHandler, type BotEffect, type TelegramUpdate } from './bot.js';
+import {
+  renderIntentPreview,
+  renderOtpMessage,
+  validateIntentNotificationBody,
+  type IntentNotificationBody,
+} from './intent-notify.js';
 
 const ALLOWED_UPDATES = ['message', 'callback_query'] as const;
 
@@ -113,6 +119,79 @@ async function main(): Promise<void> {
       // eslint-disable-next-line no-console
       console.error('[telegram-bot] issuer-channel send failed:', err);
       // 200 — failures here MUST NOT block the agent's commit path.
+      res.status(200).json({ status: 'send-failed' });
+    }
+  });
+
+  // Wave 4 P4 — backend → bot intent push. The backend mints an
+  // OpenClawIntent (parallel to the dashboard ConfirmModal flow) and
+  // POSTs the cleartext preview here whenever the user has linked
+  // Telegram. Authenticated by the same `TELEGRAM_BOT_SERVICE_SECRET`
+  // already shared on the bot → backend service-secret path; constant-
+  // time compared on every request.
+  //
+  // Privacy posture: the payload here is what the user already saw the
+  // LLM emit at propose time (token, summary, amount). The bot worker
+  // does NOT see the user's JWT; the inline-tier confirm callback flows
+  // back through `/api/v1/agent/openclaw/intent/confirm-inline` (which
+  // re-authenticates the chat via `telegram_links`).
+  //
+  // Failures are 200 — a worker-side bug MUST NOT make the backend's
+  // propose path retry; the dashboard ConfirmModal stays the canonical
+  // surface. The 5xx return shape is reserved for actual auth failures
+  // (401 service-secret mismatch / 400 malformed payload).
+  app.post('/intent/notify', async (req: Request, res: Response) => {
+    const supplied = req.header('x-muhaven-service-secret') ?? '';
+    if (
+      supplied.length !== config.backendServiceSecret.length ||
+      !constantTimeEqual(supplied, config.backendServiceSecret)
+    ) {
+      res.status(401).json({ error: 'invalid service secret' });
+      return;
+    }
+    const body = req.body as IntentNotificationBody | null;
+    const validation = validateIntentNotificationBody(body);
+    if (!validation.ok) {
+      res.status(400).json({ error: validation.error });
+      return;
+    }
+    const { intent, telegramChatId, otp } = validation.value;
+    const tier = intent.tier;
+    const keyboard = handler.buildIntentKeyboard({
+      intentId: intent.intentId,
+      tier,
+    });
+    const previewText = renderIntentPreview(intent);
+    try {
+      await api.sendMessage({
+        chat_id: telegramChatId,
+        text: previewText,
+        parse_mode: 'MarkdownV2',
+        reply_markup: keyboard,
+        disable_web_page_preview: true,
+      });
+      // Mid-tier ($200–$5K): deliver the OTP in a SEPARATE message so
+      // it lives in a different bubble from the Mini App button. The
+      // user copies the digits from this message into the Mini App
+      // OTP field; the backend HMAC-verifies + matches at confirm time.
+      // The OTP MUST NOT share the bubble with the web_app button —
+      // the Mini App's clientside has no JS access to the surrounding
+      // chat thread, so the OTP can't auto-fill (intentional).
+      if (tier === 'mini_app_otp' && otp) {
+        await api.sendMessage({
+          chat_id: telegramChatId,
+          text: renderOtpMessage(otp),
+          parse_mode: 'MarkdownV2',
+          disable_web_page_preview: true,
+        });
+      }
+      res.status(200).json({ status: 'sent' });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[telegram-bot] intent notify send failed:', err);
+      // 200 — same posture as /issuer-channel/broadcast: failures must
+      // not block the agent's commit path. The audit log already
+      // recorded the propose; Telegram delivery is best-effort.
       res.status(200).json({ status: 'send-failed' });
     }
   });
