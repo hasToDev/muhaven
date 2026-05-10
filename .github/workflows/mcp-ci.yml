@@ -1,0 +1,74 @@
+# `@muhaven/mcp` PR publish-dry-run gate.
+#
+# Orthogonal to `mcp-scan.yml` (which is a security/correctness gate):
+# this workflow is a *publishability* gate. It asks "would npm accept this
+# tarball today?" — independent of "does the package work?".
+#
+#   - publint  — package.json shape lint (exports map, types resolution,
+#                license string, files array, etc.). Caught the dual
+#                ESM/CJS `exports.types` regression during Workstream B.
+#   - npm pack --dry-run — surfaces the exact tarball contents that would
+#                ship to npm, including missing files referenced by the
+#                `files` array, and the shasum that mcp-publish.yml will
+#                re-verify post-publish.
+#
+# Pulled into a separate workflow rather than wedged into `ci.yml` per
+# MCP_PUBLISH_READINESS.md §5.3: keeps the merge-gate fast for non-MCP PRs
+# (the `paths:` filter at the workflow level means non-MCP PRs skip this
+# job entirely instead of triggering a noop run).
+#
+# References:
+#   - development/DEV_WAVE_4/MCP_PUBLISH_READINESS.md §5.3
+#   - packages/mcp/package.json `exports` map (per-condition types
+#     shape — Workstream B fix)
+
+name: mcp / ci (publish dry-run)
+
+on:
+  pull_request:
+    paths:
+      - 'packages/mcp/**'
+      - '.github/workflows/mcp-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  publish-dryrun:
+    name: publish dry-run
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install (no scripts — supply-chain hygiene)
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build
+        run: pnpm --filter @muhaven/mcp build
+
+      - name: publint
+        working-directory: packages/mcp
+        run: npx --yes publint .
+
+      - name: npm pack --dry-run
+        working-directory: packages/mcp
+        run: npm pack --dry-run | tee pack-dryrun.txt
+
+      - name: Upload pack dry-run report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-pack-dryrun
+          path: packages/mcp/pack-dryrun.txt
+          if-no-files-found: error
+          retention-days: 30

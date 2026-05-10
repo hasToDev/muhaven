@@ -1,0 +1,99 @@
+# `@muhaven/mcp` security + correctness scan.
+#
+# Two callers:
+#   1. PRs touching `packages/mcp/**` (or this workflow itself) — runs as a
+#      merge-gate.
+#   2. `mcp-publish.yml` via `workflow_call` — runs again at tag time so a
+#      stale PR-time pass cannot smuggle a regression onto npm.
+#
+# Gates layered on top of each other:
+#   - typecheck      — `tsc --noEmit`
+#   - test           — vitest (100 cases as of 2026-05-10)
+#   - tool-hash pin  — `verify-tool-hashes --check` (mcp-context-protector
+#                       pattern; descriptor SHA-256 drift exits with 70)
+#   - lethal-trifecta lint — repo-wide static check that no module bundles
+#                       untrusted_input + signing + filesystem on the same
+#                       surface (P8 introduced)
+#   - snyk mcp-scan  — best-effort, skipped when SNYK_TOKEN absent
+#
+# Workstream A's H-1 sourcemap-strip + H-3 keystore probe + Workstream B's
+# publint hardening are exercised by the test suite + tool-hash pin gate;
+# this workflow doesn't add separate steps for them.
+#
+# References:
+#   - development/DEV_WAVE_4/MCP_PUBLISH_READINESS.md §5.2
+#   - .github/workflows/openclaw-skill-scan.yml — reference shape we mirror
+
+name: mcp / scan
+
+on:
+  pull_request:
+    paths:
+      - 'packages/mcp/**'
+      - '.github/workflows/mcp-scan.yml'
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Git ref to scan'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install (no scripts — supply-chain hygiene)
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Typecheck
+        run: pnpm --filter @muhaven/mcp typecheck
+
+      - name: Build
+        # Build BEFORE running tests so `__tests__/build-artifacts.test.ts`
+        # asserts the H-1 invariant against actual `dist/` output rather
+        # than skipping silently. The test gates on `MUHAVEN_DEV_BUILD=1`
+        # which is unset here, so the publish-path assertion runs.
+        run: pnpm --filter @muhaven/mcp build
+
+      - name: Test
+        run: pnpm --filter @muhaven/mcp test
+
+      - name: Verify tool-hash pin (descriptor SHA-256 drift)
+        run: pnpm --filter @muhaven/mcp verify-tool-hashes -- --check
+
+      - name: Lethal-trifecta strict lint
+        run: pnpm run lint:trifecta:strict
+
+      - name: snyk mcp-scan (best-effort)
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SNYK_TOKEN:-}" ]; then
+            echo "::warning::SNYK_TOKEN not set — skipping snyk mcp-scan. Configure the secret to enable this gate."
+            exit 0
+          fi
+          npm install --no-save snyk@latest
+          # `snyk mcp-scan` is the MCP-aware variant (Mar 2026); fall back
+          # to `snyk test` if the runner has an older version.
+          npx snyk mcp-scan packages/mcp 2>/dev/null \
+            || npx snyk test --severity-threshold=high packages/mcp

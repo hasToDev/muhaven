@@ -1,0 +1,204 @@
+# `@muhaven/mcp` npm publish workflow.
+#
+# Trusted publishing model (Wave 4 publish-readiness · Workstream D):
+#   - Triggered on a tag push matching `mcp-v*` (e.g. `mcp-v0.1.0`) OR a
+#     manual `workflow_dispatch` with the version input. Both paths land
+#     in the `npm-publish` GitHub Environment which is gated by two
+#     reviewer approvals.
+#   - Long-lived NPM_TOKENs are NEVER stored in repo secrets. Publish auth
+#     uses npm's OIDC trusted-publisher exchange (npmjs.com → Settings →
+#     Packages → Trusted Publishers, mapping repo + workflow path +
+#     environment to the @muhaven scope).
+#   - Sigstore cosign keyless-signs the tarball with the same OIDC
+#     identity. The `.sigstore` bundle is uploaded as a workflow artifact
+#     and attached to the GitHub Release so consumers can run
+#     `cosign verify-blob` against the npm-downloaded tarball.
+#   - Post-publish verify re-fetches `npm view @muhaven/mcp@<v> dist.shasum`
+#     and compares it byte-for-byte against the local pack — closes a
+#     race where npm's CDN serves a different tarball than the workflow
+#     uploaded.
+#
+# References:
+#   - development/DEV_WAVE_4/MCP_PUBLISH_READINESS.md §5.1
+#   - .github/workflows/openclaw-skill-publish.yml — reference shape
+#   - .github/workflows/mcp-scan.yml — reusable scan, called below
+#   - packages/mcp/CHANGELOG.md — Release body source
+
+name: mcp / publish
+
+on:
+  push:
+    tags:
+      - 'mcp-v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (must match package.json + manifest.json)'
+        required: true
+
+permissions:
+  contents: read
+  # OIDC token mint — required by sigstore/cosign keyless signing AND by
+  # npm's trusted-publisher exchange. id-token is the only sensitive
+  # permission; everything else stays at default (read).
+  id-token: write
+  # Attestations for the build provenance (best practice for npm
+  # provenance + Sigstore).
+  attestations: write
+
+concurrency:
+  # Tag-driven publishes serialize on the tag itself; manual dispatches
+  # serialize on the workflow run id so a re-run cannot race a previous
+  # in-flight publish.
+  group: mcp-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    # Re-runs the same scan as `mcp-scan.yml` so a stale PR-time pass
+    # cannot smuggle a regression onto npm.
+    name: scan
+    uses: ./.github/workflows/mcp-scan.yml
+    with:
+      ref: ${{ github.sha }}
+
+  build-sign-publish:
+    name: build / sign / publish
+    needs: scan
+    runs-on: ubuntu-latest
+    # The `npm-publish` Environment has 2 required reviewers + branch
+    # restrictions on `master` + `agenticwave`. Configure in repo
+    # Settings → Environments. No environment secrets needed — auth is
+    # OIDC-based.
+    environment:
+      name: npm-publish
+      url: https://www.npmjs.com/package/@muhaven/mcp
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so the GitHub Release step can resolve tag
+          # history + so the changelog slicer (future enhancement) can
+          # diff against prior tags.
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          # Configures `~/.npmrc` to point at the npm registry — required
+          # for the OIDC trusted-publisher exchange to find the right
+          # endpoint.
+          registry-url: https://registry.npmjs.org/
+
+      - name: Install (no scripts — supply-chain hygiene)
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build
+        run: pnpm --filter @muhaven/mcp build
+
+      - name: Version-match check
+        run: |
+          set -euo pipefail
+          PKG=$(node -p "require('./packages/mcp/package.json').version")
+          MAN=$(node -p "require('./packages/mcp/manifest.json').version")
+          # Strip leading "mcp-v" from tag, or use the dispatch input.
+          TAG="${GITHUB_REF_NAME#mcp-v}"
+          DISPATCH_VERSION="${{ inputs.version }}"
+          if [ -n "$DISPATCH_VERSION" ]; then
+            TAG="$DISPATCH_VERSION"
+          fi
+          if [ "$PKG" != "$MAN" ] || [ "$PKG" != "$TAG" ]; then
+            echo "Version skew: package.json=$PKG manifest.json=$MAN tag/dispatch=$TAG"
+            exit 1
+          fi
+          echo "version: $PKG (matched across package.json + manifest.json + tag)"
+
+      - name: Pack tarball
+        id: pack
+        working-directory: packages/mcp
+        run: |
+          set -euo pipefail
+          TARBALL=$(npm pack --silent)
+          echo "tarball=packages/mcp/$TARBALL" >> "$GITHUB_OUTPUT"
+          echo "tarball-name=$TARBALL" >> "$GITHUB_OUTPUT"
+
+      - name: SHA-256 stamp
+        run: sha256sum ${{ steps.pack.outputs.tarball }} > ${{ steps.pack.outputs.tarball }}.sha256
+
+      - uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: Sign tarball with cosign keyless (Sigstore)
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+        run: |
+          set -euo pipefail
+          cosign sign-blob \
+            --yes \
+            --output-signature "${{ steps.pack.outputs.tarball }}.sig" \
+            --output-certificate "${{ steps.pack.outputs.tarball }}.pem" \
+            --bundle "${{ steps.pack.outputs.tarball }}.sigstore" \
+            "${{ steps.pack.outputs.tarball }}"
+
+      - name: Verify signature inline (defence in depth)
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+        run: |
+          set -euo pipefail
+          cosign verify-blob \
+            --bundle "${{ steps.pack.outputs.tarball }}.sigstore" \
+            --certificate-identity-regexp "^https://github\.com/${{ github.repository }}/" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "${{ steps.pack.outputs.tarball }}"
+
+      - name: npm publish (with provenance)
+        run: npm publish ${{ steps.pack.outputs.tarball }} --provenance --access public
+
+      - name: Post-publish shasum verify
+        run: |
+          set -euo pipefail
+          PKG=$(node -p "require('./packages/mcp/package.json').version")
+          PUBLISHED_SHA=$(npm view @muhaven/mcp@$PKG dist.shasum)
+          # npm's `dist.shasum` is SHA-1 (legacy) — recompute the same.
+          LOCAL_SHA=$(node -e "const c=require('crypto'),f=require('fs'); process.stdout.write(c.createHash('sha1').update(f.readFileSync('${{ steps.pack.outputs.tarball }}')).digest('hex'))")
+          if [ "$PUBLISHED_SHA" != "$LOCAL_SHA" ]; then
+            echo "shasum mismatch: published=$PUBLISHED_SHA local=$LOCAL_SHA"
+            exit 1
+          fi
+          echo "post-publish shasum verified: $LOCAL_SHA"
+
+      - name: Upload signed artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-publish-${{ github.ref_name }}
+          path: |
+            ${{ steps.pack.outputs.tarball }}
+            ${{ steps.pack.outputs.tarball }}.sigstore
+            ${{ steps.pack.outputs.tarball }}.pem
+            ${{ steps.pack.outputs.tarball }}.sig
+            ${{ steps.pack.outputs.tarball }}.sha256
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: '@muhaven/mcp ${{ github.ref_name }}'
+          # Future iteration: slice the per-version section from
+          # CHANGELOG.md instead of attaching the full file.
+          body_path: packages/mcp/CHANGELOG.md
+          files: |
+            ${{ steps.pack.outputs.tarball }}
+            ${{ steps.pack.outputs.tarball }}.sigstore
+            ${{ steps.pack.outputs.tarball }}.pem
+            ${{ steps.pack.outputs.tarball }}.sig
+            ${{ steps.pack.outputs.tarball }}.sha256
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc.') || contains(github.ref_name, '-beta.') || contains(github.ref_name, '-alpha.') }}
