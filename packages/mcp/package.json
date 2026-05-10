@@ -64,7 +64,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "verify-tool-hashes": "tsx scripts/verify-tool-hashes.ts"
+    "verify-tool-hashes": "tsx scripts/verify-tool-hashes.ts",
+    "prepublishOnly": "pnpm clean && pnpm build && pnpm typecheck && pnpm test && pnpm verify-tool-hashes -- --check"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",
