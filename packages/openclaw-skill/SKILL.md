@@ -153,12 +153,33 @@ MuHaven backend at `https://api.muhaven.app`.
 
 ## How to install
 
-1. Install OpenClaw runtime per the project's docs.
-2. `openclaw skills install muhaven-rwa-skill@0.1.0` (or via ClawHub UI).
-3. Start the broker daemon: `muhaven-broker` (see `@muhaven/mcp` README).
-4. Authenticate: `muhaven-broker login` — opens browser to
+1. Install plain OpenClaw + ClawHub CLI globally:
+   ```bash
+   npm install -g openclaw@latest clawhub
+   openclaw --version    # confirm install
+   clawhub --version
+   ```
+   (Runtime decision 2026-05-11: plain OpenClaw under
+   `sandbox.fallback: host_native`. NemoClaw remains the preferred
+   runtime claim in `manifest.json` for forward-compat; today's deploy
+   targets plain OpenClaw.)
+2. Install the broker daemon **separately as a global** so its bin
+   lands on `$PATH` regardless of ClawHub's bin-handling:
+   ```bash
+   npm install -g @muhaven/mcp@0.1.2
+   muhaven-broker --version    # sanity check
+   ```
+   (ClawHub install resolves the skill's transitive `@muhaven/mcp` dep
+   into a runtime-local `node_modules`. The `muhaven-broker` bin may
+   not surface on `$PATH` without this separate global install.)
+3. Install the skill:
+   ```bash
+   clawhub install muhaven-rwa-skill@0.1.0
+   ```
+4. Start the broker daemon: `muhaven-broker` (see `@muhaven/mcp` README).
+5. Authenticate: `muhaven-broker login` — opens browser to
    `https://muhaven.app/link?code=XXXX-XXXX`, complete passkey.
-5. Optional: link your Telegram account for the `/agent/openclaw/*`
+6. Optional: link your Telegram account for the `/agent/openclaw/*`
    confirmation surface. From the dashboard `/agent` page → Telegram
    tab → "Link Telegram" → message the bot at `@muhaven_bot` with the
    one-time link code.

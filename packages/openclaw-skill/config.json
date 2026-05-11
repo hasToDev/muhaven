@@ -16,6 +16,7 @@
     }
   },
   "network": {
+    "$comment_egress_advisory_in_host_native": "Mirrors manifest.json#permissions.network — prod hosts only. Staging rehearsals (§3 Path (a) in AGENTIC_TEST_PLAN.md) install the same signed artifact with `user_config.backend_url=https://api-stage.muhaven.app` and rely on plain OpenClaw `sandbox.fallback: host_native` (advisory, not kernel-enforced). A future runtime that enforces this allowlist would block the staging override; that is intentional — the published artifact is prod-pure.",
     "egress_allowlist": [
       {
         "host": "api.muhaven.app",
@@ -52,11 +53,12 @@
   },
   "ipc": {
     "unix_socket": {
+      "$comment_path_pattern_alignment": "Path pattern mirrors `defaultBrokerEndpoint()` in `@muhaven/mcp/src/config.ts` (POSIX: `${HOME}/.muhaven/broker.sock`; Windows: named pipe). The pre-2026-05-12 pattern `${XDG_RUNTIME_DIR:-/run/user/${UID}}/muhaven-broker.sock` failed silently on macOS (no `XDG_RUNTIME_DIR` default + no `/run/user/${UID}`) and Windows (no `$UID`), so a kernel-enforced runtime would have refused the broker IPC on those platforms. Today this field is host_native-advisory, but it now aligns with the broker code so a future kernel-enforced runtime passes through.",
       "allow_connect": [
         {
           "purpose": "muhaven-broker daemon",
-          "path_pattern": "${XDG_RUNTIME_DIR:-/run/user/${UID}}/muhaven-broker.sock",
-          "windows_named_pipe": "\\\\.\\pipe\\muhaven-broker"
+          "path_pattern": "${HOME}/.muhaven/broker.sock",
+          "windows_named_pipe": "\\\\.\\pipe\\muhaven-broker-*"
         }
       ]
     },
@@ -96,6 +98,11 @@
         "id": "broker-required",
         "title": "muhaven-broker daemon must be running and authenticated.",
         "doc_ref": "https://github.com/hasToDev/muhaven/blob/master/packages/mcp/README.md"
+      },
+      {
+        "id": "broker-bin-on-path",
+        "title": "muhaven-broker binary reachable on $PATH. ClawHub install only resolves the skill bin into a runtime-local node_modules; the broker (shipped in @muhaven/mcp) may not be on $PATH unless installed separately via `npm install -g @muhaven/mcp`.",
+        "doc_ref": "https://github.com/hasToDev/muhaven/blob/master/packages/openclaw-skill/SKILL.md#how-to-install"
       },
       {
         "id": "no-auto-submit",

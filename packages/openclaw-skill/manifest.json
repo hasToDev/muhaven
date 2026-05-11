@@ -31,8 +31,9 @@
       "node": ">=20"
     },
     "openclaw_runtime": {
-      "min": "0.4.0",
-      "tested": "0.5.x"
+      "$comment_calendar_versioning": "The npm-published `openclaw` package uses calendar versioning (e.g. 2026.5.7), not semver. The pre-2026-05-11 manifest assumed the NemoClaw-style semver range (0.4.0 / 0.5.x); that range is meaningless against the actual runtime. Range below pins the calendar major-minor at which §3 Path (a) A.4 was validated. Future-runtime adopters should bump `min` to the lowest calendar version that ships the `mcp.command/args` + `${__dirname}` template resolver the skill relies on.",
+      "min": "2026.5.0",
+      "tested": "2026.5.x"
     }
   },
   "runtime": {
@@ -42,6 +43,7 @@
   },
   "permissions": {
     "network": {
+      "$comment_egress_advisory_in_host_native": "Allowlist intentionally pins production origins only — the published artifact is prod-targeted. Staging rehearsals (§3 Path (a) A.3-A.7 in AGENTIC_TEST_PLAN.md) install the same signed tarball with a `user_config.backend_url=https://api-stage.muhaven.app` override and rely on plain OpenClaw's `sandbox.fallback: host_native` posture (manifest permissions become advisory metadata, not kernel-enforced). Defense-in-depth in host_native mode lives in the bin shim's deny-default behavior + the broker daemon's JWT-scope check. A future kernel-enforced runtime would reject the staging override; that is intentional — production artifact stays production-pure.",
       "deny_default": true,
       "egress_allowlist": [
         "https://api.muhaven.app",
@@ -75,20 +77,22 @@
   "sandbox": {
     "runtime": "nemoclaw",
     "fallback": "host_native",
-    "$comment_forward_compat": "Per OpenClaw issues #28298 (permissions schema) and #28360 (sandbox boot ABI). When the runtime doesn't recognize a field, it MUST treat unknown permissions as deny — not allow. Verified on NemoClaw 0.5.0 release notes."
+    "$comment_forward_compat": "Per OpenClaw issues #28298 (permissions schema) and #28360 (sandbox boot ABI). When the runtime doesn't recognize a field, it MUST treat unknown permissions as deny — not allow. Verified on NemoClaw 0.5.0 release notes.",
+    "$comment_runtime_decision": "Operator runtime decision 2026-05-11 (c8aba6d) shifted §3 Path (a) A.4 from NemoClaw to plain OpenClaw via `npm install -g openclaw@latest`. The `runtime: nemoclaw` field above stays as the preferred runtime claim; `fallback: host_native` is what actually runs today. Sandbox + permissions become advisory in host_native mode. Promote to NemoClaw once the homelab is willing to host the NVIDIA OpenShell + GPU stack."
   },
   "mcp": {
     "bundled": "@muhaven/mcp",
     "bundled_version": "0.1.2",
     "transport": "stdio",
     "command": "node",
-    "args": ["${__dirname}/dist/index.cjs"],
+    "$comment_args_template_resolver": "`${__dirname}` is the MCPB-canonical template token (resolves to the skill's install-time root). Plain OpenClaw's manifest resolver behavior is empirically verified during §3 Path (a) A.4 (operator-driven). The bin shim is the launch target (NOT `dist/index.cjs` directly) because it wraps `runOpenClawSkill()` in `.then(...) .catch(err => process.stderr.write(\"fatal: \" + err.stack))` — direct-launch of `dist/index.cjs` would crash silently on an unhandled rejection. If a runtime fails to expand `${__dirname}`, the `runtime.entry_point: dist/index.cjs` field at manifest line 40 is the documented fallback hook.",
+    "args": ["${__dirname}/bin/muhaven-rwa-skill.cjs"],
     "env": {
       "MUHAVEN_BACKEND_URL": "${user_config.backend_url}",
       "MUHAVEN_DASHBOARD_URL": "${user_config.dashboard_url}",
       "MUHAVEN_BROKER_ENDPOINT": "${user_config.broker_endpoint}",
       "MUHAVEN_READ_ONLY": "${user_config.read_only}",
-      "MUHAVEN_OPENCLAW_SKILL_VERSION": "0.1.0"
+      "$comment_skill_version_env": "MUHAVEN_OPENCLAW_SKILL_VERSION is intentionally NOT pre-set here. The bin shim's runOpenClawSkill() does `process.env.MUHAVEN_OPENCLAW_SKILL_VERSION = resolveSkillVersion()` at boot — the value comes from the `__SKILL_VERSION__` tsup-injected build-time constant (which itself reads `packages/openclaw-skill/package.json#version`). Hardcoding a literal here was the 5th drift site; the bin override always wins and a stale literal here only confuses install-time inspection."
     },
     "tool_subset": [
       "muhaven.read.portfolio",

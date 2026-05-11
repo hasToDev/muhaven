@@ -101,7 +101,10 @@ export function selectOpenClawSubsetRegistry(
     if (missing.length > 0) {
       throw new Error(
         `[openclaw-skill] tool-subset drift: missing ${missing.join(', ')} from upstream @muhaven/mcp registry. ` +
-          `Either update TOOLSET_SUBSET / manifest.json or pin to a compatible @muhaven/mcp version.`,
+          `The bundled_version triple-match guarantee (manifest.json#mcp.bundled_version === SKILL.md frontmatter ` +
+          `bundled_version === packages/mcp/package.json#version) is supposed to catch this at install time — if you ` +
+          `are seeing this at runtime, reinstall the skill at a compatible @muhaven/mcp version rather than patching ` +
+          `in place. If reproduces on fresh install: https://github.com/hasToDev/muhaven/issues with the missing list.`,
       );
     }
   }
