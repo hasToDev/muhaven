@@ -1,0 +1,9 @@
+dist/
+node_modules/
+*.tgz
+*.tgz.sha256
+*.sig
+*.pem
+*.sigstore
+.env
+.env.*
