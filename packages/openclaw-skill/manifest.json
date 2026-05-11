@@ -9,7 +9,6 @@
   "homepage": "https://muhaven.app",
   "documentation": "https://github.com/hasToDev/muhaven/tree/master/packages/openclaw-skill",
   "support": "https://github.com/hasToDev/muhaven/issues",
-  "icon": "icon.png",
   "keywords": [
     "fhe",
     "fhenix",

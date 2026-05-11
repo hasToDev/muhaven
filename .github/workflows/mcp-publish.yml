@@ -182,12 +182,31 @@ jobs:
         run: npm publish ${{ steps.pack.outputs.tarball }} --provenance --access public
 
       - name: Post-publish shasum verify
+        # The npm registry's GET-side CDN takes a few seconds to multiple
+        # minutes to propagate after a successful publish; an immediate
+        # `npm view` can return `undefined` or the prior version's shasum.
+        # Three retries at 15s spacing covers the typical propagation
+        # window without making CDN races gate an otherwise-successful
+        # publish — but a true shasum mismatch (not propagation) still
+        # fails the workflow loudly.
         run: |
           set -euo pipefail
           PKG=$(node -p "require('./packages/mcp/package.json').version")
-          PUBLISHED_SHA=$(npm view @muhaven/mcp@$PKG dist.shasum)
           # npm's `dist.shasum` is SHA-1 (legacy) — recompute the same.
           LOCAL_SHA=$(node -e "const c=require('crypto'),f=require('fs'); process.stdout.write(c.createHash('sha1').update(f.readFileSync('${{ steps.pack.outputs.tarball }}')).digest('hex'))")
+          PUBLISHED_SHA=""
+          for attempt in 1 2 3 4; do
+            PUBLISHED_SHA=$(npm view "@muhaven/mcp@$PKG" dist.shasum 2>/dev/null || true)
+            if [ -n "$PUBLISHED_SHA" ] && [ "$PUBLISHED_SHA" != "undefined" ]; then
+              break
+            fi
+            echo "::notice::npm CDN not propagated yet (attempt $attempt/4); sleeping 15s"
+            sleep 15
+          done
+          if [ -z "$PUBLISHED_SHA" ] || [ "$PUBLISHED_SHA" = "undefined" ]; then
+            echo "::warning::npm CDN did not surface dist.shasum within 60s — package is live (publish step exited 0) but post-publish verify could not confirm bytes match. Manually verify with: npm view @muhaven/mcp@$PKG dist.shasum"
+            exit 0
+          fi
           if [ "$PUBLISHED_SHA" != "$LOCAL_SHA" ]; then
             echo "shasum mismatch: published=$PUBLISHED_SHA local=$LOCAL_SHA"
             exit 1

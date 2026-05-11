@@ -180,7 +180,7 @@ function toolJsonResponse(payload: unknown): { content: { type: 'text'; text: st
  * `filterRegistry` is the OpenClaw-shaped extension point: callers can
  * supply a function that receives the post-`--read-only` registry and
  * returns a (possibly narrower) subset. The bundled OpenClaw skill uses
- * this to ship a curated 9-tool subset out of the 13-tool upstream
+ * this to ship a curated 11-tool subset out of the 22-tool upstream
  * surface (ADR-C). The filter MUST be a pure function; any side effect
  * (mutation of the input array, network call, etc.) is unsupported.
  *

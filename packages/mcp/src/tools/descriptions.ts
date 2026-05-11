@@ -39,9 +39,17 @@ export interface ToolDescriptor {
 }
 
 /**
- * The 13 Wave 4 MCP tools. `muhaven.checkout.*` (3 tools) is reserved
- * for P5 — wired in `manifest.json` as TODO but not implemented here so
- * the build does not advertise unimplemented surface.
+ * The 22 Wave 4 MCP tools across five groups:
+ *   muhaven.read.*       (7 — incl. P11 protection_coverage + kyc_attestation)
+ *   muhaven.position.*   (4)
+ *   muhaven.policy.*     (4)
+ *   muhaven.issuer.*     (5 — P7)
+ *   muhaven.governance.* (2 — P11; cast_vote frontend runner deferred to Wave 5)
+ *
+ * `MUHAVEN_READ_ONLY=true` exposes only the 7 `muhaven.read.*` tools.
+ * P5's `muhaven.checkout.*` namespace was retired before Wave 4 close — the
+ * hosted checkout surface ships as a separate Vite SPA (apps/checkout-pay/),
+ * not as an MCP tool group.
  */
 export const TOOL_DESCRIPTORS: readonly ToolDescriptor[] = [
   {

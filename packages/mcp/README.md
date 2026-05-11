@@ -67,7 +67,7 @@ once the package is linked.
    The broker prints a URL like `https://muhaven.app/link?code=ABCD-1234` and (when not run with `--no-launch-browser`) opens it. Sign in with your passkey on the dashboard, verify the device fingerprint shown on the `/link` page, click **Authorize**. The CLI exits with success when the JWT lands in your keystore.
 5. **Use any MCP tool** from your host LLM. First call may take a moment as the broker fetches the JWT from the keystore.
 
-> **Windows / WSL2 / devcontainer / SSH-remote operators:** export `MUHAVEN_KEYRING=file` to skip the OS-keychain probe and use the file-backed keystore at `~/.muhaven/jwt.json`. The keychain backend depends on `@napi-rs/keyring` which needs platform-specific build prerequisites; the file fallback works everywhere.
+> **Windows / WSL2 / devcontainer / SSH-remote operators:** export `MUHAVEN_KEYRING=file` to skip the OS-keychain probe and use the file-backed keystore at `~/.muhaven/jwt` (mode 0600, parent dir mode 0700). The keychain backend depends on `@napi-rs/keyring` which needs platform-specific build prerequisites; the file fallback works everywhere.
 
 ## Hardening invariants (`THREAT_MODEL_P0.md` aligned)
 
@@ -120,6 +120,6 @@ Per `development/DEV_WAVE_4/THREAT_MODEL_P0.md`:
 
 MIT
 
-## Status: P3 hackathon ship
+## Status: `0.1.0` — first publish-ready cut
 
-This is the Wave 4 Phase P3 ship per `development/DEV_WAVE_4/PROGRESS.md`. The publish-to-npm-with-OIDC story lands as a separate operator task; today the package is workspace-only.
+Wave 4 Phase P3 deliverable per `development/DEV_WAVE_4/PROGRESS.md`. Workstreams A–D of the npm-publish ceremony (security must-fixes, `package.json` hygiene, `LICENSE` + `CHANGELOG`, GitHub Actions workflows) are landed on `agenticwave`; the actual `npm publish` is operator-driven via the tag-push of `mcp-v0.1.0` against the `npm-publish` GitHub Environment (2-reviewer gate · OIDC trusted-publishing · Sigstore provenance). See `development/DEV_WAVE_4/MCP_PUBLISH_READINESS.md` §6 for the operator runbook.
