@@ -22,7 +22,7 @@ import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { sql } from 'drizzle-orm';
 import * as schema from '../schema.js';
 import { PgAgentDeviceCodeRepository } from '../pg-agent-device-code.repository.js';
-import { agentDeviceCodes } from '../schema.js';
+import { agentDeviceCodes, users } from '../schema.js';
 import { DeviceCodeStatus } from '../../../../domain/auth/model/agent-device-code.js';
 
 const PG_URL = process.env.INTEGRATION_PG_URL ?? process.env.DATABASE_URL;
@@ -73,7 +73,19 @@ describeIfPg('PgAgentDeviceCodeRepository (real postgres)', () => {
   });
 
   beforeEach(async () => {
-    await db.execute(sql`TRUNCATE TABLE ${agentDeviceCodes}`);
+    // `agent_device_codes.user_id` has FK → `users.id` (onDelete: set null).
+    // The `authorize` / `deny` use-cases set `userId` to the authorizing user's
+    // PK, so every test that touches those paths needs a `users` row to be
+    // present. TRUNCATE with CASCADE so the FK chain unwinds cleanly, then
+    // seed the canonical 'u1' user the tests reference. Without this, CI's
+    // fresh Postgres fails with `23503` violating agent_device_codes_user_id_users_id_fk.
+    await db.execute(sql`TRUNCATE TABLE ${agentDeviceCodes}, ${users} CASCADE`);
+    await db.insert(users).values({
+      id: 'u1',
+      walletAddress: '0x0000000000000000000000000000000000000001',
+      walletProvider: 'zerodev',
+      role: 'investor',
+    });
   });
 
   describe('issue + lookup', () => {

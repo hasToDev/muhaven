@@ -69,13 +69,20 @@ export class PgNavHistoryRepository implements INavHistoryRepository {
     // DISTINCT ON LOWER(token_address) so writers using different case
     // conventions (checksummed from nav-worker, lowercase from indexer
     // backfill) collapse into a single canonical group per token.
-    const rows = await this.db.execute<typeof tokenNavHistory.$inferSelect>(
+    //
+    // NB: `db.execute<>(sql`SELECT *...`)` returns rows with raw Postgres
+    // column names (snake_case), NOT Drizzle's camelCase schema aliases.
+    // Use the `RawNavHistoryRow` shape + `toDomainFromRaw` to map snake_case
+    // → domain explicitly. Surfaced in CI 2026-05-11 when the integration
+    // test hit `TypeError: Cannot read properties of undefined (reading
+    // 'toLowerCase')` on `row.tokenAddress`.
+    const rows = await this.db.execute<RawNavHistoryRow>(
       sql`SELECT DISTINCT ON (lower(${tokenNavHistory.tokenAddress})) *
           FROM ${tokenNavHistory}
           ORDER BY lower(${tokenNavHistory.tokenAddress}), ${tokenNavHistory.fetchedAt} DESC`,
     );
 
-    return rows.rows.map((r) => this.toDomain(r));
+    return rows.rows.map((r) => this.toDomainFromRaw(r));
   }
 
   private toDomain(row: typeof tokenNavHistory.$inferSelect): NavSnapshot {
@@ -93,4 +100,41 @@ export class PgNavHistoryRepository implements INavHistoryRepository {
       createdAt: row.createdAt,
     });
   }
+
+  private toDomainFromRaw(row: RawNavHistoryRow): NavSnapshot {
+    return new NavSnapshot({
+      id: row.id,
+      tokenAddress: row.token_address,
+      nav: row.nav,
+      apy: row.apy ?? undefined,
+      totalAum: row.total_aum ?? undefined,
+      yieldRate: row.yield_rate ?? undefined,
+      source: row.source,
+      sourceType: row.source_type as NavSourceType,
+      sourceTimestamp: row.source_timestamp ?? undefined,
+      fetchedAt: row.fetched_at,
+      createdAt: row.created_at,
+    });
+  }
+}
+
+/**
+ * Raw row shape for `db.execute(sql...)` queries against `token_nav_history`.
+ * Drizzle's `$inferSelect` returns camelCase column aliases for `db.query.*`
+ * paths, but raw `db.execute<>` paths yield the underlying snake_case column
+ * names — this type captures that wire shape so the per-path mapper stays
+ * type-checked.
+ */
+interface RawNavHistoryRow extends Record<string, unknown> {
+  id: string;
+  token_address: string;
+  nav: string;
+  apy: string | null;
+  total_aum: string | null;
+  yield_rate: string | null;
+  source: string;
+  source_type: string;
+  source_timestamp: Date | null;
+  fetched_at: Date;
+  created_at: Date;
 }
