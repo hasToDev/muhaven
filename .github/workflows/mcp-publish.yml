@@ -179,13 +179,29 @@ jobs:
             "${{ steps.pack.outputs.tarball }}"
 
       - name: Verify signature inline (defence in depth)
+        # Strict `--certificate-identity` (NOT regex) — surfaced by the
+        # 2026-05-11 openclaw-skill pre-publish review and ported here
+        # for parity (both publish workflows previously used a prefix
+        # regex). A regex like `^https://github\.com/<owner>/<repo>/`
+        # matches ANY workflow path under the repo (incl. an attacker-
+        # introduced workflow on a non-master branch). Identity
+        # equality binds the cert to THIS exact workflow file at THIS
+        # exact ref. The 2-reviewer `npm-publish` Environment + branch
+        # protection on master remain the primary defences; this is
+        # the structural fix.
+        #
+        # NOTE: this change does NOT retroactively affect 0.1.0 / 0.1.2
+        # which already published with the prefix-regex check — those
+        # Rekor entries remain valid against the historical workflow
+        # state. Future tag-pushes (mcp-v0.1.3+) use the strict form.
         env:
           COSIGN_EXPERIMENTAL: '1'
+          EXPECTED_CERT_IDENTITY: "https://github.com/${{ github.repository }}/.github/workflows/mcp-publish.yml@${{ github.ref }}"
         run: |
           set -euo pipefail
           cosign verify-blob \
             --bundle "${{ steps.pack.outputs.tarball }}.sigstore" \
-            --certificate-identity-regexp "^https://github\.com/${{ github.repository }}/" \
+            --certificate-identity "$EXPECTED_CERT_IDENTITY" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             "${{ steps.pack.outputs.tarball }}"
 

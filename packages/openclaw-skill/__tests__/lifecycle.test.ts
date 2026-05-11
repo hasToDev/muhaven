@@ -84,7 +84,17 @@ describe('muhaven-rwa-skill bin lifecycle', () => {
 
     child.stdin?.end();
     const exitCode = await waitForExit(child, 3000);
-    if (platform() !== 'win32') {
+    if (platform() === 'win32') {
+      // Windows doesn't deliver EOF-on-stdin the way POSIX shells do; the
+      // shim may stay parked on the SIGINT/SIGTERM signal handler. Just
+      // confirm we exited cleanly OR were SIGKILLed by afterEach.
+      // TODO(2026-05-11): wire `child.kill('SIGTERM')` + assert SIGTERM
+      // exit code once we can verify cosign-signed Windows runtime parity.
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[lifecycle.test] win32: skipped exit-code assertion (raw=${String(exitCode)})`,
+      );
+    } else {
       expect(exitCode).toBe(0);
     }
   }, 10_000);
@@ -143,4 +153,94 @@ describe('muhaven-rwa-skill bin lifecycle', () => {
     const advertised = (toolsResponse.result?.tools ?? []).map((t) => t.name).sort();
     expect(advertised).toEqual([...EXPECTED_TOOLS].sort());
   }, 10_000);
+
+  it('responds to tools/call with a structured JSON-RPC frame (regression: bin can boot+list+call)', async () => {
+    // H-3 coverage gap caught by 2026-05-11 pre-publish review: the
+    // prior two cases prove the bin boots and `tools/list` returns 11
+    // tools, but never exercise an actual `tools/call`. A regression
+    // that breaks handler wire-up post-bundle (e.g., a future tsup
+    // option dropping a request-handler import) would ship green
+    // through CI without this case. We pick `muhaven.read.tokens`
+    // because it's a `read.*` tool that's safe to call with no JWT —
+    // the broker daemon won't be running in the test env, so the call
+    // will land on an error response (auth/transport), but the *frame*
+    // shape (well-formed JSON-RPC, id-matched) is the regression
+    // guard. We assert the frame, not the specific error code.
+    child = spawn(process.execPath, [BIN], {
+      env: {
+        ...process.env,
+        MUHAVEN_BACKEND_URL: 'https://api-stage.muhaven.app',
+        MUHAVEN_DASHBOARD_URL: 'http://localhost:7778',
+        MUHAVEN_KEYRING: 'file',
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    let stderr = '';
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf8');
+    });
+
+    const responses: Array<{
+      jsonrpc?: string;
+      id?: number;
+      result?: { isError?: boolean; content?: unknown };
+      error?: { code: number; message: string };
+    }> = [];
+    readNdjsonResponses(child, (msg) => {
+      responses.push(msg as typeof responses[number]);
+    });
+
+    function send(req: Record<string, unknown>): void {
+      child!.stdin?.write(JSON.stringify(req) + '\n');
+    }
+
+    send({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+        clientInfo: { name: 'lifecycle-test', version: '0' },
+      },
+    });
+    send({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} });
+    send({
+      jsonrpc: '2.0',
+      id: 42,
+      method: 'tools/call',
+      params: {
+        name: 'muhaven.read.tokens',
+        arguments: {},
+      },
+    });
+
+    const start = Date.now();
+    let callResponse: typeof responses[number] | undefined;
+    while (Date.now() - start < 8000) {
+      callResponse = responses.find((m) => m.id === 42);
+      if (callResponse) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+
+    child.stdin?.end();
+
+    if (!callResponse) {
+      throw new Error(`tools/call timed out. stderr=${stderr || '(empty)'}`);
+    }
+    // Well-formed JSON-RPC frame: jsonrpc=2.0 + matching id + exactly
+    // one of {result, error}.
+    expect(callResponse.jsonrpc).toBe('2.0');
+    expect(callResponse.id).toBe(42);
+    const hasResult = callResponse.result !== undefined;
+    const hasError = callResponse.error !== undefined;
+    expect(hasResult || hasError).toBe(true);
+    expect(hasResult && hasError).toBe(false);
+    // Either path is acceptable — what we're guarding is that the
+    // bin returned ANY structured response instead of crashing or
+    // emitting a malformed frame. The specific shape (result.isError
+    // vs error.code === -32000 etc.) is upstream's contract and
+    // would over-couple this regression test.
+  }, 15_000);
 });

@@ -77,7 +77,7 @@ function loadSkillMdSubset(key: 'toolset_subset' | 'toolset_excluded'): string[]
   if (!block) return [];
   return block[1]
     .split(/\r?\n/)
-    .map((line) => line.replace(/^[ \\t]+-[ \\t]*/, '').trim())
+    .map((line) => line.replace(/^[ \t]+-[ \t]*/, '').trim())
     .filter(Boolean);
 }
 

@@ -7,11 +7,14 @@ and published to ClawHub as `muhaven-rwa-skill`.
 ## Why a separate package?
 
 The `@muhaven/mcp` package targets MCPB hosts (Claude Desktop, Cursor,
-Claude Code) with all 13 tools. The OpenClaw surface is investor-only:
-read your portfolio, stage a buy, claim yield, and pause the agent. The
-remaining tools (`set_tier`, `audit_export`, `sell`, `rebalance`) are
-either dashboard-only ceremonies or higher-blast-radius actions that
-need policy soak-time before going live on a Telegram-driven surface.
+Claude Code) with all 22 tools across five groups (read / position /
+policy / issuer / governance). The OpenClaw surface is investor-only:
+read your portfolio + protection coverage + KYC attestation context,
+stage a buy or claim, and pause the agent. The remaining tools
+(`set_tier`, `audit_export`, `sell`, `rebalance`, the five issuer-side
+tools, the two governance tools) are either dashboard-only ceremonies
+or higher-blast-radius actions that need policy soak-time before going
+live on a Telegram-driven surface.
 
 ADR-C in `development/research-docs/WAVE_4_AGENTIC_RESEARCH_RESULT.md`
 documents the architectural decision; `SKILL.md` carries the
@@ -23,7 +26,7 @@ operator-facing rationale.
 2. `permissions.network.deny_default` + `permissions.filesystem.{read,write}: []`
    + `permissions.process.spawn: []` install before the skill binary
    starts. Any egress / FS / spawn attempt is denied at the runtime.
-3. `bin/muhaven-rwa-skill` (CommonJS shim) calls `runOpenClawSkill()`.
+3. `bin/muhaven-rwa-skill.cjs` (CommonJS shim) calls `runOpenClawSkill()`.
 4. `runOpenClawSkill()` delegates to `@muhaven/mcp`'s `runMcpStdioCli`
    with a `filterRegistry` callback that prunes excluded tools. The
    upstream's tool-description SHA-256 verification fires BEFORE the
@@ -43,21 +46,26 @@ in CI to fail on drift.
 | `muhaven.read.distribution` | read | Distribution-status answers |
 | `muhaven.read.tokens` | read | Token list + symbols |
 | `muhaven.read.audit` | read | "Why was I paused?" forensics |
+| `muhaven.read.protection_coverage` | read | DefaultProtection reserve-rate aggregate (P11) |
+| `muhaven.read.kyc_attestation` | read | KYC attestation explainer (P11) |
 | `muhaven.position.buy` | position | Subscription buy intent |
 | `muhaven.position.claim` | position | Yield claim intent |
 | `muhaven.policy.pause` | policy | Kill-switch (cascade or per-surface) |
 | `muhaven.policy.session_key_status` | policy | Read-only state inspection |
 
-Excluded: `muhaven.position.sell`, `muhaven.position.rebalance`,
-`muhaven.policy.set_tier`, `muhaven.policy.audit_export`. Each exclusion
-has a documented reason in `manifest.json#mcp.tool_subset_excluded` and
-in `SKILL.md`.
+Excluded (11 total): `muhaven.position.sell`, `muhaven.position.rebalance`,
+`muhaven.policy.set_tier`, `muhaven.policy.audit_export`, plus the five
+`muhaven.issuer.*` tools (`distribute_yield`, `kyc_add`, `kyc_remove`,
+`unpause_token`, `audit_query`) and the two P11 `muhaven.governance.*`
+tools (`propose`, `cast_vote`). Each exclusion has a documented reason
+in `manifest.json#mcp.tool_subset_excluded` and in `SKILL.md`
+`mcp.toolset_excluded_reason`.
 
 ## Build + verify
 
 ```bash
 pnpm --filter @muhaven/openclaw-skill build           # tsup ESM/CJS + DTS
-pnpm --filter @muhaven/openclaw-skill verify-subset   # 8-way drift check
+pnpm --filter @muhaven/openclaw-skill verify-subset   # 9-way drift check (subset + excluded + tools[] + upstream + bundled_version triple-match)
 pnpm --filter @muhaven/openclaw-skill typecheck       # tsc --noEmit
 pnpm --filter @muhaven/openclaw-skill test            # vitest
 ```
@@ -74,7 +82,8 @@ companion `telegram-bot/` worker for the Telegram surface.
 ## Hardening invariants
 
 - `permissions.network.deny_default: true` — egress allowlist locked to
-  three MuHaven origins. Any new endpoint requires a manifest update +
+  the MuHaven backend + dashboard origins (`https://api.muhaven.app`,
+  `https://muhaven.app`). Any new endpoint requires a manifest update +
   signed re-publish.
 - `permissions.secrets.storage: os_keychain` — paste-token UX is forbidden.
 - `permissions.process.spawn: []` — no shell, no Python, no JIT-compiled blob.

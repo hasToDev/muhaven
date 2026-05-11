@@ -160,13 +160,23 @@ jobs:
 
       - name: Verify signature inline (defence in depth)
         working-directory: packages/openclaw-skill
+        # Strict `--certificate-identity` (NOT regex) — surfaced by the
+        # 2026-05-11 pre-publish review: a regex like
+        # `^https://github\.com/<owner>/<repo>/` matches ANY workflow
+        # path under the repo (incl. an attacker-introduced workflow on
+        # a fork-mirroring branch). Identity equality binds the cert
+        # to THIS exact workflow file at THIS exact ref, closing the
+        # inline-verify defence-in-depth gap. The 2-reviewer
+        # `clawhub-publish` Environment + branch protection on master
+        # remain the primary defences; this is the structural fix.
         env:
           COSIGN_EXPERIMENTAL: '1'
+          EXPECTED_CERT_IDENTITY: "https://github.com/${{ github.repository }}/.github/workflows/openclaw-skill-publish.yml@${{ github.ref }}"
         run: |
           set -euo pipefail
           cosign verify-blob \
             --bundle "${{ steps.pack.outputs.tarball }}.sigstore" \
-            --certificate-identity-regexp "^https://github\\.com/${{ github.repository }}/" \
+            --certificate-identity "$EXPECTED_CERT_IDENTITY" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             "${{ steps.pack.outputs.tarball }}"
 

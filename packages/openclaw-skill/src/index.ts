@@ -1,20 +1,36 @@
 /**
  * OpenClaw skill entry point. Bundles `@muhaven/mcp` with a hardcoded
- * tool subset per ADR-C: `read.*` (5) + `position.{buy,claim}` (2) +
- * `policy.{pause,session_key_status}` (2) = 9 tools.
+ * tool subset per ADR-C: `read.*` (5) + Wave 4 P11 reads
+ * (`read.protection_coverage`, `read.kyc_attestation`) +
+ * `position.{buy,claim}` (2) + `policy.{pause,session_key_status}` (2)
+ * = 11 tools. Eleven additional upstream tools (`position.{sell,
+ * rebalance}` + `policy.{set_tier,audit_export}` + the five
+ * `issuer.*` tools + the two `governance.*` tools) are deliberately
+ * excluded — see `SKILL.md` `mcp.toolset_excluded_reason`.
  *
  * The skill does NOT mint its own MCP server — it imports `@muhaven/mcp`'s
  * `runMcpStdioCli` and supplies a `filterRegistry` callback that prunes
  * excluded tools. This keeps the descriptor SHA-256 hashes identical to
  * the upstream MCP package (post-MCPoison: hash drift in a bundled
- * subset would falsely trip the mcp-context-protector pin).
+ * subset would falsely trip the mcp-context-protector pin). Hash
+ * verification fires inside `runMcpStdioCli` BEFORE the filter, so an
+ * attacker who patches a single descriptor cannot hide the patch by
+ * shipping a subset filter that excludes the patched tool — the patched
+ * bytes still get hashed against the unfiltered `TOOL_DESCRIPTORS` array.
  *
- * The toolset_subset MUST stay in sync with `manifest.json` and the
- * SKILL.md frontmatter. `scripts/verify-subset.ts` enforces this at
- * package build + CI gate time.
+ * The toolset_subset MUST stay in sync with `manifest.json`,
+ * `manifest.json#tools`, and the SKILL.md frontmatter.
+ * `scripts/verify-subset.ts` enforces this at build + CI gate time + via
+ * a vitest at `__tests__/subset.test.ts` + `__tests__/manifest-consistency.test.ts`.
  */
 
 import { runMcpStdioCli, type ToolEntry } from '@muhaven/mcp';
+
+// Build-time constant injected by tsup `define` (see tsup.config.ts).
+// Tests that import this module directly (without going through the
+// bundled output) fall back to the runtime require of package.json so
+// vitest doesn't trip on an undefined identifier.
+declare const __SKILL_VERSION__: string | undefined;
 
 /** Tool names exposed by this skill. ORDER-INDEPENDENT — used as a Set. */
 export const TOOLSET_SUBSET: readonly string[] = [
@@ -95,15 +111,32 @@ export function selectOpenClawSubsetRegistry(
 
 /** Boot the skill's MCP STDIO server. */
 export async function runOpenClawSkill(): Promise<void> {
-  process.env.MUHAVEN_OPENCLAW_SKILL_VERSION ??= '0.1.0';
+  // Hard-set (not `??=`) so a host-supplied env var can't spoof the
+  // version observed by audit/telemetry downstream. The build-time
+  // constant comes from `tsup`'s `define` (sourced from
+  // `package.json#version` — single source of truth). Tests that import
+  // the unbundled module fall back to the runtime read.
+  process.env.MUHAVEN_OPENCLAW_SKILL_VERSION = resolveSkillVersion();
   await runMcpStdioCli({ filterRegistry: selectOpenClawSubsetRegistry });
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  runOpenClawSkill().catch((err) => {
-    process.stderr.write(
-      `[openclaw-skill] fatal: ${err instanceof Error ? err.message : String(err)}\n`,
-    );
-    process.exit(1);
-  });
+function resolveSkillVersion(): string {
+  // `__SKILL_VERSION__` is replaced by tsup at build time. When the
+  // module is imported directly (vitest, type-only consumers), it's
+  // undefined; fall back to the package.json sibling.
+  if (typeof __SKILL_VERSION__ === 'string' && __SKILL_VERSION__) {
+    return __SKILL_VERSION__;
+  }
+  // Lazy require to keep ESM consumers happy. The fallback is only hit
+  // in vitest where node_modules + the workspace package.json are both
+  // reachable from this file's directory.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const pkg = require('../package.json') as { version: string };
+  return pkg.version;
 }
+
+// Bin shim (`bin/muhaven-rwa-skill.cjs`) is the only entry path; it
+// imports `runOpenClawSkill` and handles fatal-error printing + exit.
+// A direct-invocation guard here would never match in the CJS bundle
+// (file:// vs Windows-backslash path mismatches) and adds dead bytes
+// to the published tarball, so it's omitted.

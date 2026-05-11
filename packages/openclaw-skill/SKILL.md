@@ -53,8 +53,15 @@ permissions:
           - mcp.propose.*
 mcp:
   bundled: "@muhaven/mcp"
+  # Exact version pin — `pnpm pack` rewrites `workspace:*` in package.json
+  # to this exact value, which ClawHub consumers resolve from npm. The
+  # `verify-subset.ts` triple-match enforces parity between this field,
+  # `manifest.json#mcp.bundled_version`, and `packages/mcp/package.json#version`.
+  # An earlier `bundled_minor_pin: true` claim was removed 2026-05-11
+  # pre-publish review: the runtime + CI gates enforce exact equality,
+  # not semver-minor-range; the field name implied a softer pin than the
+  # code actually delivered.
   bundled_version: 0.1.2
-  bundled_minor_pin: true
   toolset_subset:
     - muhaven.read.portfolio
     - muhaven.read.yields
