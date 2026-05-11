@@ -127,9 +127,18 @@ jobs:
       # workspace install above does not populate `backend/node_modules/`,
       # so `pnpm db:push` / `pnpm test` fail with `command not found: drizzle-kit`.
       # See memory `feedback_backend_standalone_lockfile`.
+      #
+      # `--ignore-workspace` is load-bearing here: without it, pnpm walks UP
+      # to the workspace root and sees the install as already-satisfied
+      # ("backend/ is not a workspace member, nothing to install"). The flag
+      # tells pnpm to treat the current directory as a standalone project and
+      # honour its local lockfile + node_modules. The workspace install at the
+      # repo root + this standalone install below match exactly what the
+      # Docker production build does (workspace at /app, then standalone in
+      # /app/backend).
       - name: Install backend (standalone lockfile)
         working-directory: backend
-        run: pnpm install --frozen-lockfile --ignore-scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts --ignore-workspace
       - name: Push schema to test database
         working-directory: backend
         run: pnpm db:push --force
