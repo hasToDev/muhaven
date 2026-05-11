@@ -114,7 +114,7 @@ Demo loop: investor in Telegram says "buy $500 of TBILL1" → inline keyboard pr
 - URL scheme: `https://pay.muhaven.app/c/<ulid>#k=<base64url(32B)>`. Server-side `enc_payload = AES-256-GCM(plaintext, key=HKDF(k))`; 30-min TTL. **The key never reaches the server** — fragments are not sent in `Referer`, so the server holds ciphertext useless without the key.
 - Webhook signing: `MuHaven-Signature: t=<unix>,v1=<HMAC-SHA256(t.body, whsec_…)>` over raw body, 5-min replay window. `Idempotency-Key` header dedupe. SSRF guard on outbound webhook URLs.
 - Realtime: in-process SSE channel (replaces Supabase Realtime — avoids leaking session metadata to third-party SaaS).
-- ZeroDev passkey ceremony for non-customer buyers: provisions kernel account on first use via `@zerodev/passkey-validator` + `createKernelAccount`. **Passkey RP ID = eTLD+1** (`muhaven.app` prod / `muhaven.hasto.dev` stage) so kernels recovered at checkout work in the dashboard.
+- ZeroDev passkey ceremony for non-customer buyers: provisions kernel account on first use via `@zerodev/passkey-validator` + `createKernelAccount`. **Passkey RP ID** = `muhaven.app` (prod, eTLD+1) / `stage.muhaven.app` (stage subdomain) so kernels recovered at checkout work in the dashboard.
 - Issuer DID/OnchainID resolution to verified label ("You are paying [Issuer Verified]" — Stripe pattern).
 - Funding flow: testnet uses faucet redirect (Option A, locked decision 2026-04-30). Pluggable `<FundingProvider>` Vue component for Wave 5 fiat on-ramp swap (Sardine / Coinbase Onramp / MoonPay).
 
@@ -248,7 +248,7 @@ Implementation reference: `frontend/src/providers/zerodev/`, `frontend/src/provi
 
 | Surface | Auth primitive | Backed by |
 |---|---|---|
-| Dashboard (`muhaven.hasto.dev`) | **SIWE (EIP-4361)** → JOSE-signed JWT | ZeroDev passkey kernel (WebAuthn). `backend/src/infrastructure/auth/jwt.service.ts` |
+| Dashboard (`muhaven.app`) | **SIWE (EIP-4361)** → JOSE-signed JWT | ZeroDev passkey kernel (WebAuthn). `backend/src/infrastructure/auth/jwt.service.ts` |
 | HavenBot `/agent` chat (Wave 4 P2) | Same SIWE JWT + `withScope(['mcp.read.*' \| 'mcp.propose.*'])` | Inherits dashboard auth |
 | `@muhaven/mcp` server (Wave 4 P3) | **OAuth 2.0 Device Authorization Grant (RFC 8628)** → scoped JWT in OS keychain | `@napi-rs/keyring` + `muhaven-broker` daemon over Unix socket. Self-hosted endpoints under `/api/v1/auth/device/*`. |
 | Telegram / OpenClaw (Wave 4 P4) | Bot service-secret + Telegram `initData` HMAC-SHA256 + dashboard JWT for >$5K tier | All self-verified |

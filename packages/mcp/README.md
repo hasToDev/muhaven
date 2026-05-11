@@ -21,7 +21,7 @@ Context Protocol server installable in Claude Desktop / Cursor / Claude Code.
 
 The MCP server runs as an MCPB STDIO subprocess of the host LLM (Claude
 Desktop, Cursor, Claude Code). It speaks HTTPS to the MuHaven backend at
-`https://nagreg.hasto.dev` and IPC to a long-running sibling daemon
+`https://api.muhaven.app` and IPC to a long-running sibling daemon
 called `muhaven-broker`. The broker holds two secrets — your ZeroDev
 session-key private half (for signing UserOps) and your scoped JWT (for
 authenticating to the backend) — both in your OS keychain. The broker
@@ -64,7 +64,7 @@ once the package is linked.
    ```bash
    muhaven-broker login
    ```
-   The broker prints a URL like `https://muhaven.hasto.dev/link?code=ABCD-1234` and (when not run with `--no-launch-browser`) opens it. Sign in with your passkey on the dashboard, verify the device fingerprint shown on the `/link` page, click **Authorize**. The CLI exits with success when the JWT lands in your keystore.
+   The broker prints a URL like `https://muhaven.app/link?code=ABCD-1234` and (when not run with `--no-launch-browser`) opens it. Sign in with your passkey on the dashboard, verify the device fingerprint shown on the `/link` page, click **Authorize**. The CLI exits with success when the JWT lands in your keystore.
 5. **Use any MCP tool** from your host LLM. First call may take a moment as the broker fetches the JWT from the keystore.
 
 > **Windows / WSL2 / devcontainer / SSH-remote operators:** export `MUHAVEN_KEYRING=file` to skip the OS-keychain probe and use the file-backed keystore at `~/.muhaven/jwt.json`. The keychain backend depends on `@napi-rs/keyring` which needs platform-specific build prerequisites; the file fallback works everywhere.
@@ -81,8 +81,8 @@ once the package is linked.
 
 | Var | Required | Default | Purpose |
 |---|---|---|---|
-| `MUHAVEN_BACKEND_URL` | no | `https://nagreg.hasto.dev` | Backend host. Use staging URL for development. |
-| `MUHAVEN_DASHBOARD_URL` | no | `https://muhaven.hasto.dev` | Dashboard origin used for the `/link` URL. |
+| `MUHAVEN_BACKEND_URL` | no | `https://api.muhaven.app` | Backend host. Use staging URL for development. |
+| `MUHAVEN_DASHBOARD_URL` | no | `https://muhaven.app` | Dashboard origin used for the `/link` URL. |
 | `MUHAVEN_BROKER_ENDPOINT` | no | `~/.muhaven/broker.sock` (POSIX) / `\\.\pipe\muhaven-broker-<user>` (Windows) | IPC path. Set if running multiple isolated brokers. |
 | `MUHAVEN_BROKER_SESSION_KEY` | **yes** (broker) | — | 0x-prefixed 32-byte hex; the session-key private half. |
 | `MUHAVEN_READ_ONLY` | no | `false` | When `true`, only `muhaven.read.*` tools are registered. |

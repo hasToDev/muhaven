@@ -45,8 +45,7 @@
     "network": {
       "deny_default": true,
       "egress_allowlist": [
-        "https://nagreg.hasto.dev",
-        "https://muhaven.hasto.dev",
+        "https://api.muhaven.app",
         "https://muhaven.app"
       ],
       "ingress_listen": []
@@ -135,8 +134,8 @@
       "key": "backend_url",
       "type": "string",
       "title": "MuHaven backend URL",
-      "description": "Backend host. Default: https://nagreg.hasto.dev (production).",
-      "default": "https://nagreg.hasto.dev",
+      "description": "Backend host. Default: https://api.muhaven.app (production).",
+      "default": "https://api.muhaven.app",
       "sensitive": false
     },
     {
@@ -144,7 +143,7 @@
       "type": "string",
       "title": "MuHaven dashboard URL",
       "description": "Dashboard origin used by deep-link confirmations and the device-code authorization page (/link). Hardcoded for phishing resistance — do not change unless you know what you are doing.",
-      "default": "https://muhaven.hasto.dev",
+      "default": "https://muhaven.app",
       "sensitive": false
     },
     {

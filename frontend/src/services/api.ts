@@ -3,7 +3,7 @@
  * Zero dependencies — uses native fetch with token injection and 401 refresh.
  */
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://nagreg.hasto.dev/api/v1'
+const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://api.muhaven.app/api/v1'
 
 export const TOKEN_KEY = 'muhaven-auth-tokens'
 

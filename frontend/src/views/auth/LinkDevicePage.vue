@@ -14,7 +14,7 @@
  *     have no way to verify the device they are about to authorize.
  *   - One-shot, terminal page — no navigation back to other dashboard
  *     routes from within the success/failure states.
- *   - WebAuthn RP-ID is already pinned to muhaven.hasto.dev by the
+ *   - WebAuthn RP-ID is already pinned to muhaven.app by the
  *     parent dashboard; a phishing /link clone cannot complete passkey.
  */
 import { computed, onMounted, ref } from 'vue'

@@ -14,11 +14,11 @@ const DEFAULT_BASE = (() => {
   const envBase = (import.meta as ImportMeta & { env?: Record<string, string> })
     .env?.VITE_BACKEND_URL;
   if (envBase) return envBase;
-  if (typeof window !== 'undefined' && /staging/i.test(window.location.host)) {
-    return 'https://nagreg-stage.hasto.dev';
+  if (typeof window !== 'undefined' && /(^|\.)pay-stage\.muhaven\.app$/i.test(window.location.host)) {
+    return 'https://api-stage.muhaven.app';
   }
-  if (typeof window !== 'undefined' && /pay\.muhaven\.(app|hasto\.dev)/i.test(window.location.host)) {
-    return 'https://nagreg.hasto.dev';
+  if (typeof window !== 'undefined' && /(^|\.)pay\.muhaven\.app$/i.test(window.location.host)) {
+    return 'https://api.muhaven.app';
   }
   return 'http://localhost:3000';
 })();

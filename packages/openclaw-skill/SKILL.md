@@ -35,8 +35,7 @@ runtime:
 permissions:
   network:
     egress_allowlist:
-      - https://nagreg.hasto.dev
-      - https://muhaven.hasto.dev
+      - https://api.muhaven.app
       - https://muhaven.app
     deny_default: true
   filesystem:
@@ -119,7 +118,7 @@ threat_model_ref: "../../development/DEV_WAVE_4/THREAT_MODEL_P0.md"
 This skill bundles a curated subset of `@muhaven/mcp` plus an OpenClaw-shaped
 config bundle. It runs in OpenClaw's NemoClaw runtime (or any MCP host that
 honours the manifest's `permissions` block) and connects to the live
-MuHaven backend at `https://nagreg.hasto.dev`.
+MuHaven backend at `https://api.muhaven.app`.
 
 ## What it does
 
@@ -151,7 +150,7 @@ MuHaven backend at `https://nagreg.hasto.dev`.
 2. `openclaw skills install muhaven-rwa-skill@0.1.0` (or via ClawHub UI).
 3. Start the broker daemon: `muhaven-broker` (see `@muhaven/mcp` README).
 4. Authenticate: `muhaven-broker login` — opens browser to
-   `https://muhaven.hasto.dev/link?code=XXXX-XXXX`, complete passkey.
+   `https://muhaven.app/link?code=XXXX-XXXX`, complete passkey.
 5. Optional: link your Telegram account for the `/agent/openclaw/*`
    confirmation surface. From the dashboard `/agent` page → Telegram
    tab → "Link Telegram" → message the bot at `@muhaven_bot` with the
@@ -166,7 +165,7 @@ Three tiers based on intent notional (USDC):
 |---|---|---|
 | **≤ $200** | Telegram inline keyboard "Confirm" button | Low blast radius. Same trust model as a $200 mobile wallet payment — single-tap inline. |
 | **$200 – $5,000** | Mini App with 6-digit OTP sent via separate Telegram message | Defends against a chat-stuffing attack where the LLM emits a `Confirm` button users tap on autopilot. OTP is out-of-band. |
-| **> $5,000** | Deep-link to dashboard `https://muhaven.hasto.dev/agent/confirm?intent=…` for passkey signature | Phishing-resistant by construction — WebAuthn RP-ID is bound to the dashboard origin; a Telegram-based MITM cannot complete passkey. |
+| **> $5,000** | Deep-link to dashboard `https://muhaven.app/agent/confirm?intent=…` for passkey signature | Phishing-resistant by construction — WebAuthn RP-ID is bound to the dashboard origin; a Telegram-based MITM cannot complete passkey. |
 
 Tier boundaries are audit-logged in `agent_audit_events` with the
 amount-bucket the intent fell into. Investors can lower the boundaries

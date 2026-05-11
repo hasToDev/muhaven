@@ -18,22 +18,16 @@
   "network": {
     "egress_allowlist": [
       {
-        "host": "nagreg.hasto.dev",
+        "host": "api.muhaven.app",
         "port": 443,
         "protocol": "https",
         "purpose": "MuHaven backend — REST API + agent policy + intent confirmation"
       },
       {
-        "host": "muhaven.hasto.dev",
-        "port": 443,
-        "protocol": "https",
-        "purpose": "MuHaven dashboard origin — deep-link target for >$5K confirmations and device-code authorization (/link)"
-      },
-      {
         "host": "muhaven.app",
         "port": 443,
         "protocol": "https",
-        "purpose": "Public marketing origin — referenced from in-tool descriptions only"
+        "purpose": "MuHaven dashboard origin — deep-link target for >$5K confirmations and device-code authorization (/link)"
       }
     ],
     "egress_default": "deny",

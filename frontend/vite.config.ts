@@ -16,7 +16,7 @@ export default defineConfig(() => ({
     }),
   ],
   // All GH Pages deploys go through the muhaven-web repo with a custom-domain
-  // CNAME (muhaven.hasto.dev), so base is always `/`.
+  // CNAME (muhaven.app), so base is always `/`.
   base: '/',
   server: {
     port: 7778,

@@ -48,8 +48,8 @@ function buildHandler(backend: BackendClient): BotHandler {
   return new BotHandler({
     backend,
     botUsername: 'muhaven_bot',
-    miniAppUrl: 'https://muhaven.hasto.dev/telegram-mini-app',
-    dashboardUrl: 'https://muhaven.hasto.dev',
+    miniAppUrl: 'https://muhaven.app/telegram-mini-app',
+    dashboardUrl: 'https://muhaven.app',
   });
 }
 
@@ -345,8 +345,8 @@ describe('BotHandler.buildIntentKeyboard', () => {
   const handler = new BotHandler({
     backend: stubBackend(),
     botUsername: 'muhaven_bot',
-    miniAppUrl: 'https://muhaven.hasto.dev/telegram-mini-app',
-    dashboardUrl: 'https://muhaven.hasto.dev',
+    miniAppUrl: 'https://muhaven.app/telegram-mini-app',
+    dashboardUrl: 'https://muhaven.app',
   });
 
   it('renders inline tier with Confirm + Deny buttons', () => {
@@ -365,7 +365,7 @@ describe('BotHandler.buildIntentKeyboard', () => {
     // index lookup on `/telegram-mini-app/` (otherwise Pages 404s into
     // the SPA's catch-all `404.html` instead of serving the Mini App).
     expect(flat.find((b) => b.web_app)?.web_app?.url).toContain(
-      'https://muhaven.hasto.dev/telegram-mini-app/?intent=oci_AAAAAAAAAAAAAAAAAAAAAAAAAA',
+      'https://muhaven.app/telegram-mini-app/?intent=oci_AAAAAAAAAAAAAAAAAAAAAAAAAA',
     );
     expect(flat.find((b) => b.callback_data?.startsWith('dny:'))).toBeDefined();
   });

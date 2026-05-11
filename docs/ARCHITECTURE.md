@@ -237,7 +237,7 @@ Every MuHaven contract follows these patterns. Breaking any of them causes silen
 
 ## Backend services
 
-A 5-service Docker stack runs on a homelab behind a Cloudflare tunnel. Production at `nagreg.hasto.dev` (master branch); staging at `nagreg-stage.hasto.dev` (develop branch). The two stacks are physically isolated (separate compose projects, never share Postgres).
+A 5-service Docker stack runs on a homelab behind a Cloudflare tunnel. Production at `api.muhaven.app` (master branch); staging at `api-stage.muhaven.app` (agenticwave branch). The two stacks are physically isolated (separate compose projects, never share Postgres).
 
 | Service | Image | Role |
 |---|---|---|
@@ -250,8 +250,8 @@ A 5-service Docker stack runs on a homelab behind a Cloudflare tunnel. Productio
 Deploy is a single command from the dev machine:
 
 ```bash
-pnpm run deploy:homelab          # prod  · master  → nagreg.hasto.dev
-pnpm run deploy:homelab:stage    # stage · develop → nagreg-stage.hasto.dev
+pnpm run deploy:homelab          # prod  · master       → api.muhaven.app
+pnpm run deploy:homelab:stage    # stage · agenticwave  → api-stage.muhaven.app
 ```
 
 Both wrap `scripts/deploy-homelab.sh <env>` (branch-guarded, always passes `-f` + `-p` so the two compose projects stay isolated). Postgres is never restarted; backend / fhe-worker / nav-worker / nav-publisher rebuild incrementally.
@@ -268,7 +268,7 @@ Setup details, env-var tables per service, and Cloudflare tunnel config: [BACKEN
 |---|---|---|
 | Fhenix CoFHE coprocessor | External — FHE-key compromise would expose all encrypted state | Threshold decryption distributes keys across multiple parties; current testnet runs Fhenix's interim "training-wheels" trust model documented to MuHaven users |
 | MuHavenStable (mhUSDC) | Owned — `_trustedPayer` mapping gated by owner; `trustedPayout` is the only ACL bypass | Per-leg `ephemeralEOA` grants on `transferFrom`; `setTrustedPayer` folded into `deploy-v2.ts` (Phase 10 fix) so fresh deploys are claim-ready by construction |
-| ZeroDev kernel + passkey | User holds passkey on device (WebAuthn) | Session keys scoped to narrow MuHaven allowlist + time-limited; passkey RP ID bound to eTLD+1 (`muhaven.hasto.dev` prod / `muhaven-stage.hasto.dev` stage) |
+| ZeroDev kernel + passkey | User holds passkey on device (WebAuthn) | Session keys scoped to narrow MuHaven allowlist + time-limited; passkey RP ID bound to `muhaven.app` (prod, eTLD+1) / `stage.muhaven.app` (stage subdomain — separate WebAuthn credential set from prod) |
 | Per-token issuer | Issuer signs `IssuerControlledOracle.setNAV` and `YieldSnapshot.fundEpoch`; cleartext `ratePerShare` self-attests | Off-chain conservation enforcement; deviation gate rejects out-of-range NAV writes; `disableDevModeForever()` latch closes the migration KYC bypass |
 | ERC-3643 trusted issuers | Trusted issuers vouch for KYC status | Multiple issuers can be required; issuer registry on-chain in `TrustedIssuersRegistry` |
 | AI agent (Wave 4) | Scaffolded only — no execution loop in production | Tiered-autonomy state machine + deterministic policy gate between LLM and signing path (CaMeL planner/action split). See [AGENT_DESIGN.md](./AGENT_DESIGN.md) |
@@ -295,8 +295,8 @@ Risk register R-1..R-8 (prompt injection, hallucinated tool calls, replay attack
 
 - **Chain.** Arbitrum Sepolia (`421614`).
 - **CoFHE.** Fhenix testnet coprocessor.
-- **Frontend.** [muhaven.hasto.dev](https://muhaven.hasto.dev) (prod) · `muhaven-stage.hasto.dev` (staging).
-- **Backend.** [nagreg.hasto.dev](https://nagreg.hasto.dev) (prod) · `nagreg-stage.hasto.dev` (staging).
+- **Frontend.** [muhaven.app](https://muhaven.app) (prod) · `stage.muhaven.app` (staging).
+- **Backend.** [api.muhaven.app](https://api.muhaven.app) (prod) · `api-stage.muhaven.app` (staging).
 - **Contracts.** [`deployments/arb-sepolia-v2.json`](../deployments/arb-sepolia-v2.json) — fresh deploy 2026-05-04, deployer `0xe11E…6986`. All proxies + implementations verified on Arbiscan. Wave 3 read-only artifact at [`deployments/arb-sepolia.json`](../deployments/arb-sepolia.json).
 - **Tokens onboarded.** TBILL1 + GOLD1 via `bash scripts/onboard-token.sh <symbol>`.
 

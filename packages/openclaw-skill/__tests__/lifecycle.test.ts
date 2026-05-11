@@ -60,7 +60,7 @@ describe('muhaven-rwa-skill bin lifecycle', () => {
     child = spawn(process.execPath, [BIN], {
       env: {
         ...process.env,
-        MUHAVEN_BACKEND_URL: 'https://nagreg-stage.hasto.dev',
+        MUHAVEN_BACKEND_URL: 'https://api-stage.muhaven.app',
         MUHAVEN_DASHBOARD_URL: 'http://localhost:7778',
         MUHAVEN_KEYRING: 'file',
       },
@@ -93,7 +93,7 @@ describe('muhaven-rwa-skill bin lifecycle', () => {
     child = spawn(process.execPath, [BIN], {
       env: {
         ...process.env,
-        MUHAVEN_BACKEND_URL: 'https://nagreg-stage.hasto.dev',
+        MUHAVEN_BACKEND_URL: 'https://api-stage.muhaven.app',
         MUHAVEN_DASHBOARD_URL: 'http://localhost:7778',
         MUHAVEN_KEYRING: 'file',
       },

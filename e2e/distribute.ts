@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const BASE_URL = process.env.E2E_BASE_URL ?? 'https://muhaven.hasto.dev';
+const BASE_URL = process.env.E2E_BASE_URL ?? 'https://muhaven.app';
 const AMOUNT = process.env.E2E_AMOUNT ?? '0.5';
 const PASSKEY_NAME = process.env.E2E_PASSKEY_NAME ?? 'E2E Test Key';
 const RPC_URL = process.env.ARB_SEPOLIA_RPC_URL ?? 'https://sepolia-rollup.arbitrum.io/rpc';

@@ -13,7 +13,7 @@
  *    intent details (issuer, amount, hash) BEFORE the user clicks
  *    Authorize.
  *  - Origin pinning happens at the WebAuthn layer — RP-ID is bound to
- *    muhaven.hasto.dev so a Telegram-MITM cannot complete passkey on
+ *    muhaven.app so a Telegram-MITM cannot complete passkey on
  *    a clone.
  *  - Collapsed-oracle 404 responses defeat enumeration of intent ids.
  */

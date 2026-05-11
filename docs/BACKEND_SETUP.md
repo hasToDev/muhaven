@@ -11,7 +11,7 @@ For day-to-day homelab operation see the internal `development/DEV_WAVE_3/HOMELA
 ```
               ┌──────────────────────┐
  frontend ──→ │  Cloudflare tunnel   │ ──→  backend:3000  ──┬──→  postgres:5432
-              │  nagreg.hasto.dev    │                      │
+              │  api.muhaven.app     │                      │
               └──────────────────────┘                      ├──→  fhe-worker:3001
                                                             │
                                                             └──→  nav-worker:3002
@@ -62,7 +62,7 @@ Generated from `backend/.env.example`. Key variables:
 | `DATABASE_URL` | `postgresql://muhaven:muhaven@postgres:5432/muhaven` | Uses Docker DNS name inside the compose network |
 | `PORT` | `3000` | — |
 | `LOG_LEVEL` | `info` | Pino level |
-| `ALLOWED_ORIGINS` | `http://localhost:7778,https://muhaven.hasto.dev` | CORS whitelist |
+| `ALLOWED_ORIGINS` | `http://localhost:7778,https://muhaven.app` | CORS whitelist |
 
 **Auth**
 
@@ -208,7 +208,7 @@ curl -s -X POST http://localhost:3000/api/v1/auth/wallet/nonce \
 
 ## Cloudflare tunnel (optional, for public exposure)
 
-Only required if you want a public URL like `nagreg.hasto.dev` → backend:3000.
+Only required if you want a public URL like `api.muhaven.app` → backend:3000.
 
 ### One-time setup
 
@@ -232,7 +232,7 @@ tunnel: muhaven-api
 credentials-file: /home/muhaven/.cloudflared/<tunnel-id>.json
 
 ingress:
-  - hostname: nagreg.hasto.dev
+  - hostname: api.muhaven.app
     service: http://localhost:3000
   - service: http_status:404
 ```
@@ -240,7 +240,7 @@ ingress:
 ### DNS + systemd
 
 ```bash
-cloudflared tunnel route dns muhaven-api nagreg.hasto.dev
+cloudflared tunnel route dns muhaven-api api.muhaven.app
 sudo cloudflared service install
 sudo systemctl enable --now cloudflared
 ```
@@ -283,7 +283,7 @@ DATABASE_URL=... pnpm db:push
 |--------|------------------------|------------------|
 | `DATABASE_URL` host | `localhost` or `postgres` (from inside container) | `postgres` (compose DNS) |
 | `FHE_WORKER_URL` | `http://fhe-worker:3001` (compose) or `http://localhost:3001` (from host) | `http://fhe-worker:3001` |
-| `ALLOWED_ORIGINS` | `http://localhost:7778` | Add `https://muhaven.hasto.dev` |
+| `ALLOWED_ORIGINS` | `http://localhost:7778` | Add `https://muhaven.app` |
 | Port exposure | 3000, 3001, 3002, 5432 on host loopback | Only 3000 via tunnel; rest internal |
 | Frontend | `bun run dev` on 7778 | GitHub Pages at `/muhaven/` base |
 

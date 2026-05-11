@@ -78,8 +78,8 @@ describe('loadConfig', () => {
       TELEGRAM_BOT_USERNAME: 'muhaven_bot',
       TELEGRAM_BOT_SERVICE_SECRET: VALID_SERVICE_SECRET,
       TELEGRAM_WEBHOOK_SECRET_TOKEN: VALID_WEBHOOK_SECRET,
-      TELEGRAM_WEBHOOK_URL: 'https://nagreg.hasto.dev/telegram-bot/webhook',
+      TELEGRAM_WEBHOOK_URL: 'https://tg.muhaven.app/webhook',
     });
-    expect(config.webhookUrl).toBe('https://nagreg.hasto.dev/telegram-bot/webhook');
+    expect(config.webhookUrl).toBe('https://tg.muhaven.app/webhook');
   });
 });

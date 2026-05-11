@@ -234,8 +234,8 @@ export async function runDoctor(): Promise<number> {
   for (const w of env.warnings) print(`  warning: ${w}`);
   print(`Default endpoint  : ${defaultBrokerEndpoint()}`);
   print(`Configured endpoint: ${process.env.MUHAVEN_BROKER_ENDPOINT ?? defaultBrokerEndpoint()}`);
-  print(`Backend URL       : ${process.env.MUHAVEN_BACKEND_URL ?? '(default https://nagreg.hasto.dev)'}`);
-  print(`Dashboard URL     : ${process.env.MUHAVEN_DASHBOARD_URL ?? '(default https://muhaven.hasto.dev)'}`);
+  print(`Backend URL       : ${process.env.MUHAVEN_BACKEND_URL ?? '(default https://api.muhaven.app)'}`);
+  print(`Dashboard URL     : ${process.env.MUHAVEN_DASHBOARD_URL ?? '(default https://muhaven.app)'}`);
 
   const wantFile = process.env.MUHAVEN_KEYRING?.toLowerCase() === 'file';
   print(`Keystore preference: ${wantFile ? 'file (env override)' : 'auto (OS keychain → file fallback)'}`);

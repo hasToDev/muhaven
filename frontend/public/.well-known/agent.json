@@ -6,11 +6,11 @@
   "short_name": "MuHaven",
   "description": "Confidential real-world-asset (RWA) portfolio management on Fhenix CoFHE. Investors hold encrypted token balances and receive yield privately. The agent reads encrypted positions, drafts buys + claims, and submits via three-tier confirmation (inline Telegram callback, Mini App OTP, dashboard passkey). NEVER auto-submits funds-moving operations without user-side cryptographic confirmation.",
   "version": "0.1.0",
-  "url": "https://muhaven.hasto.dev/.well-known/agent.json",
+  "url": "https://muhaven.app/.well-known/agent.json",
   "homepage": "https://muhaven.app",
   "documentation": "https://github.com/hasToDev/muhaven#readme",
   "support": "https://github.com/hasToDev/muhaven/issues",
-  "icon": "https://muhaven.hasto.dev/logo.png",
+  "icon": "https://muhaven.app/logo.png",
   "license": "MIT",
   "provider": {
     "name": "MuHaven",
@@ -31,9 +31,9 @@
         "type": "oauth2",
         "flow": "device_authorization_grant",
         "rfc": "RFC 8628",
-        "authorization_url": "https://muhaven.hasto.dev/link",
-        "token_url": "https://nagreg.hasto.dev/api/v1/auth/device/token",
-        "device_code_url": "https://nagreg.hasto.dev/api/v1/auth/device/code",
+        "authorization_url": "https://muhaven.app/link",
+        "token_url": "https://api.muhaven.app/api/v1/auth/device/token",
+        "device_code_url": "https://api.muhaven.app/api/v1/auth/device/code",
         "scopes": ["mcp.read.*", "mcp.propose.*"],
         "$comment_a2a_pay": "AP2-style payment delegation is NOT supported in this card. MuHaven enforces three-tier confirmation server-side; an A2A peer cannot bypass the confirmation surface."
       }
@@ -142,7 +142,7 @@
         "surface": "dashboard_passkey",
         "user_action": "WebAuthn passkey signature in dashboard",
         "ttl_seconds": 600,
-        "$comment": "Phishing-resistant by construction — WebAuthn RP-ID is bound to muhaven.hasto.dev; a Telegram-based MITM cannot complete passkey."
+        "$comment": "Phishing-resistant by construction — WebAuthn RP-ID is bound to muhaven.app; a Telegram-based MITM cannot complete passkey."
       }
     ]
   },
@@ -159,7 +159,7 @@
     "platform": "fhenix-cofhe",
     "chain": "arbitrum-sepolia",
     "encrypted_types": ["euint64", "euint128", "ebool", "eaddress"],
-    "permit_decrypt_endpoint": "https://nagreg.hasto.dev/api/v1/decrypt/for-tx",
+    "permit_decrypt_endpoint": "https://api.muhaven.app/api/v1/decrypt/for-tx",
     "$comment": "Decrypted plaintext is NEVER returned over A2A. Peers that need to display a balance must request a permit-bound decrypt via the user's session, not via the agent."
   },
   "compliance": {

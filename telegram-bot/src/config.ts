@@ -14,7 +14,7 @@ export interface TelegramBotConfig {
   backendServiceSecret: string;
   /** Webhook secret token Telegram echoes on every update. REQUIRED. */
   webhookSecretToken: string;
-  /** Public URL Telegram POSTs updates to (e.g. https://nagreg.hasto.dev/telegram-bot/webhook).
+  /** Public URL Telegram POSTs updates to (e.g. https://tg.muhaven.app/webhook).
    *  When unset, the worker uses long-polling (dev/local). */
   webhookUrl?: string | undefined;
   /** Public Mini App URL for the inline keyboard `web_app` button. */
@@ -32,8 +32,8 @@ export interface TelegramBotConfig {
 }
 
 const DEFAULT_BACKEND_URL = 'http://backend:3000';
-const DEFAULT_DASHBOARD_URL = 'https://muhaven.hasto.dev';
-const DEFAULT_MINI_APP_URL = 'https://muhaven.hasto.dev/telegram-mini-app';
+const DEFAULT_DASHBOARD_URL = 'https://muhaven.app';
+const DEFAULT_MINI_APP_URL = 'https://muhaven.app/telegram-mini-app';
 const DEFAULT_PORT = 3004;
 
 function trimSlash(s: string): string {

@@ -20,7 +20,7 @@ export default defineConfig({
   retries: 0,
   reporter: [['list'], ['html', { open: 'never' }]],
   use: {
-    baseURL: process.env.E2E_BASE_URL ?? 'https://muhaven.hasto.dev',
+    baseURL: process.env.E2E_BASE_URL ?? 'https://muhaven.app',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     viewport: { width: 1400, height: 900 },

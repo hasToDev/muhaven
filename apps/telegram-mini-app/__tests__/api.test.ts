@@ -52,14 +52,14 @@ describe('createMiniAppApi.lookupIntent', () => {
   it('POSTs the correct path + body and returns the parsed intent', async () => {
     const { fetch, calls } = makeStubFetch([{ status: 200, body: VALID_INTENT }]);
     const api = createMiniAppApi({
-      backendBaseUrl: 'https://nagreg.hasto.dev',
+      backendBaseUrl: 'https://api.muhaven.app',
       fetchImpl: fetch,
     });
     const out = await api.lookupIntent(VALID_INTENT.intentId, 'fake_initData=1');
     expect(out).toEqual(VALID_INTENT);
     expect(calls.length).toBe(1);
     expect(calls[0]!.url).toBe(
-      'https://nagreg.hasto.dev/api/v1/agent/openclaw/intent/lookup-miniapp',
+      'https://api.muhaven.app/api/v1/agent/openclaw/intent/lookup-miniapp',
     );
     expect(calls[0]!.init?.method).toBe('POST');
     expect(JSON.parse(calls[0]!.init?.body as string)).toEqual({
@@ -71,19 +71,19 @@ describe('createMiniAppApi.lookupIntent', () => {
   it('strips a trailing slash from backendBaseUrl', async () => {
     const { fetch, calls } = makeStubFetch([{ status: 200, body: VALID_INTENT }]);
     const api = createMiniAppApi({
-      backendBaseUrl: 'https://nagreg.hasto.dev/',
+      backendBaseUrl: 'https://api.muhaven.app/',
       fetchImpl: fetch,
     });
     await api.lookupIntent(VALID_INTENT.intentId, 'fake');
     expect(calls[0]!.url).toBe(
-      'https://nagreg.hasto.dev/api/v1/agent/openclaw/intent/lookup-miniapp',
+      'https://api.muhaven.app/api/v1/agent/openclaw/intent/lookup-miniapp',
     );
   });
 
   it('translates a 404 into a friendly message', async () => {
     const { fetch } = makeStubFetch([{ status: 404, body: { title: 'not found' } }]);
     const api = createMiniAppApi({
-      backendBaseUrl: 'https://nagreg.hasto.dev',
+      backendBaseUrl: 'https://api.muhaven.app',
       fetchImpl: fetch,
     });
     await expect(
@@ -94,7 +94,7 @@ describe('createMiniAppApi.lookupIntent', () => {
   it('translates other non-2xx into a generic message', async () => {
     const { fetch } = makeStubFetch([{ status: 500 }]);
     const api = createMiniAppApi({
-      backendBaseUrl: 'https://nagreg.hasto.dev',
+      backendBaseUrl: 'https://api.muhaven.app',
       fetchImpl: fetch,
     });
     await expect(
@@ -107,12 +107,12 @@ describe('createMiniAppApi.confirmIntent', () => {
   it('POSTs to the confirm path with otp + initData + source', async () => {
     const { fetch, calls } = makeStubFetch([{ status: 200, body: { intent: { status: 'confirmed' } } }]);
     const api = createMiniAppApi({
-      backendBaseUrl: 'https://nagreg.hasto.dev',
+      backendBaseUrl: 'https://api.muhaven.app',
       fetchImpl: fetch,
     });
     await api.confirmIntent(VALID_INTENT.intentId, '123456', 'fake_initData=1');
     expect(calls[0]!.url).toBe(
-      'https://nagreg.hasto.dev/api/v1/agent/openclaw/intent/confirm',
+      'https://api.muhaven.app/api/v1/agent/openclaw/intent/confirm',
     );
     expect(JSON.parse(calls[0]!.init?.body as string)).toEqual({
       intentId: VALID_INTENT.intentId,
@@ -127,7 +127,7 @@ describe('createMiniAppApi.confirmIntent', () => {
       { status: 410, body: { title: 'intent expired' } },
     ]);
     const api = createMiniAppApi({
-      backendBaseUrl: 'https://nagreg.hasto.dev',
+      backendBaseUrl: 'https://api.muhaven.app',
       fetchImpl: fetch,
     });
     await expect(
@@ -142,7 +142,7 @@ describe('createMiniAppApi.confirmIntent', () => {
       { status: 422, body: { somethingElse: true } },
     ]);
     const api = createMiniAppApi({
-      backendBaseUrl: 'https://nagreg.hasto.dev',
+      backendBaseUrl: 'https://api.muhaven.app',
       fetchImpl: fetch,
     });
     await expect(
@@ -153,7 +153,7 @@ describe('createMiniAppApi.confirmIntent', () => {
   it('returns void on 200', async () => {
     const { fetch } = makeStubFetch([{ status: 200, body: { intent: { status: 'confirmed' } } }]);
     const api = createMiniAppApi({
-      backendBaseUrl: 'https://nagreg.hasto.dev',
+      backendBaseUrl: 'https://api.muhaven.app',
       fetchImpl: fetch,
     });
     await expect(
@@ -166,12 +166,12 @@ describe('createMiniAppApi.denyIntent', () => {
   it('POSTs to the deny path with initData + source', async () => {
     const { fetch, calls } = makeStubFetch([{ status: 200, body: { intent: { status: 'denied' } } }]);
     const api = createMiniAppApi({
-      backendBaseUrl: 'https://nagreg.hasto.dev',
+      backendBaseUrl: 'https://api.muhaven.app',
       fetchImpl: fetch,
     });
     await api.denyIntent(VALID_INTENT.intentId, 'fake_initData=1');
     expect(calls[0]!.url).toBe(
-      'https://nagreg.hasto.dev/api/v1/agent/openclaw/intent/deny',
+      'https://api.muhaven.app/api/v1/agent/openclaw/intent/deny',
     );
     expect(JSON.parse(calls[0]!.init?.body as string)).toEqual({
       intentId: VALID_INTENT.intentId,
@@ -185,7 +185,7 @@ describe('createMiniAppApi.denyIntent', () => {
       { status: 409, body: { title: 'already consumed' } },
     ]);
     const api = createMiniAppApi({
-      backendBaseUrl: 'https://nagreg.hasto.dev',
+      backendBaseUrl: 'https://api.muhaven.app',
       fetchImpl: fetch,
     });
     await expect(api.denyIntent(VALID_INTENT.intentId, 'fake')).rejects.toThrow(

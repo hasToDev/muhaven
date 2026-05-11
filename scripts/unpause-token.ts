@@ -301,9 +301,9 @@ async function main() {
     console.log("If /tokens still shows the token as 'paused' after ~30s:\n");
     console.log(
       "  1. Confirm the indexer is running:\n" +
-        "       curl -s https://nagreg" +
+        "       curl -s https://api" +
         (env === "staging" ? "-stage" : "") +
-        ".hasto.dev/health\n",
+        ".muhaven.app/health\n",
     );
     console.log(
       "  2. Recovery — re-seed from on-chain truth (refreshes existing rows):\n",

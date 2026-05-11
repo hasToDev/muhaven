@@ -8,11 +8,10 @@ import { defineConfig } from 'vite';
  * tunnel rewrites every `/c/*` to `/index.html` so the page parses the
  * sessionId out of `location.pathname` itself.
  *
- * Static-served deployment target: `pay.muhaven.hasto.dev` (hackathon
- * prod) / `pay.muhaven-staging.hasto.dev` (stage). Long-term:
- * `pay.muhaven.app`. ALL deployments share the dashboard's bare-host
- * RP ID so passkey kernels created here are recoverable from the
- * dashboard.
+ * Static-served deployment target: `pay.muhaven.app` (prod) /
+ * `pay-stage.muhaven.app` (stage). ALL deployments share the dashboard's
+ * apex RP ID (`muhaven.app`) so passkey kernels created here are
+ * recoverable from the dashboard.
  */
 export default defineConfig({
   base: '/',

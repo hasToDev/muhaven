@@ -49,7 +49,7 @@ const BACKEND_BASE_URL = (() => {
   if (buildTime && buildTime.length > 0) return buildTime;
   // 3. Default to the production homelab — Mini Apps run behind an HTTPS
   //    origin that Telegram enforces, so `http://backend:3000` isn't reachable.
-  return 'https://nagreg.hasto.dev';
+  return 'https://api.muhaven.app';
 })();
 
 function $(selector: string): HTMLElement | null {

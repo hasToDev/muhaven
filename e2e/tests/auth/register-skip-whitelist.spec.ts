@@ -24,7 +24,7 @@ test('register → Skip for now → redirect without whitelist', async () => {
 
   try {
     const page = ctx.pages()[0] ?? (await ctx.newPage())
-    const baseURL = process.env.E2E_BASE_URL ?? 'https://muhaven.hasto.dev'
+    const baseURL = process.env.E2E_BASE_URL ?? 'https://muhaven.app'
     await page.goto(`${baseURL}/login`)
 
     await byTestId(page, SEL.authModeToggle).click()

@@ -1,7 +1,7 @@
 # MuHaven E2E — Playwright suite
 
 Functional regression suite for the MuHaven UI. Runs against live
-`https://muhaven.hasto.dev` + Arb Sepolia + homelab backend. Serial execution,
+`https://muhaven.app` + Arb Sepolia + homelab backend. Serial execution,
 human-in-loop passkey prompts, no CI.
 
 > Full spec + test inventory: `../development/DEV_WAVE_3/qa/PLAYWRIGHT_QA.md`.
@@ -78,8 +78,8 @@ All optional:
 
 | Var | Default |
 |-----|---------|
-| `E2E_BASE_URL` | `https://muhaven.hasto.dev` |
-| `E2E_BACKEND_URL` | `https://nagreg.hasto.dev` |
+| `E2E_BASE_URL` | `https://muhaven.app` |
+| `E2E_BACKEND_URL` | `https://api.muhaven.app` |
 | `ARB_SEPOLIA_RPC_URL` | Arbitrum public RPC |
 | `E2E_INVESTOR_PASSKEY_NAME` | `E2E Investor` |
 | `E2E_ISSUER_PASSKEY_NAME` | `E2E Issuer` |

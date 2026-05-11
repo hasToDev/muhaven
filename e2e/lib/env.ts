@@ -1,7 +1,7 @@
 import type { Address } from 'viem'
 
-export const BASE_URL = process.env.E2E_BASE_URL ?? 'https://muhaven.hasto.dev'
-export const BACKEND_URL = process.env.E2E_BACKEND_URL ?? 'https://nagreg.hasto.dev'
+export const BASE_URL = process.env.E2E_BASE_URL ?? 'https://muhaven.app'
+export const BACKEND_URL = process.env.E2E_BACKEND_URL ?? 'https://api.muhaven.app'
 export const RPC_URL =
   process.env.ARB_SEPOLIA_RPC_URL ?? 'https://sepolia-rollup.arbitrum.io/rpc'
 

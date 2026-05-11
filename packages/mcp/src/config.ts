@@ -17,7 +17,7 @@ import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
 
 export interface McpRuntimeConfig {
-  /** MuHaven backend base URL (no trailing slash). e.g. https://nagreg.hasto.dev */
+  /** MuHaven backend base URL (no trailing slash). e.g. https://api.muhaven.app */
   backendBaseUrl: string;
   /** Origin of the MuHaven dashboard (used in AUTH_REQUIRED messages). */
   dashboardBaseUrl: string;
@@ -46,8 +46,8 @@ export interface BrokerRuntimeConfig {
   requestTimeoutMs: number;
 }
 
-const DEFAULT_BACKEND_URL = 'https://nagreg.hasto.dev';
-const DEFAULT_DASHBOARD_URL = 'https://muhaven.hasto.dev';
+const DEFAULT_BACKEND_URL = 'https://api.muhaven.app';
+const DEFAULT_DASHBOARD_URL = 'https://muhaven.app';
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 const DEFAULT_BROKER_TIMEOUT_MS = 5_000;
 const DEFAULT_BROKER_MAX_BYTES = 64 * 1024;

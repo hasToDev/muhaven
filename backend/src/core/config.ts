@@ -200,9 +200,9 @@ const EnvSchema = z.object({
   // ── Wave 4 Phase P5 — Hosted checkout `pay.muhaven.app` ────────────
   // Public base URL the checkout page is hosted at — used to build the
   // buyer-facing capability URL `<base>/c/<sessionId>#k=<key>`.
-  // Hackathon defaults: prod = `https://pay.muhaven.hasto.dev`, staging
-  // = `https://pay.muhaven-staging.hasto.dev`, dev = the local Vite
-  // server. Long-term prod = `https://pay.muhaven.app`.
+  // Production: `https://pay.muhaven.app`. Staging (subdomain on the same
+  // apex so RP-ID resolves the same as the dashboard): `https://pay-stage.muhaven.app`.
+  // Dev: the local Vite server on http://localhost:7780.
   CHECKOUT_PUBLIC_URL: z.string().default('http://localhost:7780'),
 
   // ── Wave 4 Phase P11 — DefaultProtection / EncryptedGovernance / KYC stubs ──

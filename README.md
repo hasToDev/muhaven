@@ -67,7 +67,7 @@ The DeFAI (DeFi + AI) market is exploding — AI agents that manage portfolios, 
 
 MuHaven is the first confidential, AI-powered RWA portfolio manager. It's a **two-sided platform**: issuers create and list RWA tokens, deposit yield, and manage distribution — while investors manage portfolios with AI-powered privacy. Nobody can see the strategy, the balances, or the yields. Not competitors, not MEV bots, not even the agent itself.
 
-> **Status (production live · 2026-05-04):** the full **production-grade RWA flow** is deployed on Arbitrum Sepolia and serving traffic at [muhaven.hasto.dev](https://muhaven.hasto.dev) (frontend) backed by [nagreg.hasto.dev](https://nagreg.hasto.dev) (API). 11 platform contracts behind transparent proxies — atomic `MuHavenSubscription` for buy/redeem, per-token `MuHavenTreasury` custody, pluggable `IPriceOracle` with `IssuerControlledOracle` + `ChainlinkFunctionsOracle` reference impls, `RedemptionQueue` for overflow, pull-based `YieldSnapshot` per epoch, ERC-3643 modular compliance topology (`MuHavenIdentityRegistry` + `ModularCompliance` + module library), and the `MuHavenStable` confidential USDC wrapper (mhUSDC) replacing legacy PUSDC for MuHaven flows. fhERC-20 balances, ZeroDev passkey kernel + scoped session keys, backend + FHE worker + NAV worker + NAV publisher on a Cloudflare tunnel. TBILL1 + GOLD1 onboarded end-to-end. Investors and issuers drive every flow directly from the Vue 3 dashboard today; self-serve issuer onboarding wizard ships per-token contracts on-chain in one transaction batch. The **AI agent layer is in active development on a parallel branch** (HavenBot in-dashboard copilot, `@muhaven/mcp` MCPB server, OpenClaw skill, hosted checkout at `pay.muhaven.app`, tiered-autonomy engine) — see [AI Agent Design](./docs/AGENT_DESIGN.md).
+> **Status (production live · 2026-05-04):** the full **production-grade RWA flow** is deployed on Arbitrum Sepolia and serving traffic at [muhaven.app](https://muhaven.app) (frontend) backed by [api.muhaven.app](https://api.muhaven.app) (API). 11 platform contracts behind transparent proxies — atomic `MuHavenSubscription` for buy/redeem, per-token `MuHavenTreasury` custody, pluggable `IPriceOracle` with `IssuerControlledOracle` + `ChainlinkFunctionsOracle` reference impls, `RedemptionQueue` for overflow, pull-based `YieldSnapshot` per epoch, ERC-3643 modular compliance topology (`MuHavenIdentityRegistry` + `ModularCompliance` + module library), and the `MuHavenStable` confidential USDC wrapper (mhUSDC) replacing legacy PUSDC for MuHaven flows. fhERC-20 balances, ZeroDev passkey kernel + scoped session keys, backend + FHE worker + NAV worker + NAV publisher on a Cloudflare tunnel. TBILL1 + GOLD1 onboarded end-to-end. Investors and issuers drive every flow directly from the Vue 3 dashboard today; self-serve issuer onboarding wizard ships per-token contracts on-chain in one transaction batch. The **AI agent layer is in active development on a parallel branch** (HavenBot in-dashboard copilot, `@muhaven/mcp` MCPB server, OpenClaw skill, hosted checkout at `pay.muhaven.app`, tiered-autonomy engine) — see [AI Agent Design](./docs/AGENT_DESIGN.md).
 
 **How it works in 30 seconds:**
 
@@ -230,7 +230,7 @@ All contracts are verified on [Arbiscan](https://sepolia.arbiscan.io). Proxied c
 
 ### Backend services
 
-A 5-service Docker stack runs on a homelab behind a Cloudflare tunnel. Production at `nagreg.hasto.dev` (master branch); staging at `nagreg-stage.hasto.dev` (develop branch) — both stacks isolated, side-by-side, never share Postgres.
+A 5-service Docker stack runs on a homelab behind a Cloudflare tunnel. Production at `api.muhaven.app` (master branch); staging at `api-stage.muhaven.app` (agenticwave branch) — both stacks isolated, side-by-side, never share Postgres.
 
 | Service | Role |
 |---------|------|
@@ -243,8 +243,8 @@ A 5-service Docker stack runs on a homelab behind a Cloudflare tunnel. Productio
 Deploy is a single command from the dev machine:
 
 ```bash
-pnpm run deploy:homelab          # prod  · master  → nagreg.hasto.dev
-pnpm run deploy:homelab:stage    # stage · develop → nagreg-stage.hasto.dev
+pnpm run deploy:homelab          # prod  · master       → api.muhaven.app
+pnpm run deploy:homelab:stage    # stage · agenticwave  → api-stage.muhaven.app
 ```
 
 Both wrap `scripts/deploy-homelab.sh <env>`. Branch-guarded (master for prod, develop for stage) and always passes `-f` + `-p` so the two compose stacks (`docker-compose.yml` / `muhaven` vs `docker-compose.stage.yml` / `muhaven-stage`) stay physically isolated. Downtime is ~3–5s per restarted service; postgres is never touched.
@@ -596,8 +596,8 @@ curl -s http://localhost:3000/health              # {"status":"ok",...}
 Homelab deploy shortcut once the stack is live on a target host:
 
 ```bash
-pnpm run deploy:homelab          # prod  · master  → nagreg.hasto.dev
-pnpm run deploy:homelab:stage    # stage · develop → nagreg-stage.hasto.dev
+pnpm run deploy:homelab          # prod  · master       → api.muhaven.app
+pnpm run deploy:homelab:stage    # stage · agenticwave  → api-stage.muhaven.app
 ```
 
 ### Run the frontend
@@ -608,11 +608,11 @@ bun install
 bun run dev:stage               # Dev server at http://localhost:7778 (reads .env.stage — staging ZeroDev)
 ```
 
-For local iteration, always use `bun run dev:stage`. `bun run dev` reads `.env` whose ZeroDev project is bound to RP ID `muhaven.hasto.dev`, so passkey login fails on `localhost:7778` with `"The RP ID is invalid for this domain"`. `dev:stage` reads `.env.stage` (staging ZeroDev + staging backend + staging contracts) which has `http://localhost:7778` in its allowed origins.
+For local iteration, always use `bun run dev:stage`. `bun run dev` reads `.env` whose ZeroDev project is bound to RP ID `muhaven.app`, so passkey login fails on `localhost:7778` with `"The RP ID is invalid for this domain"`. `dev:stage` reads `.env.stage` (staging ZeroDev + staging backend + staging contracts) which has `http://localhost:7778` in its allowed origins.
 
 Live deployments:
-- **Production:** [muhaven.hasto.dev](https://muhaven.hasto.dev) → backend [nagreg.hasto.dev](https://nagreg.hasto.dev)
-- **Staging:** `muhaven-stage.hasto.dev` → backend `nagreg-stage.hasto.dev`
+- **Production:** [muhaven.app](https://muhaven.app) → backend [api.muhaven.app](https://api.muhaven.app)
+- **Staging:** `stage.muhaven.app` → backend `api-stage.muhaven.app`
 
 ---
 

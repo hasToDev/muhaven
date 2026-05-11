@@ -65,16 +65,16 @@
       "key": "backend_url",
       "type": "string",
       "title": "MuHaven backend URL",
-      "description": "Backend host. Default: https://nagreg.hasto.dev (production). Use https://nagreg-stage.hasto.dev for staging.",
-      "default": "https://nagreg.hasto.dev",
+      "description": "Backend host. Default: https://api.muhaven.app (production). Use https://api-stage.muhaven.app for staging.",
+      "default": "https://api.muhaven.app",
       "sensitive": false
     },
     {
       "key": "dashboard_url",
       "type": "string",
       "title": "MuHaven dashboard URL",
-      "description": "Dashboard origin used by the device-code authorization page (/link). Default: https://muhaven.hasto.dev. Hardcoded for phishing resistance — do not change unless you know what you are doing.",
-      "default": "https://muhaven.hasto.dev",
+      "description": "Dashboard origin used by the device-code authorization page (/link). Default: https://muhaven.app. Hardcoded for phishing resistance — do not change unless you know what you are doing.",
+      "default": "https://muhaven.app",
       "sensitive": false
     },
     {
@@ -94,5 +94,5 @@
       "sensitive": false
     }
   ],
-  "$comment_setup": "First-run instructions: (1) install this package via your MCPB host (Claude Desktop / Cursor / Claude Code). (2) Start the broker daemon: `muhaven-broker` (running in the background; see README for systemd / launchd / Windows-Service recipes). (3) Authenticate: `muhaven-broker login` — opens browser to https://muhaven.hasto.dev/link?code=XXXX-XXXX, complete passkey ceremony. (4) Use any tool in this MCP package."
+  "$comment_setup": "First-run instructions: (1) install this package via your MCPB host (Claude Desktop / Cursor / Claude Code). (2) Start the broker daemon: `muhaven-broker` (running in the background; see README for systemd / launchd / Windows-Service recipes). (3) Authenticate: `muhaven-broker login` — opens browser to https://muhaven.app/link?code=XXXX-XXXX, complete passkey ceremony. (4) Use any tool in this MCP package."
 }

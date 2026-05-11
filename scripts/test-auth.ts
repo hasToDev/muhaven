@@ -100,7 +100,7 @@ async function testVerifyBadSignature(): Promise<void> {
     ``,
     `Sign in to MuHaven`,
     ``,
-    `URI: https://muhaven.hasto.dev`,
+    `URI: https://muhaven.app`,
     `Version: 1`,
     `Chain ID: 421614`,
     `Nonce: ${nonce || 'testnonce'}`,
