@@ -30,6 +30,8 @@ const root = join(here, '..');
 
 interface Manifest {
   mcp?: {
+    bundled?: string;
+    bundled_version?: string;
     tool_subset?: string[];
     tool_subset_excluded?: string[];
   };
@@ -39,6 +41,20 @@ interface Manifest {
 function loadManifest(): Manifest {
   const raw = readFileSync(join(root, 'manifest.json'), 'utf-8');
   return JSON.parse(raw) as Manifest;
+}
+
+function loadSkillMdBundledVersion(): string | undefined {
+  const raw = readFileSync(join(root, 'SKILL.md'), 'utf-8');
+  const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!fmMatch) return undefined;
+  const m = fmMatch[1].match(/^[ \t]*bundled_version:[ \t]*["']?([^"'\r\n#]+?)["']?[ \t]*(?:#.*)?$/m);
+  return m ? m[1].trim() : undefined;
+}
+
+function loadMcpPackageVersion(): string {
+  const raw = readFileSync(join(root, '..', 'mcp', 'package.json'), 'utf-8');
+  const pkg = JSON.parse(raw) as { version: string };
+  return pkg.version;
 }
 
 /**
@@ -152,6 +168,36 @@ function main(): void {
     for (const name of undecided) errors.push(`  - ${name}`);
   }
 
+  // 9. bundled_version triple-match: manifest.mcp.bundled_version =
+  //    SKILL.md frontmatter mcp.bundled_version = packages/mcp/package.json#version.
+  //    The CI publish workflow enforces (1)+(3); enforcing it locally too
+  //    catches the skew before tag-push so the operator doesn't bounce off
+  //    the CI gate on a 20-minute publish run.
+  const manifestBundled = manifest.mcp?.bundled_version;
+  const skillMdBundled = loadSkillMdBundledVersion();
+  const mcpPkgVersion = loadMcpPackageVersion();
+  if (!manifestBundled) {
+    errors.push(
+      `manifest.json#mcp.bundled_version is missing — must equal packages/mcp/package.json#version (${mcpPkgVersion}); the openclaw-skill-publish.yml workflow's version-match step will fail on tag-push without it.`,
+    );
+  }
+  if (!skillMdBundled) {
+    errors.push(
+      `SKILL.md frontmatter is missing the mcp.bundled_version key — must equal packages/mcp/package.json#version (${mcpPkgVersion}).`,
+    );
+  }
+  if (
+    manifestBundled &&
+    skillMdBundled &&
+    !(manifestBundled === skillMdBundled && skillMdBundled === mcpPkgVersion)
+  ) {
+    errors.push('bundled_version triple-match drift:');
+    errors.push(`  - manifest.json#mcp.bundled_version       = ${manifestBundled}`);
+    errors.push(`  - SKILL.md#mcp.bundled_version            = ${skillMdBundled}`);
+    errors.push(`  - packages/mcp/package.json#version       = ${mcpPkgVersion}`);
+    errors.push('  All three MUST match (pnpm pack rewrites workspace:* to the live version).');
+  }
+
   if (errors.length > 0) {
     process.stderr.write(
       'verify-subset: FAIL — manifest / SKILL.md / runtime / upstream are inconsistent.\n\n',
@@ -162,7 +208,7 @@ function main(): void {
 
   process.stdout.write(
     `verify-subset: OK — ${TOOLSET_SUBSET.length} tools advertised, ${TOOLSET_EXCLUDED.length} explicitly excluded, ` +
-      `${TOOL_DESCRIPTORS.length} upstream — partition is consistent.\n`,
+      `${TOOL_DESCRIPTORS.length} upstream; bundled @muhaven/mcp pinned at ${mcpPkgVersion} (matched across manifest.json + SKILL.md + packages/mcp/package.json).\n`,
   );
 }
 

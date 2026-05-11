@@ -53,7 +53,7 @@ permissions:
           - mcp.propose.*
 mcp:
   bundled: "@muhaven/mcp"
-  bundled_version: 0.1.0
+  bundled_version: 0.1.2
   bundled_minor_pin: true
   toolset_subset:
     - muhaven.read.portfolio

@@ -78,6 +78,8 @@
     "$comment_forward_compat": "Per OpenClaw issues #28298 (permissions schema) and #28360 (sandbox boot ABI). When the runtime doesn't recognize a field, it MUST treat unknown permissions as deny — not allow. Verified on NemoClaw 0.5.0 release notes."
   },
   "mcp": {
+    "bundled": "@muhaven/mcp",
+    "bundled_version": "0.1.2",
     "transport": "stdio",
     "command": "node",
     "args": ["${__dirname}/dist/index.cjs"],
