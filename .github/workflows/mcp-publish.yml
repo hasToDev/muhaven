@@ -178,7 +178,34 @@ jobs:
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             "${{ steps.pack.outputs.tarball }}"
 
+      - name: OIDC claims diagnostic (compare against npm Trusted Publisher config)
+        # When npm Trusted Publisher returns 404, the OIDC claim doesn't match
+        # the saved binding. Printing the exact case GitHub puts in the claim
+        # makes the mismatch obvious — every value below must match the npmjs.com
+        # Trusted Publisher config EXACTLY (case-sensitive for `repository_owner`
+        # + `workflow_ref`).
+        run: |
+          echo "github.repository_owner = ${{ github.repository_owner }}"
+          echo "github.repository       = ${{ github.repository }}"
+          echo "github.workflow_ref     = ${{ github.workflow_ref }}"
+          echo "github.event_name       = ${{ github.event_name }}"
+          echo "github.ref              = ${{ github.ref }}"
+          echo "Environment             = npm-publish"
+          echo "Workflow filename (path-only) = mcp-publish.yml"
+
       - name: npm publish (with provenance)
+        # `NODE_AUTH_TOKEN: ''` is load-bearing. The actions/setup-node@v4
+        # `registry-url` parameter writes an .npmrc with
+        # `_authToken=${NODE_AUTH_TOKEN}` placeholder. If anything in the
+        # runner's env has NODE_AUTH_TOKEN set (e.g. a stale repo secret
+        # picked up by GitHub Actions auto-injection), npm uses that token
+        # for auth INSTEAD of the OIDC exchange — and a token from a
+        # different account / scope returns 404. Setting it explicitly to
+        # the empty string here ensures the OIDC trusted-publisher path is
+        # the SOLE auth method, which is what `--provenance` is designed
+        # to drive.
+        env:
+          NODE_AUTH_TOKEN: ''
         run: npm publish ${{ steps.pack.outputs.tarball }} --provenance --access public
 
       - name: Post-publish shasum verify
