@@ -7,7 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0] — 2026-05-10
+## [0.1.1] — 2026-05-11
+
+Workflow-validation cut. `0.1.0` shipped via a one-time manual `npm publish
+--no-provenance` because npm Trusted Publisher could not be configured against
+a non-existent package; this release exercises the `mcp-publish.yml` workflow
+end-to-end on the muhaven.app hosts so subsequent releases carry full Sigstore
+provenance attestations and `npm view dist.signatures` populates.
+
+### Fixed
+
+- Re-runs the publish path through `.github/workflows/mcp-publish.yml`
+  (Workstream D) on the now-configured Trusted Publisher binding for
+  `@muhaven/mcp`. Validates the full OIDC → cosign sign → `npm publish
+  --provenance` → post-publish shasum verify chain that `0.1.0` skipped.
+- No code change relative to `0.1.0`. Bundle bytes identical except for the
+  embedded `0.1.1` version string in `package.json` + `manifest.json`. The
+  `0.1.0` "Provenance" badge gap (visible on the npmjs.com sidebar) closes
+  with this release.
+
+### Distribution
+
+- First release where `npm view @muhaven/mcp@0.1.1 dist.signatures` returns a
+  populated array, `dist.attestations.url` resolves to a GitHub-hosted
+  attestation, and the npmjs.com sidebar shows the "Provenance" badge linked
+  to the workflow run.
+
+
 
 First publishable cut. All publish-readiness security must-fixes (H-1 / H-2 /
 H-3 from `MCP_PUBLISH_READINESS.md` §2) and package-hygiene work landed on
@@ -119,5 +145,6 @@ Workstream H)
     muhaven-mcp-0.1.0.tgz
   ```
 
-[Unreleased]: https://github.com/hasToDev/muhaven/compare/mcp-v0.1.0...HEAD
+[Unreleased]: https://github.com/hasToDev/muhaven/compare/mcp-v0.1.1...HEAD
+[0.1.1]: https://github.com/hasToDev/muhaven/releases/tag/mcp-v0.1.1
 [0.1.0]: https://github.com/hasToDev/muhaven/releases/tag/mcp-v0.1.0
