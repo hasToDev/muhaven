@@ -7,7 +7,11 @@ import {
 
 describe('WebhookSigner', () => {
   const signer = new WebhookSigner();
-  const secret = 'whsec_test_constant_for_round_trip';
+  // NB: opaque test-only fixture — NOT a real Stripe webhook secret. The
+  // signer treats this as raw HMAC key bytes; prefix is irrelevant on the
+  // verification path. Deliberately not `whsec_*` so GitHub secret scanning
+  // doesn't false-positive — see /security/secret-scanning/1.
+  const secret = 'TEST_FIXTURE_NOT_A_REAL_SECRET_signer_round_trip';
   const body = new TextEncoder().encode(JSON.stringify({ x: 1 }));
 
   it('produces a header in `t=,v1=hex` shape', () => {

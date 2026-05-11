@@ -120,7 +120,15 @@ jobs:
         with:
           node-version: 20
           cache: pnpm
-      - name: Install (no scripts)
+      - name: Install workspace (no scripts)
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      # `backend/` is NOT a pnpm-workspace.yaml member — it ships its own
+      # standalone pnpm-lock.yaml that Docker reads in production. The
+      # workspace install above does not populate `backend/node_modules/`,
+      # so `pnpm db:push` / `pnpm test` fail with `command not found: drizzle-kit`.
+      # See memory `feedback_backend_standalone_lockfile`.
+      - name: Install backend (standalone lockfile)
+        working-directory: backend
         run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Push schema to test database
         working-directory: backend
@@ -146,6 +154,14 @@ jobs:
           cache: pnpm
       - name: Install (no scripts)
         run: pnpm install --frozen-lockfile --ignore-scripts
+      # `test/MuHavenSdk.integration.test.ts` imports `@muhaven/sdk/dist/index.cjs`
+      # to exercise the SDK against the freshly-compiled contracts. With
+      # `--ignore-scripts` (supply-chain hygiene) the SDK build never fires,
+      # so the dist file is absent and Hardhat aborts with MODULE_NOT_FOUND
+      # before any test runs. Build the SDK explicitly here — it's the only
+      # workspace package the Hardhat suite consumes at test time.
+      - name: Build @muhaven/sdk (hardhat integration test depends on dist)
+        run: pnpm --filter @muhaven/sdk build
       - name: Compile contracts
         run: pnpm compile
       - name: Run hardhat tests

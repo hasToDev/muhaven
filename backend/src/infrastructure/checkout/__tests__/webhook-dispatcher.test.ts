@@ -50,7 +50,12 @@ async function seedEndpoint(repo: MemoryWebhookEndpointRepository, opts: {
     endpointId: `${WEBHOOK_ENDPOINT_ID_PREFIX}deadbeefdeadbeefdeadbeefdeadbeef`,
     issuerUserId: opts.issuerUserId,
     url: opts.url ?? 'https://example.test/hook',
-    signingSecret: 'whsec_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    // NB: opaque test-only fixture — NOT a real Stripe webhook secret. Prefix
+    // deliberately differs from the runtime `whsec_*` format so GitHub secret
+    // scanning doesn't false-positive (see https://github.com/hasToDev/muhaven/
+    // security/secret-scanning/1). The signer treats the string as raw HMAC
+    // key bytes; the wire prefix never affects verification.
+    signingSecret: 'TEST_FIXTURE_NOT_A_REAL_SECRET_dispatcher_aaaaaa',
     enabledEvents: opts.enabled ?? [],
     disabledAt: null,
     createdAt: new Date(),
