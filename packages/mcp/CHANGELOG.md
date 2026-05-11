@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-05-11
+
+Re-roll of the `0.1.1` workflow-validation cut. `0.1.1` never reached npm:
+the tag pointed at the version-bump commit but the workflow at that SHA
+lacked two fixes that landed on `agenticwave` after the tag was first cut.
+Bumping to `0.1.2` lets the tag reference the latest `agenticwave` HEAD
+which contains both fixes; subsequent releases follow the normal flow.
+
+### Fixed
+
+- **NODE_AUTH_TOKEN was overriding the OIDC trusted-publisher exchange in
+  `.github/workflows/mcp-publish.yml`** (commit `e373e36`). The
+  `actions/setup-node@v4` `registry-url` parameter writes an `.npmrc`
+  with `_authToken=${NODE_AUTH_TOKEN}` placeholder; the GitHub Actions
+  runner's inherited env had `NODE_AUTH_TOKEN` populated (visible in the
+  failing workflow logs as `XXXXX-XXXXX-XXXXX-XXXXX`), so npm tried
+  token-based publish first and 404'd because that token has no
+  permission on `@muhaven/mcp`. Fix: explicit `env: NODE_AUTH_TOKEN: ''`
+  on the publish step forces the `--provenance`-driven OIDC exchange as
+  the sole auth method.
+
+- **OIDC claims diagnostic step added pre-publish** (commit `e373e36`).
+  Prints `github.repository_owner` / `github.repository` /
+  `github.workflow_ref` / `github.event_name` / `github.ref` so that any
+  future Trusted Publisher binding mismatch can be diff'd
+  character-by-character against the npm-side configuration. Surfaced
+  the case-sensitivity gotcha around `repository_owner` that `0.1.1`'s
+  three failed attempts triggered.
+
+### Distribution
+
+- Identical bundle bytes to the `0.1.1` artifact except for the embedded
+  `0.1.2` version strings in `package.json` + `manifest.json`. No code
+  changes to the MCP server or broker daemon. Same `dist/` shape, same
+  16 files in the tarball, same `bin/` entry-points.
+
 ## [0.1.1] — 2026-05-11
 
 Workflow-validation cut. `0.1.0` shipped via a one-time manual `npm publish
@@ -145,6 +181,7 @@ Workstream H)
     muhaven-mcp-0.1.0.tgz
   ```
 
-[Unreleased]: https://github.com/hasToDev/muhaven/compare/mcp-v0.1.1...HEAD
+[Unreleased]: https://github.com/hasToDev/muhaven/compare/mcp-v0.1.2...HEAD
+[0.1.2]: https://github.com/hasToDev/muhaven/releases/tag/mcp-v0.1.2
 [0.1.1]: https://github.com/hasToDev/muhaven/releases/tag/mcp-v0.1.1
 [0.1.0]: https://github.com/hasToDev/muhaven/releases/tag/mcp-v0.1.0
