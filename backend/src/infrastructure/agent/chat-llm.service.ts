@@ -254,11 +254,16 @@ function stubIntentClassifier(message: string): {
       toolCall: { toolName: 'muhaven_pause', args: {} },
     };
   }
-  // Default: explanatory response with a recommendation.
+  // Default fallback when the message didn't match a stub-classifier
+  // keyword. The full capabilities list is intentionally NOT surfaced
+  // here — the stub only supports `portfolio` / `pause` keywords; listing
+  // buys/claims/rebalances/policy-tier-changes would be misleading
+  // because none of those routes work without the Gemini loop. Keep this
+  // copy honest: tell the user the agent is degraded so they don't burn
+  // time crafting prompts that can't succeed.
   return {
     text:
-      'I can help with portfolio summaries, NAV quotes, buys, claims, rebalances, '
-      + 'policy tier changes, or pausing the agent. What would you like to do?',
+      'The agent is temporarily unavailable. Please try again in a moment.',
   };
 }
 

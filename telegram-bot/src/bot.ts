@@ -286,7 +286,7 @@ export class BotHandler {
       return [
         answerCallback(cb.id, 'Denied. No transaction submitted.', false),
         editMarkup(chatId, messageId, undefined),
-        sendText(chatId, '✖\\uFE0F Intent denied\\. Nothing was submitted on\\-chain\\.'),
+        sendText(chatId, '✖️ Intent denied\\. Nothing was submitted on\\-chain\\.'),
       ];
     }
     return [answerCallback(cb.id)];
@@ -355,7 +355,7 @@ export class BotHandler {
         inline_keyboard: [
           [
             { text: '✅ Confirm', callback_data: encodeCallbackData({ kind: 'cnf', intentId: intent.intentId }) },
-            { text: '✖\\uFE0F Deny', callback_data: encodeCallbackData({ kind: 'dny', intentId: intent.intentId }) },
+            { text: '✖️ Deny', callback_data: encodeCallbackData({ kind: 'dny', intentId: intent.intentId }) },
           ],
         ],
       };
@@ -371,7 +371,7 @@ export class BotHandler {
         inline_keyboard: [
           [{ text: '🔒 Open Mini App', web_app: { url } }],
           [
-            { text: '✖\\uFE0F Deny', callback_data: encodeCallbackData({ kind: 'dny', intentId: intent.intentId }) },
+            { text: '✖️ Deny', callback_data: encodeCallbackData({ kind: 'dny', intentId: intent.intentId }) },
           ],
         ],
       };
@@ -384,7 +384,7 @@ export class BotHandler {
           { text: '🔑 Confirm in dashboard', url },
         ],
         [
-          { text: '✖\\uFE0F Deny', callback_data: encodeCallbackData({ kind: 'dny', intentId: intent.intentId }) },
+          { text: '✖️ Deny', callback_data: encodeCallbackData({ kind: 'dny', intentId: intent.intentId }) },
         ],
       ],
     };
