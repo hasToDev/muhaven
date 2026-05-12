@@ -5,6 +5,25 @@ input::placeholder {
   color: var(--color-cool);
 }
 
+/* Native <select> option dropdown — the operating system renders the
+   open dropdown list outside the page's DOM, so Tailwind utility
+   classes on the <select> element don't propagate to <option>
+   children. Without explicit option-level styling, dark-mode users
+   see white background + dark text by default (browser fallback),
+   which is unreadable on the warm-charcoal canvas. Chrome / Firefox /
+   Safari (≥2024 releases) all honor `option { background-color, color }`
+   when explicitly set, so a single global rule restores the design-
+   system palette across every native <select> on the page. */
+option {
+  background-color: var(--color-frost, #ffffff);
+  color: var(--color-midnight, #121315);
+}
+
+.dark option {
+  background-color: #171717;
+  color: #ffffff;
+}
+
 ::-webkit-scrollbar {
   width: 8px;
 }

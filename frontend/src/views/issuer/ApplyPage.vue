@@ -117,20 +117,30 @@ onMounted(async () => {
     return
   }
 
-  // Phase 9.A · Expansion (F2). Bounce-out: an already-approved issuer
-  // who hits this route without an in-flight wizard goes back to
-  // /tokens. `issuerStatus` is hydrated by `useAuth.login()` and
-  // `main.ts`'s `fetchUserMeta()` so it's reliable here. The
-  // skip-welcome shortcut above stays open (approved issuer using
-  // /tokens' "Issue another" CTA jumps to step 2).
+  // Phase 9.A · Expansion (F2). Already-approved issuer landing on this
+  // route without an in-flight wizard would otherwise see step 1 (the
+  // welcome+KYB form), which is no longer applicable — KYB was approved
+  // on their first apply. Two paths land here:
+  //   (a) /tokens empty-state CTA → routes with `?skip-welcome` query
+  //       → handled by the branch above; wizard.step jumps to 2.
+  //   (b) Direct URL navigation to `/apply-issuer` (no query) → previously
+  //       bounced to /tokens. That created a dead-end for an approved
+  //       issuer whose first deploy attempt failed (no tokens visible
+  //       on /tokens; nothing actionable beyond the same CTA that they
+  //       can't reach without first clicking it). Now: auto-bump to step
+  //       2 so the wizard is available at the same shape as path (a).
+  //       Surfaced 2026-05-12 during §5 walkthrough setup (operator hit
+  //       deploy-lib-disabled error on first attempt; came back to
+  //       /apply-issuer and got bounced away). `issuerStatus` is
+  //       hydrated by `useAuth.login()` and `main.ts`'s `fetchUserMeta()`
+  //       so it's reliable here.
   if (
     authStore.issuerStatus === 'approved'
     && route.query['skip-welcome'] === undefined
     && wizard.step < 2
     && wizard.finalizeStatus === null
   ) {
-    router.replace('/tokens')
-    return
+    wizard.setStep(2)
   }
 
   // Re-attach to an in-flight deploy if the page reloaded mid-flight.
