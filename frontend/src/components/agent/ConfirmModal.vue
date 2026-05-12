@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { ShieldCheck, Lock, X, Loader2, AlertTriangle, ExternalLink, ArrowRight } from 'lucide-vue-next'
+import { ShieldCheck, Lock, X, Loader2, AlertTriangle, ExternalLink, ArrowRight, Send } from 'lucide-vue-next'
 import { agentToolsApi, type ActionDescriptor } from '@/services/api'
 
 const router = useRouter()
@@ -54,6 +54,17 @@ const txHash = ref<string | null>(null)
 const errorMsg = ref<string | null>(null)
 const deferredRedirectTo = ref<string | null>(null)
 const deferredReason = ref<string | null>(null)
+// Q6 (i) — when the user has linked Telegram + the propose-buy call
+// minted an OpenClaw intent that was delivered to the bot, the
+// dashboard yields to Telegram by default: the Authorize button is
+// hidden + the modal shows a "Waiting for Telegram confirmation…" panel
+// instead. The user can override with the "Use dashboard instead"
+// escape hatch (Telegram outage / impatient operator) — flipping this
+// to `true` reveals the standard Authorize CTA without affecting the
+// SSE auto-fire path (which still fires if the Telegram confirm lands
+// before the manual Authorize completes — the per-intent fire-lock in
+// AgentPage.tryAcquireFireLock dedupes the on-chain leg).
+const useDashboardFallback = ref(false)
 
 watch(
   () => props.action?.toolCallId,
@@ -62,12 +73,45 @@ watch(
     status.value = 'idle'
     txHash.value = null
     errorMsg.value = null
+    useDashboardFallback.value = false
   },
 )
 
 const isExpired = computed(() => {
   if (!props.action) return false
   return Math.floor(Date.now() / 1000) > props.action.expiresAtSec
+})
+
+/**
+ * Q6 (i) — the propose-buy use-case stamps `preview.openClawIntentId`
+ * iff the user has an active Telegram link AND the mint-and-deliver
+ * use-case posted the intent to the bot worker successfully. Treat
+ * that as the "linked & Telegram is the canonical surface" signal.
+ *
+ * Wave 4 P4 already wires the SSE `intent_confirmed` event to auto-
+ * fire the runner from `AgentPage.tryAcquireFireLock`, so the
+ * dashboard's role here is to (a) NOT distract the user with an
+ * Authorize CTA they shouldn't need to click, and (b) provide an
+ * escape hatch so a Telegram outage / impatient operator can still
+ * complete the action manually.
+ */
+const isTelegramLinked = computed(() => {
+  if (!props.action) return false
+  const id = props.action.preview.openClawIntentId
+  return typeof id === 'string' && id.length > 0
+})
+
+/**
+ * When true, the modal renders the new "Waiting for Telegram"
+ * pending panel + hides the Authorize CTA. Active only at idle (i.e.
+ * before any submission); once SSE auto-fire flips the modal to
+ * `awaiting`/`submitting`/`committing` the standard progression
+ * surfaces take over.
+ */
+const showTelegramPending = computed(() => {
+  if (!isTelegramLinked.value) return false
+  if (useDashboardFallback.value) return false
+  return status.value === 'idle'
 })
 
 function close(): void {
@@ -100,6 +144,16 @@ const isInsufficientBalanceError = computed(() => {
 function goToCash(): void {
   if (props.action) emit('cancel', props.action)
   router.push('/cash')
+}
+
+/**
+ * Q6 (i) escape hatch — reveal the standard Authorize CTA so the user
+ * can complete the action from the dashboard even when linked. SSE
+ * auto-fire is left wired; if both paths race, the per-intent fire-
+ * lock dedupes the on-chain leg.
+ */
+function useDashboard(): void {
+  useDashboardFallback.value = true
 }
 
 async function authorize(): Promise<void> {
@@ -372,6 +426,42 @@ const arbiscanUrl = computed(() =>
           </p>
         </div>
 
+        <!-- Q6 (i) — Telegram-linked pending state. Renders BEFORE the
+             status surfaces so a freshly-mounted modal (status='idle')
+             with an OpenClaw intent shows the waiting panel + escape
+             hatch instead of jumping straight to the Authorize CTA. -->
+        <div
+          v-if="showTelegramPending"
+          data-testid="agent-confirm-telegram-pending"
+          class="flex items-start gap-3 px-4 py-3 rounded-xl
+                 bg-compute/5 dark:bg-signal/5
+                 border border-compute/20 dark:border-signal/20 mb-5"
+        >
+          <Send :size="16" :stroke-width="1.8" class="text-compute dark:text-signal flex-shrink-0 mt-0.5" />
+          <div class="flex-1 min-w-0">
+            <p class="font-sans text-sm font-semibold text-midnight dark:text-white">
+              Confirm in Telegram
+            </p>
+            <p class="font-sans text-xs text-cool leading-relaxed mt-1">
+              We sent this confirmation to your linked Telegram. This tab
+              will auto-fire on-chain the moment you confirm there — no
+              need to tap Authorize here.
+            </p>
+            <button
+              type="button"
+              @click="useDashboard"
+              data-testid="agent-confirm-use-dashboard-cta"
+              class="inline-flex items-center gap-1 font-sans text-xs font-semibold
+                     text-compute dark:text-signal mt-2 underline decoration-compute/40
+                     dark:decoration-signal/40 hover:decoration-compute dark:hover:decoration-signal
+                     transition cursor-pointer"
+            >
+              Use dashboard instead
+              <ArrowRight :size="11" :stroke-width="2" />
+            </button>
+          </div>
+        </div>
+
         <!-- Status surfaces -->
         <div
           v-if="status === 'success'"
@@ -452,8 +542,28 @@ const arbiscanUrl = computed(() =>
                   : 'Cancel'
             }}
           </button>
+          <!-- Q6 (i) — passive "Waiting" pill replaces the Authorize CTA
+               when the user is Telegram-linked + hasn't tapped "Use
+               dashboard instead". Mirrors the awaiting/submitting/
+               committing pill below for visual continuity. -->
+          <div
+            v-if="showTelegramPending"
+            data-testid="agent-confirm-telegram-waiting-pill"
+            class="flex-1 py-3 px-4 rounded-xl font-sans text-sm
+                   bg-compute/10 dark:bg-signal/10
+                   border border-compute/25 dark:border-signal/25
+                   text-midnight dark:text-white
+                   flex items-center justify-center gap-2"
+          >
+            <Loader2
+              :size="14"
+              :stroke-width="2"
+              class="animate-spin text-compute dark:text-signal"
+            />
+            <span>Waiting for Telegram…</span>
+          </div>
           <button
-            v-if="status === 'idle' || (status === 'error' && !isInsufficientBalanceError)"
+            v-else-if="status === 'idle' || (status === 'error' && !isInsufficientBalanceError)"
             type="button"
             @click="authorize"
             data-testid="agent-confirm-authorize-cta"

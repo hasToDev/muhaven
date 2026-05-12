@@ -32,17 +32,56 @@ watch(
   },
 )
 
+// Within-tab dedupe for Telegram-linked actions. The cross-tab
+// localStorage `tryAcquireFireLock` below covers "two open dashboard
+// tabs both auto-fire on SSE". The within-tab `firingIntents` set
+// covers Q6 (i)'s new shape: ONE tab where the user taps "Use
+// dashboard instead" → manual Authorize starts the runner, AND moments
+// later the SSE `intent_confirmed` event lands and tries to call
+// onAuthorize a second time. Without this guard, the runner fires
+// twice (double on-chain Subscription.purchase, drained mhUSDC,
+// wasted gas — the second commit POST fails on confirm-token
+// single-use but the on-chain leg already fired). The set is reset
+// when the action terminates (success / error / cancel) — the
+// `onConfirmComplete` + `onConfirmCancel` hooks clear the entry.
+const firingIntents = new Set<string>()
+
+function tryAcquireWithinTabIntentLock(intentId: string): boolean {
+  if (firingIntents.has(intentId)) return false
+  firingIntents.add(intentId)
+  return true
+}
+
+function releaseWithinTabIntentLock(intentId: string): void {
+  firingIntents.delete(intentId)
+}
+
 async function onAuthorize(action: ActionDescriptor): Promise<void> {
-  // Tell the modal we're submitting so it shows the spinner state.
-  confirmModalRef.value?.setSubmitting()
-  const result = await runAgentAction(action)
-  await confirmModalRef.value?.reportResult(result)
-  if (result.ok === true) {
-    toast.success('Confirmed', {
-      description: `Action ${action.kind} settled. The audit log has the receipt.`,
-    })
-  } else if (result.ok === 'deferred') {
-    toast.info('Continue on the next page', { description: result.reason })
+  // Q6 (i) — for Telegram-linked actions, the same intent can be
+  // dispatched by either (a) the dashboard's Authorize CTA in
+  // "Use dashboard instead" fallback mode, or (b) the SSE
+  // intent_confirmed handler below. The lock makes the second caller
+  // a silent no-op so the runner only fires once.
+  const intentIdRaw = action.preview.openClawIntentId
+  const intentId =
+    typeof intentIdRaw === 'string' && intentIdRaw.length > 0 ? intentIdRaw : null
+  if (intentId !== null && !tryAcquireWithinTabIntentLock(intentId)) {
+    return
+  }
+  try {
+    // Tell the modal we're submitting so it shows the spinner state.
+    confirmModalRef.value?.setSubmitting()
+    const result = await runAgentAction(action)
+    await confirmModalRef.value?.reportResult(result)
+    if (result.ok === true) {
+      toast.success('Confirmed', {
+        description: `Action ${action.kind} settled. The audit log has the receipt.`,
+      })
+    } else if (result.ok === 'deferred') {
+      toast.info('Continue on the next page', { description: result.reason })
+    }
+  } finally {
+    if (intentId !== null) releaseWithinTabIntentLock(intentId)
   }
 }
 
@@ -175,16 +214,25 @@ function onConfirmComplete(payload: {
   // Remove the action from the pending queue regardless of ok/fail —
   // the user has either authorized + (succeeded|failed) or cancelled.
   agentStore.consumePendingAction(payload.action.toolCallId)
-  // Modal stays mounted on every terminal state so the user can read
-  // the receipt / error / deferred CTA at their own pace and dismiss
-  // via the Done / Cancel button. The previous version dismissed the
-  // modal on error AND fired a toast — the toast auto-dismissed
-  // after a few seconds, hiding the actionable copy
-  // ("you have $5, need $100; wrap more first") before the user
-  // could read it. Surfaced 2026-05-09 from operator feedback on
-  // the runner balance gate.
-  // The toast still fires for non-error completions (success +
-  // deferred) so confirmations bubble up via the standard surface.
+  // Q6 (i) follow-up — when a SUCCESS terminal state lands, advance
+  // immediately to the next queued action (if any). Two back-to-back
+  // propose-buy calls with Telegram linked produce a window where the
+  // second intent's `intent_confirmed` SSE event can arrive before its
+  // ConfirmModal mounts (the prior success modal is still open + the
+  // watcher's `!activeAction.value` guard suppresses the swap). That
+  // would strand the second auto-fire silently (the SSE handler reads
+  // the stale prior `activeAction.preview.openClawIntentId` and
+  // refuses to match the new intent). The success-receipt toast +
+  // audit row preserve the prior tx-hash / Arbiscan link, so dropping
+  // the success modal is lossless. ERROR and DEFERRED terminal states
+  // continue to keep the modal mounted because their actionable copy
+  // (e.g. "you have $5, need $100; wrap more first") is load-bearing
+  // and the toast auto-dismisses too fast — operator feedback
+  // 2026-05-09 on the runner balance gate.
+  if (payload.ok === true) {
+    const next = agentStore.pendingActions[0] ?? null
+    activeAction.value = next
+  }
 }
 
 function onConfirmCancel(action: ActionDescriptor): void {

@@ -8,11 +8,13 @@
  */
 
 const DEFAULT_BASE = (() => {
-  // Vite's `import.meta.env.VITE_BACKEND_URL` is the production override;
-  // hostname-based heuristic gives the demo a single-build deploy without
-  // env files.
-  const envBase = (import.meta as ImportMeta & { env?: Record<string, string> })
-    .env?.VITE_BACKEND_URL;
+  // Vite's `import.meta.env.VITE_BACKEND_URL` is the build-time override
+  // (statically replaced into the bundle via the .env / .env.stage files
+  // — see `apps/checkout-pay/.env.stage.example` for the staging value).
+  // The hostname-based heuristic below is the fallback so a single-mode
+  // build is still demoable across stage / prod / localhost without an
+  // env file in front of every Vite invocation.
+  const envBase = import.meta.env?.VITE_BACKEND_URL as string | undefined;
   if (envBase) return envBase;
   if (typeof window !== 'undefined' && /(^|\.)pay-stage\.muhaven\.app$/i.test(window.location.host)) {
     return 'https://api-stage.muhaven.app';
