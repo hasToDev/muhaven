@@ -122,12 +122,13 @@ function setRange(range: CheckoutStatsRange) {
     />
 
     <!-- Filter chips -->
-    <div class="flex flex-wrap gap-2">
+    <div role="group" aria-label="Filter by status" class="flex flex-wrap gap-2">
       <button
         v-for="f in STATUS_FILTERS"
         :key="f.key"
         type="button"
         :data-testid="`checkout-filter-${f.key}`"
+        :aria-pressed="filterKey === f.key ? 'true' : 'false'"
         :class="[
           'px-3 py-1 text-[11px] font-sans font-medium rounded-full border transition-colors',
           filterKey === f.key
@@ -163,51 +164,58 @@ function setRange(range: CheckoutStatsRange) {
         </MButton>
       </div>
 
-      <table v-else class="w-full">
-        <thead>
-          <tr class="text-left">
-            <th class="font-label text-[10px] tracking-[0.14em] uppercase text-cool font-semibold px-5 py-3">Session</th>
-            <th class="font-label text-[10px] tracking-[0.14em] uppercase text-cool font-semibold px-5 py-3">Status</th>
-            <th class="font-label text-[10px] tracking-[0.14em] uppercase text-cool font-semibold px-5 py-3">Token</th>
-            <th class="font-label text-[10px] tracking-[0.14em] uppercase text-cool font-semibold px-5 py-3">Amount</th>
-            <th class="font-label text-[10px] tracking-[0.14em] uppercase text-cool font-semibold px-5 py-3">Buyer</th>
-            <th class="font-label text-[10px] tracking-[0.14em] uppercase text-cool font-semibold px-5 py-3">Created</th>
-            <th class="px-5 py-3 w-8"></th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-haze/60 dark:divide-white/8">
-          <tr
-            v-for="s in store.sessions"
-            :key="s.sessionId"
-            class="hover:bg-mist/30 dark:hover:bg-white/3 transition-colors cursor-pointer"
-            :data-testid="`checkout-row-${s.sessionId}`"
-            @click="openSessionDetail(s.sessionId)"
-          >
-            <td class="px-5 py-3 font-mono text-[12px] text-midnight dark:text-white">
-              {{ s.sessionId.slice(0, 10) }}…{{ s.sessionId.slice(-6) }}
-            </td>
-            <td class="px-5 py-3">
-              <CheckoutStatusPill :status="s.status" size="sm" />
-            </td>
-            <td class="px-5 py-3 text-sm font-sans text-midnight dark:text-white">
-              {{ s.metadata.tokenSymbol }}
-            </td>
-            <td class="px-5 py-3 text-xs font-mono text-cool/80 italic">
-              {{ ENCRYPTED_PLACEHOLDER }}
-            </td>
-            <td class="px-5 py-3 text-xs font-mono text-cool">
-              <span v-if="s.buyerAddress">{{ formatAddress(s.buyerAddress) }}</span>
-              <span v-else class="text-cool/60">—</span>
-            </td>
-            <td class="px-5 py-3 text-xs text-cool tabular-nums">
-              {{ new Date(s.createdAt).toLocaleString() }}
-            </td>
-            <td class="px-5 py-3 text-cool group-hover:text-compute dark:group-hover:text-signal">
-              <ExternalLink :size="13" />
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <div v-else class="overflow-x-auto" :aria-busy="store.sessionsLoading ? 'true' : 'false'">
+        <table class="w-full min-w-[640px]">
+          <thead>
+            <tr class="text-left">
+              <th scope="col" class="font-label text-[10px] tracking-[0.14em] uppercase text-cool font-semibold px-5 py-3">Session</th>
+              <th scope="col" class="font-label text-[10px] tracking-[0.14em] uppercase text-cool font-semibold px-5 py-3">Status</th>
+              <th scope="col" class="font-label text-[10px] tracking-[0.14em] uppercase text-cool font-semibold px-5 py-3">Token</th>
+              <th scope="col" class="font-label text-[10px] tracking-[0.14em] uppercase text-cool font-semibold px-5 py-3">Amount</th>
+              <th scope="col" class="font-label text-[10px] tracking-[0.14em] uppercase text-cool font-semibold px-5 py-3">Buyer</th>
+              <th scope="col" class="font-label text-[10px] tracking-[0.14em] uppercase text-cool font-semibold px-5 py-3">Created</th>
+              <th scope="col" class="px-5 py-3 w-8" aria-label="Open"></th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-haze/60 dark:divide-white/8">
+            <tr
+              v-for="s in store.sessions"
+              :key="s.sessionId"
+              role="button"
+              tabindex="0"
+              :aria-label="`Open checkout session ${s.sessionId} — ${s.metadata.tokenSymbol}, ${s.status}`"
+              class="group hover:bg-mist/30 dark:hover:bg-white/3 transition-colors cursor-pointer focus:outline-none focus:bg-gold/8 focus:ring-2 focus:ring-inset focus:ring-gold/50"
+              :data-testid="`checkout-row-${s.sessionId}`"
+              @click="openSessionDetail(s.sessionId)"
+              @keydown.enter.prevent="openSessionDetail(s.sessionId)"
+              @keydown.space.prevent="openSessionDetail(s.sessionId)"
+            >
+              <td class="px-5 py-3 font-mono text-[12px] text-midnight dark:text-white">
+                {{ s.sessionId.slice(0, 10) }}…{{ s.sessionId.slice(-6) }}
+              </td>
+              <td class="px-5 py-3">
+                <CheckoutStatusPill :status="s.status" size="sm" />
+              </td>
+              <td class="px-5 py-3 text-sm font-sans text-midnight dark:text-white">
+                {{ s.metadata.tokenSymbol }}
+              </td>
+              <td class="px-5 py-3 text-xs font-mono text-cool/80 italic">
+                {{ ENCRYPTED_PLACEHOLDER }}
+              </td>
+              <td class="px-5 py-3 text-xs font-mono text-cool">
+                <span v-if="s.buyerAddress">{{ formatAddress(s.buyerAddress) }}</span>
+                <span v-else class="text-cool/60">—</span>
+              </td>
+              <td class="px-5 py-3 text-xs text-cool tabular-nums">
+                {{ new Date(s.createdAt).toLocaleString() }}
+              </td>
+              <td class="px-5 py-3 text-cool group-hover:text-compute dark:group-hover:text-signal">
+                <ExternalLink :size="13" aria-hidden="true" />
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
 
       <div v-if="store.sessions.length > 0 && store.hasMore" class="flex justify-center py-4 border-t border-haze/60 dark:border-white/8">
         <MButton

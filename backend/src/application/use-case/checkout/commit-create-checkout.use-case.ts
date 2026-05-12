@@ -106,21 +106,18 @@ export class CommitCreateCheckoutUseCase {
       );
     }
 
-    // R-3 single-use consume — throws 410 (consumed/expired) or 403
-    // (wrong binding) on rejection. The use-case stops here in both
-    // cases, no session is minted.
-    await this.confirmTokens.consume(
-      input.confirmToken,
-      input.userId,
-      'permit_grant',
-      input.actionPayload,
-      now,
-    );
-
-    // Re-fetch the token to refresh symbol / issuer state at commit
-    // time — token could have been paused or rotated between propose
-    // and commit. The hash-equality on consume guarantees the
-    // tokenAddress matches; we only need the latest decoration.
+    // Pre-validate token state + issuer-of-record BEFORE consuming the
+    // confirm token. Order matters (sec-review LOW-4): consume is
+    // destructive — a single-use confirm token is burned even if the
+    // downstream conflict throws. If we consume FIRST and then 409 on a
+    // paused token, the legitimate issuer must re-propose because their
+    // confirm token is dead. Pre-validating means a token-paused-mid-
+    // flight 409 leaves the confirm token live for a retry once the
+    // token returns to `active`.
+    //
+    // The hash-equality on consume still defends against
+    // tokenAddress / amount / memo tampering — only the token-state
+    // checks are run-ahead-of-consume here.
     const token = await this.rwaTokenRepo.findByAddress(parsed.tokenAddress);
     if (!token) {
       throw ApplicationHttpError.conflict(
@@ -146,6 +143,18 @@ export class CommitCreateCheckoutUseCase {
         `Token ${token.symbol} issuer-of-record rotated between propose and commit.`,
       );
     }
+
+    // R-3 single-use consume — throws 410 (consumed/expired) or 403
+    // (wrong binding) on rejection. NOW that pre-flight checks passed,
+    // burning the token is acceptable; on a successful consume, the
+    // session mint below is the side-effect the user authorized.
+    await this.confirmTokens.consume(
+      input.confirmToken,
+      input.userId,
+      'permit_grant',
+      input.actionPayload,
+      now,
+    );
 
     // Resolve label via the dependency-injected resolver — same shape
     // CheckoutLinkModal (dashboard path) will use, keeping the create-

@@ -154,7 +154,45 @@ export interface AuditQueryToolResponseDto {
 // preview; commit returns the buyer URL + sessionId + fragmentKey.
 
 const memoSchema = z.string().min(1).max(280).optional();
-const urlSchema = z.string().url().max(512).optional();
+
+/**
+ * Wave 4 §5 Path C — same restricted-scheme validator as the dashboard's
+ * `MetadataSchema`. The agent surface is the second user of these URL
+ * fields and MUST share the validation posture — otherwise an LLM-emitted
+ * `javascript:` URL would pass propose but fail dashboard parity.
+ *
+ * Restricts to `https://` (or `http://localhost` for dev). Hard-blocks
+ * `javascript:` / `data:` / `vbscript:` / `file:` etc.
+ */
+const urlSchema = z
+  .string()
+  .max(512)
+  .superRefine((raw, ctx) => {
+    let u: URL;
+    try {
+      u = new URL(raw);
+    } catch {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'must be a valid URL' });
+      return;
+    }
+    if (u.protocol === 'https:') return;
+    if (u.protocol === 'http:') {
+      const h = u.hostname;
+      if (h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]') {
+        return;
+      }
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'http:// only allowed for localhost; production must use https://',
+      });
+      return;
+    }
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `protocol ${u.protocol} is not allowed (https:// or http://localhost only)`,
+    });
+  })
+  .optional();
 
 export const ProposeCreateCheckoutDtoSchema = z
   .object({

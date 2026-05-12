@@ -45,12 +45,18 @@ export class ListWebhooksUseCase {
 
 /**
  * Mask the signing secret. Format: keep the `whsec_` prefix + first 6
- * chars after it + `…` + last 4 chars. For a representative
+ * chars after it + `...` + last 4 chars. For a representative
  * `whsec_d41d8cd98f00b204e9800998ecf8427e`, the hint reads
- * `whsec_d41d8c…427e`. This carries enough entropy for the issuer to
+ * `whsec_d41d8c...427e`. This carries enough entropy for the issuer to
  * disambiguate two endpoints without leaking material that could be
  * combined into a working forgery.
+ *
+ * Uses ASCII `...` (three dots) rather than the unicode horizontal-
+ * ellipsis `…` so operator pipelines that pipe the mask through
+ * legacy terminals / grep stay codepage-safe (arch-review LOW-2).
  */
+export const SIGNING_SECRET_MASK_SEPARATOR = '...';
+
 export function maskSigningSecret(secret: string): string {
   // Defensive — production secrets always carry the `whsec_` prefix +
   // 64 hex chars (`generateSigningSecret` returns whsec_<32-byte hex>),
@@ -61,7 +67,7 @@ export function maskSigningSecret(secret: string): string {
   const prefix = secret.startsWith('whsec_') ? 'whsec_' : '';
   const body = secret.slice(prefix.length);
   if (body.length < 10) return `${prefix}***`;
-  return `${prefix}${body.slice(0, 6)}…${body.slice(-4)}`;
+  return `${prefix}${body.slice(0, 6)}${SIGNING_SECRET_MASK_SEPARATOR}${body.slice(-4)}`;
 }
 
 function toListItem(endpoint: WebhookEndpoint): WebhookEndpointListItemDto {

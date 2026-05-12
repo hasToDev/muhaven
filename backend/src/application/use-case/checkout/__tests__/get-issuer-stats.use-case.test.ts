@@ -199,6 +199,54 @@ describe('GetIssuerStatsUseCase', () => {
     expect(b.total).toBe(5);
   });
 
+  it('uses half-open [since, until) bounds — no double-counting on boundary tick (arch HIGH-2)', async () => {
+    // A session created at exactly `until` should NOT count in `7d`
+    // (boundary is exclusive); the same session counts in `all`.
+    // Pre-fix, both ranges would double-count this row.
+    const sessionRepo = new MemoryCheckoutSessionRepository();
+    const userRepo = await makeUserRepo();
+    const create = new CreateCheckoutSessionUseCase(sessionRepo, BASE_URL, userRepo);
+    // NOW is the until boundary for 7d. Place a session AT NOW.
+    await create.execute({
+      issuerUserId: 'iss_a',
+      metadata: {
+        issuerAddress: ('0x' + 'a'.repeat(40)) as `0x${string}`,
+        tokenAddress: ('0x' + 'b'.repeat(40)) as `0x${string}`,
+        tokenSymbol: 'USDX',
+        issuerLabel: 'Demo',
+        description: 'Boundary',
+        successUrl: null,
+        cancelUrl: null,
+      },
+      payload: { amountUsd6: '1000000' },
+      now: NOW,
+    });
+    // Place a session strictly inside the 7d window (1h before NOW).
+    await create.execute({
+      issuerUserId: 'iss_a',
+      metadata: {
+        issuerAddress: ('0x' + 'a'.repeat(40)) as `0x${string}`,
+        tokenAddress: ('0x' + 'b'.repeat(40)) as `0x${string}`,
+        tokenSymbol: 'USDX',
+        issuerLabel: 'Demo',
+        description: 'Inside',
+        successUrl: null,
+        cancelUrl: null,
+      },
+      payload: { amountUsd6: '1000000' },
+      now: new Date(NOW.getTime() - 60 * 60 * 1000),
+    });
+    const uc = new GetIssuerStatsUseCase(sessionRepo, userRepo);
+    // `until = NOW`; the session AT NOW is excluded (half-open).
+    const r7 = await uc.execute({ issuerUserId: 'iss_a', range: '7d', now: NOW });
+    expect(r7.total).toBe(1);
+    // `all` has no `since` floor and uses NOW as the strict upper
+    // bound. The session at exactly NOW is still excluded (half-open),
+    // so the visible total is 1 — the session before NOW.
+    const rAll = await uc.execute({ issuerUserId: 'iss_a', range: 'all', now: NOW });
+    expect(rAll.total).toBe(1);
+  });
+
   it('rejects unapproved issuer', async () => {
     const sessionRepo = new MemoryCheckoutSessionRepository();
     const userRepo = await makeUserRepo('iss_a', 'pending');

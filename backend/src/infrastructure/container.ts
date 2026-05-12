@@ -412,8 +412,11 @@ function getToolDispatcher(): ToolDispatcher {
   const agentRepos = getAgentRepos();
 
   const getPolicyState = new GetPolicyStateUseCase(agentRepos.agentStateRepo);
-  const confirmTokens = new ConfirmTokenService(agentRepos.agentConfirmTokenRepo);
-  const appendAudit = new AppendAuditEventUseCase(agentRepos.agentAuditRepo);
+  // Share the singletons with `getCommitToolAction` + `getCommitCreateCheckout`
+  // so all three commit paths use the same ConfirmTokenService /
+  // AppendAuditEventUseCase instance (arch-review MEDIUM-3 consolidation).
+  const confirmTokens = getConfirmTokenService();
+  const appendAudit = getAppendAuditEvent();
   const pauseAgent = new PauseAgentUseCase(agentRepos.agentStateRepo, getPolicyState, appendAudit);
 
   _toolDispatcher = new ToolDispatcher({
@@ -668,15 +671,35 @@ function getCreateCheckoutSession(): CreateCheckoutSessionUseCase {
   return _createCheckoutSession;
 }
 
+// Shared singletons across both commit paths — arch-review MEDIUM-3 fix.
+// Before consolidation, `getCommitCreateCheckout` AND `getCommitToolAction`
+// each instantiated their own `ConfirmTokenService` + `AppendAuditEventUseCase`.
+// Both services are stateless TODAY (the constructor only stores a repo
+// reference), so the duplication was harmless. The risk was forward —
+// if `ConfirmTokenService` ever gains an in-process cache (nonce dedupe,
+// request coalescing), the two commit paths would silently bifurcate.
+// Consolidate via a single getter pair so future state lives on a shared
+// instance.
+let _confirmTokenService: ConfirmTokenService | null = null;
+function getConfirmTokenService(): ConfirmTokenService {
+  if (_confirmTokenService) return _confirmTokenService;
+  _confirmTokenService = new ConfirmTokenService(getAgentRepos().agentConfirmTokenRepo);
+  return _confirmTokenService;
+}
+
+let _appendAuditEvent: AppendAuditEventUseCase | null = null;
+function getAppendAuditEvent(): AppendAuditEventUseCase {
+  if (_appendAuditEvent) return _appendAuditEvent;
+  _appendAuditEvent = new AppendAuditEventUseCase(getAgentRepos().agentAuditRepo);
+  return _appendAuditEvent;
+}
+
 let _commitCreateCheckout: CommitCreateCheckoutUseCase | null = null;
 function getCommitCreateCheckout(): CommitCreateCheckoutUseCase {
   if (_commitCreateCheckout) return _commitCreateCheckout;
-  const agentRepos = getAgentRepos();
-  const confirmTokens = new ConfirmTokenService(agentRepos.agentConfirmTokenRepo);
-  const appendAudit = new AppendAuditEventUseCase(agentRepos.agentAuditRepo);
   _commitCreateCheckout = new CommitCreateCheckoutUseCase(
-    confirmTokens,
-    appendAudit,
+    getConfirmTokenService(),
+    getAppendAuditEvent(),
     getMuHavenRepos().rwaTokenRepo,
     getCreateCheckoutSession(),
     getIssuerLabelResolver(),
@@ -687,13 +710,10 @@ function getCommitCreateCheckout(): CommitCreateCheckoutUseCase {
 let _commitToolAction: CommitToolActionUseCase | null = null;
 function getCommitToolAction(): CommitToolActionUseCase {
   if (_commitToolAction) return _commitToolAction;
-  const agentRepos = getAgentRepos();
-  const confirmTokens = new ConfirmTokenService(agentRepos.agentConfirmTokenRepo);
-  const appendAudit = new AppendAuditEventUseCase(agentRepos.agentAuditRepo);
   _commitToolAction = new CommitToolActionUseCase(
-    confirmTokens,
-    appendAudit,
-    agentRepos.agentStateRepo,
+    getConfirmTokenService(),
+    getAppendAuditEvent(),
+    getAgentRepos().agentStateRepo,
   );
   return _commitToolAction;
 }

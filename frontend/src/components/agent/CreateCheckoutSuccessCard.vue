@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onBeforeUnmount, ref } from 'vue'
 import { ShieldCheck, Copy, Check, ExternalLink, AlertCircle } from 'lucide-vue-next'
 
 defineProps<{
@@ -12,18 +12,28 @@ defineProps<{
 }>()
 
 const copyState = ref<'idle' | 'copied'>('idle')
+const liveAnnouncement = ref<string>('')
 let copyTimer: ReturnType<typeof setTimeout> | null = null
+
+onBeforeUnmount(() => {
+  if (copyTimer) {
+    clearTimeout(copyTimer)
+    copyTimer = null
+  }
+})
 
 async function copyUrl(url: string) {
   try {
     await navigator.clipboard.writeText(url)
     copyState.value = 'copied'
+    liveAnnouncement.value = 'Checkout URL copied to clipboard.'
     if (copyTimer) clearTimeout(copyTimer)
     copyTimer = setTimeout(() => {
       copyState.value = 'idle'
+      liveAnnouncement.value = ''
     }, 1800)
   } catch {
-    // non-secure-context fallback handled by the browser; no UI surface
+    liveAnnouncement.value = 'Could not copy URL. Select it manually.'
   }
 }
 </script>
@@ -33,10 +43,13 @@ async function copyUrl(url: string) {
     class="rounded-xl bg-positive/8 border border-positive/25 overflow-hidden"
     data-testid="agent-create-checkout-success"
   >
+    <!-- aria-live region for copy-success announcement -->
+    <span class="sr-only" aria-live="polite" aria-atomic="true">{{ liveAnnouncement }}</span>
+
     <div class="flex items-start gap-3 px-4 py-3 border-b border-positive/20">
-      <ShieldCheck :size="16" :stroke-width="1.8" class="text-positive flex-shrink-0 mt-0.5" />
+      <ShieldCheck :size="16" :stroke-width="1.8" class="text-positive flex-shrink-0 mt-0.5" aria-hidden="true" />
       <div class="flex-1 min-w-0">
-        <p class="font-sans text-sm font-semibold text-positive">
+        <p class="font-sans text-sm font-semibold text-positive" role="status">
           Checkout link minted.
         </p>
         <p class="font-sans text-xs text-cool mt-0.5">
@@ -58,11 +71,12 @@ async function copyUrl(url: string) {
         <button
           type="button"
           data-testid="agent-create-checkout-copy"
+          :aria-label="copyState === 'copied' ? 'Checkout URL copied' : 'Copy checkout URL'"
           class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-white dark:bg-midnight ring-1 ring-haze dark:ring-white/12 text-xs font-sans font-semibold text-compute dark:text-signal hover:bg-mist/60 dark:hover:bg-white/5 transition-colors cursor-pointer"
           @click="copyUrl(session.url)"
         >
-          <Check v-if="copyState === 'copied'" :size="13" />
-          <Copy v-else :size="13" />
+          <Check v-if="copyState === 'copied'" :size="13" aria-hidden="true" />
+          <Copy v-else :size="13" aria-hidden="true" />
           {{ copyState === 'copied' ? 'Copied' : 'Copy URL' }}
         </button>
         <a

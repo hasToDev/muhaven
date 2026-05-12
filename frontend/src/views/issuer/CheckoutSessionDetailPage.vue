@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, Copy, Check, ExternalLink, Clock, User, Hash } from 'lucide-vue-next'
 import { useCheckoutStore } from '@/stores/checkout'
@@ -40,6 +40,13 @@ async function copySessionId() {
     // ignore
   }
 }
+
+onBeforeUnmount(() => {
+  if (copyTimer) {
+    clearTimeout(copyTimer)
+    copyTimer = null
+  }
+})
 
 function arbiscanTx(hash: string): string {
   return `https://sepolia.arbiscan.io/tx/${hash}`
@@ -98,11 +105,16 @@ function arbiscanTx(hash: string): string {
                 type="button"
                 class="inline-flex items-center justify-center w-6 h-6 rounded-md hover:bg-mist/60 dark:hover:bg-white/5 transition-colors cursor-pointer"
                 data-testid="checkout-detail-copy-id"
+                :aria-label="copyState === 'copied' ? 'Session id copied' : 'Copy session id to clipboard'"
                 @click="copySessionId"
               >
-                <Check v-if="copyState === 'copied'" :size="12" class="text-positive" />
-                <Copy v-else :size="12" class="text-cool" />
+                <Check v-if="copyState === 'copied'" :size="12" class="text-positive" aria-hidden="true" />
+                <Copy v-else :size="12" class="text-cool" aria-hidden="true" />
               </button>
+              <!-- aria-live for the copy-success announcement -->
+              <span class="sr-only" aria-live="polite" aria-atomic="true">
+                {{ copyState === 'copied' ? 'Session id copied to clipboard.' : '' }}
+              </span>
             </div>
           </div>
         </div>

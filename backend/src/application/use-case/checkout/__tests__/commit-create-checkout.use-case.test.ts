@@ -293,6 +293,66 @@ describe('CommitCreateCheckoutUseCase', () => {
     ).rejects.toMatchObject({ statusCode: 400 });
   });
 
+  it('does NOT burn the confirm token when token state changed pre-validation (sec LOW-4)', async () => {
+    // Sec-review LOW-4: pre-validate token state BEFORE consume so a
+    // paused token between propose + commit doesn't kill the issuer's
+    // confirm token. After this fix, the same confirm token can succeed
+    // on a retry once the token returns to 'active'.
+    const out = await proposeFirst();
+    // Pause the token.
+    rwaTokenRepo.tokens.set(
+      TOKEN,
+      new RwaToken({
+        id: 'tok_aura88',
+        address: TOKEN,
+        name: 'Aura Series A',
+        symbol: 'AURA88',
+        issuerAddress: ISSUER_WALLET,
+        kycTier: 1,
+        assetClass: 'private_credit' as AssetClass,
+        status: 'paused',
+        createdAt: NOW,
+        updatedAt: NOW,
+      }),
+    );
+    await expect(
+      commit.execute({
+        userId: ISSUER_USER_ID,
+        surface: Surface.HavenBot,
+        confirmToken: out.confirmTokenId,
+        actionPayload: reconstructPayload(out),
+        now: NOW,
+      }),
+    ).rejects.toMatchObject({ statusCode: 409 });
+
+    // Now restore the token to active; the SAME confirm token should
+    // succeed (it was NOT burned by the failed commit).
+    rwaTokenRepo.tokens.set(
+      TOKEN,
+      new RwaToken({
+        id: 'tok_aura88',
+        address: TOKEN,
+        name: 'Aura Series A',
+        symbol: 'AURA88',
+        issuerAddress: ISSUER_WALLET,
+        kycTier: 1,
+        assetClass: 'private_credit' as AssetClass,
+        status: 'active',
+        createdAt: NOW,
+        updatedAt: NOW,
+      }),
+    );
+    const result = await commit.execute({
+      userId: ISSUER_USER_ID,
+      surface: Surface.HavenBot,
+      confirmToken: out.confirmTokenId,
+      actionPayload: reconstructPayload(out),
+      now: NOW,
+    });
+    expect(result.consumed).toBe(true);
+    expect(result.session.sessionId).toMatch(/^cs_/);
+  });
+
   it('does NOT log the fragment key into audit metadata (privacy invariant)', async () => {
     const out = await proposeFirst();
     const result = await commit.execute({

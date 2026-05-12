@@ -40,7 +40,7 @@ describe('ListWebhooksUseCase', () => {
       // Privacy invariant — full secret never surfaces.
       expect(e.signingSecretHint).not.toBe(a.signingSecret);
       expect(e.signingSecretHint).not.toBe(b.signingSecret);
-      expect(e.signingSecretHint).toMatch(/^whsec_.{6}….{4}$/);
+      expect(e.signingSecretHint).toMatch(/^whsec_.{6}\.\.\..{4}$/);
       expect(e).not.toHaveProperty('signingSecret');
     }
   });
@@ -95,7 +95,7 @@ describe('ListWebhooksUseCase', () => {
 describe('maskSigningSecret', () => {
   it('returns a stable mask shape for a representative whsec_ secret', () => {
     const masked = maskSigningSecret('whsec_d41d8cd98f00b204e9800998ecf8427e');
-    expect(masked).toBe('whsec_d41d8c…427e');
+    expect(masked).toBe('whsec_d41d8c...427e');
   });
 
   it('returns *** for implausibly short secrets', () => {

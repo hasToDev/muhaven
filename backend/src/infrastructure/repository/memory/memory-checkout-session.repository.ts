@@ -110,10 +110,11 @@ export class MemoryCheckoutSessionRepository implements ICheckoutSessionReposito
       CHECKOUT_SESSION_STATUS_VALUES.map((s) => [s, 0]),
     ) as Record<CheckoutSessionStatus, number>;
     let total = 0;
+    // Half-open `[since, until)` boundary — matches PG repo.
     for (const s of this.store.values()) {
       if (s.issuerUserId !== issuerUserId) continue;
       if (opts.since && s.createdAt < opts.since) continue;
-      if (opts.until && s.createdAt > opts.until) continue;
+      if (opts.until && s.createdAt >= opts.until) continue;
       byStatus[s.status] += 1;
       total += 1;
     }
@@ -125,9 +126,10 @@ export class MemoryCheckoutSessionRepository implements ICheckoutSessionReposito
     opts: { since: Date; until: Date },
   ): Promise<IssuerSessionDailyBucket[]> {
     const buckets = new Map<number, number>();
+    // Half-open `[since, until)` boundary — matches PG repo.
     for (const s of this.store.values()) {
       if (s.issuerUserId !== issuerUserId) continue;
-      if (s.createdAt < opts.since || s.createdAt > opts.until) continue;
+      if (s.createdAt < opts.since || s.createdAt >= opts.until) continue;
       const d = s.createdAt;
       const bucketMs = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
       buckets.set(bucketMs, (buckets.get(bucketMs) ?? 0) + 1);

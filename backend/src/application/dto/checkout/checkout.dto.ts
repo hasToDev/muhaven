@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   CHECKOUT_SESSION_ID_RE,
   CHECKOUT_SESSION_STATUS_VALUES,
+  type CheckoutSessionStatus,
 } from '../../../domain/checkout/model/checkout-session.js';
 import { WEBHOOK_EVENT_TYPE_VALUES, WEBHOOK_ENDPOINT_ID_RE } from '../../../domain/checkout/model/webhook-endpoint.js';
 
@@ -12,6 +13,60 @@ const TX_HASH_RE = /^0x[a-fA-F0-9]{64}$/;
  *  digits to fit comfortably below 2**63 (matches PUSDC native uint64). */
 const AMOUNT_USD6_RE = /^\d{1,18}$/;
 
+/**
+ * Wave 4 §5 Path D/C — successUrl / cancelUrl validator.
+ *
+ * `z.string().url()` accepts ANY parseable URL — including `javascript:`,
+ * `data:`, `vbscript:`, `file:`, `internal.local`, AWS-metadata IPs etc.
+ * These URLs are persisted in cleartext metadata and surfaced to issuer
+ * dashboard reads + (Wave 5 / future-redirect-on-success) potentially
+ * to the buyer page. A stored `javascript:` payload becomes a reflected
+ * XSS the moment the buyer page wires `window.location.assign(...)`;
+ * an internal hostname becomes an SSRF probe.
+ *
+ * Restrict to `https://` only — with a single explicit allowance for
+ * `http://localhost*` for dev/test convenience (mirror of the
+ * RegisterWebhookEndpointUseCase SSRF posture).
+ */
+function checkoutRedirectUrl() {
+  return z
+    .string()
+    .max(512)
+    .superRefine((raw, ctx) => {
+      let u: URL;
+      try {
+        u = new URL(raw);
+      } catch {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'must be a valid URL',
+        });
+        return;
+      }
+      if (u.protocol === 'https:') return;
+      if (u.protocol === 'http:') {
+        const h = u.hostname;
+        if (
+          h === 'localhost'
+          || h === '127.0.0.1'
+          || h === '::1'
+          || h === '[::1]'
+        ) {
+          return;
+        }
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'http:// only allowed for localhost; production must use https://',
+        });
+        return;
+      }
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `protocol ${u.protocol} is not allowed (https:// or http://localhost only)`,
+      });
+    });
+}
+
 const MetadataSchema = z
   .object({
     issuerAddress: z.string().regex(HEX_ADDRESS),
@@ -19,8 +74,8 @@ const MetadataSchema = z
     tokenSymbol: z.string().min(1).max(16),
     issuerLabel: z.string().max(120).nullable().optional(),
     description: z.string().min(1).max(280),
-    successUrl: z.string().url().max(512).nullable().optional(),
-    cancelUrl: z.string().url().max(512).nullable().optional(),
+    successUrl: checkoutRedirectUrl().nullable().optional(),
+    cancelUrl: checkoutRedirectUrl().nullable().optional(),
   })
   .strict();
 
@@ -118,7 +173,10 @@ export type GetCheckoutStatsRequest = z.infer<typeof GetCheckoutStatsRequestSche
  */
 export interface CheckoutSessionListItemDto {
   sessionId: string;
-  status: string;
+  /** Narrowed to the domain enum (arch-review HIGH-1 fix) — was `string`
+   *  pre-fix, which silently invited frontend ↔ backend drift if a
+   *  future status value landed on the backend without a frontend bump. */
+  status: CheckoutSessionStatus;
   metadata: {
     issuerAddress: string;
     tokenAddress: string;
@@ -171,7 +229,12 @@ export interface ListWebhookEndpointsResponseDto {
 export interface CheckoutStatsResponseDto {
   range: CheckoutStatsRange;
   total: number;
-  byStatus: Record<string, number>;
+  /** Narrowed to the domain enum (arch-review HIGH-1 fix). Every key
+   *  in the response IS one of `CHECKOUT_SESSION_STATUS_VALUES`; the
+   *  use-case `Object.fromEntries` over that const list guarantees a
+   *  full, exhaustive map (no missing-status undefined branches on
+   *  the frontend). */
+  byStatus: Record<CheckoutSessionStatus, number>;
   /** settled / total — count of fully-reconciled sessions divided by
    *  total minted in the range. 0 when total = 0; rounded to 4dp. A
    *  Wave 5 follow-up may refine to a cohort-shaped funnel; today the

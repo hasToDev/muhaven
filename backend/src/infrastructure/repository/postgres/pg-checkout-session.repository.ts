@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, lt, lte, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, lt, or, sql } from 'drizzle-orm';
 import {
   CheckoutSession,
   type CheckoutSessionMetadata,
@@ -136,9 +136,13 @@ export class PgCheckoutSessionRepository implements ICheckoutSessionRepository {
     issuerUserId: string,
     opts: { since?: Date; until?: Date } = {},
   ): Promise<IssuerSessionStatsRow> {
+    // Half-open `[since, until)` boundary per arch-review HIGH-2 fix.
+    // Inclusive-both-ends previously double-counted sessions created at
+    // exactly the boundary tick across adjacent ranges (e.g. a row
+    // created at `now` shows up in both `7d` and `30d`).
     const conditions = [eq(checkoutSessions.issuerUserId, issuerUserId)];
     if (opts.since) conditions.push(gte(checkoutSessions.createdAt, opts.since));
-    if (opts.until) conditions.push(lte(checkoutSessions.createdAt, opts.until));
+    if (opts.until) conditions.push(lt(checkoutSessions.createdAt, opts.until));
 
     const rows = await this.db
       .select({
@@ -169,6 +173,11 @@ export class PgCheckoutSessionRepository implements ICheckoutSessionRepository {
     // yields a timestamp at the day's midnight which we then convert to
     // epoch-ms for the wire shape. Postgres returns the bucket as a
     // Date, which JS coerces consistently to UTC ms via `getTime()`.
+    // The `'UTC'` literal is HARDCODED inside the template — never bind
+    // a runtime tz string here, that would be a SQLi vector (arch-review
+    // MEDIUM-4 note).
+    //
+    // Half-open `[since, until)` boundary mirrors countByIssuerAndStatus.
     const rows = await this.db
       .select({
         bucket: sql<Date>`date_trunc('day', ${checkoutSessions.createdAt} AT TIME ZONE 'UTC')`,
@@ -179,7 +188,7 @@ export class PgCheckoutSessionRepository implements ICheckoutSessionRepository {
         and(
           eq(checkoutSessions.issuerUserId, issuerUserId),
           gte(checkoutSessions.createdAt, opts.since),
-          lte(checkoutSessions.createdAt, opts.until),
+          lt(checkoutSessions.createdAt, opts.until),
         ),
       )
       .groupBy(sql`1`)

@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, toRef, watch } from 'vue'
 import { X, Copy, ExternalLink, AlertCircle, Loader2, Check, Link as LinkIcon } from 'lucide-vue-next'
 import { useIssuerTokensStore } from '@/stores/issuer-tokens'
 import { useAuthStore } from '@/stores/auth'
 import { checkoutApi, type CreateCheckoutSessionResponse } from '@/services/api'
 import MButton from '@/components/ui/MButton.vue'
+import { useModalA11y } from '@/composables/useModalA11y'
 
 const props = defineProps<{ open: boolean }>()
 const emit = defineEmits<{
@@ -22,9 +23,33 @@ const successUrl = ref<string>('')
 const cancelUrl = ref<string>('')
 const submitting = ref(false)
 const submitError = ref<string | null>(null)
+
+// Modal a11y wiring (CRITICAL fixes from Accessibility-Auditor pass):
+// ESC dismissal, focus trap on Tab, focus restoration on close. ESC is
+// disabled while a submission is in flight so an accidental keypress
+// doesn't drop the pending API call.
+const rootRef = ref<HTMLElement | null>(null)
+const disableEscape = computed(() => submitting.value)
+useModalA11y({
+  isOpen: toRef(props, 'open'),
+  rootRef,
+  onEscape: () => emit('close'),
+  disableEscape,
+})
+const liveAnnouncement = ref<string>('')
 const result = ref<CreateCheckoutSessionResponse | null>(null)
 const copyState = ref<'idle' | 'copied'>('idle')
 let copyTimer: ReturnType<typeof setTimeout> | null = null
+
+onBeforeUnmount(() => {
+  // Self-review: orphan-timer cleanup so a quick mount/unmount cycle
+  // doesn't leave a setTimeout firing into a destroyed component
+  // (Vue warns about the ref write; in production it's a memory leak).
+  if (copyTimer) {
+    clearTimeout(copyTimer)
+    copyTimer = null
+  }
+})
 
 const activeTokens = computed(() =>
   tokensStore.tokens.filter((t) => t.status === 'active'),
@@ -117,12 +142,14 @@ async function copyUrl() {
   try {
     await navigator.clipboard.writeText(result.value.url)
     copyState.value = 'copied'
+    liveAnnouncement.value = 'Checkout URL copied to clipboard.'
     if (copyTimer) clearTimeout(copyTimer)
     copyTimer = setTimeout(() => {
       copyState.value = 'idle'
+      liveAnnouncement.value = ''
     }, 1800)
   } catch {
-    // ignore — non-secure-context clipboard call
+    liveAnnouncement.value = 'Could not copy URL. Try selecting it manually.'
   }
 }
 
@@ -145,7 +172,7 @@ function close() {
         v-if="open"
         class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-midnight/40 backdrop-blur-sm"
         data-testid="checkout-link-modal"
-        @click.self="close"
+        @click.self="submitting ? null : close()"
       >
         <Transition
           enter-active-class="transition duration-200 ease-out"
@@ -154,8 +181,15 @@ function close() {
         >
           <div
             v-if="open"
+            ref="rootRef"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="checkout-link-modal-title"
             class="w-full max-w-lg bg-white dark:bg-midnight-mid rounded-2xl shadow-2xl ring-1 ring-haze dark:ring-white/8 overflow-hidden"
           >
+            <!-- aria-live region for copy + submit status (visually hidden) -->
+            <span class="sr-only" aria-live="polite" aria-atomic="true">{{ liveAnnouncement }}</span>
+
             <!-- Header -->
             <div class="flex items-center justify-between px-6 py-5 border-b border-haze/70 dark:border-white/8">
               <div class="flex items-center gap-2.5">
@@ -163,7 +197,7 @@ function close() {
                   <LinkIcon :size="16" class="text-compute dark:text-signal" />
                 </span>
                 <div>
-                  <h2 class="font-sans font-semibold text-base text-midnight dark:text-white">
+                  <h2 id="checkout-link-modal-title" class="font-sans font-semibold text-base text-midnight dark:text-white">
                     {{ result ? 'Checkout link minted' : 'New checkout link' }}
                   </h2>
                   <p class="font-sans text-[11px] text-cool mt-0.5">
@@ -173,8 +207,9 @@ function close() {
               </div>
               <button
                 type="button"
-                class="p-1.5 text-cool hover:text-midnight dark:hover:text-white rounded-md hover:bg-mist/60 dark:hover:bg-white/5 transition-colors cursor-pointer"
-                aria-label="Close"
+                :disabled="submitting"
+                class="p-1.5 text-cool hover:text-midnight dark:hover:text-white rounded-md hover:bg-mist/60 dark:hover:bg-white/5 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                aria-label="Close dialog"
                 @click="close"
               >
                 <X :size="18" />
@@ -258,9 +293,10 @@ function close() {
 
                 <div
                   v-if="submitError"
+                  role="alert"
                   class="flex items-start gap-2 rounded-lg bg-negative/8 ring-1 ring-negative/30 px-3 py-2 text-xs text-negative"
                 >
-                  <AlertCircle :size="14" class="mt-0.5 flex-shrink-0" />
+                  <AlertCircle :size="14" class="mt-0.5 flex-shrink-0" aria-hidden="true" />
                   <span>{{ submitError }}</span>
                 </div>
               </template>
@@ -307,9 +343,15 @@ function close() {
                 </MButton>
               </template>
               <template v-else>
-                <MButton variant="secondary" size="sm" @click="copyUrl" data-testid="checkout-link-copy">
-                  <Check v-if="copyState === 'copied'" :size="14" class="text-positive" />
-                  <Copy v-else :size="14" />
+                <MButton
+                  variant="secondary"
+                  size="sm"
+                  data-testid="checkout-link-copy"
+                  :aria-label="copyState === 'copied' ? 'Checkout URL copied' : 'Copy checkout URL'"
+                  @click="copyUrl"
+                >
+                  <Check v-if="copyState === 'copied'" :size="14" class="text-positive" aria-hidden="true" />
+                  <Copy v-else :size="14" aria-hidden="true" />
                   <span class="ml-1.5">{{ copyState === 'copied' ? 'Copied' : 'Copy URL' }}</span>
                 </MButton>
                 <a

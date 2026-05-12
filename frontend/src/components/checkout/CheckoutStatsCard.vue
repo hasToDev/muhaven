@@ -111,12 +111,17 @@ function setRange(r: CheckoutStatsRange) {
           Count-only — amounts stay encrypted at rest.
         </p>
       </div>
-      <div class="inline-flex rounded-md bg-mist/60 dark:bg-white/5 ring-1 ring-haze dark:ring-white/8 p-0.5">
+      <div
+        role="group"
+        aria-label="Stats time range"
+        class="inline-flex rounded-md bg-mist/60 dark:bg-white/5 ring-1 ring-haze dark:ring-white/8 p-0.5"
+      >
         <button
           v-for="r in ranges"
           :key="r.key"
           type="button"
           :data-testid="`checkout-stats-range-${r.key}`"
+          :aria-pressed="r.key === range ? 'true' : 'false'"
           :class="[
             'px-2.5 py-1 text-[11px] font-sans font-medium rounded-[5px] transition-colors',
             r.key === range
@@ -131,8 +136,14 @@ function setRange(r: CheckoutStatsRange) {
     </div>
 
     <!-- Loading skeleton -->
-    <div v-if="loading && !stats" class="grid grid-cols-2 md:grid-cols-4 gap-3">
-      <div v-for="i in 4" :key="i" class="h-20 rounded-lg bg-mist/60 dark:bg-white/5 animate-pulse" />
+    <div
+      v-if="loading && !stats"
+      class="grid grid-cols-2 md:grid-cols-4 gap-3"
+      role="status"
+      aria-busy="true"
+      aria-label="Loading checkout stats"
+    >
+      <div v-for="i in 4" :key="i" class="h-20 rounded-lg bg-mist/60 dark:bg-white/5 motion-safe:animate-pulse" aria-hidden="true" />
     </div>
 
     <!-- Stats -->
@@ -173,7 +184,14 @@ function setRange(r: CheckoutStatsRange) {
           <TrendingUp :size="13" />
           <span class="font-label text-[10px] tracking-[0.12em] uppercase font-semibold">Trend</span>
         </div>
-        <div class="h-12 mt-1" data-testid="checkout-stats-trend">
+        <div
+          class="h-12 mt-1"
+          data-testid="checkout-stats-trend"
+          :aria-label="stats && stats.daily.length > 0
+            ? `Daily session count over ${stats.daily.length} days, ${stats.daily.reduce((a, b) => a + b.count, 0)} sessions total`
+            : 'No daily session activity yet'"
+          role="img"
+        >
           <Line v-if="stats && stats.daily.length > 0" :data="chartData" :options="chartOptions" />
           <div v-else class="h-full flex items-center text-[11px] text-cool/60">
             No activity yet.

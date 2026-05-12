@@ -131,8 +131,12 @@ function closeReveal() {
         </label>
       </div>
 
-      <div v-if="submitError" class="mt-3 flex items-start gap-2 rounded-lg bg-negative/8 ring-1 ring-negative/30 px-3 py-2 text-xs text-negative">
-        <AlertCircle :size="14" class="mt-0.5 flex-shrink-0" />
+      <div
+        v-if="submitError"
+        role="alert"
+        class="mt-3 flex items-start gap-2 rounded-lg bg-negative/8 ring-1 ring-negative/30 px-3 py-2 text-xs text-negative"
+      >
+        <AlertCircle :size="14" class="mt-0.5 flex-shrink-0" aria-hidden="true" />
         <span>{{ submitError }}</span>
       </div>
 
@@ -168,57 +172,59 @@ function closeReveal() {
         </p>
       </div>
 
-      <table v-else class="w-full">
-        <thead>
-          <tr class="text-left">
-            <th class="font-label text-[10px] tracking-[0.14em] uppercase text-cool font-semibold px-5 py-3">URL</th>
-            <th class="font-label text-[10px] tracking-[0.14em] uppercase text-cool font-semibold px-5 py-3">Events</th>
-            <th class="font-label text-[10px] tracking-[0.14em] uppercase text-cool font-semibold px-5 py-3">Secret hint</th>
-            <th class="font-label text-[10px] tracking-[0.14em] uppercase text-cool font-semibold px-5 py-3">Status</th>
-            <th class="font-label text-[10px] tracking-[0.14em] uppercase text-cool font-semibold px-5 py-3">Created</th>
-            <th class="px-5 py-3 w-12"></th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-haze/60 dark:divide-white/8">
-          <tr
-            v-for="e in store.webhooks"
-            :key="e.endpointId"
-            :data-testid="`webhook-row-${e.endpointId}`"
-            class="hover:bg-mist/30 dark:hover:bg-white/3 transition-colors"
-          >
-            <td class="px-5 py-3 text-xs font-mono text-midnight dark:text-white break-all max-w-xs">
-              {{ e.url }}
-            </td>
-            <td class="px-5 py-3 text-[11px] text-cool font-mono">
-              {{ e.enabledEvents.length === 0 ? 'all' : e.enabledEvents.join(', ') }}
-            </td>
-            <td class="px-5 py-3 text-xs font-mono text-cool/80">
-              {{ e.signingSecretHint }}
-            </td>
-            <td class="px-5 py-3">
-              <span v-if="e.disabledAt" class="font-label text-[10px] uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-mist/60 dark:bg-white/5 ring-1 ring-haze dark:ring-white/12 text-cool">Disabled</span>
-              <span v-else class="font-label text-[10px] uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-positive/10 ring-1 ring-positive/30 text-positive">Active</span>
-            </td>
-            <td class="px-5 py-3 text-[11px] text-cool tabular-nums">
-              {{ new Date(e.createdAt).toLocaleString() }}
-            </td>
-            <td class="px-5 py-3 text-right">
-              <button
-                v-if="!e.disabledAt"
-                type="button"
-                :disabled="disablingId === e.endpointId"
-                :data-testid="`webhook-row-disable-${e.endpointId}`"
-                class="inline-flex items-center justify-center w-7 h-7 rounded-md text-cool hover:text-negative hover:bg-negative/10 transition-colors cursor-pointer disabled:opacity-50"
-                title="Disable endpoint"
-                @click="handleDisable(e.endpointId)"
-              >
-                <Loader2 v-if="disablingId === e.endpointId" :size="13" class="animate-spin" />
-                <Trash2 v-else :size="13" />
-              </button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <div v-else class="overflow-x-auto" :aria-busy="store.webhooksLoading ? 'true' : 'false'">
+        <table class="w-full min-w-[640px]">
+          <thead>
+            <tr class="text-left">
+              <th scope="col" class="font-label text-[10px] tracking-[0.14em] uppercase text-cool font-semibold px-5 py-3">URL</th>
+              <th scope="col" class="font-label text-[10px] tracking-[0.14em] uppercase text-cool font-semibold px-5 py-3">Events</th>
+              <th scope="col" class="font-label text-[10px] tracking-[0.14em] uppercase text-cool font-semibold px-5 py-3">Secret hint</th>
+              <th scope="col" class="font-label text-[10px] tracking-[0.14em] uppercase text-cool font-semibold px-5 py-3">Status</th>
+              <th scope="col" class="font-label text-[10px] tracking-[0.14em] uppercase text-cool font-semibold px-5 py-3">Created</th>
+              <th scope="col" class="px-5 py-3 w-12" aria-label="Actions"></th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-haze/60 dark:divide-white/8">
+            <tr
+              v-for="e in store.webhooks"
+              :key="e.endpointId"
+              :data-testid="`webhook-row-${e.endpointId}`"
+              class="hover:bg-mist/30 dark:hover:bg-white/3 transition-colors"
+            >
+              <td class="px-5 py-3 text-xs font-mono text-midnight dark:text-white break-all max-w-xs">
+                {{ e.url }}
+              </td>
+              <td class="px-5 py-3 text-[11px] text-cool font-mono">
+                {{ e.enabledEvents.length === 0 ? 'all' : e.enabledEvents.join(', ') }}
+              </td>
+              <td class="px-5 py-3 text-xs font-mono text-cool/80">
+                {{ e.signingSecretHint }}
+              </td>
+              <td class="px-5 py-3">
+                <span v-if="e.disabledAt" class="font-label text-[10px] uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-mist/60 dark:bg-white/5 ring-1 ring-haze dark:ring-white/12 text-cool">Disabled</span>
+                <span v-else class="font-label text-[10px] uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-positive/10 ring-1 ring-positive/30 text-positive">Active</span>
+              </td>
+              <td class="px-5 py-3 text-[11px] text-cool tabular-nums">
+                {{ new Date(e.createdAt).toLocaleString() }}
+              </td>
+              <td class="px-5 py-3 text-right">
+                <button
+                  v-if="!e.disabledAt"
+                  type="button"
+                  :disabled="disablingId === e.endpointId"
+                  :data-testid="`webhook-row-disable-${e.endpointId}`"
+                  :aria-label="`Disable webhook ${e.url}`"
+                  class="inline-flex items-center justify-center w-7 h-7 rounded-md text-cool hover:text-negative hover:bg-negative/10 transition-colors cursor-pointer disabled:opacity-50"
+                  @click="handleDisable(e.endpointId)"
+                >
+                  <Loader2 v-if="disablingId === e.endpointId" :size="13" class="animate-spin" aria-hidden="true" />
+                  <Trash2 v-else :size="13" aria-hidden="true" />
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <SigningSecretRevealModal

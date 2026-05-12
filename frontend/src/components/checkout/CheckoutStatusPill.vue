@@ -24,7 +24,11 @@ const accent = computed<StatusAccent>(() => {
         text: 'text-gold',
         ring: 'border-gold/30',
         bg: 'bg-gold/10',
-        dot: 'bg-gold animate-pulse',
+        // `motion-safe:animate-pulse` — respects `prefers-reduced-motion`.
+        // (Accessibility-Auditor SERIOUS fix; users with vestibular
+        // sensitivity disable motion at the OS level and Tailwind's
+        // `motion-safe` variant honors that media query.)
+        dot: 'bg-gold motion-safe:animate-pulse',
       }
     case 'funded':
       return {
@@ -96,7 +100,10 @@ const accent = computed<StatusAccent>(() => {
       accent.ring,
     )"
   >
-    <span :class="cn('inline-flex h-1.5 w-1.5 rounded-full', accent.dot)" />
+    <span
+      aria-hidden="true"
+      :class="cn('inline-flex h-1.5 w-1.5 rounded-full', accent.dot)"
+    />
     {{ accent.label }}
   </span>
 </template>
