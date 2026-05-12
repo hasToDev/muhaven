@@ -115,6 +115,22 @@ const router = createRouter({
       component: () => import('@/views/issuer/CompliancePage.vue'),
       meta: { title: 'Compliance' },
     },
+    // Wave 4 §5 Path D — hosted-checkout dashboard.
+    {
+      path: '/checkout',
+      component: () => import('@/views/issuer/CheckoutSessionsPage.vue'),
+      meta: { title: 'Checkout' },
+    },
+    {
+      path: '/checkout/webhooks',
+      component: () => import('@/views/issuer/CheckoutWebhooksPage.vue'),
+      meta: { title: 'Checkout Webhooks' },
+    },
+    {
+      path: '/checkout/:sessionId',
+      component: () => import('@/views/issuer/CheckoutSessionDetailPage.vue'),
+      meta: { title: 'Checkout Session' },
+    },
     // Agent route (Layer 3)
     {
       path: '/agent',
@@ -164,7 +180,16 @@ const router = createRouter({
 // pasted URL or a stale link. `/cash` and `/agent` stay dual-role
 // (cash conversion is the same mechanic for both; agent surfaces will
 // gate per-role internally in Wave 4).
-const ISSUER_ROUTES = new Set(['/tokens', '/distribute', '/investors', '/compliance'])
+const ISSUER_ROUTES = new Set([
+  '/tokens',
+  '/distribute',
+  '/investors',
+  '/compliance',
+  // Wave 4 §5 Path D — hosted-checkout dashboard (issuer-only).
+  '/checkout',
+  '/checkout/webhooks',
+])
+const ISSUER_ROUTE_PREFIXES = ['/checkout/']
 const INVESTOR_ROUTES = new Set([
   '/portfolio',
   '/marketplace',
@@ -219,7 +244,10 @@ router.beforeEach(async (to) => {
   // this guard prevents an in-session navigation typo from rendering
   // a page that wouldn't have data for the wrong role.
   const role = authStore.role
-  if (role === 'investor' && ISSUER_ROUTES.has(to.path)) {
+  const matchesIssuerOnly =
+    ISSUER_ROUTES.has(to.path)
+    || ISSUER_ROUTE_PREFIXES.some((p) => to.path.startsWith(p))
+  if (role === 'investor' && matchesIssuerOnly) {
     return { path: '/portfolio' }
   }
   if (role === 'issuer' && INVESTOR_ROUTES.has(to.path)) {

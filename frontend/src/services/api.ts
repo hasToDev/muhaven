@@ -819,7 +819,15 @@ export type Tier = 'advisory' | 'confirm-per-action' | 'policy-bound' | 'paused'
 export type Surface = 'havenbot' | 'mcp' | 'openclaw' | 'checkout'
 
 export interface ActionDescriptor {
-  kind: 'buy' | 'claim' | 'rebalance' | 'set_policy' | 'pause' | 'resume'
+  kind:
+    | 'buy'
+    | 'claim'
+    | 'rebalance'
+    | 'set_policy'
+    | 'pause'
+    | 'resume'
+    // Wave 4 §5 Path C — hosted-checkout session via agent
+    | 'create_checkout'
   toolCallId: string
   confirmTokenId: string
   expiresAtSec: number
@@ -1003,6 +1011,216 @@ export const agentToolsApi = {
     return request('/agent/tools/commit', {
       method: 'POST',
       body: data,
+      auth: true,
+    })
+  },
+}
+
+// ── Wave 4 §5 Path D + C — hosted-checkout dashboard ──────────────
+
+export type CheckoutSessionStatus =
+  | 'pending'
+  | 'funded'
+  | 'wrapped'
+  | 'purchased'
+  | 'settled'
+  | 'expired'
+  | 'failed'
+
+export type CheckoutStatsRange = '7d' | '30d' | 'all'
+
+export interface CheckoutSessionMetadataDto {
+  issuerAddress: string
+  tokenAddress: string
+  tokenSymbol: string
+  issuerLabel: string | null
+  description: string
+  successUrl: string | null
+  cancelUrl: string | null
+}
+
+export interface CheckoutSessionListItemDto {
+  sessionId: string
+  status: CheckoutSessionStatus
+  metadata: CheckoutSessionMetadataDto
+  buyerAddress: string | null
+  purchaseTxHash: string | null
+  expiresAt: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ListCheckoutSessionsResponseDto {
+  sessions: CheckoutSessionListItemDto[]
+  nextCursor: string | null
+}
+
+export interface GetCheckoutSessionResponseDto {
+  session: CheckoutSessionListItemDto
+}
+
+export interface WebhookEndpointListItemDto {
+  endpointId: string
+  url: string
+  enabledEvents: string[]
+  signingSecretHint: string
+  disabledAt: string | null
+  createdAt: string
+}
+
+export interface ListWebhookEndpointsResponseDto {
+  endpoints: WebhookEndpointListItemDto[]
+}
+
+export interface CheckoutStatsResponseDto {
+  range: CheckoutStatsRange
+  total: number
+  byStatus: Record<string, number>
+  conversionRate: number
+  daily: Array<{ bucketMs: number; count: number }>
+}
+
+export interface CreateCheckoutSessionRequest {
+  metadata: CheckoutSessionMetadataDto
+  payload: {
+    amountUsd6: string
+    memo?: string
+    referenceId?: string
+  }
+  ttlSec?: number
+}
+
+export interface CreateCheckoutSessionResponse {
+  sessionId: string
+  url: string
+  fragmentKey: string
+  status: CheckoutSessionStatus
+  expiresAt: string
+  createdAt: string
+  issuerLabel: string | null
+  issuerLabelVerified: boolean
+}
+
+export interface RegisterWebhookEndpointRequest {
+  url: string
+  enabledEvents?: string[]
+}
+
+export interface RegisterWebhookEndpointResponse {
+  endpointId: string
+  url: string
+  enabledEvents: string[]
+  signingSecret: string
+  createdAt: string
+}
+
+export const checkoutApi = {
+  // ── Sessions ────────────────────────────────────────────────────
+  createSession(
+    data: CreateCheckoutSessionRequest,
+  ): Promise<CreateCheckoutSessionResponse> {
+    return request('/checkout/sessions/create', {
+      method: 'POST',
+      body: data,
+      auth: true,
+    })
+  },
+  listSessions(opts: {
+    cursor?: string
+    status?: CheckoutSessionStatus
+    limit?: number
+  } = {}): Promise<ListCheckoutSessionsResponseDto> {
+    const qs = new URLSearchParams()
+    if (opts.cursor) qs.set('cursor', opts.cursor)
+    if (opts.status) qs.set('status', opts.status)
+    if (opts.limit) qs.set('limit', String(opts.limit))
+    const q = qs.toString()
+    return request(`/checkout/sessions/list${q ? `?${q}` : ''}`, {
+      method: 'GET',
+      auth: true,
+    })
+  },
+  getSession(sessionId: string): Promise<GetCheckoutSessionResponseDto> {
+    return request(
+      `/checkout/sessions/get?id=${encodeURIComponent(sessionId)}`,
+      { method: 'GET', auth: true },
+    )
+  },
+  // ── Webhooks ────────────────────────────────────────────────────
+  listWebhooks(): Promise<ListWebhookEndpointsResponseDto> {
+    return request('/checkout/webhooks/list', { method: 'GET', auth: true })
+  },
+  registerWebhook(
+    data: RegisterWebhookEndpointRequest,
+  ): Promise<RegisterWebhookEndpointResponse> {
+    return request('/checkout/webhooks/register', {
+      method: 'POST',
+      body: data,
+      auth: true,
+    })
+  },
+  disableWebhook(endpointId: string): Promise<{ endpointId: string; disabledAt: string }> {
+    return request('/checkout/webhooks/disable', {
+      method: 'POST',
+      body: { endpointId },
+      auth: true,
+    })
+  },
+  // ── Stats ───────────────────────────────────────────────────────
+  getStats(range: CheckoutStatsRange = '7d'): Promise<CheckoutStatsResponseDto> {
+    return request(`/checkout/stats?range=${range}`, {
+      method: 'GET',
+      auth: true,
+    })
+  },
+}
+
+// Wave 4 §5 Path C — HavenBot agent surface tools for create_checkout.
+// Sit on `agentToolsApi`-shape but live in checkoutApi for proximity to
+// the buyer-URL types that the success path returns.
+
+export interface ProposeCreateCheckoutRequest {
+  tokenAddress: string
+  amountUsd6: string
+  memo?: string
+  successUrl?: string
+  cancelUrl?: string
+}
+
+export interface CommitCreateCheckoutRequest {
+  confirmToken: string
+  actionPayload: Record<string, unknown>
+  surface?: Surface
+}
+
+export interface CommitCreateCheckoutResponse {
+  consumed: true
+  auditEventId: string
+  session: {
+    sessionId: string
+    url: string
+    fragmentKey: string
+    status: CheckoutSessionStatus
+    expiresAt: string
+  }
+}
+
+export const checkoutAgentApi = {
+  proposeCreateCheckout(
+    args: ProposeCreateCheckoutRequest,
+  ): Promise<ActionDescriptor> {
+    return request('/agent/tools/propose_create_checkout', {
+      method: 'POST',
+      body: args,
+      auth: true,
+    })
+  },
+  commitCreateCheckout(
+    args: CommitCreateCheckoutRequest,
+  ): Promise<CommitCreateCheckoutResponse> {
+    return request('/agent/tools/commit_create_checkout', {
+      method: 'POST',
+      body: args,
       auth: true,
     })
   },

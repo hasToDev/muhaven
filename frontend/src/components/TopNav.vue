@@ -15,7 +15,7 @@ import { toast } from 'vue-sonner'
 import {
   PieChart, ShoppingCart, TrendingUp, Activity, Store, Sparkles, Send, Undo2,
   Coins, Share2, Users, ClipboardCheck, Wallet, LogOut, LogIn, Loader2,
-  Copy, Check, Banknote, FileSignature,
+  Copy, Check, Banknote, FileSignature, CreditCard,
 } from 'lucide-vue-next'
 
 const route = useRoute()
@@ -62,6 +62,8 @@ const issuerNav = [
   { path: '/cash', label: 'Cash', icon: Banknote },
   { path: '/tokens', label: 'Tokens', icon: Coins },
   { path: '/distribute', label: 'Distribute', icon: Share2 },
+  // Wave 4 §5 Path D — mirror Sidebar.vue ordering exactly.
+  { path: '/checkout', label: 'Checkout', icon: CreditCard },
   { path: '/investors', label: 'Investors', icon: Users },
   { path: '/compliance', label: 'Compliance', icon: ClipboardCheck },
 ]

@@ -87,6 +87,11 @@ async function tearDownUserStores(): Promise<void> {
     import('@/stores/portfolio').then((m) => m.usePortfolioStore().reset()),
     import('@/stores/activity').then((m) => m.useActivityStore().reset()),
     import('@/stores/marketplace').then((m) => m.useMarketplaceStore().reset()),
+    // Wave 4 §5 Path D — issuer checkout dashboard store. Per the
+    // `feedback_auth_boundary_teardown` memory: every new Pinia store
+    // holding user-scoped state wires into tearDownUserStores so silent
+    // JWT-expiry paths don't leave stale data behind.
+    import('@/stores/checkout').then((m) => m.useCheckoutStore().reset()),
   ])
 }
 
