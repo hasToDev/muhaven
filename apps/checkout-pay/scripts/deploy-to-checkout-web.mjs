@@ -8,13 +8,21 @@
 // `muhaven-web` / `muhaven-web-stage` — different host, different CSP,
 // different SPA-fallback route).
 //
-// Target resolution (mirrors `frontend/scripts/deploy-to-muhaven-web.mjs`):
-//   - MUHAVEN_CHECKOUT_WEB_TARGET_DIR env var (resolved from apps/checkout-pay/),
+// Target resolution (mirrors `frontend/scripts/deploy-to-muhaven-web.mjs`,
+// adjusted for the extra `apps/` directory level under muhaven/):
+//   - MUHAVEN_CHECKOUT_WEB_TARGET_DIR env var, resolved with `apps/checkout-pay/`
+//     as base (the `..` prefix on the resolve call walks one up from `scripts/`),
 //     if set
-//   - otherwise ../../../muhaven-checkout-web (sibling of muhaven/, the default)
+//   - otherwise ../../../../muhaven-checkout-web (sibling of muhaven/, the default).
+//     Four `..` are needed because scriptDir is `apps/checkout-pay/scripts/` —
+//     four levels under the parent of muhaven (scripts → checkout-pay → apps →
+//     muhaven → Fhenix). The frontend twin only needs three because
+//     `frontend/scripts/` is one level shallower.
 //
 // Stage build sets:
 //   MUHAVEN_CHECKOUT_WEB_TARGET_DIR=../../../muhaven-checkout-web-stage
+// (three `..` because the env value is resolved from `apps/checkout-pay/`, not
+// from `scripts/` — same shape as the frontend's `MUHAVEN_WEB_TARGET_DIR`.)
 //
 // Root-level files (CNAME, README.md, .nojekyll — anything not under
 // assets/) are NEVER deleted, only overwritten. If the target doesn't
@@ -30,7 +38,7 @@ const dist = resolve(scriptDir, '../dist');
 const targetOverride = process.env.MUHAVEN_CHECKOUT_WEB_TARGET_DIR;
 const target = targetOverride
   ? resolve(scriptDir, '..', targetOverride)
-  : resolve(scriptDir, '../../../muhaven-checkout-web');
+  : resolve(scriptDir, '../../../../muhaven-checkout-web');
 
 async function exists(p) {
   try {

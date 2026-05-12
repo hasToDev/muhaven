@@ -41,9 +41,13 @@ watch(
 // onAuthorize a second time. Without this guard, the runner fires
 // twice (double on-chain Subscription.purchase, drained mhUSDC,
 // wasted gas — the second commit POST fails on confirm-token
-// single-use but the on-chain leg already fired). The set is reset
-// when the action terminates (success / error / cancel) — the
-// `onConfirmComplete` + `onConfirmCancel` hooks clear the entry.
+// single-use but the on-chain leg already fired). The lock is
+// acquired at the top of `onAuthorize` and released in its `try…finally`
+// — the only call site, so terminal-state hooks (`onConfirmComplete` /
+// `onConfirmCancel`) don't need to release it. Cancel is disabled
+// during awaiting/submitting/committing so a user cannot dismiss
+// mid-flight; the finally always runs whether the runner returns or
+// throws.
 const firingIntents = new Set<string>()
 
 function tryAcquireWithinTabIntentLock(intentId: string): boolean {

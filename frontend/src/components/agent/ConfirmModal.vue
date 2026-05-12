@@ -107,6 +107,17 @@ const isTelegramLinked = computed(() => {
  * before any submission); once SSE auto-fire flips the modal to
  * `awaiting`/`submitting`/`committing` the standard progression
  * surfaces take over.
+ *
+ * Known rare edge case (deferred to Wave 5): if propose-buy B is
+ * stacked while A's runner is still in flight and the user confirms B
+ * in Telegram before A completes, AgentPage's SSE handler reads the
+ * stale `activeAction` (= A) at confirm-time, the `intent_confirmed`
+ * event for B is dropped, and after A completes + the H-1 advance
+ * lands B as the new activeAction, this panel renders for an intent
+ * that's already 'confirmed' on the backend. The "Use dashboard
+ * instead" escape hatch always works as a manual recovery; Wave 5
+ * adds an intent-status lookup on activeAction change to auto-replay
+ * the missed confirmation.
  */
 const showTelegramPending = computed(() => {
   if (!isTelegramLinked.value) return false
