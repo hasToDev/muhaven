@@ -4,26 +4,33 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="referrer" content="no-referrer" />
-    <!-- Locked allowlist: telegram.org for the Mini App SDK; api.muhaven.app /
-         api-stage.muhaven.app origins for backend calls. No inline scripts;
-         styles allow inline (Vite injects scoped style tags in dev). M-6
-         mitigation. -->
+    <!-- Locked allowlist: 'self' for our origin (the Mini App SDK is now
+         self-hosted from public/telegram-web-app.js — see below);
+         api.muhaven.app / api-stage.muhaven.app origins for backend calls.
+         No inline scripts; styles allow inline (Vite injects scoped style
+         tags in dev). M-6 mitigation. -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self' https://telegram.org; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.muhaven.app https://api-stage.muhaven.app; img-src 'self' data:; font-src 'self'; base-uri 'none'; frame-ancestors 'self' https://web.telegram.org;"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.muhaven.app https://api-stage.muhaven.app; img-src 'self' data:; font-src 'self'; base-uri 'none'; frame-ancestors 'self' https://web.telegram.org;"
     />
     <title>MuHaven — Confirm intent</title>
-    <!-- Telegram WebApp SDK is loaded from telegram.org per the Mini App
-         protocol. The local Mini App does NOT bundle the SDK because
-         Telegram's host injects a versioned global at runtime. -->
-    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <!-- Telegram WebApp SDK — self-hosted from /telegram-mini-app/telegram-web-app.js.
+         Originally loaded from https://telegram.org/js/telegram-web-app.js
+         but Telegram Android's WebView silently failed to fetch the
+         external script even with `script-src https://telegram.org` in
+         CSP (`window.Telegram` ended up undefined while the native
+         bridge + tgWebAppData hash were both populated). Self-hosting
+         from 'self' bypasses whatever cross-origin restriction the
+         WebView enforces and removes one DNS+TLS round-trip on launch.
+         Refresh from https://telegram.org/js/telegram-web-app.js when
+         Telegram ships a new SDK version. -->
+    <script src="/telegram-web-app.js"></script>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <main id="app" data-state="loading">
       <header class="brand">
         <span class="logo">MuHaven</span>
-        <span class="origin"></span>
       </header>
       <section id="intent-preview" hidden>
         <h1 class="kind"></h1>

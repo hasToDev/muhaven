@@ -104,7 +104,7 @@ describe('createMiniAppApi.lookupIntent', () => {
 });
 
 describe('createMiniAppApi.confirmIntent', () => {
-  it('POSTs to the confirm path with otp + initData + source', async () => {
+  it('POSTs to the confirm path with otp + initData (no `source` — server-derived per H-1)', async () => {
     const { fetch, calls } = makeStubFetch([{ status: 200, body: { intent: { status: 'confirmed' } } }]);
     const api = createMiniAppApi({
       backendBaseUrl: 'https://api.muhaven.app',
@@ -114,12 +114,16 @@ describe('createMiniAppApi.confirmIntent', () => {
     expect(calls[0]!.url).toBe(
       'https://api.muhaven.app/api/v1/agent/openclaw/intent/confirm',
     );
-    expect(JSON.parse(calls[0]!.init?.body as string)).toEqual({
+    // 2026-05-12: regression for the 422 "Validation failed" that fired
+    // when the body carried `source: 'mini_app'`. Backend DTO is
+    // `.strict()` and rejects extra fields; pin the cleaned shape.
+    const body = JSON.parse(calls[0]!.init?.body as string);
+    expect(body).toEqual({
       intentId: VALID_INTENT.intentId,
       otp: '123456',
       telegramInitData: 'fake_initData=1',
-      source: 'mini_app',
     });
+    expect(body).not.toHaveProperty('source');
   });
 
   it('surfaces a backend error.title when available', async () => {
@@ -163,7 +167,7 @@ describe('createMiniAppApi.confirmIntent', () => {
 });
 
 describe('createMiniAppApi.denyIntent', () => {
-  it('POSTs to the deny path with initData + source', async () => {
+  it('POSTs to the deny path with initData (no `source` — server-derived per H-1)', async () => {
     const { fetch, calls } = makeStubFetch([{ status: 200, body: { intent: { status: 'denied' } } }]);
     const api = createMiniAppApi({
       backendBaseUrl: 'https://api.muhaven.app',
@@ -173,11 +177,12 @@ describe('createMiniAppApi.denyIntent', () => {
     expect(calls[0]!.url).toBe(
       'https://api.muhaven.app/api/v1/agent/openclaw/intent/deny',
     );
-    expect(JSON.parse(calls[0]!.init?.body as string)).toEqual({
+    const body = JSON.parse(calls[0]!.init?.body as string);
+    expect(body).toEqual({
       intentId: VALID_INTENT.intentId,
       telegramInitData: 'fake_initData=1',
-      source: 'mini_app',
     });
+    expect(body).not.toHaveProperty('source');
   });
 
   it('surfaces backend error.title on non-2xx', async () => {

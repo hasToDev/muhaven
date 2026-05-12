@@ -56,10 +56,15 @@ export function createMiniAppApi(opts: MiniAppApiOpts): MiniAppApi {
     otp: string,
     initData: string,
   ): Promise<void> {
+    // `source` is intentionally omitted: the backend's confirm DTO is
+    // `.strict()` and rejects extra fields with 422 "Validation failed".
+    // The audit-trail source ('mini_app' here) is server-derived from
+    // the auth path (H-1 hardening in confirm.ts) — sending it from the
+    // client would be ignored at best and rejected at worst.
     const res = await fetchImpl(`${base}/api/v1/agent/openclaw/intent/confirm`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ intentId, otp, telegramInitData: initData, source: 'mini_app' }),
+      body: JSON.stringify({ intentId, otp, telegramInitData: initData }),
     });
     if (!res.ok) {
       const body = (await res.json().catch(() => ({ title: 'Unknown error' }))) as {
@@ -70,10 +75,13 @@ export function createMiniAppApi(opts: MiniAppApiOpts): MiniAppApi {
   }
 
   async function denyIntent(intentId: string, initData: string): Promise<void> {
+    // Same H-1 hardening as confirmIntent — `source` is server-derived,
+    // not client-provided. Backend deny DTO is `.strict()` and would
+    // reject the extra field.
     const res = await fetchImpl(`${base}/api/v1/agent/openclaw/intent/deny`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ intentId, telegramInitData: initData, source: 'mini_app' }),
+      body: JSON.stringify({ intentId, telegramInitData: initData }),
     });
     if (!res.ok) {
       const body = (await res.json().catch(() => ({ title: 'Unknown error' }))) as {

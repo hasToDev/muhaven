@@ -174,7 +174,7 @@ export function renderIntentPreview(intent: ValidatedIntentNotification['intent'
     intent.tier === 'inline'
       ? 'Inline confirm'
       : intent.tier === 'mini_app_otp'
-        ? 'Mini App + 6\\-digit code'
+        ? 'Mini App \\+ 6\\-digit code'
         : 'Dashboard passkey';
   const lines = [
     `*MuHaven \\- ${escapeMarkdownV2(verb)} ${escapeMarkdownV2(tokenShort)}*`,

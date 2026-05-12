@@ -102,6 +102,13 @@ export class PgNavHistoryRepository implements INavHistoryRepository {
   }
 
   private toDomainFromRaw(row: RawNavHistoryRow): NavSnapshot {
+    // The pg driver's auto-coerce to Date only fires through Drizzle's
+    // typed query API. `db.execute<>(sql`SELECT *...`)` bypasses that
+    // and surfaces timestamp columns as ISO strings on the wire — the
+    // `RawNavHistoryRow` type claims Date but production reality is
+    // string for this raw-SQL path. Coerce defensively so downstream
+    // consumers (e.g. `navToDto`'s `.toISOString()` call) can rely on
+    // Date semantics regardless of which read path produced the row.
     return new NavSnapshot({
       id: row.id,
       tokenAddress: row.token_address,
@@ -111,9 +118,9 @@ export class PgNavHistoryRepository implements INavHistoryRepository {
       yieldRate: row.yield_rate ?? undefined,
       source: row.source,
       sourceType: row.source_type as NavSourceType,
-      sourceTimestamp: row.source_timestamp ?? undefined,
-      fetchedAt: row.fetched_at,
-      createdAt: row.created_at,
+      sourceTimestamp: row.source_timestamp ? new Date(row.source_timestamp as Date | string) : undefined,
+      fetchedAt: new Date(row.fetched_at as Date | string),
+      createdAt: new Date(row.created_at as Date | string),
     });
   }
 }
@@ -134,7 +141,10 @@ interface RawNavHistoryRow extends Record<string, unknown> {
   yield_rate: string | null;
   source: string;
   source_type: string;
-  source_timestamp: Date | null;
-  fetched_at: Date;
-  created_at: Date;
+  // pg driver returns timestamp columns as ISO strings on the raw-SQL
+  // path (Date only when going through Drizzle's typed query API).
+  // `toDomainFromRaw` coerces with `new Date(...)`.
+  source_timestamp: string | Date | null;
+  fetched_at: string | Date;
+  created_at: string | Date;
 }

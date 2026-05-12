@@ -310,6 +310,15 @@ describe('renderIntentPreview', () => {
     const text = renderIntentPreview({ ...baseIntent, tier: 'mini_app_otp' });
     expect(text).toContain('Mini App');
     expect(text).toContain('paste the 6\\-digit code');
+    // 2026-05-12: regression for the unescaped `+` in the mid-tier tag.
+    // MarkdownV2 reserves `+` (along with `-`, `.`, etc.); leaving the
+    // raw character in a static literal made Telegram return 400 with
+    // `Bad Request: can't parse entities: Character '+' is reserved`,
+    // which the bot worker logged but swallowed — propose-buy succeeded
+    // on the dashboard side while no DM ever arrived. Pin the escaped
+    // form so future static-string edits can't silently re-introduce.
+    expect(text).toContain('Mini App \\+ 6\\-digit code');
+    expect(text).not.toMatch(/Mini App \+ 6/); // unescaped form
   });
 
   it('switches the CTA copy + tier tag for high-tier', () => {

@@ -101,17 +101,32 @@ async function main(): Promise<void> {
 
   const tg = getTelegramWebApp();
   if (!tg || !tg.initData) {
-    showStatus('Open this page from Telegram so it can verify your identity.');
+    // Append a diagnostic dump under the error message so the operator
+    // can see *why* initData is empty (BotFather /setdomain not set,
+    // hash-eating SPA router, redirect dropped fragment, etc.).
+    const debug = {
+      hasWindowTelegram: typeof window.Telegram !== 'undefined',
+      hasWebApp: typeof window.Telegram?.WebApp !== 'undefined',
+      initDataLength: tg?.initData?.length ?? null,
+      initDataUnsafeKeys: tg?.initDataUnsafe ? Object.keys(tg.initDataUnsafe) : null,
+      hasUser: Boolean(tg?.initDataUnsafe?.user),
+      platform: (tg as unknown as { platform?: string })?.platform ?? null,
+      version: (tg as unknown as { version?: string })?.version ?? null,
+      colorScheme: (tg as unknown as { colorScheme?: string })?.colorScheme ?? null,
+      hasNativeBridge:
+        typeof (window as unknown as { TelegramWebviewProxy?: unknown }).TelegramWebviewProxy
+        !== 'undefined',
+      hashLength: window.location.hash.length,
+      hashFirst80: window.location.hash.slice(0, 80),
+      href: window.location.href.slice(0, 200),
+    };
+    const message = `Open this page from Telegram so it can verify your identity.\n\n[debug]\n${JSON.stringify(debug, null, 2)}`;
+    showStatus(message);
     setState('error');
     return;
   }
   tg.ready();
   tg.expand();
-
-  // Render the dashboard origin so the user can see at a glance which
-  // backend they are talking to.
-  const originLabel = $('.origin');
-  if (originLabel) originLabel.textContent = new URL(BACKEND_BASE_URL).host;
 
   const api = createMiniAppApi({ backendBaseUrl: BACKEND_BASE_URL });
 
