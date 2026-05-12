@@ -132,6 +132,20 @@ export class CommitCreateCheckoutUseCase {
         `Token ${token.symbol} is no longer active (status=${token.status}).`,
       );
     }
+    // Issuer-of-record re-check at commit. The propose hash binds the
+    // `issuerAddress` field byte-for-byte, but the token's on-chain
+    // issuer-of-record can rotate between propose + commit (admin
+    // transfer / IssuerUpdated event from the registry indexer). A
+    // rotation would let the propose-time issuer still mint a session
+    // pinned to themselves in `metadata.issuerAddress`, even though they
+    // no longer own the token. Audit-trail anomaly + buyer-facing
+    // issuerLabel misattribution. Refuse at commit when the registered
+    // issuer no longer matches the propose-time identity.
+    if (token.issuerAddress.toLowerCase() !== parsed.issuerAddress.toLowerCase()) {
+      throw ApplicationHttpError.conflict(
+        `Token ${token.symbol} issuer-of-record rotated between propose and commit.`,
+      );
+    }
 
     // Resolve label via the dependency-injected resolver — same shape
     // CheckoutLinkModal (dashboard path) will use, keeping the create-

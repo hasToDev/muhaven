@@ -185,9 +185,11 @@ const ISSUER_ROUTES = new Set([
   '/distribute',
   '/investors',
   '/compliance',
-  // Wave 4 §5 Path D — hosted-checkout dashboard (issuer-only).
+  // Wave 4 §5 Path D — hosted-checkout dashboard (issuer-only). The bare
+  // `/checkout` listing route is enumerated here; sub-paths
+  // (`/checkout/webhooks` + `/checkout/:sessionId`) match via the prefix
+  // table below — single source of truth per sub-path.
   '/checkout',
-  '/checkout/webhooks',
 ])
 const ISSUER_ROUTE_PREFIXES = ['/checkout/']
 const INVESTOR_ROUTES = new Set([

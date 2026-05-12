@@ -40,9 +40,13 @@ function openSessionDetail(sessionId: string) {
   router.push(`/checkout/${sessionId}`)
 }
 
-function fmtAmountFromMemo(): string {
-  return 'Encrypted'
-}
+/**
+ * The sessions list never decrypts the per-row amount — that lives in
+ * the URL fragment which the backend cannot read. Render a literal
+ * "Encrypted" placeholder so issuers see the privacy boundary at a
+ * glance.
+ */
+const ENCRYPTED_PLACEHOLDER = 'Encrypted'
 
 onMounted(async () => {
   // Tokens store is needed for the create-link modal's token picker.
@@ -189,7 +193,7 @@ function setRange(range: CheckoutStatsRange) {
               {{ s.metadata.tokenSymbol }}
             </td>
             <td class="px-5 py-3 text-xs font-mono text-cool/80 italic">
-              {{ fmtAmountFromMemo() }}
+              {{ ENCRYPTED_PLACEHOLDER }}
             </td>
             <td class="px-5 py-3 text-xs font-mono text-cool">
               <span v-if="s.buyerAddress">{{ formatAddress(s.buyerAddress) }}</span>

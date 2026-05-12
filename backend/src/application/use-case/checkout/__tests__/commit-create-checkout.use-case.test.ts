@@ -221,6 +221,37 @@ describe('CommitCreateCheckoutUseCase', () => {
     ).rejects.toMatchObject({ statusCode: 403 });
   });
 
+  it('rejects when token issuer-of-record rotated between propose + commit (409)', async () => {
+    const out = await proposeFirst();
+    // Rotate the token's issuerAddress to a different wallet (mimics
+    // an admin transfer / IssuerUpdated event landing between propose
+    // and commit).
+    rwaTokenRepo.tokens.set(
+      TOKEN,
+      new RwaToken({
+        id: 'tok_aura88',
+        address: TOKEN,
+        name: 'Aura Series A',
+        symbol: 'AURA88',
+        issuerAddress: '0xdead' + '0'.repeat(36),
+        kycTier: 1,
+        assetClass: 'private_credit' as AssetClass,
+        status: 'active',
+        createdAt: NOW,
+        updatedAt: NOW,
+      }),
+    );
+    await expect(
+      commit.execute({
+        userId: ISSUER_USER_ID,
+        surface: Surface.HavenBot,
+        confirmToken: out.confirmTokenId,
+        actionPayload: reconstructPayload(out),
+        now: NOW,
+      }),
+    ).rejects.toMatchObject({ statusCode: 409 });
+  });
+
   it('rejects when token was paused between propose + commit (409)', async () => {
     const out = await proposeFirst();
     rwaTokenRepo.tokens.set(

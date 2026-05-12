@@ -172,8 +172,10 @@ export interface CheckoutStatsResponseDto {
   range: CheckoutStatsRange;
   total: number;
   byStatus: Record<string, number>;
-  /** total of all NON-pending NON-expired NON-failed states / total. 0
-   *  when total = 0; rounded to 4dp. */
+  /** settled / total — count of fully-reconciled sessions divided by
+   *  total minted in the range. 0 when total = 0; rounded to 4dp. A
+   *  Wave 5 follow-up may refine to a cohort-shaped funnel; today the
+   *  simple rate matches the implementation in get-issuer-stats. */
   conversionRate: number;
   /** UTC-day buckets, oldest-first, gaps filled with zero. */
   daily: Array<{ bucketMs: number; count: number }>;

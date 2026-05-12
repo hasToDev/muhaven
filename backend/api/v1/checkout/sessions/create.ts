@@ -1,6 +1,4 @@
 import { CreateCheckoutSessionDtoSchema } from '../../../../src/application/dto/checkout/checkout.dto.js';
-import { CreateCheckoutSessionUseCase } from '../../../../src/application/use-case/checkout/create-session.use-case.js';
-import { getEnv } from '../../../../src/core/config.js';
 import { container } from '../../../../src/infrastructure/container.js';
 import { createHandler, sendResponse } from '../../../../src/interface/handler-factory.js';
 import { withAuth } from '../../../../src/interface/middleware/with-auth.js';
@@ -27,11 +25,11 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
  * The hosted-page public base URL is read from env `CHECKOUT_PUBLIC_URL`;
  * defaults to `http://localhost:7780` for local dev.
  */
-const useCase = new CreateCheckoutSessionUseCase(
-  container.checkoutSessionRepo,
-  getEnv().CHECKOUT_PUBLIC_URL,
-  container.userRepo,
-);
+// Wave 4 §5 Path C — share the singleton with `commitCreateCheckout` so
+// a future env-override / circuit-breaker / metrics decorator applied to
+// one path also covers the other (dashboard + HavenBot agent both mint
+// sessions through the same `CreateCheckoutSessionUseCase` instance).
+const useCase = container.createCheckoutSession;
 
 const handler = createHandler({
   operationName: 'CreateCheckoutSession',

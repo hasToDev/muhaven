@@ -63,9 +63,14 @@ export class GetIssuerStatsUseCase {
       aggregateOpts,
     );
 
-    // Day-bucket range: for `all`, anchor to the oldest activity; for 7d
-    // / 30d, the requested window. The repo returns only days with ≥1
-    // event; we gap-fill UTC days so the chart x-axis stays continuous.
+    // Day-bucket range: for `7d` / `30d`, the requested window. For
+    // `all`, cap the trend line at the last 30 days regardless of the
+    // issuer's first-session date — Chart.js renders better with a
+    // bounded x-axis, and the `total` + `byStatus` counts already cover
+    // all-time. A Wave 5 follow-up may anchor `all` on
+    // `min(createdAt)` if issuers grow long-tailed activity that the
+    // 30d-cap hides. The repo returns only days with ≥1 event; we
+    // gap-fill UTC days so the chart x-axis stays continuous.
     const trendSince = since ?? new Date(until.getTime() - 30 * 24 * 60 * 60 * 1000);
     const dailyRaw = await this.sessionRepo.countByIssuerAndDay(input.issuerUserId, {
       since: trendSince,
@@ -74,14 +79,14 @@ export class GetIssuerStatsUseCase {
     const daily = fillDailyBuckets(trendSince, until, dailyRaw);
 
     const settled = byStatus[CheckoutSessionStatus.Settled] ?? 0;
-    const purchased = byStatus[CheckoutSessionStatus.Purchased] ?? 0;
     const denom = total;
     // Conversion = settled / total. We treat `purchased` as "in progress
     // toward settled" so it counts in the denominator but not the
     // numerator — same intent as a Stripe funnel where purchase is mid-
-    // flight until backend reconciles.
+    // flight until backend reconciles. Wave 5 may refine to a composite
+    // "purchased-or-settled" rate once the redemption cohort is large
+    // enough to make the distinction meaningful.
     const conversionRate = denom > 0 ? roundTo4(settled / denom) : 0;
-    void purchased; // reserved: future "purchased-or-settled" composite metric.
 
     return {
       range,
