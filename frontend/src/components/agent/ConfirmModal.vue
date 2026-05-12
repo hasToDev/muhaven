@@ -2,7 +2,8 @@
 import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ShieldCheck, Lock, X, Loader2, AlertTriangle, ExternalLink, ArrowRight, Send } from 'lucide-vue-next'
-import { agentToolsApi, type ActionDescriptor } from '@/services/api'
+import { agentToolsApi, checkoutAgentApi, type ActionDescriptor } from '@/services/api'
+import CreateCheckoutSuccessCard from '@/components/agent/CreateCheckoutSuccessCard.vue'
 
 const router = useRouter()
 
@@ -52,6 +53,15 @@ const status = ref<
 >('idle')
 const txHash = ref<string | null>(null)
 const errorMsg = ref<string | null>(null)
+// Wave 4 §5 Path C — create_checkout commit returns a buyer URL
+// (NOT a tx hash). When the success state renders for this kind, the
+// success card surfaces this URL with Copy + Open affordances.
+const checkoutResult = ref<{
+  sessionId: string
+  url: string
+  fragmentKey: string
+  expiresAt: string
+} | null>(null)
 const deferredRedirectTo = ref<string | null>(null)
 const deferredReason = ref<string | null>(null)
 // Q6 (i) — when the user has linked Telegram + the propose-buy call
@@ -74,6 +84,7 @@ watch(
     txHash.value = null
     errorMsg.value = null
     useDashboardFallback.value = false
+    checkoutResult.value = null
   },
 )
 
@@ -213,6 +224,21 @@ async function reportResult(
   txHash.value = payload.txHash ?? null
   status.value = 'committing'
   try {
+    if (props.action.kind === 'create_checkout') {
+      // Wave 4 §5 Path C — dedicated commit route returns the buyer URL
+      // (the generic /tools/commit only writes audit). Backend mints the
+      // session server-side because the AES-256-GCM key + fragment surface
+      // are server primitives.
+      const result = await checkoutAgentApi.commitCreateCheckout({
+        surface: 'havenbot',
+        confirmToken: props.action.confirmTokenId,
+        actionPayload: extractActionPayload(props.action),
+      })
+      checkoutResult.value = result.session
+      status.value = 'success'
+      emit('complete', { action: props.action, ok: true, txHash: null })
+      return
+    }
     // Closes the propose → confirm → commit loop.
     await agentToolsApi.commit({
       surface: 'havenbot',
@@ -280,6 +306,20 @@ function extractActionPayload(a: ActionDescriptor): Record<string, unknown> {
       }
     case 'pause':
       return { action: 'pause' }
+    case 'create_checkout':
+      // Mirror the propose-create-checkout actionPayload byte-for-byte.
+      // The backend's commit hash-equality check refuses anything else.
+      return {
+        tool: 'muhaven_propose_create_checkout',
+        action: 'create_checkout',
+        tokenAddress: a.preview.tokenAddress,
+        amountUsd6: a.preview.amountUsd6,
+        memo: a.preview.memo ?? null,
+        successUrl: a.preview.successUrl ?? null,
+        cancelUrl: a.preview.cancelUrl ?? null,
+        issuerAddress: a.preview.issuerAddress,
+        requestedAtSec: a.preview.requestedAtSec,
+      }
     default:
       return {}
   }
@@ -321,6 +361,14 @@ const previewRows = computed(() => {
           label: 'Surface',
           value: String(props.action.preview.surface ?? 'all surfaces'),
         },
+      ]
+    case 'create_checkout':
+      return [
+        { label: 'Token', value: `${props.action.preview.tokenSymbol}` },
+        { label: 'Amount', value: displayUsd(String(props.action.preview.amountUsd6)) },
+        ...(props.action.preview.memo
+          ? [{ label: 'Memo', value: String(props.action.preview.memo) }]
+          : []),
       ]
     default:
       return []
@@ -474,8 +522,15 @@ const arbiscanUrl = computed(() =>
         </div>
 
         <!-- Status surfaces -->
+        <!-- Wave 4 §5 Path C — buyer URL surface for create_checkout. -->
+        <CreateCheckoutSuccessCard
+          v-if="status === 'success' && action?.kind === 'create_checkout' && checkoutResult"
+          :session="checkoutResult"
+          class="mb-5"
+        />
+
         <div
-          v-if="status === 'success'"
+          v-else-if="status === 'success'"
           class="flex items-start gap-3 px-4 py-3 rounded-xl bg-positive/10 border border-positive/25 mb-5"
         >
           <ShieldCheck :size="16" :stroke-width="1.8" class="text-positive flex-shrink-0 mt-0.5" />

@@ -86,6 +86,12 @@ export async function runAgentAction(action: ActionDescriptor): Promise<RunResul
         // audit-narrative wrap-up; idempotent on backend (pause_-prefixed
         // tokens fast-path through CommitToolActionUseCase).
         return { ok: true, txHash: null }
+      case 'create_checkout':
+        // Wave 4 §5 Path C — server-side mint. The runner has no on-chain
+        // work to do; the ConfirmModal calls
+        // `checkoutAgentApi.commitCreateCheckout` directly inside its
+        // committing branch and renders the returned URL on success.
+        return { ok: true, txHash: null }
       default:
         return { ok: false, error: `Unknown action kind: ${(action as ActionDescriptor).kind}` }
     }
