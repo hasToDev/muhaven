@@ -45,6 +45,14 @@ export class PgWebhookEndpointRepository implements IWebhookEndpointRepository {
     return rows.map((r) => this.toDomain(r));
   }
 
+  async findAllByIssuerUserId(issuerUserId: string): Promise<WebhookEndpoint[]> {
+    const rows = await this.db.query.checkoutWebhookEndpoints.findMany({
+      where: eq(checkoutWebhookEndpoints.issuerUserId, issuerUserId),
+      orderBy: desc(checkoutWebhookEndpoints.createdAt),
+    });
+    return rows.map((r) => this.toDomain(r));
+  }
+
   async disable(
     input: DisableWebhookEndpointInput,
   ): Promise<WebhookEndpoint | null> {

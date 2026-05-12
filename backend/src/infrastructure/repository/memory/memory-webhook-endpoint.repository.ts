@@ -27,6 +27,12 @@ export class MemoryWebhookEndpointRepository implements IWebhookEndpointReposito
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   }
 
+  async findAllByIssuerUserId(issuerUserId: string): Promise<WebhookEndpoint[]> {
+    return Array.from(this.store.values())
+      .filter((e) => e.issuerUserId === issuerUserId)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  }
+
   async disable(input: DisableWebhookEndpointInput): Promise<WebhookEndpoint | null> {
     const existing = this.store.get(input.endpointId);
     if (!existing) return null;

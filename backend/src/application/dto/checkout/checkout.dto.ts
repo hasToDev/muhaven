@@ -70,3 +70,111 @@ export const DisableWebhookEndpointDtoSchema = z
   })
   .strict();
 export type DisableWebhookEndpointDto = z.infer<typeof DisableWebhookEndpointDtoSchema>;
+
+// ─────────────────────────────────────────────────────────────────────
+// Wave 4 / §5 Path D — issuer-side read endpoints
+// ─────────────────────────────────────────────────────────────────────
+//
+// Cursor is base64url-encoded `{createdAtMs}.{sessionId}` — opaque to the
+// client. Validated structurally at the schema layer; the use-case layer
+// decodes via `parseSessionCursor` so a malformed cursor surfaces as a
+// clean 400 rather than a 500.
+
+const CURSOR_RE = /^[A-Za-z0-9_-]{1,512}$/;
+
+export const ListCheckoutSessionsRequestSchema = z
+  .object({
+    status: z.enum(CHECKOUT_SESSION_STATUS_VALUES as unknown as [string, ...string[]]).optional(),
+    cursor: z.string().regex(CURSOR_RE).optional(),
+    /** Page size — server caps at 50 (use-case-level cap; repo enforces 200). */
+    limit: z.coerce.number().int().min(1).max(50).optional(),
+  })
+  .strict();
+export type ListCheckoutSessionsRequest = z.infer<typeof ListCheckoutSessionsRequestSchema>;
+
+export const GetCheckoutSessionRequestSchema = z
+  .object({
+    id: z.string().regex(CHECKOUT_SESSION_ID_RE),
+  })
+  .strict();
+export type GetCheckoutSessionRequest = z.infer<typeof GetCheckoutSessionRequestSchema>;
+
+export const STATS_RANGE_VALUES = ['7d', '30d', 'all'] as const;
+export type CheckoutStatsRange = (typeof STATS_RANGE_VALUES)[number];
+
+export const GetCheckoutStatsRequestSchema = z
+  .object({
+    range: z.enum(STATS_RANGE_VALUES).optional(),
+  })
+  .strict();
+export type GetCheckoutStatsRequest = z.infer<typeof GetCheckoutStatsRequestSchema>;
+
+/**
+ * Dashboard session list-item DTO. `encPayload` is INTENTIONALLY OMITTED —
+ * the issuer minted the session and already knew the cleartext at create
+ * time; surfacing the ciphertext here would let a leaked dashboard read
+ * exfiltrate every ciphertext blob, expanding the recoverable-on-key-leak
+ * surface. See `ISSUER_CHECKOUT_DASHBOARD_PLAN.md` §1.A privacy invariants.
+ */
+export interface CheckoutSessionListItemDto {
+  sessionId: string;
+  status: string;
+  metadata: {
+    issuerAddress: string;
+    tokenAddress: string;
+    tokenSymbol: string;
+    issuerLabel: string | null;
+    description: string;
+    successUrl: string | null;
+    cancelUrl: string | null;
+  };
+  buyerAddress: string | null;
+  purchaseTxHash: string | null;
+  expiresAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ListCheckoutSessionsResponseDto {
+  sessions: CheckoutSessionListItemDto[];
+  /** Opaque cursor for the next page; null on the last page. */
+  nextCursor: string | null;
+}
+
+export interface GetCheckoutSessionResponseDto {
+  session: CheckoutSessionListItemDto;
+}
+
+/**
+ * Webhook list-item DTO. The signing-secret HINT is a Stripe-style masked
+ * preview (`whsec_xxxxxx…abcd`) — the full secret was returned ONCE at
+ * register time and is NEVER re-surfaced. See §1.A invariant 2.
+ */
+export interface WebhookEndpointListItemDto {
+  endpointId: string;
+  url: string;
+  enabledEvents: string[];
+  signingSecretHint: string;
+  disabledAt: string | null;
+  createdAt: string;
+}
+
+export interface ListWebhookEndpointsResponseDto {
+  endpoints: WebhookEndpointListItemDto[];
+}
+
+/**
+ * Stats DTO. Count-only — amount aggregation is structurally impossible
+ * because amounts live encrypted at rest behind a fragment key the
+ * backend never sees. See §1.A invariant 3.
+ */
+export interface CheckoutStatsResponseDto {
+  range: CheckoutStatsRange;
+  total: number;
+  byStatus: Record<string, number>;
+  /** total of all NON-pending NON-expired NON-failed states / total. 0
+   *  when total = 0; rounded to 4dp. */
+  conversionRate: number;
+  /** UTC-day buckets, oldest-first, gaps filled with zero. */
+  daily: Array<{ bucketMs: number; count: number }>;
+}

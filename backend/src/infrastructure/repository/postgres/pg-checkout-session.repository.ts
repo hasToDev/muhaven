@@ -1,16 +1,28 @@
-import { and, desc, eq, lt } from 'drizzle-orm';
+import { and, desc, eq, gte, lt, lte, or, sql } from 'drizzle-orm';
 import {
   CheckoutSession,
   type CheckoutSessionMetadata,
   CheckoutSessionStatus,
+  CHECKOUT_SESSION_STATUS_VALUES,
 } from '../../../domain/checkout/model/checkout-session.js';
 import type {
   ICheckoutSessionRepository,
   IssueCheckoutSessionInput,
   TransitionCheckoutSessionInput,
+  FindIssuerSessionsOpts,
+  FindIssuerSessionsResult,
+  IssuerSessionStatsRow,
+  IssuerSessionDailyBucket,
 } from '../../../domain/checkout/repository/checkout-session.repository.js';
 import { checkoutSessions } from './schema.js';
 import type { Db } from './db.js';
+
+/**
+ * Hard cap on page size to keep memory + wire round-trip bounded; the
+ * issuer-side use-case caps at 50 in addition. Tests exercise the cap
+ * directly so cursor pagination stays deterministic on small pages.
+ */
+const MAX_PAGE_LIMIT = 200;
 
 export class PgCheckoutSessionRepository implements ICheckoutSessionRepository {
   constructor(private readonly db: Db) {}
@@ -76,21 +88,107 @@ export class PgCheckoutSessionRepository implements ICheckoutSessionRepository {
 
   async findByIssuerUserId(
     issuerUserId: string,
-    opts: { status?: CheckoutSessionStatus; limit?: number } = {},
-  ): Promise<CheckoutSession[]> {
-    const limit = opts.limit ?? 50;
-    const where = opts.status
-      ? and(
-          eq(checkoutSessions.issuerUserId, issuerUserId),
-          eq(checkoutSessions.status, opts.status),
-        )
-      : eq(checkoutSessions.issuerUserId, issuerUserId);
+    opts: FindIssuerSessionsOpts = {},
+  ): Promise<FindIssuerSessionsResult> {
+    const requested = opts.limit ?? 20;
+    const limit = Math.max(1, Math.min(requested, MAX_PAGE_LIMIT));
+    // Keyset (createdAt, sessionId) tuple comparison — same shape as the
+    // P1 audit-events pagination cursor fix. Drizzle has no first-class
+    // tuple operator so we hand-roll the OR-form: createdAt strictly
+    // older, OR same createdAt and sessionId strictly smaller.
+    const conditions = [eq(checkoutSessions.issuerUserId, issuerUserId)];
+    if (opts.status) {
+      conditions.push(eq(checkoutSessions.status, opts.status));
+    }
+    if (opts.cursor) {
+      const cursorDate = new Date(opts.cursor.createdAtMs);
+      conditions.push(
+        or(
+          lt(checkoutSessions.createdAt, cursorDate),
+          and(
+            eq(checkoutSessions.createdAt, cursorDate),
+            lt(checkoutSessions.sessionId, opts.cursor.sessionId),
+          ),
+        )!,
+      );
+    }
+
     const rows = await this.db.query.checkoutSessions.findMany({
-      where,
-      orderBy: desc(checkoutSessions.createdAt),
-      limit,
+      where: and(...conditions),
+      orderBy: [desc(checkoutSessions.createdAt), desc(checkoutSessions.sessionId)],
+      limit: limit + 1,
     });
-    return rows.map((r) => this.toDomain(r));
+
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    const last = page[page.length - 1];
+    const nextCursor = hasMore && last
+      ? { createdAtMs: last.createdAt.getTime(), sessionId: last.sessionId }
+      : null;
+
+    return {
+      sessions: page.map((r) => this.toDomain(r)),
+      nextCursor,
+    };
+  }
+
+  async countByIssuerAndStatus(
+    issuerUserId: string,
+    opts: { since?: Date; until?: Date } = {},
+  ): Promise<IssuerSessionStatsRow> {
+    const conditions = [eq(checkoutSessions.issuerUserId, issuerUserId)];
+    if (opts.since) conditions.push(gte(checkoutSessions.createdAt, opts.since));
+    if (opts.until) conditions.push(lte(checkoutSessions.createdAt, opts.until));
+
+    const rows = await this.db
+      .select({
+        status: checkoutSessions.status,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(checkoutSessions)
+      .where(and(...conditions))
+      .groupBy(checkoutSessions.status);
+
+    const byStatus = Object.fromEntries(
+      CHECKOUT_SESSION_STATUS_VALUES.map((s) => [s, 0]),
+    ) as Record<CheckoutSessionStatus, number>;
+    let total = 0;
+    for (const r of rows) {
+      const k = r.status as CheckoutSessionStatus;
+      byStatus[k] = r.count;
+      total += r.count;
+    }
+    return { total, byStatus };
+  }
+
+  async countByIssuerAndDay(
+    issuerUserId: string,
+    opts: { since: Date; until: Date },
+  ): Promise<IssuerSessionDailyBucket[]> {
+    // UTC day bucket — `date_trunc('day', created_at AT TIME ZONE 'UTC')`
+    // yields a timestamp at the day's midnight which we then convert to
+    // epoch-ms for the wire shape. Postgres returns the bucket as a
+    // Date, which JS coerces consistently to UTC ms via `getTime()`.
+    const rows = await this.db
+      .select({
+        bucket: sql<Date>`date_trunc('day', ${checkoutSessions.createdAt} AT TIME ZONE 'UTC')`,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(checkoutSessions)
+      .where(
+        and(
+          eq(checkoutSessions.issuerUserId, issuerUserId),
+          gte(checkoutSessions.createdAt, opts.since),
+          lte(checkoutSessions.createdAt, opts.until),
+        ),
+      )
+      .groupBy(sql`1`)
+      .orderBy(sql`1`);
+
+    return rows.map((r) => ({
+      bucketMs: r.bucket instanceof Date ? r.bucket.getTime() : new Date(r.bucket).getTime(),
+      count: r.count,
+    }));
   }
 
   private toDomain(row: typeof checkoutSessions.$inferSelect): CheckoutSession {

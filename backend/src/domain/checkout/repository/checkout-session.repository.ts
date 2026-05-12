@@ -20,6 +20,55 @@ export interface TransitionCheckoutSessionInput {
 }
 
 /**
+ * Keyset cursor for paginating issuer-scoped session listings. The cursor
+ * encodes the boundary row's `(createdAt, sessionId)` tuple so duplicate
+ * `createdAt` ticks (realistic on a Wave-5-shaped issuer back-fill that
+ * mints sessions in a tight loop) still page deterministically.
+ */
+export interface CheckoutSessionListCursor {
+  createdAtMs: number;
+  sessionId: string;
+}
+
+export interface FindIssuerSessionsOpts {
+  status?: CheckoutSessionStatus;
+  /** Page size — repo enforces `≤200` cap server-side; the use-case layer
+   *  caps at 50 for the issuer dashboard surface. */
+  limit?: number;
+  /** Opaque cursor minted by the previous page's response. */
+  cursor?: CheckoutSessionListCursor;
+}
+
+export interface FindIssuerSessionsResult {
+  sessions: CheckoutSession[];
+  /** Cursor for the NEXT page; null when this page was the tail. */
+  nextCursor: CheckoutSessionListCursor | null;
+}
+
+/**
+ * Per-status counts for the issuer dashboard stats card. Count-only by
+ * design — the privacy boundary (encrypted `encPayload` + key-on-client)
+ * makes amount aggregation structurally impossible without breaking the
+ * privacy-at-rest property. See `ISSUER_CHECKOUT_DASHBOARD_PLAN.md` §1.A.
+ */
+export interface IssuerSessionStatsRow {
+  total: number;
+  byStatus: Record<CheckoutSessionStatus, number>;
+}
+
+/**
+ * Per-day session counts for the trend line on the stats card. Day key is
+ * an ISO date string (`YYYY-MM-DD`) in UTC; the use-case layer joins gaps
+ * server-side so the chart renders a continuous range.
+ */
+export interface IssuerSessionDailyBucket {
+  /** UTC midnight ms (matches `Date.UTC(y, m, d)` for forward compat with
+   *  charting libraries that expect ms-since-epoch x-axis values). */
+  bucketMs: number;
+  count: number;
+}
+
+/**
  * Persistence contract for hosted-checkout sessions.
  *
  * Implementations MUST:
@@ -37,8 +86,29 @@ export interface ICheckoutSessionRepository {
   transition(input: TransitionCheckoutSessionInput): Promise<CheckoutSession | null>;
   /** Sweep `pending` rows past `expiresAt` to status=`expired`. Returns count. */
   sweepExpired(now: Date): Promise<number>;
+  /**
+   * Cursor-paginated issuer-scoped listing for the dashboard. The
+   * (createdAt DESC, sessionId DESC) ordering is the canonical "newest
+   * first" page sort.
+   */
   findByIssuerUserId(
     issuerUserId: string,
-    opts?: { status?: CheckoutSessionStatus; limit?: number },
-  ): Promise<CheckoutSession[]>;
+    opts?: FindIssuerSessionsOpts,
+  ): Promise<FindIssuerSessionsResult>;
+  /**
+   * Stats card aggregates — total + per-status counts. Range optional;
+   * when omitted, aggregates over the entire history for this issuer.
+   */
+  countByIssuerAndStatus(
+    issuerUserId: string,
+    opts?: { since?: Date; until?: Date },
+  ): Promise<IssuerSessionStatsRow>;
+  /**
+   * Per-day session creation counts for the trend chart. Returns rows
+   * ONLY for days that had ≥1 session; the use-case layer fills gaps.
+   */
+  countByIssuerAndDay(
+    issuerUserId: string,
+    opts: { since: Date; until: Date },
+  ): Promise<IssuerSessionDailyBucket[]>;
 }
