@@ -31,10 +31,10 @@ export class PgNavHistoryRepository implements INavHistoryRepository {
     const limit = options?.limit ?? 100;
     const offset = options?.offset ?? 0;
     // Wrap both sides with lower() — `nav-worker` writes checksummed
-    // addresses (mixed case from `engine.ts:STAGING_TBILL1` etc.) but
-    // every caller of this repo lowercases at the boundary. A plain
-    // `eq(col, input)` would silently miss. Memory rule
-    // `feedback_address_case_at_repo_boundary` (2026-05-09).
+    // addresses (mixed case from the env-driven NAV_*_ADDRESS values it
+    // reads at boot) but every caller of this repo lowercases at the
+    // boundary. A plain `eq(col, input)` would silently miss. Memory
+    // rule `feedback_address_case_at_repo_boundary` (2026-05-09).
     const lowered = tokenAddress.toLowerCase();
     const conditions = [eq(sql`lower(${tokenNavHistory.tokenAddress})`, lowered)];
 

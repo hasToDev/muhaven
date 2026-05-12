@@ -2,9 +2,9 @@
  * Real-Postgres integration test for `PgNavHistoryRepository`.
  *
  * Pins the case-insensitivity invariant on every read path. The
- * nav-worker writes checksummed addresses (mixed case from
- * `engine.ts:STAGING_TBILL1` etc.) but every caller of this repo (e.g.
- * `quote.use-case.ts`, `portfolio-summary.use-case.ts`,
+ * nav-worker writes checksummed addresses (mixed case from the
+ * env-driven NAV_*_ADDRESS values it reads at boot) but every caller
+ * of this repo (e.g. `quote.use-case.ts`, `portfolio-summary.use-case.ts`,
  * `metrics.use-case.ts`) lowercases at the boundary. A plain
  * `eq(col, input)` would silently miss — surfaced 2026-05-09 when
  * AGENTIC_TEST_PLAN §1c step 4 hit "No NAV snapshot indexed for TBILL1"

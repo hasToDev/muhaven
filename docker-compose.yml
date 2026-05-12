@@ -50,6 +50,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    env_file: ./nav-worker/.env
     environment:
       PORT: 3002
       DATABASE_URL: postgresql://muhaven:${DB_PASSWORD:-muhaven}@postgres:5432/muhaven

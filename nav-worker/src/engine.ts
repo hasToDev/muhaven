@@ -45,41 +45,43 @@ interface TokenSourceConfig {
 /**
  * Token → source mapping for the Wave 3.5 reference-rate cron.
  *
- * Addresses are env-driven so staging and prod can populate from their
- * respective deployments (NAV_TBILL1_ADDRESS / NAV_GOLD1_ADDRESS in each
- * env file). Defaults baked in below match the staging deployment in
- * `deployments/arb-sepolia-v2.staging.json` so a fresh dev box works
- * without setup.
- *
- * **Stale-defaults hazard**: these hardcoded staging addresses MUST be
- * refreshed every time the v2 staging platform is redeployed (`pnpm run
- * deploy:v2:testnet:stage` rotates them). When stale, the nav-worker
- * silently writes NAV rows for token addresses that no longer exist in
- * `rwa_tokens` — every quote for the new tokens then fails with "No NAV
- * snapshot indexed". Wave 5 should replace this constant pair with a
- * runtime read from the indexer's `rwa_tokens` table so addresses
- * track the live deployment automatically.
- *
- * Tokens with no env override AND a falsey default are filtered out at
- * cycle time so the worker doesn't run against zero-address tokens.
- *
- * Wave 3 history note: this used to list 8 demo placeholders at
- * 0x0000…0001 through 0x0000…0008 — meaningless writes against orphan
- * addresses. Removed in Phase 8 cutover.
- *
- * Last refreshed: 2026-05-09 (post the 2026-05-08 fresh staging redeploy).
+ * Addresses are env-driven and REQUIRED at boot: missing or zero-address
+ * values throw at module load so the worker fails loud (Docker restart-loop
+ * with the FATAL message in stderr) instead of silently writing NAV rows
+ * to dead addresses. The source-of-truth defaults live in
+ * `nav-worker/.env.example`, not in this file — no hardcoded fallbacks.
  */
-const STAGING_TBILL1 = '0xe80a64C13759e9b823265e2691c7C481EaAaf6e2';
-const STAGING_GOLD1  = '0x80327c5D46c2c4C517B5f021f69cA7667f30b270';
+function isValidAddress(addr: unknown): addr is string {
+  return (
+    typeof addr === 'string' && /^0x[0-9a-fA-F]{40}$/.test(addr) && !/^0x0+$/.test(addr)
+  );
+}
+
+function requireEnvAddress(name: string): string {
+  const value = process.env[name];
+  if (!isValidAddress(value)) {
+    throw new Error(
+      `[nav-worker] FATAL: ${name} is required and must be a non-zero EVM address ` +
+        `(got: ${JSON.stringify(value)}). ` +
+        `Set in nav-worker/.env from ` +
+        `\`deployments/arb-sepolia-v2*.json#tokens.{TBILL1|GOLD1}.contracts.MuHavenToken.proxy\`. ` +
+        `If you just edited the env file, restart the container with ` +
+        `\`docker compose up -d --force-recreate nav-worker\` — ` +
+        `\`docker compose restart\` does NOT pick up env_file changes (the env block is ` +
+        `locked at container create).`,
+    );
+  }
+  return value;
+}
 
 const TOKEN_SOURCES: TokenSourceConfig[] = [
   {
-    tokenAddress: process.env.NAV_TBILL1_ADDRESS || STAGING_TBILL1,
+    tokenAddress: requireEnvAddress('NAV_TBILL1_ADDRESS'),
     symbol: 'TBILL1',
     primaryFredSeries: 'DGS3MO', // 3-month Treasury Bill rate
   },
   {
-    tokenAddress: process.env.NAV_GOLD1_ADDRESS || STAGING_GOLD1,
+    tokenAddress: requireEnvAddress('NAV_GOLD1_ADDRESS'),
     symbol: 'GOLD1',
     // XAU/USD daily fixing in USD per troy ounce, fetched from
     // stooq.com (no API key, no rate limit). Stored as a price-like
@@ -87,7 +89,7 @@ const TOKEN_SOURCES: TokenSourceConfig[] = [
     // was archived in 2017 when LBMA pulled their feed.
     primaryStooqSymbol: 'XAUUSD',
   },
-].filter(t => /^0x[0-9a-fA-F]{40}$/.test(t.tokenAddress) && !/^0x0+$/.test(t.tokenAddress));
+];
 
 /**
  * Check if the new snapshot is within tolerance of the latest DB entry.
@@ -280,12 +282,10 @@ export interface FetchCycleResult {
  * indexer's `rwa_tokens` registry. A miss means the cron is about to
  * write NAV rows for an orphan address — visible only as silent
  * "No NAV snapshot indexed for SYMBOL" failures from `muhaven_quote`,
- * because `nav_history` lookups are token-address-keyed.
- *
- * Surfaced 2026-05-09 — the staging hardcoded defaults rotated out of
- * sync with the 2026-05-08 fresh redeploy and every quote silently
- * failed for ~24h. This probe makes the next stale-defaults regression
- * loud.
+ * because `nav_history` lookups are token-address-keyed. Catches the
+ * env-vars-set-but-token-not-yet-onboarded case (fresh redeploy + env
+ * rotated but `pnpm seed:tokens:v35` not yet run), which the boot-throw
+ * in this file's TOKEN_SOURCES block cannot.
  *
  * Probe is best-effort: a DB error doesn't abort startup (the worker
  * still cycles through all sources; missing NAV rows just won't
@@ -310,8 +310,10 @@ export async function probeTokenRegistration(): Promise<void> {
         console.warn(
           `[probe] WARNING: ${config.symbol} configured at ${config.tokenAddress} has NO matching row in rwa_tokens. ` +
             `Quote tool will fail with "No NAV snapshot indexed" for this symbol. ` +
-            `Likely cause: hardcoded staging default in engine.ts rotated out of sync with the latest deploy. ` +
-            `Fix: set NAV_${config.symbol}_ADDRESS in nav-worker/.env to the live address from deployments/arb-sepolia-v2*.json.`,
+            `Likely cause: NAV_${config.symbol}_ADDRESS points at a token that hasn't been onboarded yet, ` +
+            `or the deployments file has rotated since the worker container was created. ` +
+            `Fix: confirm NAV_${config.symbol}_ADDRESS in nav-worker/.env matches the live address from deployments/arb-sepolia-v2*.json, ` +
+            `then \`docker compose up -d --force-recreate nav-worker\` (NOT \`restart\`).`,
         );
       } else if (row.symbol !== config.symbol) {
         console.warn(
