@@ -241,7 +241,9 @@ export type ActionDescriptorKind =
   | 'unpause_token'
   // Wave 4 P11 — governance ceremony
   | 'governance_propose'
-  | 'governance_vote';
+  | 'governance_vote'
+  // Wave 4 §5 Path C — hosted-checkout session mint via agent
+  | 'create_checkout';
 
 export interface ActionDescriptorBase {
   kind: ActionDescriptorKind;
@@ -451,6 +453,41 @@ export interface GovernanceVoteActionDescriptor extends ActionDescriptorBase {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Wave 4 §5 Path C — create_checkout ActionDescriptor
+// ─────────────────────────────────────────────────────────────────────
+//
+// Hosted-checkout session minting via HavenBot. Unlike every other
+// propose-* tool, the on-chain leg is SERVER-side at commit time (the
+// session encrypt + persist step runs in backend, since the AES-256-GCM
+// key is server-generated). The frontend ConfirmModal renders the
+// preview rows + commits via the dedicated commit_create_checkout
+// route which returns the buyer URL.
+//
+// Privacy: `amountUsd6` lives ONLY in the propose's actionPayload (which
+// is hashed and replay-rejected via ConfirmTokenService). The cleartext
+// amount is intentionally surfaced on the preview rows — the issuer
+// already knows the amount they typed; rendering it back is not a
+// privacy leak.
+//
+// `requestedAtSec` is pinned for the standard R-3 mitigation shape
+// (mirrors propose_distribute_yield + propose_buy.navAt).
+
+export interface CreateCheckoutActionDescriptor extends ActionDescriptorBase {
+  kind: 'create_checkout';
+  preview: {
+    tokenAddress: string;
+    tokenSymbol: string;
+    /** Cleartext mhUSDC base units (6dp). Always positive integer string. */
+    amountUsd6: string;
+    memo: string | null;
+    successUrl: string | null;
+    cancelUrl: string | null;
+    issuerAddress: string;
+    requestedAtSec: number;
+  };
+}
+
 export type ActionDescriptor =
   | BuyActionDescriptor
   | ClaimActionDescriptor
@@ -462,7 +499,8 @@ export type ActionDescriptor =
   | KycRemoveActionDescriptor
   | UnpauseTokenActionDescriptor
   | GovernanceProposeActionDescriptor
-  | GovernanceVoteActionDescriptor;
+  | GovernanceVoteActionDescriptor
+  | CreateCheckoutActionDescriptor;
 
 // ─────────────────────────────────────────────────────────────────────
 // Audit-commit DTO — frontend POSTs this after the SDK tx confirms

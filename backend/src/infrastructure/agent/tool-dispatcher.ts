@@ -16,6 +16,7 @@ import {
   ProposeKycRemoveDtoSchema,
   ProposeUnpauseTokenDtoSchema,
   AuditQueryToolDtoSchema,
+  ProposeCreateCheckoutDtoSchema,
 } from '../../application/dto/agent/issuer-tool.dto.js';
 import {
   CheckProtectionCoverageDtoSchema,
@@ -37,6 +38,7 @@ import type {
   ProposeKycRemoveToolUseCase,
   ProposeUnpauseTokenToolUseCase,
   AuditQueryToolUseCase,
+  ProposeCreateCheckoutToolUseCase,
   CheckProtectionCoverageToolUseCase,
   ExplainKycAttestationToolUseCase,
   ProposeGovernanceVoteToolUseCase,
@@ -59,6 +61,7 @@ export interface ToolDispatcherDeps {
   proposeKycRemove: ProposeKycRemoveToolUseCase;
   proposeUnpauseToken: ProposeUnpauseTokenToolUseCase;
   auditQuery: AuditQueryToolUseCase;
+  proposeCreateCheckout: ProposeCreateCheckoutToolUseCase;
   // Wave 4 P11 — governance / protection / KYC tools
   checkProtectionCoverage: CheckProtectionCoverageToolUseCase;
   explainKycAttestation: ExplainKycAttestationToolUseCase;
@@ -208,6 +211,17 @@ export class ToolDispatcher {
       case 'muhaven_audit_query': {
         const args = AuditQueryToolDtoSchema.parse(rawArgs ?? {});
         return this.deps.auditQuery.execute({ userId: ctx.userId }, args);
+      }
+      case 'muhaven_propose_create_checkout': {
+        const args = ProposeCreateCheckoutDtoSchema.parse(rawArgs);
+        return this.deps.proposeCreateCheckout.execute(
+          {
+            userId: ctx.userId,
+            walletAddress: ctx.walletAddress,
+            surface: ctx.surface,
+          },
+          args,
+        );
       }
       // ── Wave 4 P11 — governance / protection / KYC tools ───────────
       case 'muhaven_check_protection_coverage': {

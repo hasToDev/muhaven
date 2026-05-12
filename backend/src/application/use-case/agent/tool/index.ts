@@ -43,6 +43,8 @@ export { ProposeUnpauseTokenToolUseCase } from './propose-unpause-token.use-case
 export type { ProposeUnpauseTokenContext } from './propose-unpause-token.use-case.js';
 export { AuditQueryToolUseCase } from './audit-query.use-case.js';
 export type { AuditQueryToolContext } from './audit-query.use-case.js';
+export { ProposeCreateCheckoutToolUseCase } from './propose-create-checkout.use-case.js';
+export type { ProposeCreateCheckoutContext } from './propose-create-checkout.use-case.js';
 // ── Wave 4 P11 — governance / protection / KYC tools ────────────────
 export { CheckProtectionCoverageToolUseCase } from './check-protection-coverage.use-case.js';
 export type { CheckProtectionCoverageDeps } from './check-protection-coverage.use-case.js';

@@ -93,6 +93,10 @@ const TOOL_NAMES = [
   'muhaven_explain_kyc_attestation',
   'muhaven_propose_governance_vote',
   'muhaven_cast_encrypted_vote',
+  // Wave 4 §5 Path C — hosted-checkout session mint via agent. Issuer-only;
+  // the lifecycle gate + token-of-record check happen inside the use-case.
+  // ConfirmModal renders the cleartext preview; commit returns the buyer URL.
+  'muhaven_propose_create_checkout',
 ] as const;
 
 type ToolName = (typeof TOOL_NAMES)[number];
@@ -124,6 +128,9 @@ YOUR CAPABILITIES (issuer-only write tools — tier-gated, requires approved iss
 
 YOUR CAPABILITIES (issuer-only read tools)
 - muhaven_audit_query(surface?, eventTypes?, since?, until?, cursor?, limit?): Read your own tiered-autonomy audit log.
+
+YOUR CAPABILITIES (issuer-only checkout tool — tier-gated)
+- muhaven_propose_create_checkout(tokenAddress, amountUsd6, memo?, successUrl?, cancelUrl?): Mint a hosted-checkout session for an investor to pay in mhUSDC. Returns an ActionDescriptor; the issuer authorizes in ConfirmModal and the commit returns a buyer URL (pay.muhaven.app/c/cs_...#k=...) which the issuer shares with the buyer.
 
 YOUR CAPABILITIES (protection / governance / KYC — read tools, no policy gate)
 - muhaven_check_protection_coverage(tokenAddress): Read on-chain DefaultProtection state for a token. Returns status (no_protection / inactive / active / triggered / distributing / completed / not_deployed) + reserveRateBps + a cleartext explanation. Backend never decrypts the encrypted reserve handle.
@@ -378,6 +385,7 @@ export function summarizeStubToolResult(
     case 'muhaven_propose_unpause_token':
     case 'muhaven_propose_governance_vote':
     case 'muhaven_cast_encrypted_vote':
+    case 'muhaven_propose_create_checkout':
       return null;
     default:
       return null;
@@ -1090,6 +1098,38 @@ function buildGeminiToolDeclarations(): unknown[] {
               voteYes: { type: 'BOOLEAN' },
             },
             required: ['proposalId', 'voteYes'],
+          },
+        },
+        // ── Wave 4 §5 Path C — hosted-checkout via agent ──────────────
+        {
+          name: 'muhaven_propose_create_checkout',
+          description:
+            'Mint a hosted-checkout session for an issuer to share with an investor. The buyer pays in mhUSDC; the session encrypts the amount client-side via a URL fragment key. Returns an ActionDescriptor with cleartext preview rows; ConfirmModal authorizes, commit returns the buyer URL.',
+          parameters: {
+            type: 'OBJECT',
+            properties: {
+              tokenAddress: {
+                type: 'STRING',
+                description: '0x-prefixed 40-hex RWA token address (resolve symbols like AURA88 via KNOWN TOKENS list).',
+              },
+              amountUsd6: {
+                type: 'STRING',
+                description: 'Cleartext mhUSDC base units (1 mhUSDC = 1000000). Positive integer string.',
+              },
+              memo: {
+                type: 'STRING',
+                description: 'Optional human-readable memo shown on the buyer page (≤280 chars).',
+              },
+              successUrl: {
+                type: 'STRING',
+                description: 'Optional post-success redirect URL (≤512 chars, must be http(s)://).',
+              },
+              cancelUrl: {
+                type: 'STRING',
+                description: 'Optional cancel-redirect URL.',
+              },
+            },
+            required: ['tokenAddress', 'amountUsd6'],
           },
         },
       ],

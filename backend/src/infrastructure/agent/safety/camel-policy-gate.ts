@@ -58,6 +58,8 @@ export const PLANNER_ALLOWED_TOOLS = [
   'muhaven_explain_kyc_attestation',
   'muhaven_propose_governance_vote',
   'muhaven_cast_encrypted_vote',
+  // Wave 4 §5 Path C — hosted-checkout session via HavenBot
+  'muhaven_propose_create_checkout',
 ] as const;
 
 export type PlannerAllowedTool = (typeof PLANNER_ALLOWED_TOOLS)[number];

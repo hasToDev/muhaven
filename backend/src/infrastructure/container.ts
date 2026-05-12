@@ -114,7 +114,11 @@ import {
   ExplainKycAttestationToolUseCase,
   ProposeGovernanceVoteToolUseCase,
   CastEncryptedVoteToolUseCase,
+  // Wave 4 §5 Path C — hosted-checkout via agent
+  ProposeCreateCheckoutToolUseCase,
 } from '../application/use-case/agent/tool/index.js';
+import { CreateCheckoutSessionUseCase } from '../application/use-case/checkout/create-session.use-case.js';
+import { CommitCreateCheckoutUseCase } from '../application/use-case/checkout/commit-create-checkout.use-case.js';
 import { GetPolicyStateUseCase } from '../application/use-case/agent/policy/get-policy-state.use-case.js';
 import { ConfirmTokenService } from '../application/use-case/agent/policy/confirm-token.service.js';
 import { AppendAuditEventUseCase } from '../application/use-case/agent/policy/append-audit-event.use-case.js';
@@ -510,6 +514,14 @@ function getToolDispatcher(): ToolDispatcher {
       appendAudit,
       { encryptedGovernanceAddress: getEnv().ENCRYPTED_GOVERNANCE_ADDRESS },
     ),
+    // ── Wave 4 §5 Path C — hosted-checkout via agent ──────────────
+    proposeCreateCheckout: new ProposeCreateCheckoutToolUseCase(
+      muhaven.rwaTokenRepo,
+      repos.userRepo,
+      getPolicyState,
+      confirmTokens,
+      appendAudit,
+    ),
   });
   return _toolDispatcher;
 }
@@ -637,6 +649,41 @@ function getPublicMetricsUseCase(): GetPublicMetricsUseCase {
   return _publicMetricsUseCase;
 }
 
+// ── Wave 4 §5 Path C — hosted-checkout via agent ──────────────────────
+//
+// Two use-cases share a single `CreateCheckoutSessionUseCase` instance so
+// the dashboard CheckoutLinkModal path AND the HavenBot agent path resolve
+// the same env-configured baseUrl. The session id + fragment key live on
+// the use-case's instance state (none, today — it's stateless), but
+// sharing reads from a single env var keeps a future env-override
+// consistent across both.
+let _createCheckoutSession: CreateCheckoutSessionUseCase | null = null;
+function getCreateCheckoutSession(): CreateCheckoutSessionUseCase {
+  if (_createCheckoutSession) return _createCheckoutSession;
+  _createCheckoutSession = new CreateCheckoutSessionUseCase(
+    getCheckoutRepos().checkoutSessionRepo,
+    getEnv().CHECKOUT_PUBLIC_URL,
+    getRepos().userRepo,
+  );
+  return _createCheckoutSession;
+}
+
+let _commitCreateCheckout: CommitCreateCheckoutUseCase | null = null;
+function getCommitCreateCheckout(): CommitCreateCheckoutUseCase {
+  if (_commitCreateCheckout) return _commitCreateCheckout;
+  const agentRepos = getAgentRepos();
+  const confirmTokens = new ConfirmTokenService(agentRepos.agentConfirmTokenRepo);
+  const appendAudit = new AppendAuditEventUseCase(agentRepos.agentAuditRepo);
+  _commitCreateCheckout = new CommitCreateCheckoutUseCase(
+    confirmTokens,
+    appendAudit,
+    getMuHavenRepos().rwaTokenRepo,
+    getCreateCheckoutSession(),
+    getIssuerLabelResolver(),
+  );
+  return _commitCreateCheckout;
+}
+
 let _commitToolAction: CommitToolActionUseCase | null = null;
 function getCommitToolAction(): CommitToolActionUseCase {
   if (_commitToolAction) return _commitToolAction;
@@ -750,6 +797,13 @@ export const container = {
   },
   get commitToolAction() {
     return getCommitToolAction();
+  },
+  // Wave 4 §5 Path C — hosted-checkout via agent
+  get createCheckoutSession() {
+    return getCreateCheckoutSession();
+  },
+  get commitCreateCheckout() {
+    return getCommitCreateCheckout();
   },
   // Wave 4 P7 — issuer-channel broadcast use-case
   get publishIssuerChannelEvent() {

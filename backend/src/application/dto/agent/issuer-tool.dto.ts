@@ -142,3 +142,31 @@ export interface AuditQueryToolResponseDto {
   }>;
   cursor?: string;
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Tool 14 — muhaven_propose_create_checkout
+// ─────────────────────────────────────────────────────────────────────
+//
+// Wave 4 §5 Path C — issuer asks the agent to mint a hosted-checkout
+// session for a known token + amount + memo. Backend mints the session
+// at commit time (NOT propose) so the fragment key never enters the
+// confirm-token replay surface. The ConfirmModal renders the cleartext
+// preview; commit returns the buyer URL + sessionId + fragmentKey.
+
+const memoSchema = z.string().min(1).max(280).optional();
+const urlSchema = z.string().url().max(512).optional();
+
+export const ProposeCreateCheckoutDtoSchema = z
+  .object({
+    tokenAddress: addressSchema,
+    /** Cleartext mhUSDC base units (1 mhUSDC = 1_000_000). Encrypted at
+     *  commit time by the backend's AES-256-GCM helper; the agent never
+     *  sees the encryption key. */
+    amountUsd6: usd6Schema,
+    memo: memoSchema,
+    successUrl: urlSchema,
+    cancelUrl: urlSchema,
+  })
+  .strict();
+
+export type ProposeCreateCheckoutDto = z.infer<typeof ProposeCreateCheckoutDtoSchema>;
