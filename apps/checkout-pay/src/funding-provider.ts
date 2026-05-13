@@ -53,12 +53,22 @@ export class FaucetRedirectProvider implements FundingProvider {
   render(ctx: FundingContext): FundingProviderRender {
     const tpl = document.createElement('template');
     // Wave 5 buyer-side port (P2): the `[data-funding-poll-status]`
-    // line is wired by `main.ts:ensureFundingPollerStarted` — every
+    // element is wired by `main.ts:ensureFundingPollerStarted` — every
     // 5 s tick of the FundingPoller updates the text + `data-poll-state`
     // attribute. Pre-poll text reads "Checking balance…" so the user
     // sees a live affordance instead of dead "we'll continue
     // automatically" copy. The first tick is synchronous on `start()`
     // so the placeholder text rarely survives more than a few frames.
+    //
+    // NOTE on screen-reader announcements: the visible element below
+    // is intentionally NOT a live region (no `aria-live`). Announcing
+    // the rotating "Current balance: X.XX — waiting for ≥ Y.YY" copy
+    // every 5 s spams NVDA / JAWS / VoiceOver users (the WCAG 4.1.3
+    // Status Messages anti-pattern). Instead, `main.ts` writes
+    // STATE-TRANSITION announcements (waiting → funded → error) to
+    // the `[data-funding-poll-announce]` / `[data-funding-poll-alert]`
+    // sr-only regions in `index.html` so each transition is spoken
+    // exactly once.
     tpl.innerHTML = `
       <div class="funding-faucet">
         <p>
@@ -75,7 +85,7 @@ export class FaucetRedirectProvider implements FundingProvider {
           hits <strong>${formatHintAmount(ctx.payload.amountUsd6)} USDC</strong>
           we'll move you on to the purchase step automatically.
         </p>
-        <p class="poll-status" data-funding-poll-status data-poll-state="waiting" aria-live="polite" aria-atomic="true">
+        <p class="poll-status" data-funding-poll-status data-poll-state="waiting">
           Checking balance…
         </p>
       </div>

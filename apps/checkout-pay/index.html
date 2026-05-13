@@ -70,7 +70,7 @@
         <p class="status-pill" data-status=""></p>
 
         <div id="step-pending" class="step" hidden>
-          <h2>1 · Sign in with passkey</h2>
+          <h2 tabindex="-1">1 · Sign in with passkey</h2>
           <p>
             We'll create a passkey-protected smart account for you. The
             same passkey logs you into the MuHaven dashboard later — no
@@ -80,7 +80,7 @@
         </div>
 
         <div id="step-funding" class="step" hidden>
-          <h2>2 · Top up testnet USDC</h2>
+          <h2 tabindex="-1">2 · Top up testnet USDC</h2>
           <p>
             Your account address — copy it and paste into the Circle
             faucet. We'll watch for the deposit and continue automatically.
@@ -104,7 +104,7 @@
         </div>
 
         <div id="step-wrapped" class="step" hidden>
-          <h2>3 · Buy the asset</h2>
+          <h2 tabindex="-1">3 · Buy the asset</h2>
           <p>
             Confirm with your passkey to wrap USDC into confidential
             mhUSDC and complete the purchase in a single sealed envelope.
@@ -113,7 +113,7 @@
         </div>
 
         <div id="step-purchased" class="step" hidden>
-          <h2>4 · Settling on chain</h2>
+          <h2 tabindex="-1">4 · Settling on chain</h2>
           <p>
             Your purchase is confirming. The page will update once the
             issuer's webhook fires.
@@ -122,7 +122,7 @@
         </div>
 
         <div id="step-settled" class="step" hidden>
-          <h2>Done — you're a holder.</h2>
+          <h2 tabindex="-1">Done — you're a holder.</h2>
           <p>
             Open the MuHaven dashboard to view your encrypted balance and
             track yields.
@@ -131,12 +131,27 @@
         </div>
 
         <div id="step-failed" class="step" hidden>
-          <h2>Something went wrong</h2>
+          <h2 tabindex="-1">Something went wrong</h2>
           <p class="failure-detail"></p>
           <a class="cta-secondary" href="/" id="cta-cancel">Cancel</a>
         </div>
       </section>
     </main>
+    <!--
+      Wave 5 buyer-side port (P2) — sr-only live regions for state
+      transitions only. The visible `[data-funding-poll-status]`
+      element updates every 5 s with the latest balance, but screen
+      readers only hear the discrete transitions:
+        - waiting → funded → preparing-next-step
+        - waiting → error
+        - retry attempts (announced once per attempt, not per poll)
+      `role="status"` ≡ aria-live="polite"; `role="alert"` ≡
+      aria-live="assertive". Hard failures route through the alert
+      region so the user is interrupted; routine progress uses the
+      polite region.
+    -->
+    <div class="sr-only" data-funding-poll-announce role="status" aria-live="polite" aria-atomic="true"></div>
+    <div class="sr-only" data-funding-poll-alert role="alert" aria-atomic="true"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

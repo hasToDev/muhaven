@@ -66,6 +66,23 @@ let fundingPoller: FundingPoller | null = null;
  *  mid-session, but the guard keeps the design forward-compatible
  *  with P3's wrap+approve+buy retry logic). */
 let fundingPollerKey: string | null = null;
+/**
+ * Wave 5 buyer-side port (P2 a11y): last poll-status state announced
+ * to the screen-reader live region. The visible status element
+ * updates every 5 s (balance ticks), but we only push to the
+ * `role="status"` / `role="alert"` regions on STATE TRANSITIONS to
+ * avoid the every-5s announce spam (WCAG 4.1.3 anti-pattern). The
+ * dedupe key includes a per-state nonce for the retry case (so each
+ * `attempt 2 of 3 → attempt 3 of 3` transition is announced), which
+ * is why the cache is typed `string` rather than the narrower
+ * PollAnnounceState union.
+ */
+type PollAnnounceState = 'idle' | 'waiting' | 'crossed' | 'funded' | 'retry' | 'error';
+let lastAnnouncedPollState: string = 'idle';
+/** Tracks the last status delivered by the SSE channel so we can
+ *  detect transitions (pending → funded → wrapped → …) and move
+ *  focus to the new step heading exactly once per transition. */
+let lastSseStatus: string | null = null;
 
 bootstrap().catch((err) => {
   console.error('checkout bootstrap failed', err);
@@ -300,17 +317,33 @@ function ensureFundingPollerStarted(state: PageState): void {
     return;
   }
   const buyer = state.buyerAddress;
+  // Parse + validate the required amount. `BigInt('-1000000')` succeeds
+  // (yielding a negative bigint), which would make `balance >= required`
+  // trivially true and auto-fire onFunded against any balance — a
+  // malicious issuer payload could weaponise this. `BigInt('0xFF')` and
+  // `BigInt(' 100 ')` also succeed and would mismatch the cache key.
+  // Pre-validate against a strict decimal-digit regex and reject
+  // negatives + impossible-magnitude values (USDC is 6-decimal uint64
+  // in practice; we use the uint64 max as a sane upper bound).
   const required = (() => {
+    const raw = state.payload.amountUsd6;
+    if (!/^[0-9]+$/.test(raw)) return null;
     try {
-      return BigInt(state.payload.amountUsd6);
+      const v = BigInt(raw);
+      if (v < 0n) return null;
+      if (v > 18_446_744_073_709_551_615n) return null;
+      return v;
     } catch {
       return null;
     }
   })();
   if (required === null) {
     console.error(
-      'checkout: amountUsd6 not a parseable bigint',
+      'checkout: amountUsd6 missing or not a non-negative decimal integer',
       state.payload.amountUsd6,
+    );
+    setPollStatusError(
+      'This checkout link has an invalid amount. Ask the issuer for a fresh link.',
     );
     return;
   }
@@ -332,8 +365,13 @@ function ensureFundingPollerStarted(state: PageState): void {
       await commitFundedTransition(state, buyer);
     },
     onError: (err) => {
-      // Transient RPC blips — log only. The next interval will retry.
-      console.warn('USDC balance poll failed (will retry)', err);
+      // Transient RPC blips — log a sanitised shape only. Viem errors
+      // embed the request body (kernel address + USDC contract +
+      // RPC URL) in `message`; surfacing them verbatim writes the
+      // buyer's address to the browser console history. Strip 0x-
+      // addresses before logging so a shared-device replay doesn't
+      // surface them. The next interval will retry the read.
+      console.warn('USDC balance poll failed (will retry)', summariseError(err));
     },
   });
   fundingPollerKey = key;
@@ -344,6 +382,14 @@ function stopFundingPoller(): void {
   fundingPoller?.stop();
   fundingPoller = null;
   fundingPollerKey = null;
+  // Reset announce dedupe AND the SSE-status memory so a future
+  // re-entry (e.g. an in-page session-switch by a future Wave-5
+  // "Cancel and try a different link" affordance) gets a clean
+  // "waiting" announcement + a correct "first snapshot, don't auto-
+  // focus" guard. `lastSseStatus = null` matches the dedupe-reset
+  // hygiene already here.
+  resetPollAnnounceState();
+  lastSseStatus = null;
 }
 
 function updatePollStatus(balance: bigint, required: bigint): void {
@@ -359,9 +405,16 @@ function updatePollStatus(balance: bigint, required: bigint): void {
   if (balance >= required) {
     el.textContent = `Current balance: ${formatted} USDC — confirming with the backend…`;
     el.dataset.pollState = 'funded';
+    // The threshold-crossed state is a meaningful transition — announce
+    // once. Subsequent ticks observing the same state are silent.
+    announceStateTransition('crossed', 'Deposit detected. Confirming with the backend.');
   } else {
     el.textContent = `Current balance: ${formatted} USDC — waiting for ≥ ${requiredFormatted}`;
     el.dataset.pollState = 'waiting';
+    // First time the page enters the waiting state — announce. Subsequent
+    // balance ticks (still waiting, just bigger / smaller balance) do
+    // NOT re-announce; the visible text updates silently.
+    announceStateTransition('waiting', `Waiting for at least ${requiredFormatted} USDC at your account address.`);
   }
 }
 
@@ -370,6 +423,7 @@ function markPollStatusFunded(): void {
   if (!el) return;
   el.textContent = 'Funded — preparing the next step…';
   el.dataset.pollState = 'funded';
+  announceStateTransition('funded', 'Funded. Preparing the next step.');
 }
 
 function setPollStatusError(message: string): void {
@@ -377,6 +431,9 @@ function setPollStatusError(message: string): void {
   if (!el) return;
   el.textContent = message;
   el.dataset.pollState = 'error';
+  // Terminal failure routes through the assertive `role="alert"`
+  // region so screen-reader users are interrupted (WCAG 3.3.1).
+  announceAlert(message);
 }
 
 /**
@@ -403,6 +460,11 @@ async function commitFundedTransition(
   buyer: Address,
 ): Promise<void> {
   const delays = [0, 1500, 4000] as const;
+  // 408 Request Timeout / 425 Too Early / 429 Too Many Requests are
+  // transient client-status responses where retrying makes sense.
+  // Other 4xx codes (400 / 401 / 403 / 404 / 405 / 410 / 422 …) mean
+  // retrying won't help — bail and surface immediately.
+  const TRANSIENT_CLIENT_STATUSES = new Set([408, 425, 429]);
   for (let attempt = 0; attempt < delays.length; attempt += 1) {
     const delay = delays[attempt] ?? 0;
     if (delay > 0) {
@@ -426,20 +488,30 @@ async function commitFundedTransition(
         return;
       }
       const deterministicClientError =
-        err instanceof BackendError && err.status >= 400 && err.status < 500;
+        err instanceof BackendError &&
+        err.status >= 400 &&
+        err.status < 500 &&
+        !TRANSIENT_CLIENT_STATUSES.has(err.status);
       const lastAttempt = attempt === delays.length - 1;
       if (deterministicClientError || lastAttempt) {
-        console.error('checkout transition(funded) failed', err);
+        console.error(
+          'checkout transition(funded) failed',
+          summariseError(err),
+        );
+        // User-facing message: drop the raw error tail to avoid
+        // surfacing the kernel address in any UI that copy-pastes
+        // text content (e.g. screen-reader speech logs, support
+        // tickets). The console log carries the redacted detail.
+        const status =
+          err instanceof BackendError ? ` (HTTP ${err.status})` : '';
         setPollStatusError(
-          `Couldn't confirm your deposit with the backend (${
-            err instanceof Error ? err.message : String(err)
-          }). Refresh to retry — your funds are safe in your kernel address above.`,
+          `Couldn't confirm your deposit with the backend${status}. Refresh to retry — your funds are safe in your kernel address above.`,
         );
         return;
       }
       console.warn(
         `transition(funded) attempt ${attempt + 1} failed — retrying`,
-        err,
+        summariseError(err),
       );
     }
   }
@@ -448,8 +520,120 @@ async function commitFundedTransition(
 function setPollStatusRetrying(attempt: number, total: number): void {
   const el = document.querySelector<HTMLElement>('[data-funding-poll-status]');
   if (!el) return;
-  el.textContent = `Confirming with the backend… (retry ${attempt}/${total})`;
-  el.dataset.pollState = 'funded';
+  // "(attempt 2 of 3)" instead of "(retry 2/3)" — the slash reads as
+  // "slash" in NVDA / VoiceOver and the word "retry" doesn't help
+  // here; "attempt N of M" is the natural phrasing for both visual
+  // and screen-reader users. Distinct `data-poll-state='confirming'`
+  // so the operator-side CSS can distinguish "amber because funded,
+  // idle" from "still trying, RPC came back slow."
+  el.textContent = `Confirming with the backend… (attempt ${attempt} of ${total})`;
+  el.dataset.pollState = 'confirming';
+  // Re-announce on each retry so SR users hear progress, but only
+  // when the attempt count actually changes (announceStateTransition
+  // de-dupes on the `state` key, so a per-attempt key is required).
+  // We use the same `retry` state key and let the message carry the
+  // attempt number — this means a 1→2 transition announces once,
+  // 2→3 announces once, and a stuck attempt does NOT spam.
+  announceStateTransition('retry', `Confirming, attempt ${attempt} of ${total}.`, attempt);
+}
+
+/**
+ * Push a transition message to the polite `role="status"` sr-only
+ * region IF the state actually changed (or a per-state nonce
+ * advanced). Subsequent calls with the same state + nonce are
+ * suppressed so screen readers don't re-announce the same condition
+ * on every poll. The visible status element keeps updating
+ * regardless — this only gates announcements.
+ */
+function announceStateTransition(
+  state: PollAnnounceState,
+  message: string,
+  nonce?: number,
+): void {
+  const compositeKey = nonce !== undefined ? `${state}:${nonce}` : state;
+  if (lastAnnouncedPollState === compositeKey) return;
+  lastAnnouncedPollState = compositeKey;
+  const el = document.querySelector<HTMLElement>('[data-funding-poll-announce]');
+  if (!el) return;
+  el.textContent = message;
+}
+
+/** Push a hard-failure message to the assertive `role="alert"`
+ *  region. Interrupts the screen reader immediately (vs the polite
+ *  channel which queues). Use ONLY for terminal failures.
+ */
+function announceAlert(message: string): void {
+  const el = document.querySelector<HTMLElement>('[data-funding-poll-alert]');
+  if (!el) return;
+  el.textContent = message;
+}
+
+function resetPollAnnounceState(): void {
+  lastAnnouncedPollState = 'idle';
+  const announce = document.querySelector<HTMLElement>('[data-funding-poll-announce]');
+  if (announce) announce.textContent = '';
+  const alertEl = document.querySelector<HTMLElement>('[data-funding-poll-alert]');
+  if (alertEl) alertEl.textContent = '';
+}
+
+/**
+ * Sanitise a viem / fetch error for safe `console.warn` / `console.error`
+ * logging on a shared-device tab. Viem errors embed the request body
+ * (kernel address + contract address + RPC URL) in `message`,
+ * `shortMessage`, and `metaMessages`. Strip any 0x-hex addresses (40
+ * nibbles) before logging so a shared-device replay doesn't surface
+ * them in DevTools history. The error name + a redacted message are
+ * sufficient for diagnostics.
+ */
+interface ErrorSummary {
+  name: string;
+  message: string;
+  shortMessage?: string;
+  metaMessages?: string[];
+  details?: string;
+  status?: number;
+}
+
+function summariseError(err: unknown): ErrorSummary {
+  if (err instanceof BackendError) {
+    return {
+      name: 'BackendError',
+      status: err.status,
+      message: redactAddresses(err.message),
+    };
+  }
+  if (err instanceof Error) {
+    const out: ErrorSummary = {
+      name: err.name,
+      message: redactAddresses(err.message),
+    };
+    // viem `BaseError` extension fields. Each may embed the kernel
+    // address (in the request args / contract address), so redact
+    // before surfacing. `metaMessages` is an array of human-readable
+    // strings appended by the viem stack walker.
+    const e = err as {
+      shortMessage?: unknown;
+      metaMessages?: unknown;
+      details?: unknown;
+    };
+    if (typeof e.shortMessage === 'string') {
+      out.shortMessage = redactAddresses(e.shortMessage);
+    }
+    if (Array.isArray(e.metaMessages)) {
+      out.metaMessages = e.metaMessages
+        .filter((m): m is string => typeof m === 'string')
+        .map(redactAddresses);
+    }
+    if (typeof e.details === 'string') {
+      out.details = redactAddresses(e.details);
+    }
+    return out;
+  }
+  return { name: 'unknown', message: redactAddresses(String(err)) };
+}
+
+function redactAddresses(s: string): string {
+  return s.replace(/0x[a-fA-F0-9]{40}/g, '0x…REDACTED');
 }
 
 async function onConfirmBuy(state: PageState): Promise<void> {
@@ -473,6 +657,7 @@ async function onConfirmBuy(state: PageState): Promise<void> {
 function subscribeToEvents(state: PageState): void {
   const source = backend.openEventStream(state.session.sessionId);
   const onUpdate = (status: string, data: { buyerAddress?: string | null; purchaseTxHash?: string | null } = {}) => {
+    const prevStatus = lastSseStatus;
     state.session = { ...state.session, status, ...data } as CheckoutSessionDto;
     if (data.buyerAddress) state.buyerAddress = data.buyerAddress;
     updateStatusPill(status);
@@ -485,6 +670,17 @@ function subscribeToEvents(state: PageState): void {
     if (status !== 'pending') {
       stopFundingPoller();
     }
+    // Wave 5 buyer-side port (P2 a11y): move focus to the newly-
+    // revealed step heading on the FIRST observation of a status
+    // transition. The h2 carries `tabindex="-1"` in index.html. Focus
+    // moves announce the heading text via the SR's focus-change hook,
+    // and give keyboard users a sensible next-tab anchor (the step's
+    // primary CTA). Skip on the initial snapshot event (prevStatus
+    // is null on first delivery) so we don't auto-focus on page load.
+    if (prevStatus !== null && prevStatus !== status) {
+      moveFocusToStep(status);
+    }
+    lastSseStatus = status;
     if (status === 'settled' || status === 'expired' || status === 'failed') {
       source.close();
     }
@@ -519,6 +715,37 @@ function subscribeToEvents(state: PageState): void {
     // EventSource auto-reconnects per the `retry:` line; we just log.
     console.warn('SSE connection blip — reconnecting');
   });
+}
+
+/**
+ * Wave 5 buyer-side port (P2 a11y): move focus to the newly-revealed
+ * step heading so screen-reader users hear the level + text on the
+ * focus-change hook, and keyboard users get a sensible next-tab
+ * anchor. Each step's `<h2>` carries `tabindex="-1"` so it can
+ * receive programmatic focus without disrupting the natural tab
+ * order. Skips terminal states (settled/expired/failed) where the
+ * step already has the primary CTA in focus order.
+ */
+function moveFocusToStep(status: string): void {
+  const stepId = STEPS_BY_STATUS[status];
+  if (!stepId) return;
+  const stepEl = document.getElementById(stepId);
+  if (!stepEl || stepEl.hidden) return;
+  const heading = stepEl.querySelector<HTMLElement>('h2');
+  if (!heading) return;
+  // Defer to the next frame so the step's `[hidden]` removal (which
+  // happens synchronously in showStepForStatus) has been committed
+  // before focus moves — some browsers refuse to focus an element
+  // that was still hidden in the same tick. jsdom + fake timers
+  // don't run rAF on the timer mock; fall back to setTimeout(0) so
+  // a future vitest test that exercises this path doesn't silently
+  // miss the focus call.
+  const schedule =
+    typeof requestAnimationFrame === 'function'
+      ? requestAnimationFrame
+      : (cb: FrameRequestCallback) =>
+          window.setTimeout(() => cb(performance.now()), 0);
+  schedule(() => heading.focus({ preventScroll: false }));
 }
 
 function truncateAddress(addr: string): string {

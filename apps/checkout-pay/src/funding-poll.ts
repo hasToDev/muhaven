@@ -27,9 +27,13 @@
  *  - **Errors don't crash.** RPC failures surface via `onError`; the
  *    interval continues. A faucet drop that arrives between two failed
  *    polls still triggers `onFunded` on the next successful read.
- *  - **Re-entrancy safe.** `stop()` mid-flight cancels — if the
- *    in-flight RPC returns after `stop()`, the post-await `stopped`
- *    check makes the result a no-op.
+ *  - **Re-entrancy safe.** `stop()` mid-flight cancels. Every `start()`
+ *    and `stop()` rolls a `runEpoch` token. Each tick captures the
+ *    epoch at entry and re-checks after every await — a stale
+ *    resolution (success OR error) from a prior epoch is suppressed
+ *    against the current run's callbacks. The `inFlight` slot is
+ *    always cleared on resolution regardless of epoch so a new run
+ *    can make progress after the prior run's RPC eventually settles.
  */
 
 import { erc20Abi, type Address, type PublicClient } from 'viem';
@@ -162,21 +166,26 @@ export class FundingPoller {
         args: [this.buyerAddress],
       })) as bigint;
     } catch (err) {
-      // Only the run that issued this RPC owns its inFlight slot.
-      if (epoch === this.runEpoch) this.inFlight = false;
+      // Always clear inFlight regardless of epoch — a NEW run can't
+      // have re-set it in the meantime because its tick() short-
+      // circuits on `this.inFlight` (i.e., this tick still owned the
+      // slot until now). Without this unconditional clear, a slow
+      // prior-epoch RPC that resolves after stop()+start() would
+      // leave inFlight stuck true → the new run's ticks would
+      // permanently short-circuit.
+      this.inFlight = false;
       if (epoch !== this.runEpoch) return null;
-      if (this.stopped) return null;
       this.callbacks.onError?.(err);
       return null;
     }
-    if (epoch === this.runEpoch) this.inFlight = false;
+    this.inFlight = false;
 
-    // Re-check stopped/fired/epoch AFTER the await — a stop() that
-    // races a slow RPC must not trigger onPoll / onFunded with stale
-    // data, AND a stop()+start() (epoch rolled) must not leak the
-    // prior run's balance into the new run's callbacks.
+    // Re-check epoch/fired AFTER the await — a stop() or stop()+start()
+    // that races a slow RPC must not trigger onPoll / onFunded with
+    // stale data, and a prior tick within the same run may have
+    // already fired onFunded.
     if (epoch !== this.runEpoch) return balance;
-    if (this.stopped || this.fired) return balance;
+    if (this.fired) return balance;
 
     this.callbacks.onPoll?.(balance);
 

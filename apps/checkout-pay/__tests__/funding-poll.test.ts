@@ -346,4 +346,100 @@ describe('FundingPoller', () => {
     expect(publicClient.readContract).toHaveBeenCalledTimes(3);
     poller.stop();
   });
+
+  it('a NEW run can make progress after a slow PRIOR-epoch RPC resolves (inFlight cleared)', async () => {
+    // Self-review (post-62dbdcc) regression: prior to the unconditional
+    // inFlight=false clear in tick()'s post-await branch, the inFlight
+    // slot stayed STUCK true after a slow prior-epoch RPC resolved,
+    // because the conditional clear (`if epoch === runEpoch`) refused
+    // to touch the slot when the epoch had rolled. The new run's
+    // ticks would forever short-circuit on the inFlight guard,
+    // permanently wedging the page. This test pins the fix: after
+    // the prior epoch's RPC settles, the new run's NEXT setInterval
+    // tick must actually call readContract.
+    let resolveFirstRun!: (v: bigint) => void;
+    const slowFirstRun = new Promise<bigint>((r) => {
+      resolveFirstRun = r;
+    });
+    const publicClient = {
+      readContract: vi
+        .fn()
+        .mockReturnValueOnce(slowFirstRun)
+        .mockResolvedValue(0n),
+    };
+    const onPoll = vi.fn();
+    const poller = new FundingPoller({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      publicClient: publicClient as any,
+      usdcAddress: USDC,
+      pollIntervalMs: 5_000,
+      onFunded: vi.fn(),
+      onPoll,
+    });
+    poller.start(BUYER, 1_000_000n);
+    // First run's tick is mid-flight against `slowFirstRun`.
+    poller.stop();
+    poller.start(BUYER, 1_000_000n);
+    // The new run's immediate-first tick short-circuits because
+    // inFlight is still true from the prior run's tick.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(publicClient.readContract).toHaveBeenCalledTimes(1);
+    // Resolve the prior run's RPC. With the fix, this unconditionally
+    // clears inFlight, so the next interval-driven tick of the new
+    // run will succeed. Without the fix, the new run's ticks stay
+    // permanently short-circuited.
+    resolveFirstRun(10_000_000n);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onPoll).not.toHaveBeenCalledWith(10_000_000n);
+    // Advance one interval — the new run's next tick must fire.
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(publicClient.readContract).toHaveBeenCalledTimes(2);
+    expect(onPoll).toHaveBeenCalledWith(0n);
+    poller.stop();
+  });
+
+  it('a rejection from a prior epoch does not fire onError on the new run', async () => {
+    // Mirror of the success-leak case but for the error path. Same
+    // failure mode reasoning: without the epoch token + unconditional
+    // inFlight clear, a prior-epoch RPC rejection would either fire
+    // onError against the new run's callbacks OR leave inFlight stuck
+    // depending on the code path order. This test pins both halves.
+    let rejectFirstRun!: (err: Error) => void;
+    const slowFirstRun = new Promise<bigint>((_resolve, reject) => {
+      rejectFirstRun = reject;
+    });
+    const publicClient = {
+      readContract: vi
+        .fn()
+        .mockReturnValueOnce(slowFirstRun)
+        .mockResolvedValue(0n),
+    };
+    const onError = vi.fn();
+    const onPoll = vi.fn();
+    const poller = new FundingPoller({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      publicClient: publicClient as any,
+      usdcAddress: USDC,
+      pollIntervalMs: 5_000,
+      onFunded: vi.fn(),
+      onError,
+      onPoll,
+    });
+    poller.start(BUYER, 1_000_000n);
+    poller.stop();
+    poller.start(BUYER, 1_000_000n);
+    await vi.advanceTimersByTimeAsync(0);
+    rejectFirstRun(new Error('prior-epoch rpc timeout'));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onError).not.toHaveBeenCalled();
+    // The new run can still make progress: the prior epoch's RPC
+    // rejection cleared inFlight (unconditionally), so the next
+    // interval tick succeeds.
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(publicClient.readContract).toHaveBeenCalledTimes(2);
+    expect(onPoll).toHaveBeenCalledWith(0n);
+    poller.stop();
+  });
 });

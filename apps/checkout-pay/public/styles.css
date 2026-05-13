@@ -332,3 +332,20 @@ main {
   background: rgba(240, 138, 138, 0.06);
   border-color: rgba(240, 138, 138, 0.32);
 }
+
+/* Visually hide content while keeping it available to assistive tech.
+ * Used by Wave 5 P2 sr-only live regions (`role="status"` /
+ * `role="alert"`) so screen-reader users get discrete state-transition
+ * announcements without seeing duplicate text on screen.
+ */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
