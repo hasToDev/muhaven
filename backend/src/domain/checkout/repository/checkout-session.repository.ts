@@ -82,6 +82,16 @@ export interface IssuerSessionDailyBucket {
 export interface ICheckoutSessionRepository {
   issue(input: IssueCheckoutSessionInput): Promise<void>;
   findById(sessionId: string): Promise<CheckoutSession | null>;
+  /**
+   * Lookup a session by its on-chain purchase tx hash. Used by the
+   * Wave 5 P4 `CheckoutSettlementIndexer` to find the session that
+   * a `MuHavenSubscription.Purchased` log corresponds to, so the
+   * `purchased → settled` transition can fire. Returns null if no
+   * session has this hash recorded (common — the indexer sees
+   * Purchased events from non-checkout flows too, e.g. dashboard
+   * direct purchases).
+   */
+  findByPurchaseTxHash(txHash: string): Promise<CheckoutSession | null>;
   /** Atomic status flip — returns the new row on success, null on a stale guard. */
   transition(input: TransitionCheckoutSessionInput): Promise<CheckoutSession | null>;
   /** Sweep `pending` rows past `expiresAt` to status=`expired`. Returns count. */

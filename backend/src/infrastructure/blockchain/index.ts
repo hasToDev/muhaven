@@ -4,6 +4,11 @@ export { NavWriterCron, type NavCronConfig, type NavCronTickResult } from './nav
 export { TaxEventIndexer, type TaxEventIndexerConfig } from './tax-event-indexer.js';
 export { TokenRegistryHandler } from './token-registry-handler.js';
 export {
+  CheckoutSettlementIndexer,
+  type CheckoutSettlementIndexerConfig,
+  type CheckoutSettlementIndexerStatus,
+} from './checkout-settlement-indexer.js';
+export {
   subscriptionTaxAbi,
   redemptionQueueTaxAbi,
   yieldSnapshotTaxAbi,

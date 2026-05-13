@@ -92,6 +92,17 @@ const EnvSchema = z.object({
   TAX_EVENT_POLLER_ENABLED: z.coerce.boolean().default(false),
   TAX_EVENT_POLLER_INTERVAL_MS: z.coerce.number().default(15_000),
   SUBSCRIPTION_ADDRESS: z.string().optional(),
+
+  // Wave 5 P4 — `CheckoutSettlementIndexer`. Watches
+  // `MuHavenSubscription.Purchased` events on the Subscription proxy
+  // and flips matching checkout sessions to `settled` so the buyer
+  // page's `/checkout/<id>` view + the issuer dashboard both reflect
+  // on-chain settlement automatically. Reuses `SUBSCRIPTION_ADDRESS`
+  // + `RPC_URL` above. Disabled by default — operator enables once
+  // the buyer-page P3 ceremony is producing real Subscription.purchase
+  // txes (otherwise the indexer polls for nothing and burns RPC).
+  CHECKOUT_SETTLEMENT_POLLER_ENABLED: z.coerce.boolean().default(false),
+  CHECKOUT_SETTLEMENT_POLLER_INTERVAL_MS: z.coerce.number().default(8_000),
   // RedemptionQueue + YieldSnapshot deployments are per-token. The indexer
   // watches all addresses in these JSON arrays. Empty = disable that path.
   REDEMPTION_QUEUE_ADDRESSES_JSON: z.string().optional(),

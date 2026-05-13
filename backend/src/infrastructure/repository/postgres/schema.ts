@@ -793,6 +793,11 @@ export const checkoutSessions = pgTable(
     ),
     index('checkout_sessions_status_idx').on(t.status),
     index('checkout_sessions_expires_idx').on(t.expiresAt),
+    // Wave 5 P4 — `CheckoutSettlementIndexer` looks up sessions by
+    // `purchase_tx_hash` on every `MuHavenSubscription.Purchased` event.
+    // Partial index: only rows with a non-null hash, which is the small
+    // subset (`status IN ('purchased', 'settled')`).
+    index('checkout_sessions_purchase_tx_idx').on(t.purchaseTxHash),
   ],
 );
 

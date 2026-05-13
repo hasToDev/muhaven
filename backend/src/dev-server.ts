@@ -4,7 +4,13 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { getHealthStatus } from './infrastructure/health.js';
 import { getEnv } from './core/config.js';
-import { BlockchainEventPoller, NavWriterCron, TaxEventIndexer } from './infrastructure/blockchain/index.js';
+import {
+  BlockchainEventPoller,
+  CheckoutSettlementIndexer,
+  NavWriterCron,
+  TaxEventIndexer,
+} from './infrastructure/blockchain/index.js';
+import { SettleFromEventUseCase } from './application/use-case/checkout/settle-from-event.use-case.js';
 import { TokenRegistryHandler } from './infrastructure/blockchain/token-registry-handler.js';
 import { ProcessEscrowEventUseCase } from './application/use-case/webhook/process-escrow-event.use-case.js';
 import { container } from './infrastructure/container.js';
@@ -363,6 +369,41 @@ async function main() {
         backgroundShutdown.push(() => indexer.stop());
         console.log(`[tax-events] Started (interval: ${env.TAX_EVENT_POLLER_INTERVAL_MS}ms)`);
       }
+    }
+  }
+
+  // Wave 5 P4 — checkout settlement indexer. Watches
+  // `MuHavenSubscription.Purchased` events and flips matching
+  // checkout sessions from `purchased → settled` so the buyer page
+  // + issuer dashboard reflect on-chain settlement automatically.
+  // Independent of every other indexer toggle.
+  if (env.CHECKOUT_SETTLEMENT_POLLER_ENABLED) {
+    if (!env.RPC_URL) {
+      console.warn('[checkout-settlement] enabled but RPC_URL missing — skipping');
+    } else if (!env.SUBSCRIPTION_ADDRESS) {
+      console.warn(
+        '[checkout-settlement] enabled but SUBSCRIPTION_ADDRESS missing — skipping',
+      );
+    } else {
+      const settleUseCase = new SettleFromEventUseCase(
+        container.checkoutSessionRepo,
+        container.checkoutSseChannel,
+        container.webhookDispatcher,
+      );
+      const indexer = new CheckoutSettlementIndexer(
+        container.checkoutSessionRepo,
+        settleUseCase,
+        {
+          rpcUrl: env.RPC_URL,
+          subscriptionAddress: env.SUBSCRIPTION_ADDRESS as Address,
+          intervalMs: env.CHECKOUT_SETTLEMENT_POLLER_INTERVAL_MS,
+        },
+      );
+      indexer.start(env.CHECKOUT_SETTLEMENT_POLLER_INTERVAL_MS);
+      backgroundShutdown.push(() => indexer.stop());
+      console.log(
+        `[checkout-settlement] Started (interval: ${env.CHECKOUT_SETTLEMENT_POLLER_INTERVAL_MS}ms, subscription: ${env.SUBSCRIPTION_ADDRESS})`,
+      );
     }
   }
 

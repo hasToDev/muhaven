@@ -49,6 +49,22 @@ export class PgCheckoutSessionRepository implements ICheckoutSessionRepository {
     return row ? this.toDomain(row) : null;
   }
 
+  async findByPurchaseTxHash(txHash: string): Promise<CheckoutSession | null> {
+    // Wave 5 P4 — `CheckoutSettlementIndexer` calls this for every
+    // `MuHavenSubscription.Purchased` event. Most events are non-
+    // checkout (dashboard direct purchases also emit this event), so
+    // null returns are the common case; the indexer treats null as
+    // "skip, not our session." Use `lower()` on both sides per the
+    // address-case repo-boundary rule even though tx hashes are
+    // case-stable in practice (defensive against any future caller
+    // that normalises differently).
+    const normalised = txHash.toLowerCase();
+    const row = await this.db.query.checkoutSessions.findFirst({
+      where: sql`LOWER(${checkoutSessions.purchaseTxHash}) = ${normalised}`,
+    });
+    return row ? this.toDomain(row) : null;
+  }
+
   async transition(
     input: TransitionCheckoutSessionInput,
   ): Promise<CheckoutSession | null> {

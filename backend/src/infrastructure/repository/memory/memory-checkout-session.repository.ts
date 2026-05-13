@@ -27,6 +27,19 @@ export class MemoryCheckoutSessionRepository implements ICheckoutSessionReposito
     return this.store.get(sessionId) ?? null;
   }
 
+  async findByPurchaseTxHash(txHash: string): Promise<CheckoutSession | null> {
+    const normalised = txHash.toLowerCase();
+    for (const session of this.store.values()) {
+      if (
+        session.purchaseTxHash &&
+        session.purchaseTxHash.toLowerCase() === normalised
+      ) {
+        return session;
+      }
+    }
+    return null;
+  }
+
   async transition(
     input: TransitionCheckoutSessionInput,
   ): Promise<CheckoutSession | null> {
