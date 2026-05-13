@@ -70,6 +70,15 @@ const issuerNav = [
 
 const navItems = computed(() => store.role === 'investor' ? investorNav : issuerNav)
 
+/**
+ * Third-pass review (Frontend M8): prefix-match active state so nav items
+ * with sub-routes (`/checkout/:sessionId`, `/checkout/webhooks`) keep
+ * their pill highlighted. Mirror of Sidebar.isNavActive.
+ */
+function isNavActive(path: string): boolean {
+  return route.path === path || route.path.startsWith(path + '/')
+}
+
 const displayAddress = computed(() => formatAddress(authStore.walletAddress))
 
 /**
@@ -187,7 +196,7 @@ onBeforeUnmount(() => {
           :to="item.path"
           :class="cn(
             'flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-sans transition-colors duration-200',
-            route.path === item.path
+            isNavActive(item.path)
               ? 'bg-gold/12 dark:bg-signal/8 ring-1 ring-gold/35 dark:ring-signal/30 text-compute dark:text-signal font-semibold'
               : 'text-cool font-medium hover:bg-mist dark:hover:bg-midnight-mid hover:text-midnight dark:hover:text-white',
           )"
@@ -196,7 +205,7 @@ onBeforeUnmount(() => {
             :is="item.icon"
             :size="16"
             :stroke-width="1.8"
-            :class="route.path === item.path ? 'text-compute dark:text-signal' : ''"
+            :class="isNavActive(item.path) ? 'text-compute dark:text-signal' : ''"
           />
           <span>{{ item.label }}</span>
         </router-link>

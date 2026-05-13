@@ -781,6 +781,16 @@ export const checkoutSessions = pgTable(
   },
   (t) => [
     index('checkout_sessions_issuer_created_idx').on(t.issuerUserId, t.createdAt),
+    // Third-pass review (Arch H-1): composite index for the §5 Path D
+    // dashboard list page's `findByIssuerUserId({status, cursor})` access
+    // pattern. Without it, a high-selectivity status filter (e.g. `failed`
+    // ~1%) at 10K sessions/issuer scans up to 10K rows to return one page.
+    // Drizzle declarative push (`pnpm db:push`) handles the ALTER cleanly.
+    index('checkout_sessions_issuer_status_created_idx').on(
+      t.issuerUserId,
+      t.status,
+      t.createdAt,
+    ),
     index('checkout_sessions_status_idx').on(t.status),
     index('checkout_sessions_expires_idx').on(t.expiresAt),
   ],

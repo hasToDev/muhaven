@@ -259,15 +259,32 @@ function close() {
                 </label>
 
                 <label class="block">
-                  <span class="font-label text-[11px] tracking-[0.14em] uppercase text-cool font-semibold">Memo <span class="font-sans normal-case tracking-normal text-cool/60 ml-1">(optional, ≤280 chars)</span></span>
+                  <span class="font-label text-[11px] tracking-[0.14em] uppercase text-cool font-semibold">Memo <span class="font-sans normal-case tracking-normal text-cool/60 ml-1">(optional)</span></span>
                   <textarea
                     v-model="memo"
                     rows="2"
                     maxlength="280"
                     placeholder="What is this payment for?"
                     data-testid="checkout-link-memo"
+                    aria-describedby="memo-counter"
                     class="mt-1.5 w-full bg-white dark:bg-midnight px-3 py-2.5 rounded-md ring-1 ring-haze dark:ring-white/12 text-sm font-sans text-midnight dark:text-white focus:outline-none focus:ring-2 focus:ring-gold/60"
                   />
+                  <!-- Third-pass review (Frontend M1): inline character
+                       counter so the user discovers the cap before
+                       hitting it. Approaching cap (≥80%) tints amber;
+                       at cap turns negative. -->
+                  <span
+                    id="memo-counter"
+                    aria-live="polite"
+                    :class="[
+                      'mt-1 block text-[11px] tabular-nums text-right',
+                      memo.length >= 280
+                        ? 'text-negative'
+                        : memo.length >= 224
+                          ? 'text-gold'
+                          : 'text-cool/70',
+                    ]"
+                  >{{ memo.length }} / 280</span>
                 </label>
 
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -276,18 +293,25 @@ function close() {
                     <input
                       v-model="successUrl"
                       type="url"
+                      pattern="https://.+"
                       placeholder="https://issuer.example/thanks"
                       class="mt-1.5 w-full bg-white dark:bg-midnight px-3 py-2 rounded-md ring-1 ring-haze dark:ring-white/12 text-xs font-mono text-midnight dark:text-white focus:outline-none focus:ring-2 focus:ring-gold/60"
                     />
+                    <!-- Third-pass review (Frontend M2): explicit https-
+                         only hint so an http://example.com paste doesn't
+                         bounce off the backend's 400 with no context. -->
+                    <span class="mt-1 block text-[11px] text-cool/70">Public HTTPS only.</span>
                   </label>
                   <label class="block">
                     <span class="font-label text-[11px] tracking-[0.14em] uppercase text-cool font-semibold">Cancel URL <span class="font-sans normal-case tracking-normal text-cool/60">(optional)</span></span>
                     <input
                       v-model="cancelUrl"
                       type="url"
+                      pattern="https://.+"
                       placeholder="https://issuer.example/cancel"
                       class="mt-1.5 w-full bg-white dark:bg-midnight px-3 py-2 rounded-md ring-1 ring-haze dark:ring-white/12 text-xs font-mono text-midnight dark:text-white focus:outline-none focus:ring-2 focus:ring-gold/60"
                     />
+                    <span class="mt-1 block text-[11px] text-cool/70">Public HTTPS only.</span>
                   </label>
                 </div>
 

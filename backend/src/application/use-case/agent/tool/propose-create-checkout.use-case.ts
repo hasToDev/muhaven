@@ -78,7 +78,12 @@ export class ProposeCreateCheckoutToolUseCase {
     const tokenAddress = input.tokenAddress.toLowerCase();
     const token = await this.rwaTokenRepo.findByAddress(tokenAddress);
     if (!token) {
-      throw ApplicationHttpError.notFound(`Token not registered: ${input.tokenAddress}`);
+      // Third-pass review (Arch L-4): 409 Conflict mirrors the commit-side
+      // posture for the same "no longer registered" condition. Before, the
+      // propose side returned 404 and commit returned 409 for identical
+      // lifecycle drift — API-consumer DX wart that surfaces on every
+      // retry-after-propose flow in ClawHub / MCP clients.
+      throw ApplicationHttpError.conflict(`Token not registered: ${input.tokenAddress}`);
     }
     if (token.status !== 'active') {
       throw ApplicationHttpError.conflict(

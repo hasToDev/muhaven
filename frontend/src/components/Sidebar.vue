@@ -87,6 +87,17 @@ const issuerNav = [
 
 const navItems = computed(() => store.role === 'investor' ? investorNav : issuerNav)
 
+/**
+ * Third-pass review (Frontend M8): nav items with sub-routes need a
+ * prefix-match active state so `/checkout/:sessionId` and
+ * `/checkout/webhooks` keep the "Checkout" pill highlighted. Pre-fix
+ * the exact `route.path === item.path` lost orientation on detail pages.
+ * Safe because no item.path is `/`; all are concrete prefixes.
+ */
+function isNavActive(path: string): boolean {
+  return route.path === path || route.path.startsWith(path + '/')
+}
+
 const displayAddress = computed(() => formatAddress(authStore.walletAddress))
 
 const connectionStatus = computed(() => {
@@ -220,7 +231,7 @@ onBeforeUnmount(() => {
         :data-testid="`sidebar-nav-${item.label.toLowerCase()}`"
         :class="cn(
           'flex items-center gap-3 py-2.5 px-4 text-sm font-sans rounded-lg transition-colors duration-200 group',
-          route.path === item.path
+          isNavActive(item.path)
             ? 'bg-gold/12 dark:bg-signal/8 ring-1 ring-gold/35 dark:ring-signal/30 text-compute dark:text-signal font-semibold'
             : 'text-cool hover:text-midnight dark:hover:text-white hover:bg-mist/70 dark:hover:bg-white/5 font-medium',
         )"
@@ -228,8 +239,8 @@ onBeforeUnmount(() => {
         <component
           :is="item.icon"
           :size="18"
-          :stroke-width="route.path === item.path ? 2.2 : 1.7"
-          :class="route.path === item.path
+          :stroke-width="isNavActive(item.path) ? 2.2 : 1.7"
+          :class="isNavActive(item.path)
             ? 'text-compute dark:text-signal'
             : 'text-cool/80 group-hover:text-compute dark:group-hover:text-signal transition-colors'"
         />

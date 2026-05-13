@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, gte, inArray, lte, or } from 'drizzle-orm';
+import { and, asc, eq, gt, gte, inArray, lt, or } from 'drizzle-orm';
 import type {
   AuditEventQueryOptions,
   IAgentAuditRepository,
@@ -76,7 +76,13 @@ export class PgAgentAuditRepository implements IAgentAuditRepository {
 
     const conditions = [eq(agentAuditEvents.userId, userId)];
     if (options?.since) conditions.push(gte(agentAuditEvents.createdAt, options.since));
-    if (options?.until) conditions.push(lte(agentAuditEvents.createdAt, options.until));
+    // Third-pass review (Code-Reviewer HIGH-2): half-open `[since, until)`
+    // matches the §5 stats endpoints' Pass-2 HIGH-2 fix. Pre-fix the two
+    // surfaces diverged at the boundary tick — an event mined exactly at
+    // `until` showed up in audit_query but NOT in checkout stats, so the
+    // LLM's "you minted 7 sessions in the last 7 days, audit shows 8
+    // events" narrative went off-by-one at every range edge.
+    if (options?.until) conditions.push(lt(agentAuditEvents.createdAt, options.until));
     if (options?.surface) conditions.push(eq(agentAuditEvents.surface, options.surface));
     if (options?.eventTypes && options.eventTypes.length > 0) {
       conditions.push(inArray(agentAuditEvents.eventType, options.eventTypes));

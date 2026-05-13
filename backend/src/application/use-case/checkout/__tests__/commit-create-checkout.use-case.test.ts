@@ -10,6 +10,8 @@ import {
   MemoryCheckoutSessionRepository,
 } from '../../../../infrastructure/repository/memory/index.js';
 import { Surface } from '../../../../domain/agent/model/surface.enum.js';
+import { Tier } from '../../../../domain/agent/model/tier.enum.js';
+import { AgentUserState } from '../../../../domain/agent/model/agent-user-state.js';
 import { GetPolicyStateUseCase } from '../../agent/policy/get-policy-state.use-case.js';
 import { AppendAuditEventUseCase } from '../../agent/policy/append-audit-event.use-case.js';
 import { ConfirmTokenService } from '../../agent/policy/confirm-token.service.js';
@@ -114,6 +116,7 @@ describe('CommitCreateCheckoutUseCase', () => {
       rwaTokenRepo,
       createSession,
       new StubIssuerLabelResolver(),
+      stateRepo,
     );
   });
 
@@ -368,5 +371,135 @@ describe('CommitCreateCheckoutUseCase', () => {
       expect(meta).not.toContain(result.session.fragmentKey);
       expect(meta).not.toContain('fragmentKey');
     }
+  });
+
+  // ── Third-pass review (2026-05-13 night) regressions ────────────────
+
+  it('bumps confirmedActionCount after successful commit (Code-Reviewer HIGH-1)', async () => {
+    // The dedicated commit path previously skipped the state bump that
+    // the generic /tools/commit performs, leaving issuers stuck below the
+    // Confirm-per-action → PolicyBound autonomy threshold. Now both paths
+    // bump symmetrically.
+    //
+    // Seed an AgentUserState row at the Confirm-per-action tier (mirrors
+    // what GetPolicyStateUseCase + first-time persistence would write).
+    // The bump branch is a no-op when no state row exists yet — consistent
+    // with the generic CommitToolActionUseCase posture.
+    await stateRepo.upsert(
+      new AgentUserState({
+        userId: ISSUER_USER_ID,
+        surface: Surface.HavenBot,
+        tier: Tier.ConfirmPerAction,
+        pausedAt: null,
+        pauseTrigger: null,
+        pauseMetadata: null,
+        enteredAt: NOW,
+        validatorAddress: null,
+        validatorInstalledAt: null,
+        validatorUninstalledAt: null,
+        confirmedActionCount: 2,
+        kycRevoked: false,
+        risksConfirmedAt: null,
+        updatedAt: NOW,
+      }),
+    );
+    const out = await proposeFirst();
+    await commit.execute({
+      userId: ISSUER_USER_ID,
+      surface: Surface.HavenBot,
+      confirmToken: out.confirmTokenId,
+      actionPayload: reconstructPayload(out),
+      now: NOW,
+    });
+    const after = await stateRepo.findByUserAndSurface(
+      ISSUER_USER_ID,
+      Surface.HavenBot,
+    );
+    expect(after?.confirmedActionCount).toBe(3);
+  });
+
+  it('writes confirm_token_consumed audit even if createSession throws mid-flight (Arch M-2)', async () => {
+    // Architectural intent: the consume + audit pair fire BEFORE
+    // createSession, so a transient downstream throw still leaves a
+    // forensic trail. Pre-fix the audit row trailed createSession; a
+    // mid-flight failure burned the token with no audit attribution.
+    //
+    // Simulate the createSession failure by wrapping the existing
+    // use-case so its `.execute()` throws. The consume + audit pair
+    // should still have landed.
+    const failingCreate = {
+      execute: async () => {
+        throw new Error('simulated createSession failure');
+      },
+    } as unknown as CreateCheckoutSessionUseCase;
+    const stateRepoFresh = new MemoryAgentStateRepository();
+    const failingCommit = new CommitCreateCheckoutUseCase(
+      confirmTokens,
+      appendAudit,
+      rwaTokenRepo,
+      failingCreate,
+      new StubIssuerLabelResolver(),
+      stateRepoFresh,
+    );
+    const out = await proposeFirst();
+    await expect(
+      failingCommit.execute({
+        userId: ISSUER_USER_ID,
+        surface: Surface.HavenBot,
+        confirmToken: out.confirmTokenId,
+        actionPayload: reconstructPayload(out),
+        now: NOW,
+      }),
+    ).rejects.toThrow(/simulated createSession failure/);
+    // The confirm_token_consumed audit row MUST exist even though the
+    // surrounding flow threw.
+    const audits = await auditRepo.findByUserId(ISSUER_USER_ID);
+    const consumed = audits.items.find((a) => a.eventType === 'confirm_token_consumed');
+    expect(consumed).toBeDefined();
+    // The permit_granted row must NOT exist — its absence is the
+    // signal that the mint failed.
+    const granted = audits.items.find(
+      (a) => a.eventType === 'permit_granted'
+        && (a.metadata as { tool?: string })?.tool === 'muhaven_propose_create_checkout',
+    );
+    expect(granted).toBeUndefined();
+  });
+
+  it('rejects javascript: successUrl in commit-side reconstruction (Sec H3)', async () => {
+    // Defense-in-depth: even though the hash-equality check should catch
+    // a mutated successUrl, the commit-side schema now also rejects
+    // dangerous URL schemes. Catches the case where a future maintenance
+    // path bypasses ConfirmTokenService.
+    const out = await proposeFirst();
+    const tampered = {
+      ...reconstructPayload(out),
+      successUrl: 'javascript:alert(1)',
+    };
+    await expect(
+      commit.execute({
+        userId: ISSUER_USER_ID,
+        surface: Surface.HavenBot,
+        confirmToken: out.confirmTokenId,
+        actionPayload: tampered,
+        now: NOW,
+      }),
+    ).rejects.toMatchObject({ statusCode: 400 });
+  });
+
+  it('rejects data: cancelUrl in commit-side reconstruction (Sec H3)', async () => {
+    const out = await proposeFirst();
+    const tampered = {
+      ...reconstructPayload(out),
+      cancelUrl: 'data:text/html,<script>alert(1)</script>',
+    };
+    await expect(
+      commit.execute({
+        userId: ISSUER_USER_ID,
+        surface: Surface.HavenBot,
+        confirmToken: out.confirmTokenId,
+        actionPayload: tampered,
+        now: NOW,
+      }),
+    ).rejects.toMatchObject({ statusCode: 400 });
   });
 });

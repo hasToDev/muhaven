@@ -2,7 +2,12 @@
 import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ShieldCheck, Lock, X, Loader2, AlertTriangle, ExternalLink, ArrowRight, Send } from 'lucide-vue-next'
-import { agentToolsApi, checkoutAgentApi, type ActionDescriptor } from '@/services/api'
+import {
+  agentToolsApi,
+  checkoutAgentApi,
+  type ActionDescriptor,
+  type CreateCheckoutActionPayload,
+} from '@/services/api'
 import CreateCheckoutSuccessCard from '@/components/agent/CreateCheckoutSuccessCard.vue'
 
 const router = useRouter()
@@ -108,6 +113,14 @@ const isExpired = computed(() => {
  */
 const isTelegramLinked = computed(() => {
   if (!props.action) return false
+  // Third-pass review (CodeReviewer MED-5): `openClawIntentId` is declared
+  // only on `BuyActionDescriptor.preview`. Reading it from any other kind
+  // is `undefined` today, but a future descriptor that adds the field
+  // (e.g. propose_distribute_yield gaining a Telegram-confirm path)
+  // would silently activate the "Confirm in Telegram" UI without the
+  // SSE auto-fire wiring being plumbed in. Narrow the check to `buy` so
+  // future descriptor additions are an opt-in via this gate.
+  if (props.action.kind !== 'buy') return false
   const id = props.action.preview.openClawIntentId
   return typeof id === 'string' && id.length > 0
 })
@@ -306,20 +319,27 @@ function extractActionPayload(a: ActionDescriptor): Record<string, unknown> {
       }
     case 'pause':
       return { action: 'pause' }
-    case 'create_checkout':
+    case 'create_checkout': {
       // Mirror the propose-create-checkout actionPayload byte-for-byte.
       // The backend's commit hash-equality check refuses anything else.
-      return {
+      // The local `payload` variable is typed via the imported
+      // `CreateCheckoutActionPayload` so a future field rename breaks
+      // compile-time, not runtime as a 403 hash mismatch (third-pass
+      // review CodeReviewer LOW-3 promoted). The cast at return narrows
+      // from the typed shape to the function's wire-shape contract.
+      const payload: CreateCheckoutActionPayload = {
         tool: 'muhaven_propose_create_checkout',
         action: 'create_checkout',
-        tokenAddress: a.preview.tokenAddress,
-        amountUsd6: a.preview.amountUsd6,
-        memo: a.preview.memo ?? null,
-        successUrl: a.preview.successUrl ?? null,
-        cancelUrl: a.preview.cancelUrl ?? null,
-        issuerAddress: a.preview.issuerAddress,
-        requestedAtSec: a.preview.requestedAtSec,
+        tokenAddress: a.preview.tokenAddress as string,
+        amountUsd6: a.preview.amountUsd6 as string,
+        memo: (a.preview.memo as string | null | undefined) ?? null,
+        successUrl: (a.preview.successUrl as string | null | undefined) ?? null,
+        cancelUrl: (a.preview.cancelUrl as string | null | undefined) ?? null,
+        issuerAddress: a.preview.issuerAddress as string,
+        requestedAtSec: a.preview.requestedAtSec as number,
       }
+      return payload as unknown as Record<string, unknown>
+    }
     default:
       return {}
   }

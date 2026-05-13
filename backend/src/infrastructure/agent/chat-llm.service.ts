@@ -1122,11 +1122,11 @@ function buildGeminiToolDeclarations(): unknown[] {
               },
               successUrl: {
                 type: 'STRING',
-                description: 'Optional post-success redirect URL (≤512 chars, must be http(s)://).',
+                description: 'Optional post-success redirect URL (≤512 chars). Must be https:// (or http://localhost for dev). javascript:/data:/file: schemes are rejected.',
               },
               cancelUrl: {
                 type: 'STRING',
-                description: 'Optional cancel-redirect URL.',
+                description: 'Optional cancel-redirect URL. Same scheme rules as successUrl (https:// only, with localhost dev allowance).',
               },
             },
             required: ['tokenAddress', 'amountUsd6'],

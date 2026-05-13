@@ -54,7 +54,10 @@ export class MemoryAgentAuditRepository implements IAgentAuditRepository {
     const filtered = this.store
       .filter((e) => e.userId === userId)
       .filter((e) => (options?.since ? e.createdAt >= options.since : true))
-      .filter((e) => (options?.until ? e.createdAt <= options.until : true))
+      // Third-pass review (Code-Reviewer HIGH-2): half-open `[since,
+      // until)` matches §5 stats endpoints (Pass-2 HIGH-2). Memory repo
+      // must keep parity with PG.
+      .filter((e) => (options?.until ? e.createdAt < options.until : true))
       .filter((e) => (options?.surface ? e.surface === options.surface : true))
       .filter((e) => {
         if (!options?.eventTypes || options.eventTypes.length === 0) return true;

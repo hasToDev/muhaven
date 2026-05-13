@@ -840,6 +840,28 @@ export interface ActionDescriptor {
   }
 }
 
+/**
+ * Wave 4 §5 Path C — typed mirror of backend's `CommitCreateCheckoutActionPayloadSchema`.
+ *
+ * Third-pass review (CodeReviewer LOW-3 promoted): frontend's
+ * `extractActionPayload` was previously typed as `Record<string, unknown>` —
+ * a stray field rename in the propose use-case would silently break every
+ * commit with a 403 hash mismatch at runtime. Pin the shape here so any
+ * field rename / addition forces a coordinated frontend bump at compile
+ * time. Mirror this exactly on backend: `commit-create-checkout.use-case.ts`.
+ */
+export interface CreateCheckoutActionPayload {
+  tool: 'muhaven_propose_create_checkout'
+  action: 'create_checkout'
+  tokenAddress: string
+  amountUsd6: string
+  memo: string | null
+  successUrl: string | null
+  cancelUrl: string | null
+  issuerAddress: string
+  requestedAtSec: number
+}
+
 export type AgentStreamEvent =
   | { type: 'meta'; model: string; sessionId: string }
   | { type: 'text'; delta: string }

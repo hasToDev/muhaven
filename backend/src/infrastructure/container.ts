@@ -703,6 +703,11 @@ function getCommitCreateCheckout(): CommitCreateCheckoutUseCase {
     getMuHavenRepos().rwaTokenRepo,
     getCreateCheckoutSession(),
     getIssuerLabelResolver(),
+    // Third-pass review (Code-Reviewer HIGH-1): wire the agent-state
+    // repo so commit_create_checkout bumps confirmedActionCount (the
+    // Confirm-per-action → PolicyBound autonomy gate). Same singleton
+    // wired into commit-tool-action — see comment block above.
+    getAgentRepos().agentStateRepo,
   );
   return _commitCreateCheckout;
 }

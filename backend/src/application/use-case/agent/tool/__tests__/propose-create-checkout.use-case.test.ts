@@ -197,14 +197,17 @@ describe('ProposeCreateCheckoutToolUseCase', () => {
     ).rejects.toMatchObject({ statusCode: 409 });
   });
 
-  it('rejects unknown token (404)', async () => {
+  it('rejects unknown token (409 lifecycle drift)', async () => {
+    // Third-pass review (Arch L-4): aligned with the commit-side 409 for
+    // the same "no longer registered" lifecycle drift. Pre-fix propose
+    // returned 404 and commit returned 409 for identical conditions.
     await expect(
       uc.execute(
         { userId: ISSUER_USER_ID, walletAddress: ISSUER_WALLET, surface: Surface.HavenBot },
         { tokenAddress: '0x' + '9'.repeat(40), amountUsd6: '1000000' },
         NOW,
       ),
-    ).rejects.toMatchObject({ statusCode: 404 });
+    ).rejects.toMatchObject({ statusCode: 409 });
   });
 
   it('rejects on Paused tier (423)', async () => {

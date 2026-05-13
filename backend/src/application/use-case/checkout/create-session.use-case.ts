@@ -100,8 +100,14 @@ export class CreateCheckoutSessionUseCase {
         `payload exceeds ${MAX_PLAINTEXT_BYTES}-byte cap`,
       );
     }
-    if (!/^\d{1,18}$/.test(input.payload.amountUsd6)) {
-      throw ApplicationHttpError.badRequest('amountUsd6 must be 1-18 decimal digits');
+    // Third-pass review (Arch M-1): require positive integer (no `0`,
+    // no leading zeros) so the dashboard create path matches the agent
+    // path's `^[1-9]\d*$` posture. A $0 session is meaningless across
+    // either surface.
+    if (!/^[1-9]\d{0,17}$/.test(input.payload.amountUsd6)) {
+      throw ApplicationHttpError.badRequest(
+        'amountUsd6 must be a positive integer (1-18 decimal digits, no leading zeros)',
+      );
     }
     if (input.payload.memo !== undefined && input.payload.memo.length > 280) {
       throw ApplicationHttpError.badRequest('memo must be ≤280 characters');

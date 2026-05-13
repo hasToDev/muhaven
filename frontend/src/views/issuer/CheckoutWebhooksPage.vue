@@ -6,6 +6,7 @@ import { checkoutApi, type RegisterWebhookEndpointResponse } from '@/services/ap
 import MButton from '@/components/ui/MButton.vue'
 import MPageLoader from '@/components/ui/MPageLoader.vue'
 import SigningSecretRevealModal from '@/components/checkout/SigningSecretRevealModal.vue'
+import DisableWebhookConfirmModal from '@/components/checkout/DisableWebhookConfirmModal.vue'
 
 const store = useCheckoutStore()
 
@@ -22,6 +23,26 @@ const reveal = ref<{
 }>({ open: false, secret: null, endpointId: null, url: null })
 
 const disablingId = ref<string | null>(null)
+
+/**
+ * Third-pass review (Frontend M5 + operator pick): destructive-action
+ * type-to-confirm modal. Disable was previously a single-click footgun
+ * — now the issuer must type the URL before the dispatch stops. Gate
+ * mirrors the SigningSecretRevealModal acknowledgment shape.
+ */
+const disableConfirm = ref<{
+  open: boolean
+  endpoint: { endpointId: string; url: string } | null
+  error: string | null
+}>({ open: false, endpoint: null, error: null })
+
+function promptDisable(endpoint: { endpointId: string; url: string }) {
+  disableConfirm.value = { open: true, endpoint, error: null }
+}
+
+function closeDisableConfirm() {
+  disableConfirm.value = { open: false, endpoint: null, error: null }
+}
 
 onMounted(() => {
   store.loadWebhooks().catch(() => {})
@@ -65,8 +86,15 @@ async function handleDisable(endpointId: string) {
   try {
     const res = await checkoutApi.disableWebhook(endpointId)
     store.markWebhookDisabled(res.endpointId, res.disabledAt)
+    closeDisableConfirm()
   } catch (err) {
-    submitError.value = err instanceof Error ? err.message : 'Disable failed'
+    // Surface inside the modal where the user is — page-level
+    // submitError (used by register-form) would be off-screen during a
+    // type-to-confirm flow.
+    disableConfirm.value = {
+      ...disableConfirm.value,
+      error: err instanceof Error ? err.message : 'Disable failed',
+    }
   } finally {
     disablingId.value = null
   }
@@ -114,10 +142,20 @@ function closeReveal() {
           <input
             v-model="url"
             type="url"
+            pattern="https://.+"
             placeholder="https://your-server.example/webhooks/muhaven"
             data-testid="webhook-form-url"
             class="mt-1.5 w-full bg-white dark:bg-midnight px-3 py-2 rounded-md ring-1 ring-haze dark:ring-white/12 text-sm font-mono text-midnight dark:text-white focus:outline-none focus:ring-2 focus:ring-gold/60"
           />
+          <!-- Third-pass review (Frontend M2): explicit https-only hint
+               so users don't bounce off the backend SSRF-guard rejection
+               with no idea what was wrong. Private-network/HTTP URLs
+               (10/8, 172.16/12, 192.168/16, 169.254 metadata, IPv6 ULA,
+               link-local) are also rejected by the backend even on
+               https://. -->
+          <span class="mt-1 block text-[11px] text-cool/80">
+            Public HTTPS URLs only. Private network and HTTP rejected.
+          </span>
         </label>
         <label class="block">
           <span class="font-label text-[11px] tracking-[0.14em] uppercase text-cool font-semibold">Event types <span class="font-sans normal-case tracking-normal text-cool/60">(comma-separated, blank = all)</span></span>
@@ -215,7 +253,7 @@ function closeReveal() {
                   :data-testid="`webhook-row-disable-${e.endpointId}`"
                   :aria-label="`Disable webhook ${e.url}`"
                   class="inline-flex items-center justify-center w-7 h-7 rounded-md text-cool hover:text-negative hover:bg-negative/10 transition-colors cursor-pointer disabled:opacity-50"
-                  @click="handleDisable(e.endpointId)"
+                  @click="promptDisable({ endpointId: e.endpointId, url: e.url })"
                 >
                   <Loader2 v-if="disablingId === e.endpointId" :size="13" class="animate-spin" aria-hidden="true" />
                   <Trash2 v-else :size="13" aria-hidden="true" />
@@ -233,6 +271,16 @@ function closeReveal() {
       :endpoint-id="reveal.endpointId"
       :url="reveal.url"
       @close="closeReveal"
+    />
+
+    <!-- Third-pass review (Frontend M5): destructive-action gate. -->
+    <DisableWebhookConfirmModal
+      :open="disableConfirm.open"
+      :endpoint="disableConfirm.endpoint"
+      :submitting="!!disablingId"
+      :error-message="disableConfirm.error"
+      @confirm="handleDisable"
+      @close="closeDisableConfirm"
     />
   </div>
 </template>

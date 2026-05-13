@@ -45,7 +45,20 @@ export const useCheckoutStore = defineStore('checkout', () => {
 
   const hasMore = computed(() => nextCursor.value !== null)
 
+  /**
+   * Third-pass review (Frontend H2/H6 + CodeReviewer LOW-2):
+   * monotonic generation token. Bumped at every entry; any in-flight
+   * call whose generation no longer matches when its response arrives
+   * silently drops its result. Closes the "user toggles status filter
+   * mid-fetch → stale page-2 rows merged into the new filter view"
+   * race + the "user clicks Load-more then a row → returns to list →
+   * duplicate rows" race. Pinia stores are singletons across navigation
+   * so the in-flight request can outlive the page that issued it.
+   */
+  const sessionsLoadGen = ref(0)
+
   async function loadSessions(opts: { reset?: boolean } = {}) {
+    const gen = ++sessionsLoadGen.value
     sessionsLoading.value = true
     sessionsError.value = null
     try {
@@ -55,14 +68,22 @@ export const useCheckoutStore = defineStore('checkout', () => {
         status: sessionsFilter.value ?? undefined,
         limit: 20,
       })
+      // Race guard — if a newer call took ownership while we were
+      // awaiting, drop our response on the floor.
+      if (gen !== sessionsLoadGen.value) return
       sessions.value = opts.reset
         ? res.sessions
         : [...sessions.value, ...res.sessions]
       nextCursor.value = res.nextCursor
     } catch (err) {
+      if (gen !== sessionsLoadGen.value) return
       sessionsError.value = err instanceof Error ? err.message : 'Failed to load sessions'
     } finally {
-      sessionsLoading.value = false
+      // Always clear loading on the LAST call's finally; older finallys
+      // would falsely zero a still-in-flight load.
+      if (gen === sessionsLoadGen.value) {
+        sessionsLoading.value = false
+      }
     }
   }
 

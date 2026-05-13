@@ -107,7 +107,20 @@ function rangeBounds(
   const until = now;
   if (range === 'all') return { since: null, until };
   const days = range === '7d' ? 7 : 30;
-  const since = new Date(until.getTime() - days * 24 * 60 * 60 * 1000);
+  // Third-pass review (Arch M-4): floor `since` to UTC midnight `daysWanted
+  // days ago` so the daily trend buckets are CALENDAR-day, not sliding-
+  // window. Pre-fix `range='7d'` at `now=15:00Z` produced an 8-bar view
+  // with truncated head + tail buckets — UX confusing on the dashboard.
+  // The post-fix 7d range is exactly 7 full calendar buckets back to
+  // 6 days ago at 00:00 UTC (inclusive) through today at 00:00 UTC
+  // (exclusive of `now`'s partial day; gap-filler will add today's
+  // partial bucket as its own bar).
+  const utcMidnight = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+  );
+  const since = new Date(
+    utcMidnight.getTime() - (days - 1) * 24 * 60 * 60 * 1000,
+  );
   return { since, until };
 }
 

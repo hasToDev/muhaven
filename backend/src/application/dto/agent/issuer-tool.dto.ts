@@ -117,7 +117,11 @@ export const AuditQueryToolDtoSchema = z
     eventTypes: z.array(auditEventTypeSchema).max(20).optional(),
     /** ISO datetime — inclusive lower bound on `createdAt`. */
     since: z.string().datetime().optional(),
-    /** ISO datetime — inclusive upper bound on `createdAt`. */
+    /** ISO datetime — half-open upper bound on `createdAt` (exclusive of
+     *  the tick itself; events at exactly `until` are NOT returned).
+     *  Third-pass review (Code-Reviewer HIGH-2): aligned with the §5 stats
+     *  endpoints (Pass-2 HIGH-2 fix). The two surfaces now agree at every
+     *  range edge so cross-surface LLM narratives don't go off-by-one. */
     until: z.string().datetime().optional(),
     /** Opaque cursor returned by a previous page. */
     cursor: z.string().min(1).max(512).optional(),

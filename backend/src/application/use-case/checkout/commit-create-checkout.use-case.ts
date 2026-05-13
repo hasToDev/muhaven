@@ -3,6 +3,7 @@ import { ApplicationHttpError } from '../../../core/errors.js';
 import { Surface } from '../../../domain/agent/model/surface.enum.js';
 import { AuditEventType } from '../../../domain/agent/model/audit-event-type.enum.js';
 import { CheckoutSessionStatus } from '../../../domain/checkout/model/checkout-session.js';
+import type { IAgentStateRepository } from '../../../domain/agent/repository/agent-state.repository.js';
 import type { IRwaTokenRepository } from '../../../domain/token-registry/repository/rwa-token.repository.js';
 import type { ConfirmTokenService } from '../agent/policy/confirm-token.service.js';
 import type { AppendAuditEventUseCase } from '../agent/policy/append-audit-event.use-case.js';
@@ -41,7 +42,45 @@ import type { IIssuerLabelResolver } from '../../../infrastructure/checkout/issu
  * byte-for-byte. Validated here for the same reason ConfirmTokenService
  * hashes it: a malformed payload should be rejected at the boundary, not
  * after the SDK call.
+ *
+ * Third-pass review (Sec M1): the propose-side DTO's `superRefine` URL
+ * validator rejects `javascript:` / `data:` / `vbscript:` schemes — the
+ * commit reconstruction MUST mirror that posture or a future maintenance
+ * code path that bypasses ConfirmTokenService.consume leaves the URL guard
+ * gone. Today the hash-equality check defends in depth; the schema-level
+ * validator below is the second layer.
  */
+const commitRedirectUrl = z
+  .string()
+  .max(512)
+  .nullable()
+  .superRefine((raw, ctx) => {
+    if (raw === null) return;
+    let u: URL;
+    try {
+      u = new URL(raw);
+    } catch {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'must be a valid URL' });
+      return;
+    }
+    if (u.protocol === 'https:') return;
+    if (u.protocol === 'http:') {
+      const h = u.hostname;
+      if (h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]') {
+        return;
+      }
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'http:// only allowed for localhost; production must use https://',
+      });
+      return;
+    }
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `protocol ${u.protocol} is not allowed (https:// or http://localhost only)`,
+    });
+  });
+
 export const CommitCreateCheckoutActionPayloadSchema = z
   .object({
     tool: z.literal('muhaven_propose_create_checkout'),
@@ -49,8 +88,8 @@ export const CommitCreateCheckoutActionPayloadSchema = z
     tokenAddress: z.string().regex(/^0x[a-f0-9]{40}$/),
     amountUsd6: z.string().regex(/^[1-9]\d*$/),
     memo: z.string().nullable(),
-    successUrl: z.string().nullable(),
-    cancelUrl: z.string().nullable(),
+    successUrl: commitRedirectUrl,
+    cancelUrl: commitRedirectUrl,
     issuerAddress: z.string().regex(/^0x[a-f0-9]{40}$/),
     requestedAtSec: z.number().int().nonnegative(),
   })
@@ -87,6 +126,16 @@ export class CommitCreateCheckoutUseCase {
     private readonly rwaTokenRepo: IRwaTokenRepository,
     private readonly createSession: CreateCheckoutSessionUseCase,
     private readonly issuerLabelResolver: IIssuerLabelResolver,
+    /**
+     * Third-pass review (Code-Reviewer HIGH-1): the generic
+     * `commit-tool-action.use-case` bumps `confirmedActionCount` after a
+     * successful permit_grant so the Confirm-per-action → PolicyBound
+     * autonomy gate can advance. The dedicated checkout commit copied the
+     * audit-pair pattern but skipped the state bump entirely, leaving
+     * issuers stuck at the lower tier despite confirming 5+ create_checkout
+     * commits. Inject IAgentStateRepository here and replicate the bump.
+     */
+    private readonly agentStateRepo: IAgentStateRepository,
   ) {}
 
   async execute(input: CommitCreateCheckoutInput): Promise<CommitCreateCheckoutResult> {
@@ -148,13 +197,34 @@ export class CommitCreateCheckoutUseCase {
     // (wrong binding) on rejection. NOW that pre-flight checks passed,
     // burning the token is acceptable; on a successful consume, the
     // session mint below is the side-effect the user authorized.
+    //
+    // Third-pass review (Arch L-3): pass the parsed (typed) payload so a
+    // future refactor that catches the .parse() exception differently
+    // cannot leak extra keys into the hash. Today .strict() guarantees
+    // equivalence; the explicit `parsed` makes the dependency explicit.
     await this.confirmTokens.consume(
       input.confirmToken,
       input.userId,
       'permit_grant',
-      input.actionPayload,
+      parsed,
       now,
     );
+
+    // Third-pass review (Arch M-2): write the `confirm_token_consumed`
+    // audit row IMMEDIATELY after consume succeeds. If createSession
+    // below throws (transient PG error / AES encrypt failure), we still
+    // have audit attribution for the burned token — orphan-consumed
+    // tokens without audit rows are a forensic gap. The PermitGranted
+    // row writes AFTER session mint (and references the sessionId), so
+    // its absence is itself a signal that the create_checkout failed
+    // mid-flight.
+    await this.appendAudit.execute({
+      userId: input.userId,
+      surface: input.surface,
+      eventType: AuditEventType.ConfirmTokenConsumed,
+      now,
+      metadata: { confirmTokenId: input.confirmToken },
+    });
 
     // Resolve label via the dependency-injected resolver — same shape
     // CheckoutLinkModal (dashboard path) will use, keeping the create-
@@ -196,13 +266,24 @@ export class CommitCreateCheckoutUseCase {
         amountUsd6: parsed.amountUsd6,
       },
     });
-    await this.appendAudit.execute({
-      userId: input.userId,
-      surface: input.surface,
-      eventType: AuditEventType.ConfirmTokenConsumed,
-      now,
-      metadata: { confirmTokenId: input.confirmToken },
-    });
+
+    // Third-pass review (Code-Reviewer HIGH-1): bump the surface's
+    // `confirmedActionCount` so the Confirm-per-action → PolicyBound gate
+    // can advance after ≥5 confirms. Mirrors the read-modify-write in
+    // commit-tool-action.use-case.ts. The benign race where two parallel
+    // commits each see the same starting count is tolerable here — the
+    // threshold is ≥5; off-by-one is fine.
+    const state = await this.agentStateRepo.findByUserAndSurface(
+      input.userId,
+      input.surface,
+    );
+    if (state) {
+      const next = state.with({
+        confirmedActionCount: state.confirmedActionCount + 1,
+        updatedAt: now,
+      });
+      await this.agentStateRepo.upsert(next);
+    }
 
     return {
       consumed: true,

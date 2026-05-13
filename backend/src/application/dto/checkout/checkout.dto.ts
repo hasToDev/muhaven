@@ -9,9 +9,15 @@ import { WEBHOOK_EVENT_TYPE_VALUES, WEBHOOK_ENDPOINT_ID_RE } from '../../../doma
 const HEX_ADDRESS = /^0x[a-fA-F0-9]{40}$/;
 const TX_HASH_RE = /^0x[a-fA-F0-9]{64}$/;
 
-/** USDC 6-decimal amount as a non-negative decimal string. Capped at 18
- *  digits to fit comfortably below 2**63 (matches PUSDC native uint64). */
-const AMOUNT_USD6_RE = /^\d{1,18}$/;
+/** USDC 6-decimal amount as a positive integer string. Capped at 18 digits
+ *  to fit comfortably below 2**63 (matches mhUSDC native uint64).
+ *
+ *  Third-pass review (Arch M-1): tightened from `/^\d{1,18}$/` to require
+ *  a leading 1-9. Pre-fix the dashboard accepted `0`/`00`/`007` while the
+ *  agent path rejected them (`^[1-9]\d*$` in `usd6Schema`). The two
+ *  surfaces minted divergent shapes for the same operation — a $0 session
+ *  is meaningless. Both surfaces now agree at the wire boundary. */
+const AMOUNT_USD6_RE = /^[1-9]\d{0,17}$/;
 
 /**
  * Wave 4 §5 Path D/C — successUrl / cancelUrl validator.
