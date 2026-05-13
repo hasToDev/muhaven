@@ -96,7 +96,7 @@ export class RegisterWebhookEndpointUseCase {
 
     const now = input.now ?? new Date();
     const signingSecret = generateSigningSecret();
-    const endpointId = `${WEBHOOK_ENDPOINT_ID_PREFIX}${randomBytes(16).toString('hex')}`;
+    const endpointId = generateWebhookEndpointId();
     const endpoint = new WebhookEndpoint({
       endpointId,
       issuerUserId: input.issuerUserId,
@@ -151,4 +151,30 @@ function isPrivateOrLoopback(hostname: string): boolean {
   if (/^fe80:/i.test(h)) return true;
   if (h === '::') return true;
   return false;
+}
+
+/**
+ * Endpoint-id generator. Mirrors `generateSessionId` in
+ * create-session.use-case so the shape stays uniform across the §5
+ * Path D dashboard surface (`cs_<26>` + `whe_<26>` both Crockford
+ * base32, no IO0L lookalikes).
+ *
+ * §5 walkthrough operator-side bug 2026-05-1?: pre-fix this minted
+ * `whe_<32 lowercase hex>` via `randomBytes(16).toString('hex')`,
+ * which mismatched `WEBHOOK_ENDPOINT_ID_RE = /^whe_[A-Z0-9]{26}$/`
+ * on BOTH length (32 vs 26) and alphabet (lowercase hex vs uppercase
+ * Crockford). The list endpoint returned those malformed ids; the
+ * disable DTO 422'd on Zod regex check when the frontend echoed them
+ * back. The id alphabet check is load-bearing — it prevents IO0L
+ * confusion in audit logs and dashboards.
+ */
+const WEBHOOK_ENDPOINT_ID_ALPHABET = 'ABCDEFGHJKMNPQRSTVWXYZ23456789';
+
+function generateWebhookEndpointId(): string {
+  const buf = randomBytes(26);
+  let out = '';
+  for (const b of buf) {
+    out += WEBHOOK_ENDPOINT_ID_ALPHABET[b % WEBHOOK_ENDPOINT_ID_ALPHABET.length];
+  }
+  return WEBHOOK_ENDPOINT_ID_PREFIX + out;
 }

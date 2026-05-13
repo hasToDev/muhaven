@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { RegisterWebhookEndpointUseCase } from '../register-webhook.use-case.js';
 import { MemoryWebhookEndpointRepository } from '../../../../infrastructure/repository/memory/memory-webhook-endpoint.repository.js';
 import { MemoryUserRepository } from '../../../../infrastructure/repository/memory/memory-user.repository.js';
-import { WebhookEventType } from '../../../../domain/checkout/model/webhook-endpoint.js';
+import {
+  WebhookEventType,
+  WEBHOOK_ENDPOINT_ID_RE,
+} from '../../../../domain/checkout/model/webhook-endpoint.js';
 import { User, type IssuerStatus } from '../../../../domain/auth/model/user.js';
 
 async function makeUserRepo(
@@ -31,7 +34,13 @@ describe('RegisterWebhookEndpointUseCase', () => {
       issuerUserId: 'iss_1',
       url: 'https://issuer.test/hook',
     });
-    expect(result.endpoint.endpointId).toMatch(/^whe_[0-9a-f]{32}$/);
+    // §5 walkthrough operator-side bug 2026-05-1?: pre-fix this assertion
+    // pinned the BROKEN `whe_<32-lowercase-hex>` shape that mismatched
+    // `WEBHOOK_ENDPOINT_ID_RE = /^whe_[A-Z0-9]{26}$/` (used by the disable
+    // DTO's Zod regex). The test cemented the regression. Post-fix, both
+    // generator + regex agree on the 26-char Crockford alphabet.
+    expect(result.endpoint.endpointId).toMatch(/^whe_[A-HJ-NP-Z2-9]{26}$/);
+    expect(result.endpoint.endpointId).toMatch(WEBHOOK_ENDPOINT_ID_RE);
     expect(result.signingSecret).toMatch(/^whsec_[0-9a-f]{64}$/);
     expect(result.endpoint.enabledEvents).toEqual([]);
   });

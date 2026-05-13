@@ -94,9 +94,32 @@ export class ApiError extends Error {
     public status: number,
     public body: unknown,
   ) {
-    super(`API error ${status}`)
+    super(extractApiErrorMessage(status, body))
     this.name = 'ApiError'
   }
+}
+
+/**
+ * Surface the backend's RFC-7807 problem-detail `title` (or `detail`)
+ * as the error message when available so user-facing toasts read
+ * "webhook url must be http:// or https://" instead of the unhelpful
+ * "API error 400". Falls back to "API error <status>" when the body
+ * doesn't carry a structured message.
+ *
+ * §5 walkthrough operator feedback 2026-05-1?: webhook register form
+ * surfaced `API error 400` for the SSRF guard rejection. The friendly
+ * message was sitting in `body.title` unused.
+ */
+function extractApiErrorMessage(status: number, body: unknown): string {
+  if (body && typeof body === 'object') {
+    const b = body as Record<string, unknown>
+    const title = typeof b.title === 'string' ? b.title : null
+    const detail = typeof b.detail === 'string' ? b.detail : null
+    if (title && detail) return `${title} — ${detail}`
+    if (title) return title
+    if (detail) return detail
+  }
+  return `API error ${status}`
 }
 
 let refreshPromise: Promise<StoredTokens | null> | null = null
