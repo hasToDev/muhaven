@@ -1,6 +1,27 @@
 @import './tailwind.css';
 @import './fonts.css';
 
+/* ══════════════════════════════════════════════════════════════════════
+ *  Q3 (post-§4 queue, 2026-05-14) — Dark-mode overrides for the new
+ *  semantic surface tokens defined in `tailwind.css @theme`. Light
+ *  defaults live in `@theme` so a page with no `.dark` ancestor gets
+ *  cream surfaces by default; this block flips them for the
+ *  `html.dark { … }` lineage. The selector `html.dark` is the
+ *  app-level toggle target (set in `stores/app.ts`).
+ * ══════════════════════════════════════════════════════════════════════ */
+html.dark {
+  --color-surface: var(--color-midnight-mid);        /* charcoal mid */
+  --color-surface-elevated: var(--color-midnight);   /* deeper recess */
+  --color-border: rgba(255, 255, 255, 0.08);         /* faint white */
+  --color-text-muted: var(--color-body-dark);        /* warm body */
+  /* Card overlay: in dark mode we want a subtle warm-charcoal tint so
+   * the gradient stays visible over the dark base. Keep amber start
+   * for the precious-accent shimmer, blend into a darker tint. */
+  --color-card-overlay-start: rgba(255, 186, 32, 0.04);
+  --color-card-overlay-mid: rgba(28, 29, 32, 0.60);
+  --color-card-overlay-end: rgba(28, 29, 32, 0.70);
+}
+
 input::placeholder {
   color: var(--color-cool);
 }

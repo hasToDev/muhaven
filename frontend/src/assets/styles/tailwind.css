@@ -65,4 +65,30 @@
   --shadow-fab: 0 6px 24px rgba(255, 186, 32, 0.30);
   --shadow-button: 0 8px 28px rgba(255, 220, 161, 0.22);
   --shadow-ambient-glow: 0 0 60px -10px rgba(255, 220, 161, 0.10);
+
+  /* ══════════════════════════════════════════════════════════
+   *  SEMANTIC SURFACE TOKENS — Q3 (post-§4 queue, 2026-05-14)
+   *  Mode-responsive surface/border/muted-text tokens for pages
+   *  whose hardcoded `rgba(28, 29, 32, …)` values painted dark
+   *  over the light cream canvas in Light mode. Light defaults
+   *  live here in `@theme`; the `html.dark { ... }` override
+   *  block in global.css flips them to the warm-charcoal palette.
+   *
+   *  Naming convention: `--color-surface*` for fills,
+   *  `--color-border*` for strokes, `--color-text-muted` for
+   *  secondary copy. Match the dashboard's prior usage so a
+   *  search-replace of any remaining hardcoded values has a
+   *  canonical target.
+   * ══════════════════════════════════════════════════════════ */
+  /* Light-mode defaults — warm cream surfaces, cream borders, taupe muted */
+  --color-surface: var(--color-mist);              /* primary card fill */
+  --color-surface-elevated: var(--color-frost);    /* hover / modal */
+  --color-border: var(--color-haze);               /* card separators */
+  --color-text-muted: var(--color-cool);           /* secondary copy */
+  /* Card-gradient overlay — paints amber-tinted in BOTH modes; the
+   * card's base fill (`--color-surface`) carries the mode-correct hue.
+   * Token-ized so future cards can opt in without hardcoded rgba. */
+  --color-card-overlay-start: rgba(255, 186, 32, 0.04);
+  --color-card-overlay-mid: rgba(255, 235, 200, 0.00);
+  --color-card-overlay-end: rgba(255, 235, 200, 0.04);
 }

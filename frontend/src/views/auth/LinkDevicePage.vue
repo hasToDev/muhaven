@@ -281,12 +281,14 @@ async function handleDeny(): Promise<void> {
   border: 1px solid var(--color-border, rgba(255, 255, 255, 0.08));
   border-radius: 18px;
   padding: 32px;
+  /* Q3 — gradient overlay tokens flip between dark + light mode so the
+   * card no longer paints dark rgba over the cream canvas in Light. */
   background:
     linear-gradient(
       180deg,
-      rgba(255, 186, 32, 0.04) 0%,
-      rgba(28, 29, 32, 0.6) 30%,
-      rgba(28, 29, 32, 0.7) 100%
+      var(--color-card-overlay-start) 0%,
+      var(--color-card-overlay-mid) 30%,
+      var(--color-card-overlay-end) 100%
     ),
     var(--color-surface, rgba(28, 29, 32, 0.85));
   box-shadow:

@@ -8,6 +8,7 @@ import ConfirmModal from '@/components/agent/ConfirmModal.vue'
 import { runAgentAction } from '@/composables/useAgentActionRunner'
 import { useOpenClawIntentEvents } from '@/composables/useOpenClawIntentEvents'
 import type { ActionDescriptor } from '@/services/api'
+import { openClawApi } from '@/services/api'
 import { toast } from 'vue-sonner'
 import {
   Sparkles, Send, Zap, PieChart, ArrowDown, Shield, User, ShieldCheck, Lightbulb,
@@ -208,6 +209,103 @@ const intentEvents = useOpenClawIntentEvents({
     console.warn('[openclaw-intent-events] sse error', err)
   },
 })
+
+// ── Q7 (post-§4 queue, 2026-05-14) — intent-status lookup on
+// activeAction change ──────────────────────────────────────────────
+//
+// When a Telegram-linked descriptor mounts (or is advanced into via the
+// H-1 success fix in onConfirmComplete), call `lookupIntent` once to
+// catch up with the backend's state. The race window this closes:
+//   1. User proposes buy A (Telegram-linked, openClawIntentId = idA).
+//      Modal mounts. activeAction = A.
+//   2. User proposes buy B BEFORE A's runner completes (modal A still
+//      open, B sits at pendingActions[1]).
+//   3. Bot DM A — user confirms A. SSE intent_confirmed for A → onAuthorize(A)
+//      runs. A settles. onConfirmComplete advances activeAction → B.
+//   4. Meanwhile bot DM B — user confirms B. SSE intent_confirmed for B
+//      arrived at step 3.5 (BEFORE A's modal closed), so the SSE handler
+//      checked activeAction = A and bailed (idA !== idB). The event was
+//      DROPPED — B's modal renders "Waiting for Telegram…" forever even
+//      though the backend has B at status='confirmed'.
+//
+// This watcher catches up: on every activeAction → non-null transition
+// (initial mount OR H-1 auto-advance), if the new descriptor has an
+// openClawIntentId AND we haven't looked it up yet in this page session,
+// fire one lookup. Dispatch:
+//   - status === 'confirmed' → call onAuthorize (within-tab firingIntents
+//     lock prevents double-fire if SSE also arrives concurrently).
+//   - status === 'denied' | 'consumed' | 'expired' → call onConfirmCancel
+//     + surface a toast so the operator knows why the modal closed.
+//   - status === 'pending' → no action (waiting for SSE as today).
+//
+// Idempotency: track looked-up intent IDs in a Set. The "Use dashboard
+// instead" escape hatch remains as belt-and-suspenders for the case
+// where lookup itself fails (5xx / network).
+const lookedUpIntents = new Set<string>()
+
+async function lookupAndDispatchForActiveAction(
+  action: ActionDescriptor,
+): Promise<void> {
+  if (action.kind !== 'buy') return
+  const intentIdRaw = action.preview.openClawIntentId
+  if (typeof intentIdRaw !== 'string' || intentIdRaw.length === 0) return
+  const intentId = intentIdRaw
+  if (lookedUpIntents.has(intentId)) return
+  lookedUpIntents.add(intentId)
+  let summary
+  try {
+    summary = await openClawApi.lookupIntent(intentId)
+  } catch (err) {
+    console.warn('[openclaw-intent-lookup] failed', err)
+    // Lookup failure isn't fatal — the escape hatch (Use dashboard
+    // instead) + SSE channel both remain. Don't remove from the set;
+    // a retry would re-spam the backend on every watcher tick. Trust
+    // the operator to refresh the page if it persists.
+    return
+  }
+  switch (summary.status) {
+    case 'confirmed':
+      // Fire the runner. The within-tab `firingIntents` lock (acquired
+      // at the top of onAuthorize) makes a concurrent SSE-driven call
+      // a silent no-op.
+      void onAuthorize(action)
+      break
+    case 'denied':
+      toast.info('Denied via Telegram', {
+        description: 'Nothing was submitted on-chain.',
+      })
+      onConfirmCancel(action)
+      break
+    case 'consumed':
+      // Backend has already processed this intent (probably via a
+      // different tab or device). The audit row exists; just close
+      // the modal so the user doesn't see a stale "Waiting…" panel.
+      toast.info('Already handled', {
+        description: 'This intent was settled from another surface.',
+      })
+      onConfirmCancel(action)
+      break
+    case 'expired':
+      toast.info('Confirmation window expired', {
+        description: 'Re-issue the action to try again.',
+      })
+      onConfirmCancel(action)
+      break
+    case 'pending':
+    default:
+      // Continue waiting for SSE.
+      break
+  }
+}
+
+watch(
+  () => activeAction.value,
+  (action) => {
+    if (action) {
+      void lookupAndDispatchForActiveAction(action)
+    }
+  },
+)
 
 function onConfirmComplete(payload: {
   action: ActionDescriptor
