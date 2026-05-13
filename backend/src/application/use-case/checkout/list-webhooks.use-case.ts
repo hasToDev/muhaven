@@ -45,11 +45,13 @@ export class ListWebhooksUseCase {
 
 /**
  * Mask the signing secret. Format: keep the `whsec_` prefix + first 6
- * chars after it + `...` + last 4 chars. For a representative
- * `whsec_d41d8cd98f00b204e9800998ecf8427e`, the hint reads
- * `whsec_d41d8c...427e`. This carries enough entropy for the issuer to
- * disambiguate two endpoints without leaking material that could be
- * combined into a working forgery.
+ * chars after it + `...` + last 4 chars. For a representative input
+ * shaped `whsec_<32 hex chars>`, the hint reads `whsec_<first-6>...
+ * <last-4>`. (Literal example omitted: GitHub's secret scanner regex
+ * triggers on any `whsec_` + 32-hex string regardless of context, and
+ * the bare placeholder docstring kept getting flagged.) This carries
+ * enough entropy for the issuer to disambiguate two endpoints without
+ * leaking material that could be combined into a working forgery.
  *
  * Uses ASCII `...` (three dots) rather than the unicode horizontal-
  * ellipsis `…` so operator pipelines that pipe the mask through

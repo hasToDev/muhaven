@@ -84,6 +84,7 @@ import { SseChannelService } from './checkout/sse-channel.js';
 import { WebhookDispatcher } from './checkout/webhook-dispatcher.js';
 import {
   ChainedIssuerLabelResolver,
+  KybIssuerLabelResolver,
   StaticIssuerLabelResolver,
   StubIssuerLabelResolver,
   type IIssuerLabelResolver,
@@ -318,11 +319,22 @@ function getWebhookDispatcher(): WebhookDispatcher {
 let _issuerLabelResolver: IIssuerLabelResolver | null = null;
 function getIssuerLabelResolver(): IIssuerLabelResolver {
   if (!_issuerLabelResolver) {
-    // Wave 4: stub primary, optional static fallback. Wave 5 swaps the
-    // primary for an on-chain ONCHAINID resolver.
+    // Wave 4 prod hot-fix (2026-05-13): primary resolver reads
+    // `user.issuerDisplayName` from the KYB user row so the buyer page
+    // shows the company name captured at `/apply-issuer` step 1
+    // (marked `verified: false` since it's issuer-supplied). Wave 5
+    // adds an on-chain ONCHAINID resolver ahead of this in the chain
+    // — that's the resolver that earns the verified chip. Stub +
+    // empty-static stay as terminal fallbacks so non-approved /
+    // missing-display-name addresses still surface the truncated
+    // address rather than throwing.
+    const repos = getRepos();
     _issuerLabelResolver = new ChainedIssuerLabelResolver(
-      new StubIssuerLabelResolver(),
-      new StaticIssuerLabelResolver({}),
+      new KybIssuerLabelResolver(repos.userRepo),
+      new ChainedIssuerLabelResolver(
+        new StubIssuerLabelResolver(),
+        new StaticIssuerLabelResolver({}),
+      ),
     );
   }
   return _issuerLabelResolver;

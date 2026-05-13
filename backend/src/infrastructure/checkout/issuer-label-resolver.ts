@@ -1,3 +1,4 @@
+import type { IUserRepository } from '../../domain/auth/repository/user.repository.js';
 import { getLogger } from '../../core/logger.js';
 
 /**
@@ -68,6 +69,32 @@ export class StaticIssuerLabelResolver implements IIssuerLabelResolver {
     const label = this.map.get(issuerAddress.toLowerCase());
     if (!label) return null;
     return { label, verified: false };
+  }
+}
+
+/**
+ * Resolve from the KYB user row — looks up an approved issuer by wallet
+ * address and returns the `issuer_display_name` captured at
+ * `/apply-issuer` step 1. Marked `verified: false` since the label is
+ * issuer-supplied; the on-chain ONCHAINID resolver (Wave 5) is what
+ * earns the verified chip.
+ *
+ * Returns null when:
+ *   - no user row exists for the address (e.g. a yet-to-register issuer)
+ *   - the row exists but `issuerStatus !== 'approved'` (pending /
+ *     suspended issuers should not surface a label on the buyer page)
+ *   - the row exists and is approved, but `issuerDisplayName` is null
+ *     (legacy rows from before the wizard captured display_name)
+ */
+export class KybIssuerLabelResolver implements IIssuerLabelResolver {
+  constructor(private readonly userRepo: IUserRepository) {}
+
+  async resolve(issuerAddress: `0x${string}`): Promise<ResolvedIssuerLabel | null> {
+    const user = await this.userRepo.findByWalletAddress(issuerAddress);
+    if (!user) return null;
+    if (user.issuerStatus !== 'approved') return null;
+    if (!user.issuerDisplayName) return null;
+    return { label: user.issuerDisplayName, verified: false };
   }
 }
 

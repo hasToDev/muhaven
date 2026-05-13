@@ -16,10 +16,23 @@
          - `https://sepolia-rollup.arbitrum.io` — Arb Sepolia RPC for
            viem public-client reads (P2 USDC.balanceOf, P3 read paths)
          Without these, the WebAuthn ceremony's POST to passkeys.zerodev.app
-         CSP-blocks at fetch time. -->
+         CSP-blocks at fetch time.
+
+         Prod cutover (2026-05-13):
+         - `script-src` allows `https://static.cloudflareinsights.com` —
+           CF Web Analytics injects `beacon.min.js` at the proxy layer
+           when the zone has the feature enabled. Browser blocks it
+           otherwise. Beacon has no URL-fragment access; payment-surface
+           privacy unaffected.
+         - `connect-src` allows `https://cloudflareinsights.com` — the
+           beacon POSTs telemetry to `/cdn-cgi/rum` on this host.
+         - `frame-ancestors` removed from the meta tag. Browsers ignore
+           it when delivered via meta (warning in console). If we want
+           click-jacking protection, add it via a Cloudflare Transform
+           Rule on the response — operator follow-up. -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.muhaven.app https://api-stage.muhaven.app http://localhost:3000 https://passkeys.zerodev.app https://rpc.zerodev.app https://sepolia-rollup.arbitrum.io; img-src 'self' data:; font-src 'self'; base-uri 'none'; frame-ancestors 'none';"
+      content="default-src 'none'; script-src 'self' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.muhaven.app https://api-stage.muhaven.app http://localhost:3000 https://passkeys.zerodev.app https://rpc.zerodev.app https://sepolia-rollup.arbitrum.io https://cloudflareinsights.com; img-src 'self' data:; font-src 'self'; base-uri 'none';"
     />
     <title>MuHaven — Checkout</title>
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
