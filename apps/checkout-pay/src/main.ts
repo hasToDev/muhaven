@@ -38,7 +38,7 @@ import {
 import { FundingPoller } from './funding-poll.js';
 import { connectOrCreate, PasskeyError } from './passkey.js';
 import type { KernelAccountClient } from '@zerodev/sdk';
-import { isAddress, type Address } from 'viem';
+import { getAddress, isAddress, type Address } from 'viem';
 
 interface PageState {
   session: CheckoutSessionDto;
@@ -83,6 +83,16 @@ let lastAnnouncedPollState: string = 'idle';
  *  detect transitions (pending → funded → wrapped → …) and move
  *  focus to the new step heading exactly once per transition. */
 let lastSseStatus: string | null = null;
+/**
+ * Wave 5 buyer-side port (P2 third-pass): AbortController paired with
+ * the active FundingPoller so a `stopFundingPoller()` call (triggered
+ * by an SSE status transition) ALSO cancels any in-flight
+ * `commitFundedTransition` retry loop. Without this, a backoff sleep
+ * (up to 4 s) followed by a 5xx response would write a misleading
+ * "Couldn't confirm your deposit" error to the assertive sr-only
+ * alert region — even though the page has already advanced to step 3.
+ */
+let fundingCommitAc: AbortController | null = null;
 
 bootstrap().catch((err) => {
   console.error('checkout bootstrap failed', err);
@@ -283,20 +293,28 @@ function showFundingStep(state: PageState): void {
   const stepPending = document.getElementById('step-pending');
   if (stepPending) stepPending.hidden = true;
   stepFunding.hidden = false;
-  // Render the pluggable provider into the funding container — replaces
-  // the legacy faucet snippet on each transition so the swap to a Wave
-  // 5 onramp provider is a one-component change.
+  // Wave 5 buyer-side port (P2 third-pass): idempotent rebuild. Without
+  // the buyer-match guard, every redundant SSE `pending` snapshot (e.g.
+  // EventSource auto-reconnects after a tab sleep) would `existing.remove()`
+  // + recreate, wiping any "Confirming with the backend… (attempt 2 of 3)"
+  // or balance-tick text the poller had written to
+  // `[data-funding-poll-status]`. Track the buyer that owns the current
+  // slot via `data-buyer-address`; rebuild only when missing or stale.
   const existing = stepFunding.querySelector('[data-funding-slot]');
-  if (existing) existing.remove();
-  const slotEl = document.createElement('div');
-  slotEl.setAttribute('data-funding-slot', '');
-  const rendered = fundingProvider.render({
-    buyerAddress: state.buyerAddress,
-    payload: state.payload,
-    issuerLabel: state.session.metadata.issuerLabel,
-  });
-  slotEl.appendChild(rendered.fragment);
-  stepFunding.appendChild(slotEl);
+  const existingBuyer = existing?.getAttribute('data-buyer-address');
+  if (!existing || existingBuyer !== state.buyerAddress) {
+    if (existing) existing.remove();
+    const slotEl = document.createElement('div');
+    slotEl.setAttribute('data-funding-slot', '');
+    slotEl.setAttribute('data-buyer-address', state.buyerAddress);
+    const rendered = fundingProvider.render({
+      buyerAddress: state.buyerAddress,
+      payload: state.payload,
+      issuerLabel: state.session.metadata.issuerLabel,
+    });
+    slotEl.appendChild(rendered.fragment);
+    stepFunding.appendChild(slotEl);
+  }
   // Wave 5 buyer-side port (P2): start (or reuse) the USDC balance
   // poller. Idempotent — re-entry from SSE events with the same
   // buyer + amount does NOT restart the interval.
@@ -316,21 +334,31 @@ function ensureFundingPollerStarted(state: PageState): void {
     );
     return;
   }
-  const buyer = state.buyerAddress;
+  // Wave 5 buyer-side port (P2 third-pass): canonicalise via
+  // `getAddress` so a backend-supplied lowercase address (DTO) and a
+  // kernel-supplied checksummed address (viem) produce the same cache
+  // key. Without this, two same-buyer re-entries with different cases
+  // would build different keys → unnecessary `stop()` + `new` churn.
+  const buyer = getAddress(state.buyerAddress);
   // Parse + validate the required amount. `BigInt('-1000000')` succeeds
   // (yielding a negative bigint), which would make `balance >= required`
   // trivially true and auto-fire onFunded against any balance — a
   // malicious issuer payload could weaponise this. `BigInt('0xFF')` and
   // `BigInt(' 100 ')` also succeed and would mismatch the cache key.
   // Pre-validate against a strict decimal-digit regex and reject
-  // negatives + impossible-magnitude values (USDC is 6-decimal uint64
-  // in practice; we use the uint64 max as a sane upper bound).
+  // negatives + zero + impossible-magnitude values (USDC is 6-decimal
+  // uint64 in practice; we use the uint64 max as a sane upper bound).
+  // Third-pass: ALSO reject `0n`. `BigInt('0')` passes the regex + the
+  // `< 0n` check, but `balance >= 0n` is trivially true → onFunded fires
+  // on tick 1 against any balance. Defense-in-depth — backend should
+  // validate amountUsd6 > 0 server-side, but corrupt sessions shouldn't
+  // weaponise the buyer page either.
   const required = (() => {
     const raw = state.payload.amountUsd6;
     if (!/^[0-9]+$/.test(raw)) return null;
     try {
       const v = BigInt(raw);
-      if (v < 0n) return null;
+      if (v <= 0n) return null;
       if (v > 18_446_744_073_709_551_615n) return null;
       return v;
     } catch {
@@ -339,7 +367,7 @@ function ensureFundingPollerStarted(state: PageState): void {
   })();
   if (required === null) {
     console.error(
-      'checkout: amountUsd6 missing or not a non-negative decimal integer',
+      'checkout: amountUsd6 missing or not a positive decimal integer ≤ uint64 max',
       state.payload.amountUsd6,
     );
     setPollStatusError(
@@ -353,6 +381,12 @@ function ensureFundingPollerStarted(state: PageState): void {
     return;
   }
   fundingPoller?.stop();
+  // Wave 5 buyer-side port (P2 third-pass): abort any prior in-flight
+  // commit retry before starting a new poller — the new run owns the
+  // confirmation contract from here on.
+  fundingCommitAc?.abort();
+  fundingCommitAc = new AbortController();
+  const commitSignal = fundingCommitAc.signal;
   fundingPoller = new FundingPoller({
     onPoll: (balance) => {
       updatePollStatus(balance, required);
@@ -362,7 +396,7 @@ function ensureFundingPollerStarted(state: PageState): void {
       // the SSE channel will flip the page to step 3 shortly. Showing
       // a green tick here closes the gap.
       markPollStatusFunded();
-      await commitFundedTransition(state, buyer);
+      await commitFundedTransition(state, buyer, commitSignal);
     },
     onError: (err) => {
       // Transient RPC blips — log a sanitised shape only. Viem errors
@@ -382,14 +416,27 @@ function stopFundingPoller(): void {
   fundingPoller?.stop();
   fundingPoller = null;
   fundingPollerKey = null;
-  // Reset announce dedupe AND the SSE-status memory so a future
-  // re-entry (e.g. an in-page session-switch by a future Wave-5
-  // "Cancel and try a different link" affordance) gets a clean
-  // "waiting" announcement + a correct "first snapshot, don't auto-
-  // focus" guard. `lastSseStatus = null` matches the dedupe-reset
-  // hygiene already here.
+  // Wave 5 buyer-side port (P2 third-pass): cancel any in-flight
+  // commit retry. Without this, a `funded`/`wrapped` SSE flip mid-
+  // backoff (4 s sleep) followed by a 5xx response would write a
+  // misleading `setPollStatusError` to the assertive sr-only alert
+  // region even though the page has already advanced.
+  fundingCommitAc?.abort();
+  fundingCommitAc = null;
+  // Reset announce dedupe so a future re-entry (e.g. an in-page
+  // session-switch by a future Wave-5 "Cancel and try a different
+  // link" affordance) gets a clean "waiting" announcement.
+  //
+  // NB: `lastSseStatus` is NOT reset here. It's a module-level
+  // singleton that the SSE-handler reads to detect transitions; the
+  // handler captures `prevStatus = lastSseStatus` BEFORE calling
+  // `stopFundingPoller`, then writes `lastSseStatus = status` AFTER,
+  // so any reset here is immediately overwritten on the same SSE
+  // event. For the (currently nonexistent) "Cancel and try a
+  // different link" path that wants a fresh session, reset
+  // `lastSseStatus` there explicitly — it's not the funding poll's
+  // concern.
   resetPollAnnounceState();
-  lastSseStatus = null;
 }
 
 function updatePollStatus(balance: bigint, required: bigint): void {
@@ -458,6 +505,7 @@ function setPollStatusError(message: string): void {
 async function commitFundedTransition(
   state: PageState,
   buyer: Address,
+  signal: AbortSignal,
 ): Promise<void> {
   const delays = [0, 1500, 4000] as const;
   // 408 Request Timeout / 425 Too Early / 429 Too Many Requests are
@@ -466,14 +514,21 @@ async function commitFundedTransition(
   // retrying won't help — bail and surface immediately.
   const TRANSIENT_CLIENT_STATUSES = new Set([408, 425, 429]);
   for (let attempt = 0; attempt < delays.length; attempt += 1) {
+    // Third-pass abort points: check before sleep + before fetch. If
+    // the caller (typically the SSE-driven `stopFundingPoller`)
+    // aborted us, exit silently — the page state is already advancing
+    // and any UI write here would be misleading.
+    if (signal.aborted) return;
     const delay = delays[attempt] ?? 0;
     if (delay > 0) {
       // Second/third attempts can sit silent for up to 5.5 s combined.
       // Swap the "preparing the next step…" copy for an honest "still
       // confirming" so the user doesn't read the pause as a freeze.
       setPollStatusRetrying(attempt + 1, delays.length);
-      await new Promise((r) => setTimeout(r, delay));
+      const aborted = await sleepWithAbort(delay, signal);
+      if (aborted) return;
     }
+    if (signal.aborted) return;
     try {
       await backend.transition({
         sessionId: state.session.sessionId,
@@ -482,6 +537,10 @@ async function commitFundedTransition(
       });
       return;
     } catch (err) {
+      // Re-check abort: the transition POST may have resolved AFTER
+      // an abort fired (network in flight when SSE flipped status).
+      // Don't surface the error in that case — the page already moved.
+      if (signal.aborted) return;
       if (err instanceof BackendError && err.status === 409) {
         // SSE channel beat us — the page is already advancing.
         console.warn('transition(funded) raced with backend (409) — ignoring');
@@ -515,6 +574,30 @@ async function commitFundedTransition(
       );
     }
   }
+}
+
+/**
+ * Sleep that honours `AbortSignal`. Returns `true` if the signal
+ * fired during the sleep (caller should bail), `false` if the timer
+ * elapsed normally. Uses `once: true` listener registration so the
+ * abort handler is detached on first fire (no listener leak).
+ */
+function sleepWithAbort(ms: number, signal: AbortSignal): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve(true);
+      return;
+    }
+    const onAbort = (): void => {
+      clearTimeout(timerId);
+      resolve(true);
+    };
+    const timerId = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve(false);
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 function setPollStatusRetrying(attempt: number, total: number): void {
@@ -658,8 +741,18 @@ function subscribeToEvents(state: PageState): void {
   const source = backend.openEventStream(state.session.sessionId);
   const onUpdate = (status: string, data: { buyerAddress?: string | null; purchaseTxHash?: string | null } = {}) => {
     const prevStatus = lastSseStatus;
-    state.session = { ...state.session, status, ...data } as CheckoutSessionDto;
-    if (data.buyerAddress) state.buyerAddress = data.buyerAddress;
+    // Third-pass: explicit field merge instead of `{...state.session,
+    // status, ...data} as CheckoutSessionDto`. The `as` cast hid any
+    // future SSE field that would otherwise clobber a DTO field. Only
+    // merge fields we own the wire-shape contract for.
+    state.session = { ...state.session, status };
+    if (data.buyerAddress) {
+      state.session.buyerAddress = data.buyerAddress;
+      state.buyerAddress = data.buyerAddress;
+    }
+    if (data.purchaseTxHash) {
+      state.session.purchaseTxHash = data.purchaseTxHash;
+    }
     updateStatusPill(status);
     showStepForStatus(state);
     // Wave 5 buyer-side port (P2): once the session has progressed
@@ -745,7 +838,16 @@ function moveFocusToStep(status: string): void {
       ? requestAnimationFrame
       : (cb: FrameRequestCallback) =>
           window.setTimeout(() => cb(performance.now()), 0);
-  schedule(() => heading.focus({ preventScroll: false }));
+  schedule(() => {
+    // Re-check `hidden` inside the RAF callback. If two SSE events
+    // arrive in quick succession (e.g. `funded` → `failed`), the first
+    // event queues a focus on step-wrapped; the second event hides
+    // step-wrapped before the frame runs. Chrome quietly focuses a
+    // hidden element which then re-appears invisible until the next
+    // layout pass; Firefox refuses. Guard against both.
+    if (stepEl.hidden) return;
+    heading.focus({ preventScroll: false });
+  });
 }
 
 function truncateAddress(addr: string): string {

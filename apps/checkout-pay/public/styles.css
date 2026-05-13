@@ -302,9 +302,12 @@ main {
 
 /* Wave 5 buyer-side port (P2): live USDC balance poll status. The
  * `data-poll-state` attribute is rotated by `main.ts:updatePollStatus`
- * + `markPollStatusFunded` + `setPollStatusError`. Three states:
+ * + `markPollStatusFunded` + `setPollStatusError` + `setPollStatusRetrying`.
+ * Four states:
  *  - waiting (default): muted text, watching for the deposit.
  *  - funded: amber-bright text + subtle bloom, threshold crossed.
+ *  - confirming: dimmer amber, retry attempt in flight — distinguishes
+ *    "still trying" from the settled "funded" affordance.
  *  - error: error tone, retry hint inline.
  */
 .poll-status {
@@ -325,6 +328,12 @@ main {
   color: var(--amber-bright);
   background: rgba(255, 220, 161, 0.06);
   border-color: rgba(255, 220, 161, 0.32);
+}
+
+.poll-status[data-poll-state='confirming'] {
+  color: var(--amber-bright);
+  background: rgba(255, 220, 161, 0.03);
+  border-color: rgba(255, 220, 161, 0.18);
 }
 
 .poll-status[data-poll-state='error'] {

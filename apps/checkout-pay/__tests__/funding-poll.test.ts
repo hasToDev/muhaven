@@ -442,4 +442,43 @@ describe('FundingPoller', () => {
     expect(onPoll).toHaveBeenCalledWith(0n);
     poller.stop();
   });
+
+  it('stop() during a slow onFunded callback does not leak state for a subsequent start()', async () => {
+    // Third-pass regression: tick() awaits `this.callbacks.onFunded(balance)`
+    // (line 202 of funding-poll.ts). If the caller's onFunded body
+    // awaits a long-running task (in production: `commitFundedTransition`'s
+    // bounded-retry POST loop) and the caller `stop()`s the poller
+    // mid-callback, a subsequent `start()` must work cleanly: no
+    // stuck inFlight, no stale `fired` flag, no leaked interval.
+    let resolveOnFunded!: () => void;
+    const slowOnFunded = new Promise<void>((r) => {
+      resolveOnFunded = r;
+    });
+    const onFunded = vi.fn().mockReturnValueOnce(slowOnFunded);
+    const publicClient = makePublicClient([10_000_000n, 10_000_000n]);
+    const poller = new FundingPoller({
+      publicClient,
+      usdcAddress: USDC,
+      pollIntervalMs: 5_000,
+      onFunded,
+    });
+    poller.start(BUYER, 1_000_000n);
+    // The immediate tick reads 10_000_000n, fires onFunded (which is
+    // hanging), then awaits the slow callback. isRunning is now false
+    // (the interval was cleared inside tick() before invoking onFunded).
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onFunded).toHaveBeenCalledTimes(1);
+    expect(poller.isRunning).toBe(false);
+    // Caller mid-callback stop() (simulating SSE-driven cleanup).
+    poller.stop();
+    // Now resolve the hanging callback. Nothing else should fire.
+    resolveOnFunded();
+    await Promise.resolve();
+    await Promise.resolve();
+    // Fresh start() — pre-funded kernel, must fire onFunded again.
+    poller.start(BUYER, 1_000_000n);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onFunded).toHaveBeenCalledTimes(2);
+    poller.stop();
+  });
 });

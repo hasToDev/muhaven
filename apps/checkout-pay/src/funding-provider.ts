@@ -95,12 +95,22 @@ export class FaucetRedirectProvider implements FundingProvider {
     const copyBtn = fragment.querySelector<HTMLButtonElement>('[data-faucet-copy]');
     if (addr) addr.textContent = ctx.buyerAddress;
     if (copyBtn) {
+      let revertTimer: ReturnType<typeof setTimeout> | null = null;
       copyBtn.addEventListener('click', async () => {
         try {
           await navigator.clipboard.writeText(ctx.buyerAddress);
           copyBtn.textContent = 'Copied';
-          setTimeout(() => {
-            copyBtn.textContent = 'Copy address';
+          if (revertTimer !== null) clearTimeout(revertTimer);
+          revertTimer = setTimeout(() => {
+            // Skip the revert if the button has been detached from the
+            // DOM (e.g. a Wave 5 P2 idempotent re-render replaced the
+            // funding slot). Without this, the closure pins the
+            // detached subtree until the timer fires — bounded but
+            // observable in jsdom timer-count assertions.
+            if (copyBtn.isConnected) {
+              copyBtn.textContent = 'Copy address';
+            }
+            revertTimer = null;
           }, 1500);
         } catch {
           copyBtn.textContent = 'Copy failed — select manually';
