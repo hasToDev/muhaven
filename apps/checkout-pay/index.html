@@ -4,14 +4,22 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="referrer" content="no-referrer" />
-    <!-- CSP locks scripts to self + connect to backend. The Wave 5
-         on-ramp swap will need to relax connect-src for the chosen
-         provider (Sardine / Coinbase / MoonPay). NO inline scripts —
-         all interactivity runs from the bundled module. Inline styles
-         are not allowed; styles ship as a separate <link>. -->
+    <!-- CSP locks scripts to self + connect to backend + ZeroDev surfaces.
+         The Wave 5 on-ramp swap will need to relax connect-src for the
+         chosen provider (Sardine / Coinbase / MoonPay). NO inline
+         scripts — all interactivity runs from the bundled module.
+         Inline styles are not allowed; styles ship as a separate <link>.
+
+         Wave 5 buyer-side port (P1+P2+P3) — `connect-src` extends to:
+         - `https://passkeys.zerodev.app` — passkey-server (P1 ceremony)
+         - `https://rpc.zerodev.app` — bundler (P3 UserOps + paymaster)
+         - `https://sepolia-rollup.arbitrum.io` — Arb Sepolia RPC for
+           viem public-client reads (P2 USDC.balanceOf, P3 read paths)
+         Without these, the WebAuthn ceremony's POST to passkeys.zerodev.app
+         CSP-blocks at fetch time. -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.muhaven.app https://api-stage.muhaven.app http://localhost:3000; img-src 'self' data:; font-src 'self'; base-uri 'none'; frame-ancestors 'none';"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.muhaven.app https://api-stage.muhaven.app http://localhost:3000 https://passkeys.zerodev.app https://rpc.zerodev.app https://sepolia-rollup.arbitrum.io; img-src 'self' data:; font-src 'self'; base-uri 'none'; frame-ancestors 'none';"
     />
     <title>MuHaven — Checkout</title>
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
