@@ -83,6 +83,14 @@ const issuerNav = [
   { path: '/checkout', label: 'Checkout', icon: CreditCard },
   { path: '/investors', label: 'Investors', icon: Users },
   { path: '/compliance', label: 'Compliance', icon: ClipboardCheck },
+  // §5 walkthrough operator feedback 2026-05-1?: HavenBot supports the
+  // full P7 issuer-side tool surface (distribute_yield / kyc_add /
+  // kyc_remove / unpause_token / propose_create_checkout) plus the
+  // P11 governance/protection reads. Pre-fix the issuer sidebar
+  // omitted /agent entirely, forcing issuers to type the URL to
+  // reach HavenBot. Mirrors the investor-side last-position
+  // (post-Activity / post-Compliance "tools beyond the core flow").
+  { path: '/agent', label: 'Agent', icon: Sparkles },
 ]
 
 const navItems = computed(() => store.role === 'investor' ? investorNav : issuerNav)

@@ -42,9 +42,9 @@ export interface FundingProvider {
 
 /**
  * Wave 4 provider — opens the Circle testnet faucet in a new tab and
- * shows the buyer's kernel address with a copy button.
+ * shows the buyer's wallet address with a copy button.
  *
- * The page side-runs a kernel-balance poll loop; this provider is
+ * The page side-runs a wallet-balance poll loop; this provider is
  * "hands-off" once rendered.
  */
 export class FaucetRedirectProvider implements FundingProvider {

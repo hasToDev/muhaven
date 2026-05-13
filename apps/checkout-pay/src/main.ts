@@ -182,16 +182,20 @@ function wireCtas(state: PageState): void {
 
 async function onPasskeyContinue(state: PageState): Promise<void> {
   // Wave 4 placeholder — real ZeroDev SDK integration lands in Wave 5.
-  // The shape stays stable: provision kernel, surface address, set
-  // `state.buyerAddress`, transition to `funded` once chain reports
+  // The shape stays stable: provision smart-account, surface its address,
+  // set `state.buyerAddress`, transition to `funded` once chain reports
   // `≥ amount` USDC.
   //
   // For the hackathon demo the page asks the buyer for an address (or
   // generates a deterministic placeholder bound to the sessionId). The
   // real ceremony will swap the prompt for `passkeyKernelClient.create`
-  // + return the kernel address.
+  // + return the freshly-provisioned wallet address.
+  //
+  // Walkthrough operator feedback 2026-05-1?: rename "kernel address"
+  // → "wallet address" across all buyer-page copy. "Kernel" is leaky
+  // ERC-4337 abstraction the buyer shouldn't need to learn.
   const provisional = state.buyerAddress ?? prompt(
-    'Wave 4 demo placeholder — paste your kernel address to continue. Wave 5 will replace this with the ZeroDev passkey ceremony.',
+    'Paste your wallet address (0x-prefixed hex) to continue. A one-tap passkey sign-in is coming soon.',
   );
   if (!provisional) return;
   if (!/^0x[a-fA-F0-9]{40}$/.test(provisional)) {
@@ -207,7 +211,7 @@ function showFundingStep(state: PageState): void {
   const stepFunding = document.getElementById('step-funding');
   if (!stepFunding) return;
   // Mount the funding provider under the existing CTA block.
-  const slot = stepFunding.querySelector('#kernel-address');
+  const slot = stepFunding.querySelector('#wallet-address');
   if (slot && slot.textContent !== state.buyerAddress) {
     slot.textContent = state.buyerAddress;
   }

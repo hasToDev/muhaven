@@ -66,6 +66,11 @@ const issuerNav = [
   { path: '/checkout', label: 'Checkout', icon: CreditCard },
   { path: '/investors', label: 'Investors', icon: Users },
   { path: '/compliance', label: 'Compliance', icon: ClipboardCheck },
+  // §5 walkthrough operator feedback — HavenBot supports issuer-side
+  // tools (P7 distribute_yield / kyc_add / kyc_remove / unpause_token /
+  // propose_create_checkout + P11 governance/protection reads). See
+  // Sidebar.vue for the rationale block.
+  { path: '/agent', label: 'Agent', icon: Sparkles },
 ]
 
 const navItems = computed(() => store.role === 'investor' ? investorNav : issuerNav)
