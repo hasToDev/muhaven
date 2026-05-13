@@ -233,7 +233,16 @@ function onConfirmComplete(payload: {
   // (e.g. "you have $5, need $100; wrap more first") is load-bearing
   // and the toast auto-dismisses too fast — operator feedback
   // 2026-05-09 on the runner balance gate.
-  if (payload.ok === true) {
+  //
+  // EXCEPTION (third-pass walkthrough operator feedback 2026-05-1?):
+  // `create_checkout` is a single-shot action whose SUCCESS terminal
+  // state IS the load-bearing surface — the buyer URL + fragment key
+  // (after `#k=`) are surfaced ONCE inside `CreateCheckoutSuccessCard`,
+  // backend can never reproduce the key, and there's no audit-row /
+  // toast fallback that carries the URL. Auto-advancing dismisses the
+  // modal before the operator can Copy / Open. Keep the success modal
+  // mounted; the operator dismisses via X or backdrop when done.
+  if (payload.ok === true && payload.action.kind !== 'create_checkout') {
     const next = agentStore.pendingActions[0] ?? null
     activeAction.value = next
   }
