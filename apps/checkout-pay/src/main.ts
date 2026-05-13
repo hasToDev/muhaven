@@ -35,11 +35,18 @@ import {
   FaucetRedirectProvider,
   type FundingProvider,
 } from './funding-provider.js';
+import { connectOrCreate, PasskeyError } from './passkey.js';
+import type { KernelAccountClient } from '@zerodev/sdk';
 
 interface PageState {
   session: CheckoutSessionDto;
   payload: CheckoutPayload;
   buyerAddress: string | null;
+  /** Wave-5 buyer-side port (P1): live kernel client after a successful
+   *  passkey ceremony. Reused by P2's funding poll (to read the kernel
+   *  address) and P3's wrap+approve+buy UserOps. Null before the
+   *  ceremony completes. */
+  kernelClient: KernelAccountClient | null;
 }
 
 const backend = new CheckoutBackend();
@@ -52,6 +59,11 @@ bootstrap().catch((err) => {
 
 async function bootstrap(): Promise<void> {
   showSection('loading');
+  // Wave 5 buyer-side port (P1): operator surfaced that the
+  // `<span class="environment">` chip in the header was rendering empty.
+  // Populate from hostname so stage / preview deployments don't get
+  // mistaken for prod in screenshots.
+  populateEnvironmentChip();
 
   const loc = parseCheckoutLocation(window.location);
   if (!loc) {
@@ -75,6 +87,7 @@ async function bootstrap(): Promise<void> {
     session,
     payload,
     buyerAddress: session.buyerAddress,
+    kernelClient: null,
   };
   renderSession(state);
   subscribeToEvents(state);
@@ -181,29 +194,48 @@ function wireCtas(state: PageState): void {
 }
 
 async function onPasskeyContinue(state: PageState): Promise<void> {
-  // Wave 4 placeholder — real ZeroDev SDK integration lands in Wave 5.
-  // The shape stays stable: provision smart-account, surface its address,
-  // set `state.buyerAddress`, transition to `funded` once chain reports
-  // `≥ amount` USDC.
+  // Wave 5 buyer-side port (P1): real ZeroDev passkey ceremony via the
+  // shared stage project. `connectOrCreate` tries login first
+  // (returning buyer with an existing credential) and falls back to
+  // register on no-credential — single button, two paths.
   //
-  // For the hackathon demo the page asks the buyer for an address (or
-  // generates a deterministic placeholder bound to the sessionId). The
-  // real ceremony will swap the prompt for `passkeyKernelClient.create`
-  // + return the freshly-provisioned wallet address.
-  //
-  // Walkthrough operator feedback 2026-05-1?: rename "kernel address"
-  // → "wallet address" across all buyer-page copy. "Kernel" is leaky
-  // ERC-4337 abstraction the buyer shouldn't need to learn.
-  const provisional = state.buyerAddress ?? prompt(
-    'Paste your wallet address (0x-prefixed hex) to continue. A one-tap passkey sign-in is coming soon.',
-  );
-  if (!provisional) return;
-  if (!/^0x[a-fA-F0-9]{40}$/.test(provisional)) {
-    showError('Address must be a 0x-prefixed 40-char hex string.');
-    return;
+  // Operator-side prereq (LANDED 2026-05-1?): the stage ZeroDev project
+  // has `https://pay-stage.muhaven.app` added to Domains. Without that,
+  // the WebAuthn server 401s.
+  const ctaPasskey = document.getElementById('cta-passkey');
+  const ctaPasskeyLabel = ctaPasskey?.textContent ?? null;
+  setPasskeyCtaState(ctaPasskey, 'busy', 'Signing in with passkey…');
+  try {
+    const kernel = await connectOrCreate();
+    state.kernelClient = kernel.kernelClient;
+    state.buyerAddress = kernel.address;
+    showFundingStep(state);
+  } catch (err) {
+    if (err instanceof PasskeyError && err.code === 'passkey_cancelled') {
+      // User cancelled — leave the CTA enabled so they can retry.
+      setPasskeyCtaState(ctaPasskey, 'idle', ctaPasskeyLabel ?? 'Continue with passkey');
+      return;
+    }
+    const msg = err instanceof Error ? err.message : 'Passkey sign-in failed.';
+    showError(`Couldn't sign in with passkey: ${msg}`);
+    setPasskeyCtaState(ctaPasskey, 'idle', ctaPasskeyLabel ?? 'Continue with passkey');
   }
-  state.buyerAddress = provisional;
-  showFundingStep(state);
+}
+
+function setPasskeyCtaState(
+  el: HTMLElement | null,
+  state: 'idle' | 'busy',
+  label: string,
+): void {
+  if (!el) return;
+  el.textContent = label;
+  if (state === 'busy') {
+    el.setAttribute('aria-busy', 'true');
+    (el as HTMLButtonElement).disabled = true;
+  } else {
+    el.removeAttribute('aria-busy');
+    (el as HTMLButtonElement).disabled = false;
+  }
 }
 
 function showFundingStep(state: PageState): void {
@@ -299,4 +331,23 @@ function subscribeToEvents(state: PageState): void {
 function truncateAddress(addr: string): string {
   if (addr.length < 12) return addr;
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+}
+
+/**
+ * Populate the header `<span class="environment">` chip from the
+ * hostname. Stage / preview deploys label themselves so they don't
+ * get mistaken for prod in screenshots / bug reports.
+ *
+ * Production (`pay.muhaven.app`) renders no chip — empty span.
+ */
+function populateEnvironmentChip(): void {
+  const el = document.querySelector<HTMLElement>('.brand .environment');
+  if (!el) return;
+  const host = window.location.hostname.toLowerCase();
+  let label: string;
+  if (host === 'pay.muhaven.app') label = '';
+  else if (host === 'pay-stage.muhaven.app') label = 'stage';
+  else if (host === 'localhost' || host === '127.0.0.1') label = 'local';
+  else label = 'preview';
+  el.textContent = label;
 }
