@@ -1,0 +1,7 @@
+# Quarantine freshly-published versions for 7 days. See the root
+# bunfig.toml + .npmrc for full rationale — this duplicate covers the
+# frontend/bun.lock when `cd frontend && bun install` runs from this
+# subdirectory (bun resolves bunfig.toml relative to cwd).
+
+[install]
+minimumReleaseAge = 604800

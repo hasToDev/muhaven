@@ -5,7 +5,7 @@ WORKDIR /app
 # Install dependencies
 FROM base AS deps
 COPY package.json pnpm-lock.yaml* ./
-RUN pnpm install --frozen-lockfile 2>/dev/null || pnpm install
+RUN pnpm install --frozen-lockfile --ignore-scripts
 
 # Runtime — tsx serves src/ + api/ directly (no pre-compile needed)
 FROM base AS runner

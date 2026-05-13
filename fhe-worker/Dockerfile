@@ -5,7 +5,7 @@ WORKDIR /app
 FROM base AS build
 COPY package.json pnpm-lock.yaml* tsconfig.json ./
 COPY src/ src/
-RUN pnpm install --frozen-lockfile || pnpm install
+RUN pnpm install --frozen-lockfile --ignore-scripts
 RUN pnpm build
 
 FROM base AS runner

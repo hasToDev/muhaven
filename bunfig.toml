@@ -1,0 +1,13 @@
+# Quarantine freshly-published versions for 7 days before bun will resolve
+# them, blocking the short detection window most npm supply-chain worms
+# rely on (Shai-Hulud, Mini Shai-Hulud, etc.). Value is in SECONDS.
+# Only affects NEW resolutions — anything already in bun.lock installs
+# unchanged. Override on a one-shot install with
+# `bun install --config-overrides install.minimumReleaseAge=0 <pkg>` when
+# an urgent fix can't wait, or add the package name to
+# `minimumReleaseAgeExcludes` here for permanent exceptions.
+# Mirrors `.npmrc`'s `minimumReleaseAge` (minutes) for the pnpm-managed
+# subtrees. A second bunfig.toml in frontend/ covers that bun.lock too.
+
+[install]
+minimumReleaseAge = 604800
