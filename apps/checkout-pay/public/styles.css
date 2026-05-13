@@ -299,3 +299,36 @@ main {
   word-break: break-all;
   margin-bottom: 14px;
 }
+
+/* Wave 5 buyer-side port (P2): live USDC balance poll status. The
+ * `data-poll-state` attribute is rotated by `main.ts:updatePollStatus`
+ * + `markPollStatusFunded` + `setPollStatusError`. Three states:
+ *  - waiting (default): muted text, watching for the deposit.
+ *  - funded: amber-bright text + subtle bloom, threshold crossed.
+ *  - error: error tone, retry hint inline.
+ */
+.poll-status {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  transition:
+    color 0.2s ease,
+    background 0.2s ease,
+    border-color 0.2s ease;
+}
+
+.poll-status[data-poll-state='funded'] {
+  color: var(--amber-bright);
+  background: rgba(255, 220, 161, 0.06);
+  border-color: rgba(255, 220, 161, 0.32);
+}
+
+.poll-status[data-poll-state='error'] {
+  color: var(--error);
+  background: rgba(240, 138, 138, 0.06);
+  border-color: rgba(240, 138, 138, 0.32);
+}

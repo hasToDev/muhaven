@@ -28,15 +28,17 @@
  * project page — no code-level config.
  */
 
-import { CheckoutBackend, type CheckoutSessionDto } from './backend.js';
+import { BackendError, CheckoutBackend, type CheckoutSessionDto } from './backend.js';
 import { decryptPayload, formatUsd6, type CheckoutPayload } from './decrypt.js';
 import { parseCheckoutLocation } from './fragment.js';
 import {
   FaucetRedirectProvider,
   type FundingProvider,
 } from './funding-provider.js';
+import { FundingPoller } from './funding-poll.js';
 import { connectOrCreate, PasskeyError } from './passkey.js';
 import type { KernelAccountClient } from '@zerodev/sdk';
+import { isAddress, type Address } from 'viem';
 
 interface PageState {
   session: CheckoutSessionDto;
@@ -51,6 +53,19 @@ interface PageState {
 
 const backend = new CheckoutBackend();
 const fundingProvider: FundingProvider = new FaucetRedirectProvider();
+
+/**
+ * Wave 5 buyer-side port (P2): module-level FundingPoller so the
+ * interval is single-instance per page. Two SSE events firing
+ * `showFundingStep` in rapid succession reuse the same poller via
+ * `ensureFundingPollerStarted`'s key check — no stacked intervals.
+ */
+let fundingPoller: FundingPoller | null = null;
+/** Key = `${buyerAddress}:${amountUsd6}` — restart only when the
+ *  buyer or required amount changes (in practice neither does
+ *  mid-session, but the guard keeps the design forward-compatible
+ *  with P3's wrap+approve+buy retry logic). */
+let fundingPollerKey: string | null = null;
 
 bootstrap().catch((err) => {
   console.error('checkout bootstrap failed', err);
@@ -265,6 +280,176 @@ function showFundingStep(state: PageState): void {
   });
   slotEl.appendChild(rendered.fragment);
   stepFunding.appendChild(slotEl);
+  // Wave 5 buyer-side port (P2): start (or reuse) the USDC balance
+  // poller. Idempotent — re-entry from SSE events with the same
+  // buyer + amount does NOT restart the interval.
+  ensureFundingPollerStarted(state);
+}
+
+function ensureFundingPollerStarted(state: PageState): void {
+  if (!state.buyerAddress) return;
+  if (!isAddress(state.buyerAddress)) {
+    // Belt-and-braces: backend DTO types this `string | null`, kernel
+    // ceremony returns a viem `Address`. If a malformed value ever
+    // landed here, viem would surface it as an opaque `readContract`
+    // failure every 5 s — surface the configuration error instead.
+    console.error('checkout: buyerAddress is not a valid hex address', state.buyerAddress);
+    setPollStatusError(
+      'Your account address looks malformed. Refresh to retry — if this persists, contact the issuer.',
+    );
+    return;
+  }
+  const buyer = state.buyerAddress;
+  const required = (() => {
+    try {
+      return BigInt(state.payload.amountUsd6);
+    } catch {
+      return null;
+    }
+  })();
+  if (required === null) {
+    console.error(
+      'checkout: amountUsd6 not a parseable bigint',
+      state.payload.amountUsd6,
+    );
+    return;
+  }
+  const key = `${buyer.toLowerCase()}:${required.toString()}`;
+  if (fundingPollerKey === key && fundingPoller?.isRunning) {
+    // Already polling the same kernel for the same target — no-op.
+    return;
+  }
+  fundingPoller?.stop();
+  fundingPoller = new FundingPoller({
+    onPoll: (balance) => {
+      updatePollStatus(balance, required);
+    },
+    onFunded: async () => {
+      // Drop the "checking…" copy in favour of a settled affordance —
+      // the SSE channel will flip the page to step 3 shortly. Showing
+      // a green tick here closes the gap.
+      markPollStatusFunded();
+      await commitFundedTransition(state, buyer);
+    },
+    onError: (err) => {
+      // Transient RPC blips — log only. The next interval will retry.
+      console.warn('USDC balance poll failed (will retry)', err);
+    },
+  });
+  fundingPollerKey = key;
+  fundingPoller.start(buyer, required);
+}
+
+function stopFundingPoller(): void {
+  fundingPoller?.stop();
+  fundingPoller = null;
+  fundingPollerKey = null;
+}
+
+function updatePollStatus(balance: bigint, required: bigint): void {
+  const el = document.querySelector<HTMLElement>('[data-funding-poll-status]');
+  if (!el) return;
+  const formatted = formatUsd6(balance.toString());
+  const requiredFormatted = formatUsd6(required.toString());
+  // onPoll fires synchronously before onFunded inside the same tick.
+  // When the threshold has just been crossed, render a transient
+  // "confirming" message instead of the misleading "waiting for ≥ X"
+  // copy. `markPollStatusFunded` then overrides to "Funded — preparing
+  // the next step…" once the transition resolves.
+  if (balance >= required) {
+    el.textContent = `Current balance: ${formatted} USDC — confirming with the backend…`;
+    el.dataset.pollState = 'funded';
+  } else {
+    el.textContent = `Current balance: ${formatted} USDC — waiting for ≥ ${requiredFormatted}`;
+    el.dataset.pollState = 'waiting';
+  }
+}
+
+function markPollStatusFunded(): void {
+  const el = document.querySelector<HTMLElement>('[data-funding-poll-status]');
+  if (!el) return;
+  el.textContent = 'Funded — preparing the next step…';
+  el.dataset.pollState = 'funded';
+}
+
+function setPollStatusError(message: string): void {
+  const el = document.querySelector<HTMLElement>('[data-funding-poll-status]');
+  if (!el) return;
+  el.textContent = message;
+  el.dataset.pollState = 'error';
+}
+
+/**
+ * Commit the `funded` transition with bounded retries.
+ *
+ * The buyer's kernel observably crosses the threshold (we just polled
+ * a balance ≥ required). The only thing that can fail is the
+ * backend round-trip. Three outcomes:
+ *  - 2xx: done.
+ *  - 409 Conflict: benign — `transition-session.use-case.ts` throws
+ *    `conflict` for terminal state, expired pending, invalid forward
+ *    transition, OR lost race. All four reduce to "the row is no
+ *    longer in pending" → the page is already advancing via SSE.
+ *  - Other 4xx: deterministic — retrying won't help. Surface
+ *    immediately so the user / operator sees the cause.
+ *  - 5xx / network: transient — retry with backoff (0 / 1.5s / 4s).
+ *
+ * Failure is NOT fatal to the page: the rest of the UI stays usable
+ * (kernel address visible, faucet link works) and we surface a retry
+ * hint inline. The user can refresh to re-poll + re-attempt.
+ */
+async function commitFundedTransition(
+  state: PageState,
+  buyer: Address,
+): Promise<void> {
+  const delays = [0, 1500, 4000] as const;
+  for (let attempt = 0; attempt < delays.length; attempt += 1) {
+    const delay = delays[attempt] ?? 0;
+    if (delay > 0) {
+      // Second/third attempts can sit silent for up to 5.5 s combined.
+      // Swap the "preparing the next step…" copy for an honest "still
+      // confirming" so the user doesn't read the pause as a freeze.
+      setPollStatusRetrying(attempt + 1, delays.length);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+    try {
+      await backend.transition({
+        sessionId: state.session.sessionId,
+        newStatus: 'funded',
+        buyerAddress: buyer,
+      });
+      return;
+    } catch (err) {
+      if (err instanceof BackendError && err.status === 409) {
+        // SSE channel beat us — the page is already advancing.
+        console.warn('transition(funded) raced with backend (409) — ignoring');
+        return;
+      }
+      const deterministicClientError =
+        err instanceof BackendError && err.status >= 400 && err.status < 500;
+      const lastAttempt = attempt === delays.length - 1;
+      if (deterministicClientError || lastAttempt) {
+        console.error('checkout transition(funded) failed', err);
+        setPollStatusError(
+          `Couldn't confirm your deposit with the backend (${
+            err instanceof Error ? err.message : String(err)
+          }). Refresh to retry — your funds are safe in your kernel address above.`,
+        );
+        return;
+      }
+      console.warn(
+        `transition(funded) attempt ${attempt + 1} failed — retrying`,
+        err,
+      );
+    }
+  }
+}
+
+function setPollStatusRetrying(attempt: number, total: number): void {
+  const el = document.querySelector<HTMLElement>('[data-funding-poll-status]');
+  if (!el) return;
+  el.textContent = `Confirming with the backend… (retry ${attempt}/${total})`;
+  el.dataset.pollState = 'funded';
 }
 
 async function onConfirmBuy(state: PageState): Promise<void> {
@@ -292,6 +477,14 @@ function subscribeToEvents(state: PageState): void {
     if (data.buyerAddress) state.buyerAddress = data.buyerAddress;
     updateStatusPill(status);
     showStepForStatus(state);
+    // Wave 5 buyer-side port (P2): once the session has progressed
+    // beyond pending, the kernel either deposited the USDC we were
+    // waiting for OR the backend wrote it directly. Either way, the
+    // poll loop has no work left — stop the interval so we don't
+    // burn RPC quota on a session that's already advancing.
+    if (status !== 'pending') {
+      stopFundingPoller();
+    }
     if (status === 'settled' || status === 'expired' || status === 'failed') {
       source.close();
     }

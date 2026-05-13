@@ -1,6 +1,6 @@
 {
   "name": "@muhaven/checkout-pay",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "description": "Hosted checkout buyer page for MuHaven (pay.muhaven.app). Renders the issuer label + decrypted amount, runs the ZeroDev passkey ceremony, and walks the buyer through fund → wrap → buy.",
   "type": "module",

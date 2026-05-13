@@ -52,6 +52,13 @@ export class FaucetRedirectProvider implements FundingProvider {
 
   render(ctx: FundingContext): FundingProviderRender {
     const tpl = document.createElement('template');
+    // Wave 5 buyer-side port (P2): the `[data-funding-poll-status]`
+    // line is wired by `main.ts:ensureFundingPollerStarted` — every
+    // 5 s tick of the FundingPoller updates the text + `data-poll-state`
+    // attribute. Pre-poll text reads "Checking balance…" so the user
+    // sees a live affordance instead of dead "we'll continue
+    // automatically" copy. The first tick is synchronous on `start()`
+    // so the placeholder text rarely survives more than a few frames.
     tpl.innerHTML = `
       <div class="funding-faucet">
         <p>
@@ -64,8 +71,12 @@ export class FaucetRedirectProvider implements FundingProvider {
           <a class="cta" data-faucet-link href="https://faucet.circle.com/" target="_blank" rel="noopener noreferrer">Open Circle faucet</a>
         </div>
         <p class="hint">
-          Once your account shows ≥ ${formatHintAmount(ctx.payload.amountUsd6)} USDC,
-          we'll continue automatically.
+          We're watching your balance every few seconds. As soon as it
+          hits <strong>${formatHintAmount(ctx.payload.amountUsd6)} USDC</strong>
+          we'll move you on to the purchase step automatically.
+        </p>
+        <p class="poll-status" data-funding-poll-status data-poll-state="waiting" aria-live="polite" aria-atomic="true">
+          Checking balance…
         </p>
       </div>
     `;
