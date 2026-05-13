@@ -11,12 +11,16 @@ import { cn, formatAddress } from '@/lib/utils'
 import MDarkToggle from '@/components/ui/MDarkToggle.vue'
 import MSessionStatus from '@/components/ui/MSessionStatus.vue'
 import MDevModeBanner from '@/components/ui/MDevModeBanner.vue'
+import LinkTelegramModal from '@/components/agent/LinkTelegramModal.vue'
 import { toast } from 'vue-sonner'
 import {
   PieChart, ShoppingCart, TrendingUp, Activity, Store, Sparkles, Send, Undo2,
   Coins, Share2, Users, ClipboardCheck, Wallet, LogOut, LogIn, Loader2,
   Copy, Check, Banknote, FileSignature, CreditCard,
 } from 'lucide-vue-next'
+
+// Q4 (post-§4 queue) — Telegram-link modal visibility ref.
+const showLinkTelegram = ref(false)
 
 // Role is chosen at login (see LoginPage.vue). The sidebar no longer offers a
 // post-login switcher — users must re-sign-in via a different role if they
@@ -352,6 +356,30 @@ onBeforeUnmount(() => {
         Sign In
       </button>
 
+      <!-- Q4 (post-§4 queue, 2026-05-14): Link Telegram CTA. Surfaces
+           the `issueTelegramLink()` flow as a visible button so the
+           operator doesn't need DevTools-fu to mint a link code
+           (workaround used during §4 walkthrough). Only renders when
+           the wallet is connected — Telegram linking is a per-user
+           credential. Bypasses HavenBot entirely so it works even
+           with stub classifier active. -->
+      <button
+        v-if="authStore.walletAddress"
+        type="button"
+        data-testid="nav-link-telegram"
+        @click="showLinkTelegram = true"
+        class="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium
+               text-compute dark:text-signal
+               border border-haze dark:border-white/10
+               bg-mist/40 dark:bg-midnight-mid/40
+               hover:bg-mist dark:hover:bg-midnight-mid/80
+               rounded-lg transition-colors duration-150 cursor-pointer"
+        title="Link your Telegram account to receive confirmation prompts"
+      >
+        <Send :size="13" />
+        Link Telegram
+      </button>
+
       <!-- ADR-023 dev-mode pill — bottom of the sidebar so it's always
            visible without dominating the chrome. Inherits the parent's
            `space-y-2` gap (the pre-9.C `!mt-1.5` override was undone
@@ -375,5 +403,15 @@ onBeforeUnmount(() => {
         >{{ versionLabel }}</span>
       </div>
     </div>
+
+    <!-- Q4 + Q5 — Telegram-link modal. Teleport to body so the modal's
+         `position: fixed` resolves against the viewport regardless of
+         the sidebar's transform context. -->
+    <Teleport to="body">
+      <LinkTelegramModal
+        v-if="showLinkTelegram"
+        @close="showLinkTelegram = false"
+      />
+    </Teleport>
   </aside>
 </template>
