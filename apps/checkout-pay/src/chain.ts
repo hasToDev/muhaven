@@ -63,6 +63,25 @@ export function getSubscriptionAddress(): Address {
 }
 
 /**
+ * Legacy ConfidentialUSDC (PUSDC) address — pre-v0.1.0 ReineiraOS
+ * contract that `MuHavenStable.wrap(InEuint64, address)` pulls from
+ * via the ADR-008 `confidentialTransferFrom(...)` selector. The buyer
+ * page's wrap chain is USDC → legacy PUSDC → mhUSDC, so we need this
+ * address for both the `USDC.approve(legacyPusdc, ...)` allowance and
+ * the `legacyPusdc.setOperator(muHavenStable, ...)` grant.
+ *
+ * Default falls back to the canonical Arb Sepolia deployment if env
+ * is unset — same value for prod + staging since legacy PUSDC is
+ * shared across both environments (immutable, deployed pre-Wave-3.5).
+ */
+export function getLegacyPusdcAddress(): Address {
+  return readEnv(
+    'VITE_LEGACY_PUSDC_ADDRESS',
+    '0x6b6e6479b8b3237933c3ab9d8be969862d4ed89f',
+  ) as Address;
+}
+
+/**
  * Singleton `PublicClient` bound to the env RPC. Reused across the
  * P1 passkey ceremony + P2 balance poll + P3 ceremony so observation
  * is consistent.

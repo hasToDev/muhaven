@@ -31,8 +31,29 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
-    target: 'es2022',
+    // Wave 5 P3: `esnext` (was es2022) so Vite's code-splitting for the
+    // cofhe SDK's worker entry compiles cleanly. The cofhe `@cofhe/sdk/web`
+    // package ships dynamic-import chunks that fail to bundle under
+    // older targets if any output format defaults to iife.
+    target: 'esnext',
     sourcemap: true,
+  },
+  // Wave 5 P3 — cofhe SDK ships web workers + WASM. Match the dashboard's
+  // `frontend/vite.config.ts` worker + optimizeDeps shape:
+  //  - `worker.format: 'es'` → Vite emits the worker entry as an ES
+  //    module (default is iife, which breaks code-splitting per the
+  //    rollup error `UMD and IIFE output formats are not supported for
+  //    code-splitting builds`).
+  //  - `optimizeDeps.exclude` → cofhe SDK + tfhe ship sibling worker
+  //    files that Vite's pre-bundler doesn't relocate into
+  //    node_modules/.vite/deps, so the runtime worker URL would 404.
+  //    Excluding them keeps the worker manager loading from the
+  //    unbundled source location.
+  worker: {
+    format: 'es',
+  },
+  optimizeDeps: {
+    exclude: ['tfhe', '@cofhe/sdk'],
   },
   server: {
     port: 7780,

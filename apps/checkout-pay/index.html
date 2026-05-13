@@ -15,24 +15,38 @@
          - `https://rpc.zerodev.app` — bundler (P3 UserOps + paymaster)
          - `https://sepolia-rollup.arbitrum.io` — Arb Sepolia RPC for
            viem public-client reads (P2 USDC.balanceOf, P3 read paths)
-         Without these, the WebAuthn ceremony's POST to passkeys.zerodev.app
-         CSP-blocks at fetch time.
+         - `https://testnet-cofhe.fhenix.zone` — Fhenix CoFHE coprocessor
+         - `https://testnet-cofhe-tn.fhenix.zone` — Fhenix TaskManager
+         - `https://testnet-cofhe-vrf.fhenix.zone` — Fhenix VRF
+         Without the cofhe hosts, the P3 encrypt-input call (inside
+         StableClient.wrap + SubscriptionClient.purchase) blocks at fetch.
+
+         Wave 5 P3 also requires:
+         - `wasm-unsafe-eval` in script-src — cofhe SDK loads WASM for
+           the ZK verifier signature step. Safe in our threat model:
+           the page only loads code from our own static bundle (no
+           remote script-src, no inline). `wasm-unsafe-eval` does NOT
+           re-enable `eval` for JavaScript.
+         - `worker-src 'self' blob:` — cofhe spawns a Web Worker for
+           the encryption job. `blob:` is needed because Vite emits the
+           worker bundle as a blob: URL at runtime.
+         - `frame-src https://iframe-shared-storage.vercel.app` — cofhe
+           SDK loads a cross-origin iframe for persistent permit cache.
+           Without it the SDK falls back to in-memory permits (we
+           tolerate this — fresh-permit each page load is fine for a
+           single-tab buyer session).
 
          Prod cutover (2026-05-13):
          - `script-src` allows `https://static.cloudflareinsights.com` —
-           CF Web Analytics injects `beacon.min.js` at the proxy layer
-           when the zone has the feature enabled. Browser blocks it
-           otherwise. Beacon has no URL-fragment access; payment-surface
-           privacy unaffected.
-         - `connect-src` allows `https://cloudflareinsights.com` — the
-           beacon POSTs telemetry to `/cdn-cgi/rum` on this host.
-         - `frame-ancestors` removed from the meta tag. Browsers ignore
-           it when delivered via meta (warning in console). If we want
-           click-jacking protection, add it via a Cloudflare Transform
-           Rule on the response — operator follow-up. -->
+           CF Web Analytics injects `beacon.min.js` at the proxy layer.
+         - `connect-src` allows `https://cloudflareinsights.com` for
+           the beacon POSTs.
+         - `frame-ancestors` removed from the meta tag (browsers ignore
+           it via meta; add via Cloudflare Transform Rule for
+           click-jacking protection — operator follow-up). -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.muhaven.app https://api-stage.muhaven.app http://localhost:3000 https://passkeys.zerodev.app https://rpc.zerodev.app https://sepolia-rollup.arbitrum.io https://cloudflareinsights.com; img-src 'self' data:; font-src 'self'; base-uri 'none';"
+      content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.muhaven.app https://api-stage.muhaven.app http://localhost:3000 https://passkeys.zerodev.app https://rpc.zerodev.app https://sepolia-rollup.arbitrum.io https://testnet-cofhe.fhenix.zone https://testnet-cofhe-tn.fhenix.zone https://testnet-cofhe-vrf.fhenix.zone https://cloudflareinsights.com; img-src 'self' data:; font-src 'self'; worker-src 'self' blob:; frame-src https://iframe-shared-storage.vercel.app; base-uri 'none';"
     />
     <title>MuHaven — Checkout</title>
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
@@ -107,9 +121,14 @@
           <h2 tabindex="-1">3 · Buy the asset</h2>
           <p>
             Confirm with your passkey to wrap USDC into confidential
-            mhUSDC and complete the purchase in a single sealed envelope.
+            mhUSDC and complete the purchase. Six on-chain steps run
+            under the hood — the progress below shows where you are.
           </p>
           <button id="cta-buy" class="cta">Confirm purchase</button>
+          <!-- Wave 5 P3 — purchase progress indicator. Stays empty
+               (hidden via CSS :empty selector) until executePurchase
+               fires its first onProgress callback. -->
+          <div class="purchase-progress" data-purchase-progress></div>
         </div>
 
         <div id="step-purchased" class="step" hidden>
@@ -152,6 +171,11 @@
     -->
     <div class="sr-only" data-funding-poll-announce role="status" aria-live="polite" aria-atomic="true"></div>
     <div class="sr-only" data-funding-poll-alert role="alert" aria-atomic="true"></div>
+    <!-- Wave 5 P3 — purchase-stage announcements. Each `executePurchase`
+         onProgress callback writes the stage headline + detail here so
+         screen-reader users hear the 6-step ceremony progress without
+         visual updates spamming the polite channel. -->
+    <div class="sr-only" data-purchase-announce role="status" aria-live="polite" aria-atomic="true"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

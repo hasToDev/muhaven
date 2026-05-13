@@ -342,6 +342,42 @@ main {
   border-color: rgba(240, 138, 138, 0.32);
 }
 
+/* Wave 5 buyer-side port (P3): purchase-progress indicator. The
+ * `[data-purchase-progress]` div under step-wrapped is empty until
+ * `executePurchase`'s first onProgress callback fires (`:empty`
+ * hides it). Each stage rotates the headline + detail. Final
+ * `data-stage='done'` switches the accent to success-green.
+ */
+.purchase-progress {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border);
+}
+.purchase-progress:empty {
+  display: none;
+}
+.purchase-progress-headline {
+  margin: 0 0 4px;
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--amber-bright);
+  letter-spacing: 0.02em;
+}
+.purchase-progress-detail {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.purchase-progress[data-stage='done'] {
+  background: rgba(185, 212, 160, 0.06);
+  border-color: rgba(185, 212, 160, 0.32);
+}
+.purchase-progress[data-stage='done'] .purchase-progress-headline {
+  color: var(--success);
+}
+
 /* Visually hide content while keeping it available to assistive tech.
  * Used by Wave 5 P2 sr-only live regions (`role="status"` /
  * `role="alert"`) so screen-reader users get discrete state-transition

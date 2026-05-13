@@ -37,6 +37,12 @@ import {
 } from './funding-provider.js';
 import { FundingPoller } from './funding-poll.js';
 import { connectOrCreate, PasskeyError } from './passkey.js';
+import {
+  executePurchase,
+  type PurchaseProgress,
+  type PurchaseStage,
+} from './purchase.js';
+import { getCofheClient } from './cofhe.js';
 import type { KernelAccountClient } from '@zerodev/sdk';
 import { getAddress, isAddress, type Address } from 'viem';
 
@@ -720,21 +726,181 @@ function redactAddresses(s: string): string {
 }
 
 async function onConfirmBuy(state: PageState): Promise<void> {
-  // Wave 4 placeholder — the real wrap+buy UserOp ceremony lands in
-  // Wave 5. For the hackathon demo, the page reports `purchased` with
-  // a synthetic tx hash so the SSE + webhook plumbing exercises end-
-  // to-end.
-  const fakeTxHash = `0x${'demo'.padEnd(64, '0')}` as const;
-  await backend
-    .transition({
-      sessionId: state.session.sessionId,
-      newStatus: 'purchased',
-      purchaseTxHash: fakeTxHash,
-    })
-    .catch((err) => {
-      console.error('purchase transition failed', err);
-      showError(`Purchase failed: ${err instanceof Error ? err.message : err}`);
+  // Wave 5 buyer-side port (P3): real wrap+approve+buy ceremony.
+  // Six on-chain UserOps via the buyer's kernel:
+  //   1) USDC.approve(LegacyPusdc, amount)
+  //   2) LegacyPusdc.wrap(kernel, amount)
+  //   3) LegacyPusdc.setOperator(MuHavenStable, until)
+  //   4) MuHavenStable.wrap(InEuint64, ephemeralEOA)
+  //   5) MuHavenStable.setOperator(Subscription, until)
+  //   6) Subscription.purchase(token, InEuint128, maxSharesHint, eph)
+  //
+  // Steps 1, 3, 5 skip when pre-checks pass (existing allowance /
+  // operator grant). Steps 2, 4, 6 always run. The final tx hash from
+  // step 6 is what we send to the backend as `purchaseTxHash`.
+  if (!state.kernelClient) {
+    showError('Kernel client not ready. Please sign in with passkey first.');
+    return;
+  }
+  if (!state.buyerAddress || !isAddress(state.buyerAddress)) {
+    showError('Buyer address is not a valid hex address. Refresh and retry.');
+    return;
+  }
+  const tokenAddress = state.session.metadata.tokenAddress;
+  if (!isAddress(tokenAddress)) {
+    showError(
+      `Token address is not a valid hex address (${tokenAddress}). Ask the issuer for a fresh link.`,
+    );
+    return;
+  }
+  const amountRaw = state.payload.amountUsd6;
+  if (!/^[0-9]+$/.test(amountRaw)) {
+    showError(
+      'This checkout link has an invalid amount. Ask the issuer for a fresh link.',
+    );
+    return;
+  }
+  let amountUsd6: bigint;
+  try {
+    amountUsd6 = BigInt(amountRaw);
+  } catch {
+    showError(
+      'This checkout link has an invalid amount. Ask the issuer for a fresh link.',
+    );
+    return;
+  }
+  if (amountUsd6 < 1_000_000n) {
+    // Demo-NAV scaling rounds down to 0 shares below 1 USDC. Surface
+    // the limit explicitly instead of letting executePurchase fail
+    // with a less helpful error.
+    showError(
+      'Demo build: this checkout requires at least 1 USDC. Larger amounts behave normally.',
+    );
+    return;
+  }
+
+  setBuyCtaState('busy');
+  const purchaseAlert = (msg: string): void => announceAlert(msg);
+  try {
+    const txHash = await executePurchase({
+      kernelClient: state.kernelClient,
+      buyerAddress: getAddress(state.buyerAddress),
+      amountUsd6,
+      tokenAddress: getAddress(tokenAddress),
+      callbacks: {
+        onProgress: (p) => {
+          renderPurchaseProgress(p);
+          // Re-announce only on stage transitions (we get one
+          // onProgress per stage, so the announce dedupe by stage is
+          // safe).
+          announcePurchaseProgress(p);
+        },
+      },
     });
+    // Step 6's tx hash is the on-chain settlement tx. Report it to
+    // the backend so the SSE channel + webhook fire `purchased` to
+    // the issuer dashboard.
+    try {
+      await backend.transition({
+        sessionId: state.session.sessionId,
+        newStatus: 'purchased',
+        purchaseTxHash: txHash,
+      });
+    } catch (err) {
+      if (err instanceof BackendError && err.status === 409) {
+        // Backend already advanced — likely the P4 settlement indexer
+        // beat us to it. Benign.
+        console.warn('transition(purchased) raced with backend (409) — ignoring');
+      } else {
+        console.error('purchase transition failed', err);
+        purchaseAlert(
+          'Purchase landed on chain but the backend hand-off failed. ' +
+            'Refresh in a moment — the issuer indexer will pick up your tx.',
+        );
+      }
+    }
+  } catch (err) {
+    console.error('executePurchase failed', err);
+    const msg =
+      err instanceof Error ? err.message : 'Purchase failed for unknown reason';
+    showError(`Couldn't complete the purchase: ${msg}`);
+    setBuyCtaState('idle');
+  }
+}
+
+/**
+ * Set the buy CTA's busy / idle state. When busy, the button is
+ * disabled and shows a "Working…" label; when idle, the original
+ * "Confirm purchase" label is restored.
+ */
+function setBuyCtaState(stateName: 'idle' | 'busy'): void {
+  const cta = document.getElementById('cta-buy') as HTMLButtonElement | null;
+  if (!cta) return;
+  if (stateName === 'busy') {
+    cta.dataset.idleLabel = cta.dataset.idleLabel || cta.textContent || '';
+    cta.disabled = true;
+    cta.setAttribute('aria-busy', 'true');
+    cta.textContent = 'Working… do not close this tab';
+  } else {
+    cta.disabled = false;
+    cta.removeAttribute('aria-busy');
+    cta.textContent = cta.dataset.idleLabel || 'Confirm purchase';
+  }
+}
+
+const PURCHASE_STAGE_COPY: Record<PurchaseStage, string> = {
+  approve_usdc: 'Step 1 of 6 · Authorise USDC',
+  wrap_pusdc: 'Step 2 of 6 · Wrap into PUSDC',
+  grant_pusdc_operator: 'Step 3 of 6 · Authorise the wrapper',
+  wrap_mhusdc: 'Step 4 of 6 · Seal into confidential mhUSDC',
+  grant_mhusdc_operator: 'Step 5 of 6 · Authorise Subscription',
+  purchase: 'Step 6 of 6 · Buy RWA shares',
+  done: 'Purchase complete',
+};
+
+/**
+ * Render the current purchase stage to the buy step's progress
+ * indicator. The DOM is in `index.html` under `step-wrapped`.
+ */
+function renderPurchaseProgress(p: PurchaseProgress): void {
+  const indicator = document.querySelector<HTMLElement>(
+    '[data-purchase-progress]',
+  );
+  if (!indicator) return;
+  const headline = PURCHASE_STAGE_COPY[p.stage] ?? p.message;
+  const detail = p.skipped
+    ? `${p.message} — already authorised, skipping`
+    : p.message;
+  indicator.innerHTML = `
+    <p class="purchase-progress-headline" data-purchase-stage="${escapeAttr(p.stage)}">${escapeHtml(headline)}</p>
+    <p class="purchase-progress-detail">${escapeHtml(detail)}</p>
+  `;
+  indicator.dataset.stage = p.stage;
+  indicator.dataset.step = String(p.step);
+}
+
+/** Announce purchase progress to the sr-only `[data-purchase-announce]` region
+ *  on every stage advance. */
+function announcePurchaseProgress(p: PurchaseProgress): void {
+  const announce = document.querySelector<HTMLElement>(
+    '[data-purchase-announce]',
+  );
+  if (!announce) return;
+  const headline = PURCHASE_STAGE_COPY[p.stage] ?? p.message;
+  announce.textContent = `${headline}. ${p.message}.`;
+}
+
+/** Minimal DOM-string escapers — we render trusted backend text but
+ *  also dynamic stage labels, so escape defensively. */
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+function escapeAttr(s: string): string {
+  return escapeHtml(s);
 }
 
 function subscribeToEvents(state: PageState): void {
@@ -762,6 +928,19 @@ function subscribeToEvents(state: PageState): void {
     // burn RPC quota on a session that's already advancing.
     if (status !== 'pending') {
       stopFundingPoller();
+    }
+    // Wave 5 buyer-side port (P3): pre-warm the cofhe SDK as soon as
+    // the buyer reaches the buy step. The cofhe + tfhe + WASM chunks
+    // total ~5.5 MB and only load on demand; firing init here means
+    // the download runs in parallel while the user reads the buy CTA
+    // copy, so tap-to-confirm doesn't pay the full download latency.
+    // Idempotent — concurrent calls share the in-flight init promise.
+    if (status === 'funded' || status === 'wrapped') {
+      void getCofheClient().catch((err) => {
+        // Pre-warm failure isn't fatal — `executePurchase` will retry
+        // on click. Log redacted only.
+        console.warn('cofhe pre-warm failed (will retry on click)', summariseError(err));
+      });
     }
     // Wave 5 buyer-side port (P2 a11y): move focus to the newly-
     // revealed step heading on the FIRST observation of a status

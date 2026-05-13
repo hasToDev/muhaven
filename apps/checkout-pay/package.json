@@ -1,6 +1,6 @@
 {
   "name": "@muhaven/checkout-pay",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "private": true,
   "description": "Hosted checkout buyer page for MuHaven (pay.muhaven.app). Renders the issuer label + decrypted amount, runs the ZeroDev passkey ceremony, and walks the buyer through fund → wrap → buy.",
   "type": "module",
@@ -13,6 +13,8 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@cofhe/sdk": "^0.5.1",
+    "@muhaven/sdk": "workspace:*",
     "@zerodev/passkey-validator": "^5.6.0",
     "@zerodev/sdk": "^5.5.10",
     "@zerodev/webauthn-key": "^5.5.0",
