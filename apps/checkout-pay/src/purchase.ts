@@ -150,6 +150,17 @@ export interface PurchaseProgress {
 
 export type PurchaseCallbacks = {
   onProgress?: (p: PurchaseProgress) => void;
+  /**
+   * Fired ONCE after step 4 (`MuHavenStable.wrap`) lands on chain.
+   * The caller is expected to fire `backend.transition({newStatus:
+   * 'wrapped'})` so the backend state machine advances `funded →
+   * wrapped → purchased` (the FORWARD_TRANSITIONS table forbids the
+   * `funded → purchased` shortcut). If this callback throws, the
+   * 6-UserOp ceremony aborts — wrap the call site in a try/catch
+   * that swallows non-409 errors (a 409 means the SSE channel beat
+   * us, which is benign).
+   */
+  onWrappedComplete?: (wrapTxHash: Hash) => Promise<void> | void;
 };
 
 export interface ExecutePurchaseOpts {
@@ -227,14 +238,36 @@ export async function executePurchase(
 
   // ── Step 2: LegacyPusdc.wrap(kernel, amount) ─────────────────────
   // Cleartext USDC → cleartext PUSDC under the kernel.
+  //
+  // Idempotency check (post-review fix): if the kernel ALREADY holds
+  // ≥ amountUsd6 of legacy PUSDC (cleartext ERC-20 balanceOf), skip
+  // the wrap. This handles the partial-failure retry case where step
+  // 3/4/5/6 failed AFTER step 2 succeeded: re-running executePurchase
+  // would otherwise re-approve USDC (allowance is now 0 because legacy
+  // PUSDC consumed it on the first wrap) + call wrap again, which
+  // reverts at the underlying USDC.safeTransferFrom (kernel's USDC
+  // balance is now 0). Reading the cleartext balance is the canonical
+  // skip signal — legacy PUSDC has a CLEARTEXT `balanceOf(address)`
+  // shadow alongside its confidential balance (per
+  // LegacyPusdcService:38).
   report('wrap_pusdc', 2, 'Wrapping USDC into PUSDC…');
-  const wrapPusdcHash = await sender.write({
+  const pusdcCleartextBalance = (await publicClient.readContract({
     address: legacyPusdc,
-    abi: pusdcAbi,
-    functionName: 'wrap',
-    args: [buyerAddress, amountUsd6],
-  });
-  report('wrap_pusdc', 2, 'USDC wrapped into PUSDC', { txHash: wrapPusdcHash });
+    abi: erc20Abi,
+    functionName: 'balanceOf',
+    args: [buyerAddress],
+  })) as bigint;
+  if (pusdcCleartextBalance < amountUsd6) {
+    const wrapPusdcHash = await sender.write({
+      address: legacyPusdc,
+      abi: pusdcAbi,
+      functionName: 'wrap',
+      args: [buyerAddress, amountUsd6],
+    });
+    report('wrap_pusdc', 2, 'USDC wrapped into PUSDC', { txHash: wrapPusdcHash });
+  } else {
+    report('wrap_pusdc', 2, 'PUSDC balance already sufficient', { skipped: true });
+  }
 
   // ── Step 3: LegacyPusdc.setOperator(MuHavenStable, until) ────────
   // Once per kernel — pre-check via `isOperator` so subsequent buys
@@ -272,6 +305,17 @@ export async function executePurchase(
   const stableClient = new StableClient(ctx, muHavenStable);
   const wrapMhusdcHash = await stableClient.wrap(amountUsd6, ephemeralEOA);
   report('wrap_mhusdc', 4, 'mhUSDC ready', { txHash: wrapMhusdcHash });
+
+  // Backend state machine requires `funded → wrapped → purchased` —
+  // fire the wrapped transition here BEFORE step 5/6 so the next
+  // `transition({purchased})` is a valid forward step. The caller
+  // owns the actual HTTP call via `onWrappedComplete`; we just hand
+  // them the tx hash so they can log / audit if they choose. A
+  // throw from the callback aborts the ceremony (caller can swallow
+  // 409-on-race themselves).
+  if (callbacks?.onWrappedComplete) {
+    await callbacks.onWrappedComplete(wrapMhusdcHash);
+  }
 
   // ── Step 5: MuHavenStable.setOperator(Subscription, until) ───────
   // Subscription.purchase pulls mhUSDC via the operator path. Once

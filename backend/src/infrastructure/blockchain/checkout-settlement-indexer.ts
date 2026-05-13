@@ -149,11 +149,36 @@ export class CheckoutSettlementIndexer {
         toBlock,
       });
 
+      // Post-review fix (Finding #7) — clamp the cursor when a session
+      // returns from the use-case in the race-window state ("indexer
+      // saw the on-chain Purchased event BEFORE the buyer's HTTP
+      // `transition({newStatus:'purchased'})` POST lands"). If we
+      // advance the cursor past the failing log's block, we'll never
+      // see it again and the session is stranded in `funded`/`wrapped`
+      // forever. The clamp finds the lowest block among retry-needed
+      // logs and stops the cursor at `clampBlock - 1n` so the next
+      // tick re-scans from that block onward.
+      let clampBlock: bigint | null = null;
       for (const log of logs) {
-        await this.processLog(log);
+        const retryNeeded = await this.processLog(log);
+        if (retryNeeded && log.blockNumber !== null) {
+          const lb = log.blockNumber;
+          if (clampBlock === null || lb < clampBlock) {
+            clampBlock = lb;
+          }
+        }
       }
 
-      this.lastProcessedBlock = toBlock;
+      // Advance cursor — clamped to the lowest retry-needed block - 1.
+      // If no retries needed, the full `toBlock` is consumed.
+      const nextCursor = clampBlock !== null ? clampBlock - 1n : toBlock;
+      // Defensive: never move the cursor backward across ticks, even
+      // if a re-scan window's clampBlock somehow lands earlier than
+      // the existing cursor (shouldn't happen given fromBlock = cursor
+      // + 1, but the guard is cheap).
+      if (this.lastProcessedBlock === null || nextCursor > this.lastProcessedBlock) {
+        this.lastProcessedBlock = nextCursor;
+      }
     } catch (err) {
       this.logger.error(
         { err: err instanceof Error ? err.message : String(err) },
@@ -165,18 +190,24 @@ export class CheckoutSettlementIndexer {
     }
   }
 
-  private async processLog(log: Log): Promise<void> {
+  /**
+   * Process a single log. Returns `true` if the log needs to be
+   * retried on a future tick (race-window: indexer beat the buyer's
+   * HTTP transition POST). Returns `false` if the log was handled
+   * (settled, already terminal, or no matching session).
+   */
+  private async processLog(log: Log): Promise<boolean> {
     const txHash = log.transactionHash;
     if (!txHash) {
       // Pending logs (from `getLogs` against a `pending` block) have
       // no tx hash. Skip — we'll see them again when they're mined.
-      return;
+      return false;
     }
     const session = await this.sessionRepo.findByPurchaseTxHash(txHash);
     if (!session) {
       // Most events are not our sessions (dashboard direct purchases
       // also emit `Purchased`). Skip silently.
-      return;
+      return false;
     }
     try {
       const result = await this.settleUseCase.execute({
@@ -192,7 +223,21 @@ export class CheckoutSettlementIndexer {
           },
           'checkout session settled from on-chain event',
         );
+        return false;
       }
+      // `transitioned: false` covers two distinct cases:
+      //  (a) Already terminal (Settled/Failed) — done, never retry.
+      //  (b) Race window: session is still in funded/wrapped/pending.
+      //      The buyer's `transition({purchased})` POST hasn't landed
+      //      yet (or never will, if their kernel died mid-ceremony).
+      //      Clamp cursor so the next tick re-checks.
+      const status = result.session.status;
+      const isRaceWindow =
+        status !== 'settled' &&
+        status !== 'failed' &&
+        status !== 'expired' &&
+        status !== 'purchased';
+      return isRaceWindow;
     } catch (err) {
       this.logger.error(
         {
@@ -202,9 +247,8 @@ export class CheckoutSettlementIndexer {
         },
         'failed to settle checkout session from on-chain event',
       );
-      // Don't re-throw — one bad session shouldn't abort the rest of
-      // the batch. The next tick will retry (cursor wasn't advanced
-      // until after the loop).
+      // Throws are transient (DB blip, etc.) — retry on next tick.
+      return true;
     }
   }
 }

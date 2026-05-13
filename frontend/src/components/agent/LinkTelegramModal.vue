@@ -26,7 +26,7 @@
  * + emits SVG inline); no third-party renderer sees the code.
  */
 
-import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { openClawApi, type TelegramLinkIssueResponse } from '@/services/api'
 import { Send, Copy, Check, X, RefreshCcw, Smartphone } from 'lucide-vue-next'
 import QRCode from 'qrcode'
@@ -117,11 +117,19 @@ async function reissue(): Promise<void> {
   await issue()
 }
 
+// ESC closes the modal — table-stakes UX. Hoisted out of onMounted
+// so the listener teardown in onBeforeUnmount can reference the same
+// function reference.
+function onKeydown(e: KeyboardEvent): void {
+  if (e.key === 'Escape') close()
+}
+
 onMounted(() => {
   void issue()
   tickHandle = setInterval(() => {
     now.value = Date.now()
   }, 1000)
+  window.addEventListener('keydown', onKeydown)
 })
 
 onBeforeUnmount(() => {
@@ -129,20 +137,6 @@ onBeforeUnmount(() => {
     clearInterval(tickHandle)
     tickHandle = null
   }
-})
-
-// ESC closes the modal — table-stakes UX.
-function onKeydown(e: KeyboardEvent): void {
-  if (e.key === 'Escape') close()
-}
-watch(
-  () => true,
-  () => {
-    window.addEventListener('keydown', onKeydown)
-  },
-  { immediate: true },
-)
-onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
 })
 </script>
@@ -219,8 +213,8 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <!-- Active link -->
-      <template v-else-if="linkData && !isExpired">
+      <!-- Active link, with bot configured (the common path) -->
+      <template v-else-if="linkData && !isExpired && linkData.botStartUrl">
         <!-- QR code (Q5) -->
         <div
           v-if="qrSvg"
@@ -286,6 +280,35 @@ onBeforeUnmount(() => {
           Code expires in
           <span class="font-mono text-compute dark:text-signal">{{ countdownLabel }}</span>
         </p>
+      </template>
+
+      <!-- Post-review fix: bot not configured in this environment.
+           `issueTelegramLink` succeeded (we got a linkCode) but the
+           backend's TELEGRAM_BOT_USERNAME env var is unset, so we
+           can't build a `t.me/<bot>?start=<code>` URL. Surface the
+           raw linkCode so a sufficiently-motivated operator can DM
+           the bot manually with `/start <linkCode>`. -->
+      <template v-else-if="linkData && !isExpired && !linkData.botStartUrl">
+        <div
+          class="p-4 rounded-xl border border-haze dark:border-white/10 bg-mist dark:bg-midnight-deep text-sm text-cool dark:text-body-dark"
+        >
+          <p class="mb-2">
+            The Telegram bot isn't configured in this environment, so
+            we can't open a deep-link automatically. Paste this code
+            into the bot manually with <code class="font-mono text-compute dark:text-signal">/start &lt;code&gt;</code>:
+          </p>
+          <code
+            class="block px-3 py-2 rounded-lg bg-frost dark:bg-midnight font-mono text-xs text-compute dark:text-signal break-all"
+            >{{ linkData.linkCode }}</code
+          >
+          <p
+            class="mt-2 text-xs"
+            aria-live="polite"
+          >
+            Code expires in
+            <span class="font-mono text-compute dark:text-signal">{{ countdownLabel }}</span>
+          </p>
+        </div>
       </template>
 
       <!-- Expired state -->

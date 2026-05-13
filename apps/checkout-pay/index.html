@@ -176,6 +176,11 @@
          screen-reader users hear the 6-step ceremony progress without
          visual updates spamming the polite channel. -->
     <div class="sr-only" data-purchase-announce role="status" aria-live="polite" aria-atomic="true"></div>
+    <!-- Wave 5 P3 (post-review fix) — purchase-stage HARD-FAILURE
+         announcements. Separate from the funding alert region so an
+         end-of-ceremony backend hand-off failure can't overwrite (or
+         be overwritten by) a still-relevant funding-phase alert. -->
+    <div class="sr-only" data-purchase-alert role="alert" aria-atomic="true"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

@@ -263,6 +263,15 @@ async function lookupAndDispatchForActiveAction(
     // the operator to refresh the page if it persists.
     return
   }
+  // Post-review fix (Finding #10): the lookup is async + may take
+  // hundreds of ms. If the user clicks "Use dashboard instead" (Q6 (i)
+  // escape hatch) OR the SSE handler advances activeAction (H-1
+  // auto-advance on success) WHILE this promise is in flight, the
+  // resolved summary applies to a stale `action` reference. The
+  // toolCallId comparison protects against firing the runner /
+  // closing the modal against a descriptor the user has already
+  // moved past.
+  if (activeAction.value?.toolCallId !== action.toolCallId) return
   switch (summary.status) {
     case 'confirmed':
       // Fire the runner. The within-tab `firingIntents` lock (acquired

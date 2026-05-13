@@ -780,7 +780,6 @@ async function onConfirmBuy(state: PageState): Promise<void> {
   }
 
   setBuyCtaState('busy');
-  const purchaseAlert = (msg: string): void => announceAlert(msg);
   try {
     const txHash = await executePurchase({
       kernelClient: state.kernelClient,
@@ -794,6 +793,28 @@ async function onConfirmBuy(state: PageState): Promise<void> {
           // onProgress per stage, so the announce dedupe by stage is
           // safe).
           announcePurchaseProgress(p);
+        },
+        // Backend state machine requires `funded → wrapped → purchased`.
+        // Fire the intermediate `wrapped` transition after step 4 so
+        // the next `purchased` POST is a valid forward step. 409 is
+        // benign (SSE/P4 beat us to it). Other errors bubble up to
+        // abort the ceremony — better than blasting Subscription.purchase
+        // when the backend can't track the state.
+        onWrappedComplete: async () => {
+          try {
+            await backend.transition({
+              sessionId: state.session.sessionId,
+              newStatus: 'wrapped',
+            });
+          } catch (err) {
+            if (err instanceof BackendError && err.status === 409) {
+              console.warn('transition(wrapped) raced with backend (409) — ignoring');
+              return;
+            }
+            console.error('transition(wrapped) failed', summariseError(err));
+            // Re-throw so executePurchase aborts before step 5/6.
+            throw err;
+          }
         },
       },
     });
@@ -813,7 +834,7 @@ async function onConfirmBuy(state: PageState): Promise<void> {
         console.warn('transition(purchased) raced with backend (409) — ignoring');
       } else {
         console.error('purchase transition failed', err);
-        purchaseAlert(
+        announcePurchaseAlert(
           'Purchase landed on chain but the backend hand-off failed. ' +
             'Refresh in a moment — the issuer indexer will pick up your tx.',
         );
@@ -824,8 +845,37 @@ async function onConfirmBuy(state: PageState): Promise<void> {
     const msg =
       err instanceof Error ? err.message : 'Purchase failed for unknown reason';
     showError(`Couldn't complete the purchase: ${msg}`);
+  } finally {
+    // Restore the CTA whenever the ceremony exits — success path
+    // gets hidden by the SSE flip anyway, but a degraded SSE channel
+    // would otherwise leave the user stuck on a permanently-disabled
+    // "Working…" button with no recovery short of a refresh. Symmetric
+    // with the error path that USED to call setBuyCtaState('idle')
+    // directly.
     setBuyCtaState('idle');
   }
+}
+
+/**
+ * Push a purchase-stage hard-failure message to the dedicated
+ * `[data-purchase-alert]` sr-only region (role="alert"). Separate
+ * from the funding step's alert region so an end-of-ceremony failure
+ * never overwrites a still-relevant funding-phase alert (and vice
+ * versa). Falls back to the funding alert region as a defensive
+ * shim if the purchase-alert region is missing from index.html
+ * (e.g., during partial revisions of the SPA scaffold).
+ */
+function announcePurchaseAlert(message: string): void {
+  const purchaseAlert = document.querySelector<HTMLElement>(
+    '[data-purchase-alert]',
+  );
+  if (purchaseAlert) {
+    purchaseAlert.textContent = message;
+    return;
+  }
+  // Defensive fallback — if the dedicated region wasn't shipped, use
+  // the existing funding alert so the SR user still hears the message.
+  announceAlert(message);
 }
 
 /**

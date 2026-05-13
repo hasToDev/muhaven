@@ -374,6 +374,72 @@ describe('CheckoutSettlementIndexer', () => {
     expect(after?.status).toBe(CheckoutSessionStatus.Wrapped);
     expect(publishSpy).not.toHaveBeenCalled();
   });
+
+  it('clamps the cursor when a log lands in the race-window so the next tick retries', async () => {
+    // Post-review fix (Finding #7) — race-window logs MUST be
+    // retried. Without the clamp the cursor advances past the failing
+    // block and the session is stranded permanently in
+    // `funded`/`wrapped`. Sequence:
+    //   tick 1: cursor init at 500.
+    //   tick 2: getLogs([logAt505]). Session is `wrapped` (race
+    //           window). Clamp cursor to 504 (i.e., re-scan 505+
+    //           next tick).
+    //   tick 3: session has advanced to `purchased`. getLogs returns
+    //           the SAME log at 505. Settle fires. Cursor advances
+    //           past.
+    await repo.issue({
+      session: makeSession({
+        sessionId: 'cs_CLAMP000000000000000000',
+        status: CheckoutSessionStatus.Wrapped,
+        purchaseTxHash: TX_HASH_OURS,
+      }),
+    });
+    const logFn = vi.fn().mockResolvedValue([
+      makeLog({ txHash: TX_HASH_OURS, blockNumber: 505n }),
+    ]);
+    const client = createMockClientWith({
+      getBlockNumber: vi
+        .fn()
+        .mockResolvedValueOnce(500n) // tick 1: init
+        .mockResolvedValueOnce(510n) // tick 2: fetch 501..510
+        .mockResolvedValue(515n), //    tick 3: fetch 505..515 (clamped)
+      getLogs: logFn,
+    });
+    const indexer = new CheckoutSettlementIndexer(
+      repo,
+      settleUseCase,
+      {
+        rpcUrl: '',
+        subscriptionAddress: SUBSCRIPTION_ADDRESS,
+        intervalMs: 1000,
+      },
+      client,
+    );
+
+    await indexer.tickOnce(); // init at 500
+    await indexer.tickOnce(); // race window — clamp cursor to 504
+    expect(indexer.getStatus().lastProcessedBlock).toBe(504n);
+    expect(publishSpy).not.toHaveBeenCalled();
+
+    // Now simulate the buyer's HTTP transition({purchased}) landing.
+    // Move the session to `purchased` so the next tick can settle it.
+    await repo.transition({
+      sessionId: 'cs_CLAMP000000000000000000',
+      expectedStatus: CheckoutSessionStatus.Wrapped,
+      newStatus: CheckoutSessionStatus.Purchased,
+      purchaseTxHash: TX_HASH_OURS,
+      now: new Date(),
+    });
+
+    await indexer.tickOnce(); // re-scans 505..515, sees the log again, settles
+
+    // Verify the fetch window started at 505 (the clamped block).
+    const lastCall = logFn.mock.calls[logFn.mock.calls.length - 1]?.[0];
+    expect(lastCall?.fromBlock).toBe(505n);
+    const after = await repo.findById('cs_CLAMP000000000000000000');
+    expect(after?.status).toBe(CheckoutSessionStatus.Settled);
+    expect(publishSpy).toHaveBeenCalledOnce();
+  });
 });
 
 describe('SettleFromEventUseCase (unit)', () => {
