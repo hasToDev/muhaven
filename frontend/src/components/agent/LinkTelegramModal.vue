@@ -215,11 +215,11 @@ onBeforeUnmount(() => {
 
       <!-- Active link, with bot configured (the common path) -->
       <template v-else-if="linkData && !isExpired && linkData.botStartUrl">
-        <!-- QR code (Q5) -->
-        <div
-          v-if="qrSvg"
-          class="mt-1 mb-4 flex flex-col items-center gap-2"
-        >
+        <!-- QR code (Q5). The container ALWAYS renders (reserves 180×180
+             slot + caption row) so the modal doesn't visibly resize when
+             the QR resolves. Skeleton placeholder fades into the SVG when
+             ready. Operator-walkthrough fix 2026-05-14. -->
+        <div class="mt-1 mb-4 flex flex-col items-center gap-2">
           <div
             class="rounded-xl p-3 bg-white dark:bg-frost
                    border border-haze dark:border-white/10
@@ -227,11 +227,22 @@ onBeforeUnmount(() => {
                    dark:shadow-[0_2px_10px_-4px_rgba(0,0,0,0.55)]"
             :style="{ width: '180px', height: '180px' }"
             role="img"
-            aria-label="QR code — scan with phone to open the Telegram bot"
+            :aria-label="qrSvg ? 'QR code — scan with phone to open the Telegram bot' : 'QR code rendering…'"
+            :aria-busy="!qrSvg"
           >
             <div
+              v-if="qrSvg"
               v-html="qrSvg"
               class="w-full h-full [&>svg]:w-full [&>svg]:h-full"
+            />
+            <!-- Skeleton: subtle pulsing block while qrcode lib resolves
+                 (typically <50ms but can spike on slow devices). Same
+                 dimensions as the QR, so no layout shift on swap. -->
+            <div
+              v-else
+              class="w-full h-full rounded-lg bg-haze/50 dark:bg-white/10
+                     animate-pulse"
+              aria-hidden="true"
             />
           </div>
           <p class="text-[10px] uppercase tracking-[0.18em] text-cool/80">

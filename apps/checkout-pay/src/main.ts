@@ -215,15 +215,49 @@ const STEPS_BY_STATUS: Record<string, string> = {
   failed: 'step-failed',
 };
 
+/**
+ * Statuses where the user CAN'T proceed without a live `kernelClient`
+ * (Confirm purchase fires 6 UserOps via the kernel). On a fresh page
+ * load (or reload) at one of these states, JS-memory `kernelClient`
+ * is null even though the backend session is past `pending`.
+ *
+ * Without this guard, `step-wrapped` rendered with the Confirm
+ * purchase CTA enabled — taps would fail at the `if (!state.kernelClient)`
+ * check in `onConfirmBuy` with a confusing "Kernel client not ready"
+ * full-page error. Fix: re-show step-pending when status is in this
+ * set AND kernel is null, so the user re-runs the passkey ceremony
+ * to re-provision the kernel before reaching the buy step.
+ *
+ * `pending` is excluded — step-pending is what we'd show anyway.
+ * `purchased` and terminal states (`settled` / `expired` / `failed`)
+ * don't need the kernel (no more UserOps required), so they render
+ * correctly without it.
+ */
+const STATUSES_NEEDING_KERNEL = new Set(['funded', 'wrapped']);
+
 function showStepForStatus(state: PageState): void {
-  const target = STEPS_BY_STATUS[state.session.status];
+  // Wave 5 P3 post-cutover hot-fix (2026-05-14): handle the
+  // "page reloaded after passkey + funded but before purchase" case.
+  // The session row is past `pending` on the backend, but
+  // `state.kernelClient` is null because passkey-provisioned kernels
+  // don't survive a page reload. Re-show step-pending so the user
+  // re-runs the passkey ceremony; `onPasskeyContinue` then dispatches
+  // back to `showStepForStatus(state)` which will advance to
+  // step-wrapped (or wherever) with the kernel now populated.
+  const status = state.session.status;
+  const needsKernelAndMissing =
+    STATUSES_NEEDING_KERNEL.has(status) && !state.kernelClient;
+  const effectiveTarget = needsKernelAndMissing
+    ? 'step-pending'
+    : STEPS_BY_STATUS[status];
+
   const steps = document.querySelectorAll<HTMLElement>('.step');
   for (const step of steps) {
-    step.hidden = step.id !== target;
+    step.hidden = step.id !== effectiveTarget;
   }
 
   // Funded shows a funding panel BEFORE the buy step.
-  if (state.session.status === 'pending' && state.buyerAddress) {
+  if (status === 'pending' && state.buyerAddress) {
     // Buyer already linked but not yet funded — render the funding step
     // ahead of the pending passkey CTA.
     showFundingStep(state);
@@ -257,7 +291,16 @@ async function onPasskeyContinue(state: PageState): Promise<void> {
     const kernel = await connectOrCreate();
     state.kernelClient = kernel.kernelClient;
     state.buyerAddress = kernel.address;
-    showFundingStep(state);
+    // Wave 5 P3 post-cutover hot-fix (2026-05-14): dispatch through
+    // showStepForStatus so we advance to whatever step the CURRENT
+    // backend status maps to (not always step-funding). Reload-after-
+    // funded scenario: status is `funded`, kernel is now set, this
+    // call advances directly to step-wrapped (Confirm purchase).
+    // Prior code unconditionally called `showFundingStep(state)`
+    // which forced step-funding even when the session was already
+    // past funded — caused the user to see the faucet panel + funding
+    // poll RE-ARM unnecessarily after a reload-then-passkey flow.
+    showStepForStatus(state);
   } catch (err) {
     if (err instanceof PasskeyError && err.code === 'passkey_cancelled') {
       // User cancelled — leave the CTA enabled so they can retry.
