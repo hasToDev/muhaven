@@ -83,18 +83,24 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile --ignore-scripts
 
-      - name: Build @muhaven/mcp (verify-subset + verify-tool-hashes import from its dist/)
-        # verify-subset.ts imports `{ TOOL_DESCRIPTORS } from '@muhaven/mcp'`
-        # which resolves to packages/openclaw-skill/node_modules/@muhaven/mcp
-        # (workspace symlink) and follows the main/exports field into
-        # packages/mcp/dist/index.{cjs,js}. On a clean CI checkout that
-        # dist/ doesn't exist until @muhaven/mcp is built. The downstream
-        # Build step (below) builds it then, but that's too late for the
-        # verify-subset gate — by ordering we must build the mcp dependency
-        # FIRST so the verify steps can resolve its compiled exports.
-        # Removing this step reverts to the 2026-05-17 publish failure
-        # (ERR_MODULE_NOT_FOUND on @muhaven/mcp/dist/index.js).
-        run: pnpm --filter @muhaven/mcp build
+      - name: Build (mcp + openclaw-skill) — required for downstream verify / typecheck / test / pack
+        # Three distinct dist/ resolutions fail without this — same
+        # reasoning as openclaw-skill-scan.yml's identical step:
+        #  1. verify-subset.ts imports `{ TOOL_DESCRIPTORS } from '@muhaven/mcp'`
+        #     → workspace symlink resolves but main/exports points at
+        #     packages/mcp/dist/.
+        #  2. openclaw-skill typecheck → tsc resolves @muhaven/mcp via
+        #     `./dist/index.d.ts` exports field.
+        #  3. openclaw-skill test → __tests__/lifecycle.test.ts spawns
+        #     `bin/muhaven-rwa-skill.cjs` which `require('../dist/index.cjs')`.
+        # Plus `pnpm pack` below reads package.json#files which lists
+        # "dist" — packing without dist/ would ship a broken tarball.
+        # Removing the original late-build step keeps a single source of
+        # truth; tsup's incremental builds aren't gaining us anything
+        # by re-running the same builds twice.
+        run: |
+          pnpm --filter @muhaven/mcp build
+          pnpm --filter @muhaven/openclaw-skill build
 
       - name: Version-match check
         # Pass dispatch input via env (NOT inline `${{ }}` interpolation
@@ -138,11 +144,6 @@ jobs:
 
       - name: Test
         run: pnpm --filter @muhaven/openclaw-skill test
-
-      - name: Build
-        run: |
-          pnpm --filter @muhaven/mcp build
-          pnpm --filter @muhaven/openclaw-skill build
 
       - name: Pack tarball
         id: pack
