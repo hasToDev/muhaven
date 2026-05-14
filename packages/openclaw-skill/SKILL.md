@@ -177,7 +177,7 @@ MuHaven backend at `https://api.muhaven.app`.
    daemon CLI.)
 3. Install the skill:
    ```bash
-   clawhub install muhaven-rwa-skill@0.1.1
+   clawhub install muhaven-rwa-skill@0.1.2
    ```
 4. Start the broker daemon: `muhaven-broker` (see `@muhaven/mcp` README).
 5. Authenticate: `muhaven-broker login` — opens browser to

@@ -108,6 +108,7 @@ First publishable cut to ClawHub. See `development/DEV_WAVE_4/DEV_LOG.md`
   rehearsal slot); promoted to `muhaven-rwa-skill@0.1.0` upon §3 Path (a)
   walkthrough closure.
 
-[Unreleased]: https://github.com/hasToDev/muhaven/compare/openclaw-skill-v0.1.1...HEAD
+[Unreleased]: https://github.com/hasToDev/muhaven/compare/openclaw-skill-v0.1.2...HEAD
+[0.1.2]: https://github.com/hasToDev/muhaven/releases/tag/openclaw-skill-v0.1.2
 [0.1.1]: https://github.com/hasToDev/muhaven/releases/tag/openclaw-skill-v0.1.1
 [0.1.0]: https://github.com/hasToDev/muhaven/releases/tag/openclaw-skill-v0.1.0
