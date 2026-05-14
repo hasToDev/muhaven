@@ -1,7 +1,7 @@
 ---
 name: muhaven-rwa-skill
 display_name: MuHaven RWA Portfolio
-version: 0.1.1
+version: 0.1.2
 schema_version: "1.0"
 description: |
   Confidential real-world-asset (RWA) portfolio agent built on MuHaven's

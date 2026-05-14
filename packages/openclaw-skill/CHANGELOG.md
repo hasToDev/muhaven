@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-05-17
+
+Cosmetic fix — corrects the display name shown on ClawHub. No code or
+manifest schema changes; bundled `@muhaven/mcp@0.1.3` is identical to
+0.1.1.
+
+### Fixed
+
+- ClawHub display name now reads "MuHaven RWA Portfolio" (matching
+  `manifest.json#display_name`). 0.1.1 was published without the
+  `clawhub publish --name "<...>"` flag, which caused clawhub v0.12.3 to
+  fall back to the path basename (`package` from `pnpm pack` output) and
+  render the skill title as "Package". The fix is to always pass
+  `--name` explicitly on publish; recipe codified in memory
+  `feedback_clawhub_publish_explicit_name`.
+
 ## [0.1.1] — 2026-05-16
 
 Q2 fix bundle from the post-§4 queue closing the ClawScan findings and

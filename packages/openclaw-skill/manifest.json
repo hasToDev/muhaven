@@ -3,7 +3,7 @@
   "schema_version": "1.0",
   "name": "muhaven-rwa-skill",
   "display_name": "MuHaven RWA Portfolio",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Confidential RWA portfolio agent on Fhenix CoFHE. Reads encrypted balances, stages buy + claim intents, never auto-submits. Three-tier confirmation surface (inline / Mini App OTP / passkey deep-link) keyed on intent notional.",
   "license": "MIT",
   "homepage": "https://muhaven.app",
