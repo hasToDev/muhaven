@@ -31,6 +31,13 @@
 import {
   toWebAuthnKey,
   WebAuthnMode,
+  b64ToBytes,
+  base64FromUint8Array,
+  findQuoteIndices,
+  hexStringToUint8Array,
+  isRIP7212SupportedNetwork,
+  parseAndNormalizeSig,
+  uint8ArrayToHexString,
   type WebAuthnKey,
 } from '@zerodev/webauthn-key';
 import {
@@ -44,7 +51,13 @@ import {
   constants,
   type KernelAccountClient,
 } from '@zerodev/sdk';
-import { http, type Address } from 'viem';
+import {
+  encodeAbiParameters,
+  http,
+  type Address,
+  type Hex,
+  type SignableMessage,
+} from 'viem';
 import { entryPoint07Address } from 'viem/account-abstraction';
 import {
   ARB_SEPOLIA_CHAIN,
@@ -130,6 +143,32 @@ export async function connectOrCreate(
     }
   }
 
+  // Plan C (2026-05-15) — install a GPM-friendly signMessage callback
+  // on the webAuthnKey BEFORE building the kernel. The default
+  // `signMessageUsingWebAuthn` in @zerodev/passkey-validator (v5.6.0
+  // confirmed via `development/reference/ZeroDev/sdk/plugins/passkey/
+  // toPasskeyValidator.ts:43-77`) constructs assertion options with
+  // only `challenge + allowCredentials + userVerification: required`.
+  // It omits `mediation` and per-credential `transports`, which on
+  // Windows + Chrome means the OS picker offers Windows Hello only,
+  // even when the same passkey is also stored in GPM.
+  //
+  // `WebAuthnKey.signMessageCallback` is the upstream-supported
+  // override hook — when set, toPasskeyValidator calls it instead of
+  // the default signer. We re-implement the same signature encoding
+  // (using helpers exported from @zerodev/webauthn-key — b64ToBytes,
+  // findQuoteIndices, parseAndNormalizeSig, etc.) but add
+  // `mediation: 'optional'` + `transports: ['hybrid', 'internal']` to
+  // the assertion. `'hybrid'` tells the picker to ALSO offer the
+  // QR / phone-as-authenticator path that GPM advertises through.
+  // Cast: upstream's `signMessageCallback` types `allowCredentials` against
+  // `PublicKeyCredentialDescriptorJSON` (from @simplewebauthn/types — not a
+  // direct dep). Our locally-typed shape is structurally compatible at
+  // runtime; the cast pins the assignment without pulling the upstream
+  // type lib.
+  webAuthnKey.signMessageCallback =
+    signMessageWithGpmFriendlyAssertion as unknown as typeof webAuthnKey.signMessageCallback;
+
   const kernelClient = await buildKernelClient(webAuthnKey);
   const account = kernelClient.account;
   if (!account) {
@@ -144,6 +183,128 @@ export async function connectOrCreate(
     webAuthnKey,
     newlyRegistered,
   };
+}
+
+/**
+ * Plan C (2026-05-15) — GPM-friendly signMessage callback.
+ *
+ * Re-implements the signature encoding from `signMessageUsingWebAuthn`
+ * in @zerodev/passkey-validator (see
+ * `development/reference/ZeroDev/sdk/plugins/passkey/toPasskeyValidator.ts`),
+ * adding:
+ *   - `mediation: 'optional'` — surfaces the full OS picker so non-
+ *     platform authenticators (GPM, cross-device QR) appear alongside
+ *     Windows Hello. Without this, Chromium-on-Win prefers the platform
+ *     authenticator and silently filters out GPM.
+ *   - `transports: ['hybrid', 'internal']` — hints to the browser that
+ *     this credential is reachable via BOTH the platform path AND the
+ *     cross-device / phone-as-authenticator path. GPM-stored passkeys
+ *     advertise through 'hybrid' (formerly caBLE); restricting to
+ *     'internal' alone would re-hide GPM.
+ *
+ * The signature encoding (ABI-encoded tuple of authenticatorData,
+ * clientDataJSON, responseTypeLocation, r, s, usePrecompiled) is
+ * byte-identical to the upstream implementation so the on-chain
+ * WebAuthn verifier accepts it without contract changes. Only the
+ * authentication-dialog options differ.
+ *
+ * Test matrix targeted by this fix: Chrome+Windows (GPM signed-in),
+ * Edge+Windows, Chrome+Mac, Safari+Mac. Mac platforms already work
+ * (Apple's authenticator surfaces iCloud-synced passkeys); Windows is
+ * the regression this commit closes.
+ */
+async function signMessageWithGpmFriendlyAssertion(
+  message: SignableMessage,
+  _rpId: string,
+  chainId: number,
+  allowCredentials?: Array<{ id: string; type: 'public-key'; transports?: AuthenticatorTransport[] }>,
+): Promise<Hex> {
+  let messageContent: string;
+  if (typeof message === 'string') {
+    messageContent = message;
+  } else if ('raw' in message && typeof message.raw === 'string') {
+    messageContent = message.raw;
+  } else if ('raw' in message && message.raw instanceof Uint8Array) {
+    messageContent = message.raw.toString();
+  } else {
+    throw new Error('Unsupported message format');
+  }
+
+  const formattedMessage = messageContent.startsWith('0x')
+    ? messageContent.slice(2)
+    : messageContent;
+
+  const challenge = base64FromUint8Array(
+    hexStringToUint8Array(formattedMessage),
+    true,
+  );
+
+  // Plan C — extend each allowCredentials entry with the broadened
+  // transports list. Upstream passes credentials WITHOUT transports,
+  // which is what hides GPM on Win+Chrome. Keep `id` + `type` as-is.
+  const enrichedAllowCredentials = allowCredentials?.map((c) => ({
+    id: c.id,
+    type: c.type,
+    transports: c.transports ?? (['hybrid', 'internal'] as AuthenticatorTransport[]),
+  }));
+
+  const assertionOptions = {
+    challenge,
+    allowCredentials: enrichedAllowCredentials,
+    userVerification: 'required' as const,
+    // Plan C key change: `'optional'` surfaces the picker for every
+    // matching authenticator instead of silently choosing the platform
+    // default. WebAuthn spec values: silent / optional / required /
+    // conditional. We pick 'optional' (the spec's recommended default)
+    // rather than 'required' (which forces a picker even when only one
+    // authenticator matches — fine for our case but unnecessary).
+    mediation: 'optional' as CredentialMediationRequirement,
+  };
+
+  // @simplewebauthn/browser is a transitive dep through
+  // @zerodev/passkey-validator — runtime resolution succeeds, but the
+  // package doesn't ship its own .d.ts entry into our typecheck. Cast
+  // the dynamic-import to `any` so we sidestep the unresolved-module
+  // diagnostic; the call-site below is shape-checked by usage.
+  const wAuthn = (await import(
+    /* @vite-ignore */ '@simplewebauthn/browser'
+  )) as { startAuthentication: (opts: unknown) => Promise<{
+    response: {
+      authenticatorData: string;
+      clientDataJSON: string;
+      signature: string;
+    };
+  }> };
+  const cred = await wAuthn.startAuthentication(assertionOptions);
+
+  const { authenticatorData } = cred.response;
+  const authenticatorDataHex = uint8ArrayToHexString(b64ToBytes(authenticatorData));
+  const clientDataJSON = atob(cred.response.clientDataJSON);
+  const { beforeType } = findQuoteIndices(clientDataJSON);
+  const { signature } = cred.response;
+  const signatureHex = uint8ArrayToHexString(b64ToBytes(signature));
+  const { r, s } = parseAndNormalizeSig(signatureHex);
+
+  // ABI encoding MUST match toPasskeyValidator.ts exactly — order +
+  // types of the tuple are pinned by the WebAuthn verifier contract.
+  return encodeAbiParameters(
+    [
+      { name: 'authenticatorData', type: 'bytes' },
+      { name: 'clientDataJSON', type: 'string' },
+      { name: 'responseTypeLocation', type: 'uint256' },
+      { name: 'r', type: 'uint256' },
+      { name: 's', type: 'uint256' },
+      { name: 'usePrecompiled', type: 'bool' },
+    ],
+    [
+      authenticatorDataHex,
+      clientDataJSON,
+      beforeType,
+      BigInt(r),
+      BigInt(s),
+      isRIP7212SupportedNetwork(chainId),
+    ],
+  );
 }
 
 async function buildKernelClient(

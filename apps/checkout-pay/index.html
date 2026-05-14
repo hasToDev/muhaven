@@ -91,6 +91,18 @@
             seed phrase to write down.
           </p>
           <button id="cta-passkey" class="cta">Continue with passkey</button>
+          <!-- Plan C (2026-05-15) — when the picker offers BOTH Windows
+               Hello AND "Use a different device / Google Password Manager",
+               pick the same option you registered with the first time.
+               Mixing the two providers on a single account leaves a
+               credential reachable only from one provider (Windows
+               native passkey doesn't sync to GPM and vice versa). -->
+          <p class="hint">
+            <strong>Tip:</strong> On Windows, the passkey picker may offer
+            both Windows Hello and a phone/Google Password Manager option.
+            Pick the SAME provider you used to register — they don't sync
+            between each other.
+          </p>
         </div>
 
         <div id="step-funding" class="step" hidden>

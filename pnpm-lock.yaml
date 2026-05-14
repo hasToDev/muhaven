@@ -116,6 +116,9 @@ importers:
       '@muhaven/sdk':
         specifier: workspace:*
         version: link:../../packages/sdk
+      '@simplewebauthn/browser':
+        specifier: ^8.3.4
+        version: 8.3.7
       '@zerodev/passkey-validator':
         specifier: ^5.6.0
         version: 5.6.0(@zerodev/sdk@5.5.10(viem@2.48.1(typescript@5.9.3)(zod@4.3.6)))(@zerodev/webauthn-key@5.5.0(viem@2.48.1(typescript@5.9.3)(zod@4.3.6)))(viem@2.48.1(typescript@5.9.3)(zod@4.3.6))
