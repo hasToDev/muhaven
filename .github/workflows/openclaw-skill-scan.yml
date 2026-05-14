@@ -59,6 +59,15 @@ jobs:
       - name: Install (no scripts — supply-chain hygiene)
         run: pnpm install --frozen-lockfile --ignore-scripts
 
+      - name: Build @muhaven/mcp (verify-subset + downstream typecheck import from its dist/)
+        # See openclaw-skill-publish.yml's identical step. Without this,
+        # verify-subset.ts errors with ERR_MODULE_NOT_FOUND on
+        # `@muhaven/mcp/dist/index.js` because the workspace symlink
+        # resolves but main/exports points at an unbuilt file. The
+        # openclaw-skill typecheck step downstream also depends on the
+        # built .d.ts surface, so building mcp first cures both gates.
+        run: pnpm --filter @muhaven/mcp build
+
       - name: Verify subset partition
         run: pnpm --filter @muhaven/openclaw-skill verify-subset
 
