@@ -97,6 +97,9 @@ const TOOL_NAMES = [
   // the lifecycle gate + token-of-record check happen inside the use-case.
   // ConfirmModal renders the cleartext preview; commit returns the buyer URL.
   'muhaven_propose_create_checkout',
+  // Q4 Part B (2026-05-15) — Telegram-link tool. Mints a 5-min link
+  // code + bot-start URL; frontend surfaces a side-panel card.
+  'muhaven_link_telegram',
 ] as const;
 
 type ToolName = (typeof TOOL_NAMES)[number];
@@ -112,6 +115,7 @@ YOUR CAPABILITIES (read tools — no policy gate)
 - muhaven_portfolio_summary: Encrypted portfolio summary + signal flags.
 - muhaven_quote(tokenAddress, notionalUsd6): NAV-derived buy quote.
 - muhaven_unseal_position(handle): Client-driven decrypt instructions.
+- muhaven_link_telegram(): Mint a single-use Telegram link code so the user can receive confirmation prompts on their phone. Returns a linkCode + bot-start URL the dashboard surfaces as a QR + tap-link card. The user completes the link by messaging the bot.
 
 YOUR CAPABILITIES (write tools — tier-gated)
 - muhaven_propose_buy(tokenAddress, shares): Atomic purchase via Subscription.
@@ -261,6 +265,19 @@ function stubIntentClassifier(message: string): {
       toolCall: { toolName: 'muhaven_pause', args: {} },
     };
   }
+  // Q4 Part B (2026-05-15) — Telegram-link stub branch. Matches the
+  // common phrasings ("link telegram", "connect telegram", "link my tg")
+  // so the link card shows up even when GEMINI_API_KEY is unset (CI /
+  // dev iteration / cost-saving stub posture).
+  if (
+    (lower.includes('telegram') || lower.includes(' tg'))
+    && (lower.includes('link') || lower.includes('connect'))
+  ) {
+    return {
+      text: 'Minting a Telegram link code now — scan the QR or tap the link to finish linking.',
+      toolCall: { toolName: 'muhaven_link_telegram', args: {} },
+    };
+  }
   // Default fallback when the message didn't match a stub-classifier
   // keyword. The full capabilities list is intentionally NOT surfaced
   // here — the stub only supports `portfolio` / `pause` keywords; listing
@@ -387,6 +404,18 @@ export function summarizeStubToolResult(
     case 'muhaven_cast_encrypted_vote':
     case 'muhaven_propose_create_checkout':
       return null;
+    case 'muhaven_link_telegram': {
+      // Side-panel card surfaces the QR + tap-link + countdown; the
+      // text synthesis is short so the user's eyes go to the card,
+      // not the chat bubble.
+      const botStartUrl =
+        typeof r.botStartUrl === 'string' && r.botStartUrl.length > 0
+          ? r.botStartUrl
+          : null;
+      return botStartUrl
+        ? 'Open the link on your phone or scan the QR code shown on the right — the link expires in 5 minutes.'
+        : 'Telegram bot is not configured in this environment. Use the link code shown on the right with the bot directly: /start <code>.';
+    }
     default:
       return null;
   }
@@ -1098,6 +1127,16 @@ function buildGeminiToolDeclarations(): unknown[] {
               voteYes: { type: 'BOOLEAN' },
             },
             required: ['proposalId', 'voteYes'],
+          },
+        },
+        // ── Q4 Part B (2026-05-15) — Telegram-link tool ───────────────
+        {
+          name: 'muhaven_link_telegram',
+          description:
+            'Mint a single-use Telegram link code (5-min TTL) so the user can receive confirmation prompts via the @muhaven_bot. Returns a linkCode + bot-start URL the dashboard surfaces as a QR + tap-link inline card. Call this when the user asks to "link telegram", "connect my telegram", or similar. Argless — strict-additionalProperties enforced.',
+          parameters: {
+            type: 'OBJECT',
+            properties: {},
           },
         },
         // ── Wave 4 §5 Path C — hosted-checkout via agent ──────────────

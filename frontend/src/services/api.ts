@@ -381,6 +381,14 @@ export const authApi = {
 
 // ── Current user (auth) ─────────────────────────────────────────────
 
+/** Plan A (2026-05-15) — Telegram-link summary surfaced on /me. */
+export interface MeTelegramLinkDto {
+  linked: true
+  telegram_chat_id: string
+  telegram_username: string | null
+  linked_at: string
+}
+
 export interface MeResponseDto {
   id: string
   wallet_address: string
@@ -395,6 +403,9 @@ export interface MeResponseDto {
   issuer_display_name?: string
   issuer_jurisdiction?: string
   issuer_approved_at?: string
+  // Plan A — `null` when no active Telegram link. Optional in the wire
+  // shape so a frontend that pre-dates Plan A doesn't crash on absence.
+  telegram_link?: MeTelegramLinkDto | null
 }
 
 export const usersApi = {
@@ -483,6 +494,19 @@ export const openClawApi = {
     return request('/agent/openclaw/link/issue', {
       method: 'POST',
       auth: true,
+    })
+  },
+
+  /**
+   * Plan A (2026-05-15) — dashboard-driven unlink. With `chatId`
+   * unlinks just that chat; without, unlinks every active row owned
+   * by the calling user (the typical sidebar-pill UX).
+   */
+  unlinkTelegram(opts?: { chatId?: string }): Promise<{ unlinkedCount: number }> {
+    return request('/agent/openclaw/link/unlink', {
+      method: 'POST',
+      auth: true,
+      body: opts?.chatId ? { telegramChatId: opts.chatId } : {},
     })
   },
 }

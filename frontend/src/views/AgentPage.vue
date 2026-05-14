@@ -21,6 +21,11 @@ const inputFocused = ref(false)
 const confirmModalRef = ref<InstanceType<typeof ConfirmModal> | null>(null)
 const activeAction = ref<ActionDescriptor | null>(null)
 
+// Q4 Part B — the muhaven_link_telegram tool result is handled at
+// App-level (App.vue mounts LinkTelegramModal globally) so it works
+// from both the /agent route AND the side panel. AgentPage owns
+// only the ConfirmModal lifecycle.
+
 // When a propose_* tool result arrives, mount the ConfirmModal for the
 // next pending action. The composable maintains a queue; we pop the
 // front whenever the modal closes.
@@ -465,6 +470,7 @@ onMounted(() => {
         @complete="onConfirmComplete"
       />
     </Teleport>
+
 
     <!-- ── Chat column (with input bar pinned at bottom).
          On xl+: `xl:mr-80` reserves space for the fixed right aside. ── -->

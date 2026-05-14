@@ -96,6 +96,57 @@ export class FindTelegramLinkUseCase {
   }
 }
 
+/**
+ * Plan A (2026-05-15) — dashboard-driven unlink.
+ *
+ * The dashboard's LinkTelegramModal exposes an "Unlink" CTA in the
+ * linked-state branch. Without a server-side verb the only way to
+ * unlink was to message the bot directly — fine for power users, but
+ * a UX gap for everyone else. The use-case mutates ONLY links owned
+ * by the calling userId (defense against a `chatId` from another
+ * user's URL being passed in), so the route handler can take a
+ * chatId in the body without worrying about authorization drift.
+ *
+ * Semantics:
+ *   - chatId omitted → unlinks EVERY active row owned by the user
+ *     (Plan A's default surface — the sidebar pill only reflects the
+ *     "most-recent" link, so unlinking should clear the whole set).
+ *   - chatId provided → unlinks only that one (future surface for a
+ *     multi-link manager UI).
+ *   - No active rows → return { unlinkedCount: 0 } rather than 404;
+ *     the operation is idempotent.
+ */
+export interface UnlinkTelegramInput {
+  userId: string;
+  telegramChatId?: string;
+  now?: Date;
+}
+
+export interface UnlinkTelegramResult {
+  unlinkedCount: number;
+}
+
+export class UnlinkTelegramUseCase {
+  constructor(private readonly linkRepo: ITelegramLinkRepository) {}
+
+  async execute(input: UnlinkTelegramInput): Promise<UnlinkTelegramResult> {
+    const now = input.now ?? new Date();
+    const rows = await this.linkRepo.findByUserId(input.userId);
+    const targets = rows
+      .filter((r) => r.isActive())
+      .filter((r) => !input.telegramChatId || r.telegramChatId === input.telegramChatId);
+    if (targets.length === 0) {
+      return { unlinkedCount: 0 };
+    }
+    let count = 0;
+    for (const row of targets) {
+      const updated = await this.linkRepo.unlink(row.telegramChatId, now);
+      if (updated) count += 1;
+    }
+    return { unlinkedCount: count };
+  }
+}
+
 function generateLinkCode(): string {
   const buf = randomBytes(8);
   let out = '';

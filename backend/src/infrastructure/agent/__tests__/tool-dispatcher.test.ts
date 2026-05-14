@@ -46,6 +46,11 @@ function buildDeps(): ToolDispatcherDeps {
     explainKycAttestation: noopUseCase('muhaven_explain_kyc_attestation') as unknown as ToolDispatcherDeps['explainKycAttestation'],
     proposeGovernanceVote: noopUseCase('muhaven_propose_governance_vote') as unknown as ToolDispatcherDeps['proposeGovernanceVote'],
     castEncryptedVote: noopUseCase('muhaven_cast_encrypted_vote') as unknown as ToolDispatcherDeps['castEncryptedVote'],
+    // Wave 4 §5 Path C
+    proposeCreateCheckout: noopUseCase('muhaven_propose_create_checkout') as unknown as ToolDispatcherDeps['proposeCreateCheckout'],
+    // Q4 Part B (2026-05-15) — Telegram-link tool
+    linkTelegram: noopUseCase('muhaven_link_telegram') as unknown as ToolDispatcherDeps['linkTelegram'],
+    resolveBotStartUrl: (code: string) => `https://t.me/test_bot?start=${code}`,
   };
 }
 
@@ -244,6 +249,21 @@ describe('ToolDispatcher routing', () => {
       (deps.castEncryptedVote.execute as ReturnType<typeof vi.fn>).mock.calls.length,
     ).toBe(1);
   });
+
+  // ── Q4 Part B (2026-05-15) — Telegram-link HavenBot tool ────────
+  it('routes muhaven_link_telegram with no args + closes over botStartUrlResolver', async () => {
+    const deps = buildDeps();
+    const d = new ToolDispatcher(deps);
+    await d.dispatch(CTX, 'muhaven_link_telegram', {});
+    const calls = (deps.linkTelegram.execute as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls.length).toBe(1);
+    const ctx = calls[0]?.[0] as { userId: string; botStartUrlResolver: (c: string) => string | null };
+    expect(ctx.userId).toBe(CTX.userId);
+    // The resolver closure is passed through verbatim — call it to
+    // confirm the dispatcher wires deps.resolveBotStartUrl (not a fresh
+    // default) into the use-case context.
+    expect(ctx.botStartUrlResolver('ABCDEFGH')).toBe('https://t.me/test_bot?start=ABCDEFGH');
+  });
 });
 
 describe('ToolDispatcher — CaMeL gate enforcement', () => {
@@ -253,9 +273,13 @@ describe('ToolDispatcher — CaMeL gate enforcement', () => {
     await expect(d.dispatch(CTX, 'muhaven_drop_database', {})).rejects.toBeInstanceOf(
       ApplicationHttpError,
     );
-    // No use-case fires.
+    // No use-case fires. Skip non-use-case deps (e.g. resolveBotStartUrl
+    // which is a plain function for the Q4 Part B Telegram-link tool).
     for (const u of Object.values(deps)) {
-      expect((u.execute as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+      if (typeof u === 'function') continue;
+      const execMock = (u as { execute?: ReturnType<typeof vi.fn> }).execute;
+      if (!execMock) continue;
+      expect(execMock.mock.calls.length).toBe(0);
     }
   });
 

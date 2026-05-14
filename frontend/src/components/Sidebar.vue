@@ -356,15 +356,15 @@ onBeforeUnmount(() => {
         Sign In
       </button>
 
-      <!-- Q4 (post-§4 queue, 2026-05-14): Link Telegram CTA. Surfaces
-           the `issueTelegramLink()` flow as a visible button so the
-           operator doesn't need DevTools-fu to mint a link code
-           (workaround used during §4 walkthrough). Only renders when
-           the wallet is connected — Telegram linking is a per-user
-           credential. Bypasses HavenBot entirely so it works even
-           with stub classifier active. -->
+      <!-- Q4 (post-§4 queue, 2026-05-14) + Plan A (2026-05-15):
+           Link Telegram CTA with linked-state pill. When not linked,
+           shows the prior "Link Telegram" CTA. When linked, shows a
+           smaller pill `Telegram • @username` — clicking opens the
+           modal in its linked-state branch (Unlink CTA). Plan A's
+           `/me` short-poll auto-closes the modal on link, so the
+           pill flips without operator action. -->
       <button
-        v-if="authStore.walletAddress"
+        v-if="authStore.walletAddress && !authStore.telegramLink?.linked"
         type="button"
         data-testid="nav-link-telegram"
         @click="showLinkTelegram = true"
@@ -378,6 +378,24 @@ onBeforeUnmount(() => {
       >
         <Send :size="13" />
         Link Telegram
+      </button>
+      <button
+        v-else-if="authStore.walletAddress && authStore.telegramLink?.linked"
+        type="button"
+        data-testid="nav-telegram-linked-pill"
+        @click="showLinkTelegram = true"
+        class="w-full flex items-center justify-center gap-2 px-3 py-1.5 text-[11px] font-medium
+               text-compute dark:text-signal
+               border border-positive/30
+               bg-positive/8
+               hover:bg-positive/12
+               rounded-lg transition-colors duration-150 cursor-pointer"
+        :title="`Linked to @${authStore.telegramLink.telegram_username ?? 'Telegram'} — click to manage`"
+      >
+        <Send :size="11" />
+        <span class="truncate">
+          Telegram · @{{ authStore.telegramLink.telegram_username ?? 'linked' }}
+        </span>
       </button>
 
       <!-- ADR-023 dev-mode pill — bottom of the sidebar so it's always

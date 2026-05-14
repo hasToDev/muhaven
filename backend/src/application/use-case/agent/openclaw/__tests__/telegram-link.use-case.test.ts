@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import {
   ConsumeTelegramLinkUseCase,
   IssueTelegramLinkCodeUseCase,
+  UnlinkTelegramUseCase,
 } from '../telegram-link.use-case.js';
 import {
   MemoryTelegramLinkCodeRepository,
@@ -112,5 +113,77 @@ describe('ConsumeTelegramLinkUseCase', () => {
     expect(found?.userId).toBe('u1');
     const missing = await linkRepo.findByTelegramUserId('67890');
     expect(missing).toBeNull();
+  });
+});
+
+describe('UnlinkTelegramUseCase (Plan A)', () => {
+  let codeRepo: MemoryTelegramLinkCodeRepository;
+  let linkRepo: MemoryTelegramLinkRepository;
+  let issueCase: IssueTelegramLinkCodeUseCase;
+  let consumeCase: ConsumeTelegramLinkUseCase;
+  let unlinkCase: UnlinkTelegramUseCase;
+
+  beforeEach(() => {
+    codeRepo = new MemoryTelegramLinkCodeRepository();
+    linkRepo = new MemoryTelegramLinkRepository();
+    issueCase = new IssueTelegramLinkCodeUseCase(codeRepo);
+    consumeCase = new ConsumeTelegramLinkUseCase(codeRepo, linkRepo);
+    unlinkCase = new UnlinkTelegramUseCase(linkRepo);
+  });
+
+  async function linkChat(userId: string, chatId: string, username: string): Promise<void> {
+    const issued = await issueCase.execute(userId, NOW);
+    await consumeCase.execute({
+      linkCode: issued.linkCode,
+      telegramChatId: chatId,
+      telegramUserId: chatId,
+      telegramUsername: username,
+      now: ONE_MIN_LATER,
+    });
+  }
+
+  it('unlinks every active row for the user when chatId is omitted', async () => {
+    await linkChat('u1', '111', 'alice_personal');
+    await linkChat('u1', '222', 'alice_family');
+    const out = await unlinkCase.execute({ userId: 'u1', now: SIX_MIN_LATER });
+    expect(out.unlinkedCount).toBe(2);
+    const rows = await linkRepo.findByUserId('u1');
+    for (const r of rows) {
+      expect(r.isActive()).toBe(false);
+    }
+  });
+
+  it('targets a single chat when chatId is provided', async () => {
+    await linkChat('u1', '111', 'alice_personal');
+    await linkChat('u1', '222', 'alice_family');
+    const out = await unlinkCase.execute({
+      userId: 'u1',
+      telegramChatId: '111',
+      now: SIX_MIN_LATER,
+    });
+    expect(out.unlinkedCount).toBe(1);
+    const a = await linkRepo.findByChatId('111');
+    const b = await linkRepo.findByChatId('222');
+    expect(a?.isActive()).toBe(false);
+    expect(b?.isActive()).toBe(true);
+  });
+
+  it('does NOT unlink another user\'s chat even if the chatId is passed', async () => {
+    await linkChat('u1', '111', 'alice');
+    await linkChat('u2', '222', 'bob');
+    // u1 tries to unlink u2's chat — refused at the user-scope filter.
+    const out = await unlinkCase.execute({
+      userId: 'u1',
+      telegramChatId: '222',
+      now: SIX_MIN_LATER,
+    });
+    expect(out.unlinkedCount).toBe(0);
+    const b = await linkRepo.findByChatId('222');
+    expect(b?.isActive()).toBe(true);
+  });
+
+  it('returns 0 idempotently when there are no active links', async () => {
+    const out = await unlinkCase.execute({ userId: 'u1', now: NOW });
+    expect(out.unlinkedCount).toBe(0);
   });
 });

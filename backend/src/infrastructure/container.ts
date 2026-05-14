@@ -117,6 +117,8 @@ import {
   CastEncryptedVoteToolUseCase,
   // Wave 4 §5 Path C — hosted-checkout via agent
   ProposeCreateCheckoutToolUseCase,
+  // Q4 Part B (2026-05-15) — Telegram-link HavenBot tool
+  LinkTelegramToolUseCase,
 } from '../application/use-case/agent/tool/index.js';
 import { CreateCheckoutSessionUseCase } from '../application/use-case/checkout/create-session.use-case.js';
 import { CommitCreateCheckoutUseCase } from '../application/use-case/checkout/commit-create-checkout.use-case.js';
@@ -137,6 +139,7 @@ import {
   type IBotIntentTransport,
 } from '../application/use-case/agent/openclaw/notify-intent-to-bot.use-case.js';
 import { CreateOpenClawIntentUseCase } from '../application/use-case/agent/openclaw/create-intent.use-case.js';
+import { IssueTelegramLinkCodeUseCase } from '../application/use-case/agent/openclaw/telegram-link.use-case.js';
 import {
   classifyTier,
   DEFAULT_TIER_THRESHOLDS,
@@ -537,6 +540,15 @@ function getToolDispatcher(): ToolDispatcher {
       confirmTokens,
       appendAudit,
     ),
+    // ── Q4 Part B (2026-05-15) — Telegram-link HavenBot tool ───────
+    linkTelegram: new LinkTelegramToolUseCase(
+      new IssueTelegramLinkCodeUseCase(agentRepos.telegramLinkCodeRepo),
+    ),
+    resolveBotStartUrl: (linkCode: string): string | null => {
+      const botUsername = getEnv().TELEGRAM_BOT_USERNAME;
+      if (!botUsername) return null;
+      return `https://t.me/${encodeURIComponent(botUsername)}?start=${encodeURIComponent(linkCode)}`;
+    },
   });
   return _toolDispatcher;
 }

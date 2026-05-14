@@ -9,6 +9,7 @@ import {
   SetPolicyDtoSchema,
   PauseToolDtoSchema,
   UnsealPositionDtoSchema,
+  LinkTelegramDtoSchema,
 } from '../../application/dto/agent/tool.dto.js';
 import {
   ProposeDistributeYieldDtoSchema,
@@ -43,6 +44,7 @@ import type {
   ExplainKycAttestationToolUseCase,
   ProposeGovernanceVoteToolUseCase,
   CastEncryptedVoteToolUseCase,
+  LinkTelegramToolUseCase,
 } from '../../application/use-case/agent/tool/index.js';
 import { gatePlannerIntent, sanitiseToolResult } from './safety/index.js';
 
@@ -67,6 +69,12 @@ export interface ToolDispatcherDeps {
   explainKycAttestation: ExplainKycAttestationToolUseCase;
   proposeGovernanceVote: ProposeGovernanceVoteToolUseCase;
   castEncryptedVote: CastEncryptedVoteToolUseCase;
+  // Q4 Part B (2026-05-15) — Telegram-link HavenBot tool
+  linkTelegram: LinkTelegramToolUseCase;
+  /** Resolves a 5-min link-code → bot-start URL (null if
+   *  TELEGRAM_BOT_USERNAME is unset). Closed over getEnv() at
+   *  container wire time so this dispatcher stays decoupled from env. */
+  resolveBotStartUrl: (linkCode: string) => string | null;
 }
 
 export interface ToolDispatcherContext {
@@ -253,6 +261,16 @@ export class ToolDispatcher {
           },
           args,
         );
+      }
+      // ── Q4 Part B (2026-05-15) — Telegram-link HavenBot tool ───────
+      case 'muhaven_link_telegram': {
+        // Argless tool — pass through schema for strict-additionalProperties
+        // enforcement (catches an LLM that hallucinates a token field).
+        LinkTelegramDtoSchema.parse(rawArgs ?? {});
+        return this.deps.linkTelegram.execute({
+          userId: ctx.userId,
+          botStartUrlResolver: this.deps.resolveBotStartUrl,
+        });
       }
       default:
         throw ApplicationHttpError.badRequest(`Unknown tool: ${toolName}`);

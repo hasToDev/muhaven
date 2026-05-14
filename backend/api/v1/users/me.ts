@@ -5,7 +5,15 @@ import { withAuth } from '../../../src/interface/middleware/with-auth.js';
 import { withCors } from '../../../src/interface/middleware/with-cors.js';
 import { Response } from '../../../src/interface/response.js';
 
-const useCase = new GetCurrentUserUseCase(container.userRepo);
+const useCase = new GetCurrentUserUseCase(
+  container.userRepo,
+  // Plan A (2026-05-15): /me now surfaces the user's active Telegram-link
+  // summary so the sidebar can render an "already linked" pill without
+  // a second roundtrip. Repo is optional on the use-case so unit tests
+  // that don't care about telegram can still instantiate with the user
+  // repo alone.
+  container.telegramLinkRepo,
+);
 
 const handler = createGetHandler({
   operationName: 'GetCurrentUser',

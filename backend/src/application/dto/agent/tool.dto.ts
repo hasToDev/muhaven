@@ -216,6 +216,38 @@ export interface UnsealPositionResponseDto {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Q4 Part B (2026-05-15) — muhaven_link_telegram (read tool; no policy gate)
+// ─────────────────────────────────────────────────────────────────────
+//
+// Wraps the existing `IssueTelegramLinkCodeUseCase` behind the HavenBot
+// surface so an LLM-driven "link my telegram" request returns an
+// actionable tool result that the chat UI surfaces as a side-panel
+// card (QR + tap-link button + countdown). The link-consume side
+// stays the bot worker's responsibility — this tool only mints the
+// code + bot-start URL.
+//
+// Privacy: no FHE involved. The linkCode is single-use + 5-min TTL,
+// and the consume step requires the user to message the bot from
+// the device that owns the Telegram account — out-of-band confirmation
+// the LLM cannot impersonate.
+
+export const LinkTelegramDtoSchema = z.object({}).strict();
+export type LinkTelegramDto = z.infer<typeof LinkTelegramDtoSchema>;
+
+export interface LinkTelegramToolResult {
+  tool: 'muhaven_link_telegram';
+  /** Side-panel card kind so the frontend chat composable can dispatch
+   *  the surface (modal mount / inline card) without sniffing the tool
+   *  name. Matches the ActionDescriptor pattern's `kind` discriminator. */
+  kind: 'link_telegram';
+  linkCode: string;
+  expiresInSec: number;
+  /** Null when the backend's TELEGRAM_BOT_USERNAME is unset — the
+   *  modal renders a manual `/start <code>` fallback. */
+  botStartUrl: string | null;
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // ActionDescriptor — every propose_* tool returns this shape
 // ─────────────────────────────────────────────────────────────────────
 //

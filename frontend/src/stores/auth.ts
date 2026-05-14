@@ -6,6 +6,7 @@ import {
   clearStoredTokens,
   usersApi,
   type IssuerStatus,
+  type MeTelegramLinkDto,
   type StoredTokens,
   type UserRole,
 } from '@/services/api'
@@ -26,6 +27,11 @@ export const useAuthStore = defineStore('auth', () => {
   // resolves.
   const issuerStatus = ref<IssuerStatus>('unregistered')
   const issuerDisplayName = ref<string | null>(null)
+  // Plan A (2026-05-15) — current Telegram-link summary (or null when
+  // unlinked). Populated from /me on hydrate + after a fresh link
+  // consume. The sidebar pill + the LinkTelegramModal's linked-state
+  // branch both read from here.
+  const telegramLink = ref<MeTelegramLinkDto | null>(null)
   // Cache of the `/me` fetch promise. Router guards await this on
   // every navigation; reusing the resolved promise means we only hit
   // /me once per session (fresh login, or page reload). Cleared on
@@ -105,6 +111,10 @@ export const useAuthStore = defineStore('auth', () => {
         const me = await usersApi.me()
         issuerStatus.value = me.issuer_status
         issuerDisplayName.value = me.issuer_display_name ?? null
+        // Plan A — telegram_link is `null` when unset; explicit
+        // assignment avoids stale linked-state lingering after a
+        // remote unlink.
+        telegramLink.value = me.telegram_link ?? null
         // Refresh the localStorage cache so a future reload
         // hydrates with the latest server-side status.
         const tokens = getStoredTokens()
@@ -129,8 +139,19 @@ export const useAuthStore = defineStore('auth', () => {
     error.value = null
     issuerStatus.value = 'unregistered'
     issuerDisplayName.value = null
+    telegramLink.value = null
     userMetaPromise = null
     clearStoredTokens()
+  }
+
+  /**
+   * Plan A (2026-05-15) — invalidate the /me promise cache so the
+   * next `fetchUserMeta()` call refetches. Used by the LinkTelegramModal
+   * after a successful link consume or unlink so the sidebar pill
+   * updates without a full reload.
+   */
+  function invalidateUserMeta() {
+    userMetaPromise = null
   }
 
   return {
@@ -144,6 +165,7 @@ export const useAuthStore = defineStore('auth', () => {
     loading,
     issuerStatus,
     issuerDisplayName,
+    telegramLink,
     // computed
     isAuthenticated,
     // actions
@@ -151,6 +173,7 @@ export const useAuthStore = defineStore('auth', () => {
     setTokens,
     setIssuerStatus,
     fetchUserMeta,
+    invalidateUserMeta,
     clearAuth,
   }
 })

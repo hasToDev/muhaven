@@ -70,3 +70,13 @@ export const TelegramLinkConsumeDtoSchema = z
   })
   .strict();
 export type TelegramLinkConsumeDto = z.infer<typeof TelegramLinkConsumeDtoSchema>;
+
+// Plan A (2026-05-15) — dashboard-driven unlink. Body is OPTIONAL; the
+// route handler reads `userId` from the JWT and unlinks every active
+// row when chatId is omitted (sidebar's "Unlink" CTA).
+export const TelegramLinkUnlinkDtoSchema = z
+  .object({
+    telegramChatId: z.string().regex(/^-?\d{1,32}$/).optional(),
+  })
+  .strict();
+export type TelegramLinkUnlinkDto = z.infer<typeof TelegramLinkUnlinkDtoSchema>;

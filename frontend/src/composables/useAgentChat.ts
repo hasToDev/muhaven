@@ -5,6 +5,7 @@ import {
   type AgentStreamEvent,
   type AgentSuggestionItem,
   type AgentChatStreamRequest,
+  type TelegramLinkIssueResponse,
 } from '@/services/api'
 
 /**
@@ -27,6 +28,11 @@ export interface UseAgentChat {
   streamingText: Ref<string>
   lastError: Ref<string | null>
   pendingActions: Ref<ActionDescriptor[]>
+  /** Q4 Part B (2026-05-15) — set when a `muhaven_link_telegram` tool
+   *  result lands; AgentPage mounts LinkTelegramModal with this
+   *  prefetched data. Cleared via `consumePendingTelegramLink()`. */
+  pendingTelegramLink: Ref<TelegramLinkIssueResponse | null>
+  consumePendingTelegramLink: () => TelegramLinkIssueResponse | null
   consumePendingAction: (toolCallId: string) => ActionDescriptor | null
   /** Returns the final accumulated text + any ActionDescriptors emitted +
    * a count of tool_result events seen on this turn + the suggestions
@@ -50,6 +56,29 @@ export function useAgentChat(): UseAgentChat {
   const streamingText = ref('')
   const lastError = ref<string | null>(null)
   const pendingActions = ref<ActionDescriptor[]>([])
+  const pendingTelegramLink = ref<TelegramLinkIssueResponse | null>(null)
+
+  function consumePendingTelegramLink(): TelegramLinkIssueResponse | null {
+    const v = pendingTelegramLink.value
+    pendingTelegramLink.value = null
+    return v
+  }
+
+  function isLinkTelegramResult(value: unknown): value is {
+    tool: 'muhaven_link_telegram'
+    kind: 'link_telegram'
+    linkCode: string
+    expiresInSec: number
+    botStartUrl: string | null
+  } {
+    if (!value || typeof value !== 'object') return false
+    const v = value as Record<string, unknown>
+    return (
+      v.kind === 'link_telegram'
+      && typeof v.linkCode === 'string'
+      && typeof v.expiresInSec === 'number'
+    )
+  }
 
   let activeController: AbortController | null = null
 
@@ -160,6 +189,15 @@ export function useAgentChat(): UseAgentChat {
         if (event.ok && event.result && isActionDescriptor(event.result)) {
           pendingActions.value.push(event.result)
           turnActions.push(event.result)
+        } else if (event.ok && event.result && isLinkTelegramResult(event.result)) {
+          // Q4 Part B — the muhaven_link_telegram tool result mounts
+          // LinkTelegramModal with the prefetched code (rather than
+          // burning a second issue() on modal mount).
+          pendingTelegramLink.value = {
+            linkCode: event.result.linkCode,
+            expiresInSec: event.result.expiresInSec,
+            botStartUrl: event.result.botStartUrl,
+          }
         }
         // Failures are NOT echoed verbatim into the chat anymore —
         // the backend's agentic loop feeds the structured error back
@@ -188,6 +226,8 @@ export function useAgentChat(): UseAgentChat {
     streamingText,
     lastError,
     pendingActions,
+    pendingTelegramLink,
+    consumePendingTelegramLink,
     consumePendingAction,
     send,
     abort,

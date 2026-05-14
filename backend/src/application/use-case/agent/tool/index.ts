@@ -56,3 +56,6 @@ export {
 export type { ProposeGovernanceVoteContext } from './propose-governance-vote.use-case.js';
 export { CastEncryptedVoteToolUseCase } from './cast-encrypted-vote.use-case.js';
 export type { CastEncryptedVoteContext } from './cast-encrypted-vote.use-case.js';
+// ── Q4 Part B (2026-05-15) — Telegram-link HavenBot tool ────────────
+export { LinkTelegramToolUseCase } from './link-telegram.use-case.js';
+export type { LinkTelegramToolContext } from './link-telegram.use-case.js';

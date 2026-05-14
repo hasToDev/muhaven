@@ -26,12 +26,27 @@
  * + emits SVG inline); no third-party renderer sees the code.
  */
 
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { openClawApi, type TelegramLinkIssueResponse } from '@/services/api'
-import { Send, Copy, Check, X, RefreshCcw, Smartphone } from 'lucide-vue-next'
+import { useAuthStore } from '@/stores/auth'
+import { toast } from 'vue-sonner'
+import { Send, Copy, Check, X, RefreshCcw, Smartphone, Unlink2 } from 'lucide-vue-next'
 import QRCode from 'qrcode'
 
+const props = withDefaults(
+  defineProps<{
+    /** Q4 Part B — when set, modal mounts in "agent-triggered" mode:
+     *  seeds linkData from the HavenBot tool result without re-issuing
+     *  a fresh code. Stays optional so the sidebar's button-driven
+     *  flow keeps its existing fresh-issue posture. */
+    prefetched?: TelegramLinkIssueResponse | null
+  }>(),
+  { prefetched: null },
+)
+
 const emit = defineEmits<{ close: [] }>()
+
+const authStore = useAuthStore()
 
 const linkData = ref<TelegramLinkIssueResponse | null>(null)
 const loading = ref(false)
@@ -41,6 +56,16 @@ const qrSvg = ref<string>('')
 const now = ref(Date.now())
 const issuedAtMs = ref<number | null>(null)
 let tickHandle: ReturnType<typeof setInterval> | null = null
+let pollHandle: ReturnType<typeof setInterval> | null = null
+const unlinking = ref(false)
+
+// Plan A — short-poll /me every 2s while the modal is open + the
+// link code is unconsumed. As soon as the bot DM lands and the
+// backend writes the link row, /me surfaces `telegram_link.linked=true`
+// and we auto-close.
+const POLL_INTERVAL_MS = 2000
+
+const isLinked = computed(() => authStore.telegramLink?.linked === true)
 
 const expiresAtMs = computed<number | null>(() => {
   if (!linkData.value || issuedAtMs.value === null) return null
@@ -64,33 +89,56 @@ const countdownLabel = computed<string>(() => {
   return m > 0 ? `${m}m ${sec.toString().padStart(2, '0')}s` : `${sec}s`
 })
 
+async function seedFromPrefetched(data: TelegramLinkIssueResponse): Promise<void> {
+  linkData.value = data
+  issuedAtMs.value = Date.now()
+  qrSvg.value = ''
+  if (data.botStartUrl) {
+    try {
+      qrSvg.value = await QRCode.toString(data.botStartUrl, {
+        type: 'svg',
+        errorCorrectionLevel: 'M',
+        margin: 1,
+        color: { dark: '#1a1714', light: '#00000000' },
+      })
+    } catch (e) {
+      console.warn('[LinkTelegramModal] QR render failed', e)
+    }
+  }
+}
+
 async function issue(): Promise<void> {
   loading.value = true
   error.value = null
   qrSvg.value = ''
   try {
     const data = await openClawApi.issueTelegramLink()
-    linkData.value = data
-    issuedAtMs.value = Date.now()
-    // Render QR for the bot-start URL. Fail soft — if QR rendering
-    // throws (e.g., unsupported character) the deep-link + copy
-    // surfaces remain functional.
-    if (data.botStartUrl) {
-      try {
-        qrSvg.value = await QRCode.toString(data.botStartUrl, {
-          type: 'svg',
-          errorCorrectionLevel: 'M',
-          margin: 1,
-          color: { dark: '#1a1714', light: '#00000000' },
-        })
-      } catch (e) {
-        console.warn('[LinkTelegramModal] QR render failed', e)
-      }
-    }
+    await seedFromPrefetched(data)
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to issue link code'
   } finally {
     loading.value = false
+  }
+}
+
+// Plan A — Unlink CTA on the linked-state branch.
+async function unlink(): Promise<void> {
+  if (unlinking.value) return
+  unlinking.value = true
+  try {
+    await openClawApi.unlinkTelegram()
+    // Invalidate the cached /me promise + refetch so the sidebar
+    // pill + this modal's linked-state both flip in one tick.
+    authStore.invalidateUserMeta()
+    await authStore.fetchUserMeta()
+    toast.success('Telegram unlinked')
+    close()
+  } catch (e) {
+    toast.error('Unlink failed', {
+      description: e instanceof Error ? e.message : String(e),
+    })
+  } finally {
+    unlinking.value = false
   }
 }
 
@@ -125,10 +173,33 @@ function onKeydown(e: KeyboardEvent): void {
 }
 
 onMounted(() => {
-  void issue()
+  // Q4 Part B — when the HavenBot triggers the modal it passes a
+  // pre-minted linkCode through `prefetched`; reuse it instead of
+  // burning another code.
+  if (props.prefetched && !isLinked.value) {
+    void seedFromPrefetched(props.prefetched)
+  } else if (!isLinked.value) {
+    void issue()
+  }
+
   tickHandle = setInterval(() => {
     now.value = Date.now()
   }, 1000)
+
+  // Plan A — short-poll /me so a successful link from the bot side
+  // flips this modal closed without operator intervention. Only the
+  // pending-link path polls; the linked-state branch is static.
+  pollHandle = setInterval(async () => {
+    if (isLinked.value) return
+    try {
+      authStore.invalidateUserMeta()
+      await authStore.fetchUserMeta()
+    } catch {
+      // /me transient failure — keep polling; the next tick may
+      // succeed. The cached telegramLink is preserved.
+    }
+  }, POLL_INTERVAL_MS)
+
   window.addEventListener('keydown', onKeydown)
 })
 
@@ -137,7 +208,26 @@ onBeforeUnmount(() => {
     clearInterval(tickHandle)
     tickHandle = null
   }
+  if (pollHandle !== null) {
+    clearInterval(pollHandle)
+    pollHandle = null
+  }
   window.removeEventListener('keydown', onKeydown)
+})
+
+// Plan A — auto-close on linked. Watcher fires whenever the
+// authStore's telegramLink flips to truthy, regardless of whether
+// the change came from the poll, the AgentPage's lookup, or a
+// neighbouring tab updating localStorage.
+watch(isLinked, (linked, prev) => {
+  // Only auto-close on the unlinked → linked transition while the
+  // modal is in its issue-and-wait state (prevents flickering close
+  // when the modal mounts already-linked — that's the unlink surface).
+  if (linked && !prev && linkData.value !== null) {
+    const username = authStore.telegramLink?.telegram_username
+    toast.success(username ? `Linked to @${username}` : 'Telegram linked')
+    close()
+  }
 })
 </script>
 
@@ -180,17 +270,59 @@ onBeforeUnmount(() => {
             id="link-telegram-title"
             class="font-accent text-[1.25rem] leading-tight text-compute dark:text-signal"
           >
-            Link your Telegram
+            {{ isLinked ? 'Telegram connected' : 'Link your Telegram' }}
           </h2>
           <p class="text-xs text-cool dark:text-body-dark/70 mt-0.5">
-            Tap the bot in Telegram to finish linking
+            {{ isLinked
+              ? 'Your account is linked — you can unlink any time'
+              : 'Tap the bot in Telegram to finish linking' }}
           </p>
         </div>
       </div>
 
+      <!-- Plan A — linked-state branch. Renders first so the modal
+           mounts in this surface when the user re-opens it after
+           a successful link (Sidebar pill click). -->
+      <div
+        v-if="isLinked"
+        class="p-4 rounded-xl border border-positive/30 bg-positive/5 space-y-3"
+      >
+        <p class="text-sm text-compute dark:text-body-dark">
+          Connected to
+          <span class="font-mono text-compute dark:text-signal">
+            {{ authStore.telegramLink?.telegram_username
+              ? `@${authStore.telegramLink.telegram_username}`
+              : 'Telegram' }}
+          </span>
+          since
+          <span class="text-cool">
+            {{ authStore.telegramLink ? new Date(authStore.telegramLink.linked_at).toLocaleDateString() : '' }}
+          </span>.
+        </p>
+        <p class="text-xs text-cool dark:text-body-dark/70">
+          The bot will DM you with confirmation prompts when an agent
+          surface proposes a write. Unlink to stop receiving them.
+        </p>
+        <button
+          type="button"
+          :disabled="unlinking"
+          class="w-full inline-flex items-center justify-center gap-2 py-2 px-4 rounded-lg
+                 text-sm font-medium
+                 border border-negative/40 text-negative
+                 hover:bg-negative/10
+                 disabled:opacity-50 disabled:cursor-not-allowed
+                 transition-colors"
+          data-testid="link-telegram-unlink"
+          @click="unlink"
+        >
+          <Unlink2 :size="14" />
+          {{ unlinking ? 'Unlinking…' : 'Unlink Telegram' }}
+        </button>
+      </div>
+
       <!-- Loading + error states -->
       <div
-        v-if="loading"
+        v-else-if="loading"
         class="py-8 flex items-center justify-center text-cool dark:text-body-dark/70"
         role="status"
         aria-live="polite"

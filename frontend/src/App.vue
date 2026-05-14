@@ -1,17 +1,40 @@
 <script setup lang="ts">
-import { watch, computed, onMounted } from 'vue'
+import { ref, watch, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAppStore } from '@/stores/app'
+import { useAgentStore } from '@/stores/agent'
 import TopNav from '@/components/TopNav.vue'
 import Sidebar from '@/components/Sidebar.vue'
 import MMeshGradient from '@/components/ui/MMeshGradient.vue'
 import MMobileTabBar from '@/components/ui/MMobileTabBar.vue'
 import AgentFAB from '@/components/agent/AgentFAB.vue'
 import AgentSidePanel from '@/components/agent/AgentSidePanel.vue'
+import LinkTelegramModal from '@/components/agent/LinkTelegramModal.vue'
 import MToastProvider from '@/components/ui/MToastProvider.vue'
+import type { TelegramLinkIssueResponse } from '@/services/api'
 
 const route = useRoute()
 const store = useAppStore()
+const agentStore = useAgentStore()
+
+// Q4 Part B (2026-05-15) — global LinkTelegramModal mount. When the
+// HavenBot fires `muhaven_link_telegram` from either the /agent page
+// or the AgentSidePanel, the chat composable populates
+// `pendingTelegramLink`. App.vue owns the modal lifecycle so the user
+// sees the QR + tap-link regardless of which surface they're on.
+const activeTelegramLink = ref<TelegramLinkIssueResponse | null>(null)
+watch(
+  () => agentStore.pendingTelegramLink,
+  (v) => {
+    if (v && !activeTelegramLink.value) {
+      activeTelegramLink.value = agentStore.consumePendingTelegramLink()
+    }
+  },
+  { deep: true },
+)
+function onTelegramLinkClose() {
+  activeTelegramLink.value = null
+}
 
 const isLandingPage = computed(() => route.path === '/' || route.meta.layout === 'landing')
 const isLoginPage = computed(() => route.meta.layout === 'login')
@@ -80,6 +103,14 @@ onMounted(() => {
       <MMobileTabBar />
     </template>
     <AgentSidePanel />
+    <!-- Q4 Part B — global LinkTelegramModal mount triggered by the
+         HavenBot `muhaven_link_telegram` tool result. Pre-seeded with
+         the LLM-minted code so the modal doesn't re-issue. -->
+    <LinkTelegramModal
+      v-if="activeTelegramLink"
+      :prefetched="activeTelegramLink"
+      @close="onTelegramLinkClose"
+    />
     <MToastProvider />
   </div>
 </template>

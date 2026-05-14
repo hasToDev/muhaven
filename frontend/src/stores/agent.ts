@@ -163,6 +163,13 @@ export const useAgentStore = defineStore('agent', () => {
     return chat.consumePendingAction(toolCallId)
   }
 
+  /** Q4 Part B (2026-05-15) — drain the prefetched Telegram-link
+   *  payload from the agent stream so AgentPage's modal lifecycle
+   *  owns the close. */
+  function consumePendingTelegramLink() {
+    return chat.consumePendingTelegramLink()
+  }
+
   function openWithPrompt(prompt: string): void {
     pendingPrompt.value = prompt
   }
@@ -178,9 +185,11 @@ export const useAgentStore = defineStore('agent', () => {
     isTyping: chat.isStreaming,
     streamingText: chat.streamingText,
     pendingActions: chat.pendingActions,
+    pendingTelegramLink: chat.pendingTelegramLink,
     lastError: chat.lastError,
     pendingPrompt,
     consumePendingAction,
+    consumePendingTelegramLink,
     sendMessage,
     openWithPrompt,
     consumePrompt,

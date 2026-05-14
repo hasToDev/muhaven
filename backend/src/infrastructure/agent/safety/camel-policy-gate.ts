@@ -60,6 +60,8 @@ export const PLANNER_ALLOWED_TOOLS = [
   'muhaven_cast_encrypted_vote',
   // Wave 4 §5 Path C — hosted-checkout session via HavenBot
   'muhaven_propose_create_checkout',
+  // Q4 Part B (2026-05-15) — Telegram-link tool
+  'muhaven_link_telegram',
 ] as const;
 
 export type PlannerAllowedTool = (typeof PLANNER_ALLOWED_TOOLS)[number];
