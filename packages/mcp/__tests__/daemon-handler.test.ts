@@ -118,4 +118,75 @@ describe('handleBrokerRequest', () => {
     expect(res.type).toBe('error');
     if (res.type === 'error') expect(res.code).toBe('keystore_unavailable');
   });
+
+  // ------- v0.3.0: lazy session-key + effectiveConfig surface -------
+
+  it('hello surfaces hasSessionKey + effectiveConfig from options', async () => {
+    const res = await handleBrokerRequest({ type: 'hello' }, signer, keystore, undefined, {
+      hasSessionKey: true,
+      effectiveConfig: {
+        backendBaseUrl: 'https://api.example.test',
+        dashboardBaseUrl: 'https://dash.example.test',
+      },
+    });
+    expect(res.type).toBe('hello');
+    if (res.type === 'hello') {
+      expect(res.hasSessionKey).toBe(true);
+      expect(res.effectiveConfig).toEqual({
+        backendBaseUrl: 'https://api.example.test',
+        dashboardBaseUrl: 'https://dash.example.test',
+      });
+    }
+  });
+
+  it('hello defaults hasSessionKey to true when options omitted (back-compat)', async () => {
+    const res = await handleBrokerRequest({ type: 'hello' }, signer, keystore);
+    if (res.type === 'hello') {
+      expect(res.hasSessionKey).toBe(true);
+      expect(res.effectiveConfig).toBeUndefined();
+    }
+  });
+
+  it('hello reflects hasSessionKey=false when options say so', async () => {
+    const res = await handleBrokerRequest({ type: 'hello' }, signer, keystore, undefined, {
+      hasSessionKey: false,
+    });
+    if (res.type === 'hello') expect(res.hasSessionKey).toBe(false);
+  });
+
+  it('sign_hash with NullSigner returns session_key_unavailable error', async () => {
+    const { NullSigner } = await import('../src/broker/signer.js');
+    const nullSigner = new NullSigner();
+    const res = await handleBrokerRequest(
+      { type: 'sign_hash', hash: ('0x' + '1'.repeat(64)) as `0x${string}` },
+      nullSigner,
+      keystore,
+      undefined,
+      { hasSessionKey: false },
+    );
+    expect(res.type).toBe('error');
+    if (res.type === 'error') {
+      expect(res.code).toBe('session_key_unavailable');
+      expect(res.message).toMatch(/MUHAVEN_BROKER_SESSION_KEY/);
+    }
+  });
+
+  it('sign_hash with NullSigner re-throws non-MissingSessionKey errors verbatim', async () => {
+    // Defensive: a signer that throws an unrelated error should NOT be
+    // mapped to session_key_unavailable — the daemon's outer try/catch
+    // path should see the raw exception and surface `internal`.
+    const exploder: import('../src/broker/signer.js').ISigner = {
+      address: '0x2222222222222222222222222222222222222222' as const,
+      async signHash() {
+        throw new Error('viem oom');
+      },
+    };
+    await expect(
+      handleBrokerRequest(
+        { type: 'sign_hash', hash: ('0x' + '2'.repeat(64)) as `0x${string}` },
+        exploder,
+        keystore,
+      ),
+    ).rejects.toThrow(/viem oom/);
+  });
 });

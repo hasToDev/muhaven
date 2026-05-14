@@ -6,11 +6,14 @@
  * (Windows). Each request is a single JSON object; each response is a
  * single JSON object. No request pipelining, no streaming.
  *
- * **Protocol version 0.2.0** — bumped from 0.1.0 in Wave 4 P3 ADR-3
- * to add the `store_jwt` / `get_jwt` / `clear_jwt` triple. The broker
- * is now the single keeper of the device-flow JWT (per ADR-3 D1
- * "polling, not loopback callback") in addition to the session-key
- * private half.
+ * **Protocol version 0.3.0** — additive bump from 0.2.0 in @muhaven/mcp@0.1.3
+ * to add `hello.hasSessionKey` + `hello.effectiveConfig` (so a daemon
+ * booted without `MUHAVEN_BROKER_SESSION_KEY` can serve read paths AND
+ * surface its effective backend/dashboard URLs to `muhaven-broker login
+ * --from-daemon`). The 0.2.0 bump from 0.1.0 (Wave 4 P3 ADR-3) added the
+ * `store_jwt` / `get_jwt` / `clear_jwt` triple — the broker is the single
+ * keeper of the device-flow JWT (per ADR-3 D1 "polling, not loopback
+ * callback") in addition to the session-key private half.
  *
  * Threat-model invariants:
  *  - The broker NEVER reaches out to the network. It only:
@@ -24,7 +27,7 @@
  *    cannot exhaust broker memory by sending an unbounded JSON blob.
  */
 
-export const BROKER_PROTOCOL_VERSION = '0.2.0';
+export const BROKER_PROTOCOL_VERSION = '0.3.0';
 
 // ---------- requests ----------
 
@@ -65,10 +68,40 @@ export interface BrokerClearJwtRequest {
 export interface BrokerHelloResponse {
   readonly type: 'hello';
   readonly version: string;
-  /** 0x-prefixed checksummed address derived from the session key. */
+  /**
+   * 0x-prefixed checksummed address derived from the session key. When
+   * the daemon was booted without `MUHAVEN_BROKER_SESSION_KEY` (read-only
+   * posture; see `hasSessionKey`), this is the zero address.
+   *
+   * **DO NOT** use address-equality (`sessionKeyAddress !== ZERO_ADDRESS`)
+   * as a proxy for "session key is loaded" — that's a soft signal that
+   * future changes (e.g. allowing custom EOA-bound dev posture) could
+   * break silently. The authoritative aliveness check is `hasSessionKey`.
+   */
   readonly sessionKeyAddress: `0x${string}`;
   /** Whether a JWT is currently in the keystore. Useful for `doctor`. */
   readonly hasJwt: boolean;
+  /**
+   * Whether a session-key private half is loaded into the daemon. False
+   * when the daemon was booted without `MUHAVEN_BROKER_SESSION_KEY` — in
+   * that posture read tools still work (the broker serves JWT verbs), but
+   * any `sign_hash` request returns `session_key_unavailable`. Field added
+   * in protocol 0.3.0; absence implies `true` for back-compat with
+   * 0.2.0 daemons.
+   */
+  readonly hasSessionKey?: boolean;
+  /**
+   * Effective backend + dashboard URLs the daemon resolved from its own
+   * process env at boot. Surfaced so `muhaven-broker login --from-daemon`
+   * can stay in lockstep with the daemon's view rather than re-reading
+   * the CLI's env (which may diverge — e.g. login invoked over ssh inherits
+   * a different shell env than the systemd-launched daemon). Field added
+   * in protocol 0.3.0; absent on older daemons.
+   */
+  readonly effectiveConfig?: {
+    readonly backendBaseUrl: string;
+    readonly dashboardBaseUrl: string;
+  };
 }
 
 export interface BrokerSignHashResponse {
@@ -107,7 +140,8 @@ export type BrokerErrorCode =
   | 'unsupported_type'
   | 'internal'
   | 'forbidden'
-  | 'keystore_unavailable';
+  | 'keystore_unavailable'
+  | 'session_key_unavailable';
 
 export type BrokerRequest =
   | BrokerHelloRequest

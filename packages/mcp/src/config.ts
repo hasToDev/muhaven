@@ -38,12 +38,26 @@ export interface McpRuntimeConfig {
 export interface BrokerRuntimeConfig {
   /** Endpoint to bind: socket path on POSIX, named pipe name on Windows. */
   endpoint: string;
-  /** 0x-prefixed 32-byte private key. Sensitive — keychain-backed. */
-  sessionKeyHex: `0x${string}`;
+  /**
+   * 0x-prefixed 32-byte private key, OR undefined for read-only posture.
+   * When undefined, the daemon still serves `hello` + the JWT verbs
+   * (so MCP read tools work), but any `sign_hash` request returns
+   * `session_key_unavailable`. Sensitive when present — keychain-backed.
+   */
+  sessionKeyHex: `0x${string}` | undefined;
   /** Maximum payload bytes accepted from the IPC peer. */
   maxRequestBytes: number;
   /** Per-request hard timeout (ms). */
   requestTimeoutMs: number;
+  /**
+   * Effective backend URL the daemon read from its own env at boot. Used
+   * to populate `hello.effectiveConfig` so a `muhaven-broker login
+   * --from-daemon` call uses the same URL as the daemon, even when the
+   * login CLI was launched from a different shell env.
+   */
+  backendBaseUrl: string;
+  /** Effective dashboard URL paired with backendBaseUrl. */
+  dashboardBaseUrl: string;
 }
 
 const DEFAULT_BACKEND_URL = 'https://api.muhaven.app';
@@ -100,7 +114,7 @@ function deriveAllowedHosts(baseUrl: string): readonly string[] {
   }
 }
 
-function trimTrailingSlash(s: string): string {
+export function trimTrailingSlash(s: string): string {
   return s.endsWith('/') ? s.slice(0, -1) : s;
 }
 
@@ -128,24 +142,38 @@ export function loadMcpConfig(env: NodeJS.ProcessEnv = process.env): McpRuntimeC
 const PRIVKEY_HEX_RE = /^0x[0-9a-fA-F]{64}$/;
 
 export function loadBrokerConfig(env: NodeJS.ProcessEnv = process.env): BrokerRuntimeConfig {
-  const sessionKeyHex = env.MUHAVEN_BROKER_SESSION_KEY;
-  if (!sessionKeyHex) {
-    throw new Error(
-      'MUHAVEN_BROKER_SESSION_KEY is required (0x-prefixed 32-byte hex). Mint a session key via the dashboard policy-template install flow.',
-    );
-  }
-  if (!PRIVKEY_HEX_RE.test(sessionKeyHex)) {
-    throw new Error('MUHAVEN_BROKER_SESSION_KEY must be a 0x-prefixed 32-byte hex string');
+  // Lazy session-key posture: the daemon can boot WITHOUT a session key
+  // and still serve `hello` + JWT verbs (so MCP read tools work). Any
+  // `sign_hash` request then returns `session_key_unavailable` instead of
+  // the daemon dying at startup. Format is still validated when the value
+  // is present so a typo doesn't masquerade as the read-only posture.
+  // Closes §3e⁶ F-broker-session-key-required-for-reads.
+  const sessionKeyHexRaw = env.MUHAVEN_BROKER_SESSION_KEY;
+  let sessionKeyHex: `0x${string}` | undefined;
+  if (sessionKeyHexRaw && sessionKeyHexRaw.length > 0) {
+    if (!PRIVKEY_HEX_RE.test(sessionKeyHexRaw)) {
+      throw new Error('MUHAVEN_BROKER_SESSION_KEY must be a 0x-prefixed 32-byte hex string');
+    }
+    sessionKeyHex = sessionKeyHexRaw as `0x${string}`;
   }
 
   const endpoint = env.MUHAVEN_BROKER_ENDPOINT ?? defaultBrokerEndpoint();
   const maxRequestBytes = readEnvInt('MUHAVEN_BROKER_MAX_BYTES', DEFAULT_BROKER_MAX_BYTES, env);
   const requestTimeoutMs = readEnvInt('MUHAVEN_BROKER_TIMEOUT_MS', DEFAULT_BROKER_TIMEOUT_MS, env);
 
+  // Resolve effective backend + dashboard URLs from the daemon's OWN env
+  // (rather than punning loadMcpConfig). Surfaced via `hello.effectiveConfig`
+  // so a later `muhaven-broker login --from-daemon` stays in lockstep with
+  // the daemon's view even when the CLI was invoked from a different shell.
+  const backendBaseUrl = trimTrailingSlash(env.MUHAVEN_BACKEND_URL ?? DEFAULT_BACKEND_URL);
+  const dashboardBaseUrl = trimTrailingSlash(env.MUHAVEN_DASHBOARD_URL ?? DEFAULT_DASHBOARD_URL);
+
   return {
     endpoint,
-    sessionKeyHex: sessionKeyHex as `0x${string}`,
+    sessionKeyHex,
     maxRequestBytes,
     requestTimeoutMs,
+    backendBaseUrl,
+    dashboardBaseUrl,
   };
 }

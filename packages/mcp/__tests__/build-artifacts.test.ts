@@ -49,4 +49,33 @@ describe('publish artifact hygiene', () => {
     }
     expect(offenders).toEqual([]);
   });
+
+  it('dist/index.{js,cjs} embed the package.json version via __SERVER_VERSION__ inject', () => {
+    // Q2 regression guard: the tsup `define` block replaces
+    // `__SERVER_VERSION__` with package.json#version at build time. A
+    // future tsup config edit that drops the define would silently
+    // downgrade the bundled server's `serverInfo.version` to the
+    // '0.0.0-dev' fallback in `src/server.ts:resolveServerVersion`. This
+    // test fails when the bundled dist doesn't carry the literal version
+    // string from the current package.json.
+    if (!existsSync(dist)) return;
+    const pkg = JSON.parse(
+      readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'),
+    ) as { version: string };
+    const bundles = ['index.js', 'index.cjs'];
+    const missing: string[] = [];
+    for (const f of bundles) {
+      const path = join(dist, f);
+      if (!existsSync(path)) continue;
+      const content = readFileSync(path, 'utf-8');
+      // We look for the literal version string in a context that proves
+      // it came from the tsup define (the `resolveServerVersion` body
+      // returns the literal directly). A bare substring search is fine
+      // because no other code in dist mentions the version.
+      if (!content.includes(`"${pkg.version}"`)) {
+        missing.push(`${f} (looking for "${pkg.version}")`);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
 });

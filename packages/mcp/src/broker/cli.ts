@@ -72,16 +72,31 @@ interface LoginFlags {
   brokerEndpoint?: string;
   backendBaseUrl?: string;
   dashboardBaseUrl?: string;
+  /**
+   * Resolve `backendBaseUrl` + `dashboardBaseUrl` from the running
+   * daemon's view (returned in `hello.effectiveConfig`) rather than the
+   * CLI's env. Solves the daemon-vs-CLI env-divergence problem when the
+   * CLI is launched from a different shell (ssh, IDE-spawned terminal)
+   * than the systemd / launchd-launched daemon. Closes §3e⁶
+   * F-broker-env-divergence.
+   *
+   * Mutually exclusive with explicit `--backend-base-url` /
+   * `--dashboard-base-url`; the CLI rejects the combination so the
+   * operator picks one source of truth.
+   */
+  fromDaemon: boolean;
 }
 
-function parseLoginFlags(argv: readonly string[]): LoginFlags {
+export function parseLoginFlags(argv: readonly string[]): LoginFlags {
   let noLaunchBrowser = false;
   let brokerEndpoint: string | undefined;
   let backendBaseUrl: string | undefined;
   let dashboardBaseUrl: string | undefined;
+  let fromDaemon = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--no-launch-browser') noLaunchBrowser = true;
+    else if (a === '--from-daemon') fromDaemon = true;
     else if (a === '--broker-endpoint' && i + 1 < argv.length) {
       brokerEndpoint = argv[++i];
     } else if (a === '--backend-base-url' && i + 1 < argv.length) {
@@ -92,7 +107,12 @@ function parseLoginFlags(argv: readonly string[]): LoginFlags {
       throw new Error(`unknown flag: ${a}`);
     }
   }
-  return { noLaunchBrowser, brokerEndpoint, backendBaseUrl, dashboardBaseUrl };
+  if (fromDaemon && (backendBaseUrl || dashboardBaseUrl)) {
+    throw new Error(
+      '--from-daemon is mutually exclusive with --backend-base-url / --dashboard-base-url',
+    );
+  }
+  return { noLaunchBrowser, brokerEndpoint, backendBaseUrl, dashboardBaseUrl, fromDaemon };
 }
 
 async function tryLaunchBrowser(url: string): Promise<boolean> {
@@ -115,7 +135,9 @@ export async function runLogin(argv: readonly string[]): Promise<number> {
     flags = parseLoginFlags(argv);
   } catch (err) {
     printErr(`error: ${(err as Error).message}`);
-    printErr('usage: muhaven-broker login [--no-launch-browser] [--broker-endpoint PATH] [--backend-base-url URL] [--dashboard-base-url URL]');
+    printErr(
+      'usage: muhaven-broker login [--no-launch-browser] [--broker-endpoint PATH] [--from-daemon | (--backend-base-url URL --dashboard-base-url URL)]',
+    );
     return 2;
   }
 
@@ -132,9 +154,11 @@ export async function runLogin(argv: readonly string[]): Promise<number> {
     timeoutMs: config.brokerTimeoutMs,
   });
 
-  // Sanity check — broker reachable?
+  // Sanity check — broker reachable? Also captures `effectiveConfig` for
+  // the `--from-daemon` flag.
+  let helloResult;
   try {
-    await broker.hello();
+    helloResult = await broker.hello();
   } catch (err) {
     printErr(
       `cannot reach muhaven-broker daemon at ${config.brokerEndpoint}: ${(err as Error).message}`,
@@ -143,9 +167,56 @@ export async function runLogin(argv: readonly string[]): Promise<number> {
     return 1;
   }
 
+  // Resolve the URLs the device-flow + token-store ceremonies will hit.
+  // Default: CLI's loadMcpConfig view (env + flag overrides).
+  // `--from-daemon`: take the daemon's effective view from `hello.effectiveConfig`.
+  let backendBaseUrl = config.backendBaseUrl;
+  let dashboardBaseUrl = config.dashboardBaseUrl;
+  if (flags.fromDaemon) {
+    if (!helloResult.effectiveConfig) {
+      printErr(
+        '--from-daemon requested but broker did not return effectiveConfig (daemon is older than protocol 0.3.0). Upgrade the daemon (`@muhaven/mcp@0.1.3+`) or drop the flag.',
+      );
+      return 1;
+    }
+    const daemonBackend = helloResult.effectiveConfig.backendBaseUrl;
+    const daemonDashboard = helloResult.effectiveConfig.dashboardBaseUrl;
+    // Empty-URL guard — `loadBrokerConfig` always trims + defaults, so an
+    // empty string here means the daemon was somehow rebuilt with the
+    // contract broken. Refuse to proceed rather than pass `''` into
+    // `DeviceFlowClient` and chase a confusing fetch error.
+    if (!daemonBackend || !daemonDashboard) {
+      printErr(
+        '--from-daemon: daemon returned an empty backend/dashboard URL — refusing to proceed.',
+      );
+      return 1;
+    }
+    // Defense-in-depth: if the daemon's effective URL diverges from
+    // what the CLI sees in its own env, emit a structured warning so a
+    // local-daemon impersonation or a misconfigured stage-vs-prod env
+    // doesn't silently route the device-flow ceremony to the wrong host.
+    // The trust model assumes a same-user, same-machine daemon (the
+    // socket is mode 0600); this warning is visibility, not enforcement.
+    if (daemonBackend !== config.backendBaseUrl) {
+      print(
+        `⚠ daemon backend (${daemonBackend}) differs from CLI env (${config.backendBaseUrl}). Using daemon's value per --from-daemon.`,
+      );
+    }
+    if (daemonDashboard !== config.dashboardBaseUrl) {
+      print(
+        `⚠ daemon dashboard (${daemonDashboard}) differs from CLI env (${config.dashboardBaseUrl}). Using daemon's value per --from-daemon.`,
+      );
+    }
+    backendBaseUrl = daemonBackend;
+    dashboardBaseUrl = daemonDashboard;
+    print(`Using daemon's effective config:`);
+    print(`  backend:   ${backendBaseUrl}`);
+    print(`  dashboard: ${dashboardBaseUrl}`);
+  }
+
   const flow = new DeviceFlowClient({
-    backendBaseUrl: config.backendBaseUrl,
-    dashboardBaseUrl: config.dashboardBaseUrl,
+    backendBaseUrl,
+    dashboardBaseUrl,
     requesterMetadata: {
       processName: detectMcpHost(),
       hostname: hostname(),
@@ -289,7 +360,15 @@ export async function runDoctor(): Promise<number> {
   });
   try {
     const h = await broker.hello();
-    print(`Broker daemon     : reachable (proto v${h.version}, signer ${h.sessionKeyAddress}, hasJwt=${h.hasJwt})`);
+    // hasSessionKey is optional in the response (added in protocol 0.3.0);
+    // an undefined value means a pre-0.3.0 daemon which always had a key.
+    const hasKey = h.hasSessionKey ?? true;
+    const keyTag = hasKey ? `signer ${h.sessionKeyAddress}` : 'NO SESSION KEY (read-only posture)';
+    print(`Broker daemon     : reachable (proto v${h.version}, ${keyTag}, hasJwt=${h.hasJwt})`);
+    if (h.effectiveConfig) {
+      print(`Daemon backend URL: ${h.effectiveConfig.backendBaseUrl}`);
+      print(`Daemon dashboard  : ${h.effectiveConfig.dashboardBaseUrl}`);
+    }
     return 0;
   } catch (err) {
     print(`Broker daemon     : NOT reachable (${(err as Error).message})`);
@@ -303,6 +382,7 @@ function printUsage(): void {
   print('');
   print('  (no subcommand)    Run the daemon (production mode)');
   print('  login              Acquire a JWT via the device-code flow + store in keystore');
+  print('                       [--from-daemon] resolves backend/dashboard URLs from the running daemon');
   print('  logout             Clear the JWT from the keystore');
   print('  doctor             Print environment + keystore + reachability report');
   print('  -h, --help         Show this help');

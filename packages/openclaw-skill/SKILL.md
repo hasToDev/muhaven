@@ -1,7 +1,7 @@
 ---
 name: muhaven-rwa-skill
 display_name: MuHaven RWA Portfolio
-version: 0.1.0
+version: 0.1.1
 schema_version: "1.0"
 description: |
   Confidential real-world-asset (RWA) portfolio agent built on MuHaven's
@@ -61,7 +61,7 @@ mcp:
   # pre-publish review: the runtime + CI gates enforce exact equality,
   # not semver-minor-range; the field name implied a softer pin than the
   # code actually delivered.
-  bundled_version: 0.1.2
+  bundled_version: 0.1.3
   toolset_subset:
     - muhaven.read.portfolio
     - muhaven.read.yields
@@ -166,15 +166,18 @@ MuHaven backend at `https://api.muhaven.app`.
 2. Install the broker daemon **separately as a global** so its bin
    lands on `$PATH` regardless of ClawHub's bin-handling:
    ```bash
-   npm install -g @muhaven/mcp@0.1.2
+   npm install -g @muhaven/mcp@0.1.3
    muhaven-broker --version    # sanity check
    ```
-   (ClawHub install resolves the skill's transitive `@muhaven/mcp` dep
-   into a runtime-local `node_modules`. The `muhaven-broker` bin may
-   not surface on `$PATH` without this separate global install.)
+   (The skill itself bundles `@muhaven/mcp` inline since 0.1.1 via tsup
+   `noExternal`, so no separate `npm install --omit=dev` is needed after
+   `clawhub install`. The global install of `@muhaven/mcp` is still useful
+   because it puts the `muhaven-broker` daemon bin on `$PATH` — the skill's
+   bundled copy of `@muhaven/mcp` only exposes the MCP server, not the
+   daemon CLI.)
 3. Install the skill:
    ```bash
-   clawhub install muhaven-rwa-skill@0.1.0
+   clawhub install muhaven-rwa-skill@0.1.1
    ```
 4. Start the broker daemon: `muhaven-broker` (see `@muhaven/mcp` README).
 5. Authenticate: `muhaven-broker login` — opens browser to

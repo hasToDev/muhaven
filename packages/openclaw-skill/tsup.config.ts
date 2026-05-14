@@ -20,6 +20,16 @@ const pkg = JSON.parse(readFileSync(join(here, 'package.json'), 'utf-8')) as {
   version: string;
 };
 
+// `__SERVER_VERSION__` is sourced from packages/mcp's package.json so that
+// when @muhaven/mcp is inline-bundled (see noExternal below), the bundled
+// MCP server's `serverInfo.version` still resolves correctly via tsup
+// `define` — otherwise the inline-bundled `__SERVER_VERSION__ ?? '0.0.0-dev'`
+// fallback in server.ts kicks in and silently regresses the very
+// `serverInfo.version` fix Q2 ships. Pre-publish review caught this 2026-05-16.
+const mcpPkg = JSON.parse(
+  readFileSync(join(here, '..', 'mcp', 'package.json'), 'utf-8'),
+) as { version: string };
+
 export default defineConfig({
   entry: {
     index: 'src/index.ts',
@@ -33,7 +43,29 @@ export default defineConfig({
   splitting: false,
   treeshake: true,
   shims: true,
+  // Inline-bundle `@muhaven/mcp` AND its heavy transitive deps into the
+  // skill's dist so the ClawHub tarball is truly self-contained. ClawHub
+  // v0.12.3 extracts the tarball but does NOT run `npm install` to fetch
+  // transitive deps; bundling only `@muhaven/mcp` would still leave the
+  // SDK + viem + zod unresolved at runtime. Bundling ALL of them closes
+  // ClawScan #3 + §3e⁶ F-clawhub-install-no-npm-install (HIGH).
+  //
+  // `@napi-rs/keyring` is intentionally NOT bundled — it's declared as
+  // an `optionalDependencies` of @muhaven/mcp for platform-specific
+  // native bindings, and bundling it would force one platform's binary
+  // into every tarball. The skill's bundled @muhaven/mcp keystore.ts
+  // already falls back to FileKeystore when the native dep is absent
+  // (`MUHAVEN_KEYRING=file`); operators who want OS-keychain backing
+  // can `npm install -g @muhaven/mcp` (still recommended for the
+  // `muhaven-broker` daemon bin anyway, per SKILL.md "How to install").
+  noExternal: [
+    '@muhaven/mcp',
+    '@modelcontextprotocol/sdk',
+    'viem',
+    'zod',
+  ],
   define: {
     __SKILL_VERSION__: JSON.stringify(pkg.version),
+    __SERVER_VERSION__: JSON.stringify(mcpPkg.version),
   },
 });

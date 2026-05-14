@@ -34,7 +34,7 @@ import {
   type BrokerRequest,
   type BrokerResponse,
 } from './protocol.js';
-import { ViemSigner, type ISigner } from './signer.js';
+import { MissingSessionKeyError, NullSigner, ViemSigner, type ISigner } from './signer.js';
 import { openKeystore, type IKeystore } from './keystore.js';
 
 export { BROKER_PROTOCOL_VERSION };
@@ -63,11 +63,32 @@ const noopLogger = (_e: BrokerLogEvent): void => {
  * keystore, returns the response object. Easy to unit-test without
  * spawning a socket.
  */
+export interface HandleBrokerRequestOptions {
+  /**
+   * Whether the daemon was booted with a session-key private half. Drives
+   * the `hello.hasSessionKey` field + the `session_key_unavailable` error
+   * mapping. Defaults to `true` when omitted (current-runtime back-compat
+   * — older callers that don't know about the read-only posture still
+   * get the pre-0.3.0 behaviour).
+   */
+  hasSessionKey?: boolean;
+  /**
+   * Effective backend + dashboard URLs the daemon resolved from its env
+   * at boot. Surfaced via `hello.effectiveConfig` so the `--from-daemon`
+   * login path can use the daemon's view of these URLs (not the CLI's).
+   */
+  effectiveConfig?: {
+    readonly backendBaseUrl: string;
+    readonly dashboardBaseUrl: string;
+  };
+}
+
 export async function handleBrokerRequest(
   req: BrokerRequest,
   signer: ISigner,
   keystore: IKeystore,
   nowSec: () => number = () => Math.floor(Date.now() / 1000),
+  options: HandleBrokerRequestOptions = {},
 ): Promise<BrokerResponse> {
   switch (req.type) {
     case 'hello': {
@@ -79,16 +100,26 @@ export async function handleBrokerRequest(
         // hello must always succeed; keystore failures surface on get/store
         hasJwt = false;
       }
+      const hasSessionKey = options.hasSessionKey ?? true;
       return {
         type: 'hello',
         version: BROKER_PROTOCOL_VERSION,
         sessionKeyAddress: signer.address,
         hasJwt,
+        hasSessionKey,
+        ...(options.effectiveConfig ? { effectiveConfig: options.effectiveConfig } : {}),
       };
     }
     case 'sign_hash': {
-      const signature = await signer.signHash(req.hash);
-      return { type: 'sign_hash', signature, signerAddress: signer.address };
+      try {
+        const signature = await signer.signHash(req.hash);
+        return { type: 'sign_hash', signature, signerAddress: signer.address };
+      } catch (err) {
+        if (err instanceof MissingSessionKeyError) {
+          return errorResponse('session_key_unavailable', err.message);
+        }
+        throw err;
+      }
     }
     case 'store_jwt': {
       try {
@@ -174,9 +205,30 @@ export class BrokerDaemon {
   private readonly config: BrokerRuntimeConfig;
   private keystore: IKeystore | null;
 
+  /**
+   * Whether a session-key private half is actually loaded. `false` =
+   * daemon booted in read-only posture (no `MUHAVEN_BROKER_SESSION_KEY`
+   * at env-load time) and uses a `NullSigner` whose `signHash` throws.
+   */
+  private readonly hasSessionKey: boolean;
+
   constructor(options: BrokerDaemonOptions) {
     this.config = options.config;
-    this.signer = options.signer ?? new ViemSigner(options.config.sessionKeyHex);
+    // Tests inject a signer directly; the runtime path lazy-constructs
+    // either a ViemSigner or a NullSigner depending on whether the env
+    // supplied a session key. When the test injects a signer we treat
+    // hasSessionKey as `true` — the NullSigner case is only exercised by
+    // the production loader.
+    if (options.signer) {
+      this.signer = options.signer;
+      this.hasSessionKey = true;
+    } else if (options.config.sessionKeyHex) {
+      this.signer = new ViemSigner(options.config.sessionKeyHex);
+      this.hasSessionKey = true;
+    } else {
+      this.signer = new NullSigner();
+      this.hasSessionKey = false;
+    }
     this.keystore = options.keystore ?? null;
     this.log = options.logger ?? noopLogger;
     this.server = createServer((socket) => this.onConnection(socket));
@@ -215,6 +267,7 @@ export class BrokerDaemon {
       meta: {
         endpoint: this.config.endpoint,
         signer: this.signer.address,
+        hasSessionKey: this.hasSessionKey,
         keystore: this.keystore.backend,
         version: BROKER_PROTOCOL_VERSION,
       },
@@ -315,7 +368,19 @@ export class BrokerDaemon {
       return;
     }
     try {
-      const res = await handleBrokerRequest(parsed as BrokerRequest, this.signer, this.keystore);
+      const res = await handleBrokerRequest(
+        parsed as BrokerRequest,
+        this.signer,
+        this.keystore,
+        undefined,
+        {
+          hasSessionKey: this.hasSessionKey,
+          effectiveConfig: {
+            backendBaseUrl: this.config.backendBaseUrl,
+            dashboardBaseUrl: this.config.dashboardBaseUrl,
+          },
+        },
+      );
       socket.end(serializeResponse(res));
     } catch (err) {
       this.log({
@@ -337,6 +402,18 @@ export class BrokerDaemon {
  */
 export async function runBrokerDaemonCli(): Promise<void> {
   const config = loadBrokerConfig();
+  if (!config.sessionKeyHex) {
+    // One-line operator-visible breadcrumb so the read-only posture isn't
+    // a silent surprise. Write paths will surface `session_key_unavailable`
+    // from `sign_hash`; reads + JWT verbs work normally.
+    process.stderr.write(
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        level: 'info',
+        msg: 'broker booting in read-only posture (no MUHAVEN_BROKER_SESSION_KEY)',
+      }) + '\n',
+    );
+  }
   const daemon = new BrokerDaemon({
     config,
     logger: (e) => {

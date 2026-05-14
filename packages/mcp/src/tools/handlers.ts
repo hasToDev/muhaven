@@ -23,7 +23,12 @@ import type { BackendClient } from '../clients/backend-client.js';
 import { BackendError } from '../clients/backend-client.js';
 import type { BrokerClient } from '../clients/broker-client.js';
 import { BrokerClientError } from '../clients/broker-client.js';
-import { authRequiredPayload, type AuthRequiredPayload } from './auth-required.js';
+import {
+  authRequiredPayload,
+  sessionKeyRequiredPayload,
+  type AuthRequiredPayload,
+  type SessionKeyRequiredPayload,
+} from './auth-required.js';
 import type {
   PolicyAuditExportInput,
   PolicyPauseInput,
@@ -57,6 +62,13 @@ export interface ToolDeps {
   /** Surface this MCP server is configured for. Always 'mcp' here, but
    *  carried as a dep so the audit tool can filter to the local surface. */
   surface: 'mcp';
+  /**
+   * Dashboard base URL — used to build the mint-URL surfaced in the
+   * `SESSION_KEY_REQUIRED` payload when the broker is in read-only
+   * posture. Optional for back-compat; the payload falls back to the
+   * production default when absent.
+   */
+  dashboardBaseUrl?: string;
 }
 
 export type ToolResult<T> =
@@ -64,7 +76,11 @@ export type ToolResult<T> =
   | { ok: false; code: string; message: string }
   // Special unauthorized payload — adds `loginCommand` so the host LLM
   // can present the device-flow CLI without parsing message strings.
-  | AuthRequiredPayload;
+  | AuthRequiredPayload
+  // Sibling discriminator — broker is reachable but has no session key.
+  // Distinct from AUTH_REQUIRED so the LLM doesn't suggest the wrong
+  // remediation path (login mints a JWT; this needs a dashboard ceremony).
+  | SessionKeyRequiredPayload;
 
 function ok<T>(data: T): ToolResult<T> {
   return { ok: true, data };
@@ -225,6 +241,26 @@ function sortKeys<T>(value: T): T {
   return value;
 }
 
+/**
+ * Per-process cache of the most recent `hello.hasSessionKey` value. A
+ * single broker `hello()` round-trip is enough to detect the read-only
+ * posture; we cache the result for the lifetime of the MCP subprocess
+ * to avoid an IPC round-trip on every write-path call. The host can
+ * always force a refresh by reconnecting the MCP subprocess (one-off
+ * cost on Claude Desktop restart).
+ *
+ * Stored as a `Promise<boolean>` (not a settled `boolean`) so concurrent
+ * tool calls during the FIRST probe share the same in-flight hello —
+ * otherwise two simultaneous `signEnvelope` callers would each issue
+ * their own IPC round-trip + IPC connect. Once resolved, subsequent calls
+ * await the already-resolved promise (zero IPC cost).
+ *
+ * On probe failure (broker down at probe time), the rejected promise is
+ * NOT cached — we clear the slot so a later call retries instead of
+ * surfacing the same stale rejection forever.
+ */
+let cachedHasSessionKeyProbe: Promise<boolean> | null = null;
+
 async function signEnvelope(
   intent: Record<string, unknown>,
   toolName: string,
@@ -238,8 +274,42 @@ async function signEnvelope(
       'position tools require a running muhaven-broker daemon — see README §Broker setup',
     );
   }
+  const broker = deps.broker;
+  // Probe `hello.hasSessionKey` once per process so a read-only-posture
+  // daemon surfaces a structured `SESSION_KEY_REQUIRED` payload pointing
+  // at the dashboard mint flow, instead of a generic broker error from
+  // the eventual `sign_hash` failure. Concurrent calls during the first
+  // probe share the same in-flight hello (cache stores the Promise, not
+  // the resolved value).
+  if (cachedHasSessionKeyProbe === null) {
+    // The clear-on-rejection step lives INSIDE the IIFE (not in a separate
+    // `.catch` chain) so the slot is cleared synchronously with the throw —
+    // every subsequent caller awaiting this Promise sees a null slot the
+    // moment its `await` rejects. A `.catch(() => { cachedHasSessionKeyProbe
+    // = null })` would clear on a later microtask, leaving a window where
+    // a concurrent second caller reads the stale rejected slot and gets
+    // the same `mapBrokerError` instead of retrying. Code Reviewer M1 fix.
+    cachedHasSessionKeyProbe = (async () => {
+      try {
+        const hello = await broker.hello();
+        return hello.hasSessionKey ?? true;
+      } catch (err) {
+        cachedHasSessionKeyProbe = null;
+        throw err;
+      }
+    })();
+  }
+  let hasSessionKey: boolean;
   try {
-    const sig = await deps.broker.signHash(intentHash, { tool: toolName, summary });
+    hasSessionKey = await cachedHasSessionKeyProbe;
+  } catch (e) {
+    return mapBrokerError(e);
+  }
+  if (hasSessionKey === false) {
+    return sessionKeyRequiredPayload(deps.dashboardBaseUrl);
+  }
+  try {
+    const sig = await broker.signHash(intentHash, { tool: toolName, summary });
     return ok({
       intentHash,
       unsignedUserOp: {
@@ -251,8 +321,28 @@ async function signEnvelope(
       signerAddress: sig.signerAddress,
     });
   } catch (e) {
+    // Safety net — if the daemon transitioned states between our probe
+    // and now (extremely unlikely; daemon process can't change state
+    // without a restart), surface SESSION_KEY_REQUIRED rather than the
+    // generic broker error. broker_error.message embeds the daemon's
+    // remediation string verbatim, which we'd rather route through our
+    // structured payload. Update the cache so subsequent calls
+    // short-circuit at the probe instead of re-hitting `signHash`.
+    if (
+      e instanceof BrokerClientError &&
+      e.code === 'broker_error' &&
+      /session_key_unavailable/.test(e.message)
+    ) {
+      cachedHasSessionKeyProbe = Promise.resolve(false);
+      return sessionKeyRequiredPayload(deps.dashboardBaseUrl);
+    }
     return mapBrokerError(e);
   }
+}
+
+/** Test-only: reset the in-process cache so vitest can drive both paths. */
+export function __resetSessionKeyProbeCacheForTests(): void {
+  cachedHasSessionKeyProbe = null;
 }
 
 export async function positionBuy(

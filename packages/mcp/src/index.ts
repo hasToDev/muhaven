@@ -12,6 +12,7 @@
 export {
   runMcpStdioCli,
   buildMcpServer,
+  SERVER_VERSION,
   type RunMcpStdioCliOptions,
 } from './server.js';
 export {
@@ -52,7 +53,15 @@ export {
   handleBrokerRequest,
   BROKER_PROTOCOL_VERSION,
   type BrokerDaemonOptions,
+  type HandleBrokerRequestOptions,
 } from './broker/daemon.js';
+export {
+  MissingSessionKeyError,
+  NullSigner,
+  ViemSigner,
+  ZERO_ADDRESS,
+  type ISigner,
+} from './broker/signer.js';
 export {
   parseBrokerRequest,
   serializeResponse,

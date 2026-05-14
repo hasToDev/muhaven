@@ -17,6 +17,7 @@
  */
 
 import { readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -39,8 +40,43 @@ import {
 
 import { authRequiredPayload } from './tools/auth-required.js';
 
+// `__SERVER_VERSION__` is replaced by tsup at build time (see tsup.config.ts
+// `define` block — sourced from `package.json#version`, single source of
+// truth). When the module is imported unbundled (vitest), the constant is
+// undefined; fall back to the runtime require of the sibling package.json.
+declare const __SERVER_VERSION__: string | undefined;
+
 const SERVER_NAME = '@muhaven/mcp';
-const SERVER_VERSION = '0.1.0';
+export const SERVER_VERSION = resolveServerVersion();
+
+function resolveServerVersion(): string {
+  if (typeof __SERVER_VERSION__ === 'string' && __SERVER_VERSION__) {
+    return __SERVER_VERSION__;
+  }
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    // Vitest path: src/server.ts → ../package.json
+    const candidates = [
+      join(here, '..', 'package.json'),
+      // Compiled-fallback path: dist/index.cjs → ../package.json
+      join(here, '..', '..', 'package.json'),
+    ];
+    for (const path of candidates) {
+      try {
+        const raw = readFileSync(path, 'utf-8');
+        const pkg = JSON.parse(raw) as { version?: unknown; name?: unknown };
+        if (typeof pkg.version === 'string' && pkg.name === SERVER_NAME) {
+          return pkg.version;
+        }
+      } catch {
+        // try next
+      }
+    }
+  } catch {
+    // fall through to placeholder
+  }
+  return '0.0.0-dev';
+}
 
 interface ZodSchemaWithJsonSchema {
   parse(input: unknown): unknown;
@@ -99,6 +135,12 @@ export interface BuildServerOptions {
   registry: readonly ToolEntry[];
   backend: BackendClient;
   broker: BrokerClient | undefined;
+  /**
+   * Threaded into `ToolDeps` so the `SESSION_KEY_REQUIRED` payload's
+   * `mintUrl` points at the operator's actual dashboard, not a hardcoded
+   * production URL.
+   */
+  dashboardBaseUrl?: string;
 }
 
 export function buildMcpServer(opts: BuildServerOptions): Server {
@@ -142,6 +184,7 @@ export function buildMcpServer(opts: BuildServerOptions): Server {
         backend: opts.backend,
         broker: opts.broker,
         surface: 'mcp',
+        dashboardBaseUrl: opts.dashboardBaseUrl,
       });
       return toolJsonResponse(result);
     } catch (err) {
@@ -233,6 +276,7 @@ export async function runMcpStdioCli(opts: RunMcpStdioCliOptions = {}): Promise<
     registry,
     backend,
     broker: config.readOnly ? undefined : broker,
+    dashboardBaseUrl: config.dashboardBaseUrl,
   });
 
   const transport = new StdioServerTransport();

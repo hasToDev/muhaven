@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-05-16
+
+Q2 fix bundle from the post-§4 queue closing four findings from §3e⁶
+(broker-session-key-required-for-reads, broker-env-divergence,
+mcp-serverinfo-version-stale) and unblocking the openclaw-skill ClawScan
+fix (the `noExternal: ['@muhaven/mcp']` inline bundle requires this
+version on npm before the skill can be republished).
+
+### Added
+
+- **Read-only daemon posture**: the broker daemon now boots WITHOUT
+  `MUHAVEN_BROKER_SESSION_KEY`. In that mode the daemon still serves
+  `hello` + the JWT verbs (so `muhaven.read.*` tools work end-to-end via
+  the standalone `@muhaven/mcp` install), but any `sign_hash` request
+  returns the new `session_key_unavailable` broker error so write paths
+  fail with a clear remediation message instead of the daemon dying at
+  startup. Closes §3e⁶ F-broker-session-key-required-for-reads.
+- **`muhaven-broker login --from-daemon` flag**: resolves backend +
+  dashboard URLs from the running daemon's `hello.effectiveConfig`
+  rather than the login CLI's env. Solves the daemon-vs-CLI env-divergence
+  problem when the two processes inherit different shell environments
+  (e.g. the daemon was launched by systemd/launchd, the CLI by ssh).
+  Mutually exclusive with explicit `--backend-base-url` /
+  `--dashboard-base-url`. Closes §3e⁶ F-broker-env-divergence.
+- **`muhaven-broker doctor` surfaces the daemon's effective config**
+  and read-only-posture status — the operator can verify which backend
+  URL is actually in play before driving a login.
+
+### Changed
+
+- **Broker protocol bumped 0.2.0 → 0.3.0** (additive — pre-0.3.0 clients
+  remain compatible):
+  - `hello.hasSessionKey` (optional `boolean`) — absence implies `true`
+    for back-compat.
+  - `hello.effectiveConfig` (optional `{ backendBaseUrl, dashboardBaseUrl }`).
+  - New `session_key_unavailable` broker error code.
+- **`serverInfo.version`** in the MCP server's `initialize` response is
+  now build-time injected from `package.json#version` (tsup `define` on
+  `__SERVER_VERSION__`) rather than the previously hardcoded `'0.1.0'`
+  string in `src/server.ts`. Closes §3e⁶ F-mcp-serverinfo-version-stale.
+
+### Tests
+
+- 134 vitest pass (up from 101 in 0.1.2). Net +33 cases:
+  - **+6** `config.test.ts` — `loadBrokerConfig` lazy-validation
+    (no key, empty string, valid key, malformed key) + env-driven backend
+    + dashboard URL surface.
+  - **+5** `daemon-handler.test.ts` — 0.3.0 protocol: `hello` surfaces
+    `hasSessionKey` + `effectiveConfig` from options, defaults `true`
+    when omitted, reflects `false` when set; `sign_hash` with
+    `NullSigner` returns `session_key_unavailable`; re-throws non-Missing
+    errors verbatim.
+  - **+9** `cli-parse-login-flags.test.ts` — flag parser unit cases
+    incl. `--from-daemon` mutual-exclusion guard.
+  - **+8** `session-key-required.test.ts` — `signEnvelope` probe of
+    `hello.hasSessionKey`; short-circuit returns `SESSION_KEY_REQUIRED`
+    for buy + claim with mint-URL pointing at `dashboardBaseUrl`;
+    safety-net mapping of inner `session_key_unavailable`;
+    probe-cache reuse; concurrent-call coalescing (one hello round-trip
+    for N callers); retry-after-rejection (eager cache clear); trailing-slash
+    mintUrl strip.
+  - **+2** `server-version.test.ts` — runtime fallback returns
+    `package.json#version`; matches `manifest.json#version`.
+  - **+2** `build-artifacts.test.ts` — hostname-migration guard + new
+    `__SERVER_VERSION__` literal grep in bundled dist.
+  - **+1** `daemon-lifecycle.test.ts` — read-only-posture boot test
+    replaces the prior "exits on missing key" assertion; added
+    "exits on a malformed session key" as the second negative-path test.
+
 ## [0.1.2] — 2026-05-11
 
 Re-roll of the `0.1.1` workflow-validation cut. `0.1.1` never reached npm:
@@ -181,7 +250,8 @@ Workstream H)
     muhaven-mcp-0.1.0.tgz
   ```
 
-[Unreleased]: https://github.com/hasToDev/muhaven/compare/mcp-v0.1.2...HEAD
+[Unreleased]: https://github.com/hasToDev/muhaven/compare/mcp-v0.1.3...HEAD
+[0.1.3]: https://github.com/hasToDev/muhaven/releases/tag/mcp-v0.1.3
 [0.1.2]: https://github.com/hasToDev/muhaven/releases/tag/mcp-v0.1.2
 [0.1.1]: https://github.com/hasToDev/muhaven/releases/tag/mcp-v0.1.1
 [0.1.0]: https://github.com/hasToDev/muhaven/releases/tag/mcp-v0.1.0

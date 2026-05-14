@@ -85,14 +85,55 @@ describe('muhaven-broker bin lifecycle', () => {
     }
   }, 10_000);
 
-  it('daemon exits with non-zero on bad config (missing session key)', async () => {
+  it('daemon boots in read-only posture when MUHAVEN_BROKER_SESSION_KEY is absent', async () => {
+    // Behavior change in @muhaven/mcp@0.1.3: the daemon no longer exits
+    // when MUHAVEN_BROKER_SESSION_KEY is missing — it boots into a
+    // read-only posture where `sign_hash` returns `session_key_unavailable`
+    // but `hello` + JWT verbs still work. Closes §3e⁶
+    // F-broker-session-key-required-for-reads.
+    const endpoint =
+      platform() === 'win32'
+        ? `\\\\.\\pipe\\muhaven-broker-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+        : join(mkdtempSync(join(tmpdir(), 'muhaven-broker-test-')), 'broker.sock');
+
     child = spawn(process.execPath, [BIN], {
       env: {
-        // Strip MUHAVEN_BROKER_SESSION_KEY out of the inherited env so
-        // the loadBrokerConfig path raises.
+        // Strip MUHAVEN_BROKER_SESSION_KEY out of the inherited env.
         ...Object.fromEntries(
           Object.entries(process.env).filter(([k]) => k !== 'MUHAVEN_BROKER_SESSION_KEY'),
         ),
+        MUHAVEN_BROKER_ENDPOINT: endpoint,
+        MUHAVEN_KEYRING: 'file',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stderr = '';
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf8');
+    });
+
+    // The daemon should NOT exit within 1.5s — it's listening in read-only mode.
+    const earlyExit = await waitForExit(child, 1500);
+    if (earlyExit !== null) {
+      throw new Error(
+        `daemon exited with code ${earlyExit} within 1.5s. ` +
+          `Expected read-only posture, not exit. stderr=${stderr || '(empty)'}`,
+      );
+    }
+    expect(child.exitCode).toBeNull();
+    expect(stderr).toContain('read-only posture');
+    expect(stderr).toContain('broker daemon listening');
+
+    child.kill('SIGTERM');
+    await waitForExit(child, 3000);
+  }, 10_000);
+
+  it('daemon exits with non-zero on a malformed session key', async () => {
+    child = spawn(process.execPath, [BIN], {
+      env: {
+        ...process.env,
+        MUHAVEN_BROKER_SESSION_KEY: '0xdeadbeef',
         MUHAVEN_KEYRING: 'file',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -107,6 +148,7 @@ describe('muhaven-broker bin lifecycle', () => {
     expect(exitCode).not.toBeNull();
     expect(exitCode).not.toBe(0);
     expect(stderr).toMatch(/MUHAVEN_BROKER_SESSION_KEY/);
+    expect(stderr).toMatch(/32-byte hex/);
   }, 10_000);
 });
 
