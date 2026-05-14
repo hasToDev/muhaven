@@ -238,6 +238,25 @@ describe('ProposeCreateCheckoutToolUseCase', () => {
     ).rejects.toMatchObject({ statusCode: 423 });
   });
 
+  it('rejects amountUsd6 < 1_000_000 (Plan B: ≥1 USDC floor)', async () => {
+    // Sub-$1 amounts pass the schema's `^[1-9]\d*$` and the positive
+    // check but should fail Plan B's floor with a 400.
+    await expect(
+      uc.execute(
+        { userId: ISSUER_USER_ID, walletAddress: ISSUER_WALLET, surface: Surface.HavenBot },
+        { tokenAddress: TOKEN, amountUsd6: '999999' },
+        NOW,
+      ),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    // Boundary: exactly 1 USDC is accepted.
+    const ok = await uc.execute(
+      { userId: ISSUER_USER_ID, walletAddress: ISSUER_WALLET, surface: Surface.HavenBot },
+      { tokenAddress: TOKEN, amountUsd6: '1000000' },
+      NOW,
+    );
+    expect(ok.preview.amountUsd6).toBe('1000000');
+  });
+
   it('rejects amountUsd6 = 0 — schema regex forbids zero so reaches schema layer', async () => {
     // The Zod schema regex `^[1-9]\d*$` rejects '0' upstream — exercise
     // here directly via the use-case to confirm a 0n branch is unreachable

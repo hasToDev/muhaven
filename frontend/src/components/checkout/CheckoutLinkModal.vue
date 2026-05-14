@@ -93,7 +93,16 @@ function usdToBaseUnits(input: string): string | null {
   return out
 }
 
-const amountValid = computed(() => usdToBaseUnits(amountUsd.value) !== null)
+const amountBaseUnits = computed(() => usdToBaseUnits(amountUsd.value))
+const amountWellFormed = computed(() => amountBaseUnits.value !== null)
+// Plan B (2026-05-14): demo-NAV scaling rejects amounts < 1 USDC. Mirror
+// the backend floor at the form layer so issuers can't even submit a
+// session URL that would dead-end on the buyer page.
+const amountBelowFloor = computed(() => {
+  const base = amountBaseUnits.value
+  return base !== null && BigInt(base) < 1_000_000n
+})
+const amountValid = computed(() => amountWellFormed.value && !amountBelowFloor.value)
 
 const canSubmit = computed(
   () => !!tokenAddress.value && amountValid.value && !submitting.value,
@@ -253,8 +262,11 @@ function close() {
                     />
                     <span class="absolute right-3 top-1/2 -translate-y-1/2 font-mono text-[11px] uppercase tracking-widest text-cool">USD</span>
                   </div>
-                  <p v-if="amountUsd && !amountValid" class="mt-1 text-[11px] text-negative">
+                  <p v-if="amountUsd && !amountWellFormed" class="mt-1 text-[11px] text-negative" data-testid="checkout-link-amount-error">
                     Amount must be a positive number with up to 6 decimals.
+                  </p>
+                  <p v-else-if="amountBelowFloor" class="mt-1 text-[11px] text-negative" data-testid="checkout-link-amount-error">
+                    Minimum is $1.00 — demo-NAV scaling rejects smaller amounts.
                   </p>
                 </label>
 

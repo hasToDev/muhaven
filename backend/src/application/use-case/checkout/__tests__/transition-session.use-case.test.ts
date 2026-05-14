@@ -60,7 +60,7 @@ describe('TransitionCheckoutSessionUseCase', () => {
     const r = await create.execute({
       issuerUserId: 'iss_1',
       metadata: makeMetadata(),
-      payload: { amountUsd6: '1' },
+      payload: { amountUsd6: '1000000' },
     });
     const result = await transition.execute({
       sessionId: r.session.sessionId,
@@ -76,7 +76,7 @@ describe('TransitionCheckoutSessionUseCase', () => {
     const r = await create.execute({
       issuerUserId: 'iss_1',
       metadata: makeMetadata(),
-      payload: { amountUsd6: '1' },
+      payload: { amountUsd6: '1000000' },
     });
     await expect(
       transition.execute({
@@ -91,7 +91,7 @@ describe('TransitionCheckoutSessionUseCase', () => {
     const r = await create.execute({
       issuerUserId: 'iss_1',
       metadata: makeMetadata(),
-      payload: { amountUsd6: '1' },
+      payload: { amountUsd6: '1000000' },
     });
     // First reach wrapped via the legal path.
     await transition.execute({
@@ -116,7 +116,7 @@ describe('TransitionCheckoutSessionUseCase', () => {
     const r = await create.execute({
       issuerUserId: 'iss_1',
       metadata: makeMetadata(),
-      payload: { amountUsd6: '1' },
+      payload: { amountUsd6: '1000000' },
     });
     await expect(
       transition.execute({
@@ -135,7 +135,7 @@ describe('TransitionCheckoutSessionUseCase', () => {
     const r = await create.execute({
       issuerUserId: 'iss_1',
       metadata: makeMetadata(),
-      payload: { amountUsd6: '1' },
+      payload: { amountUsd6: '1000000' },
     });
     await expect(
       transition.execute({
@@ -157,7 +157,7 @@ describe('TransitionCheckoutSessionUseCase', () => {
     const r = await create.execute({
       issuerUserId: 'iss_1',
       metadata: makeMetadata(),
-      payload: { amountUsd6: '1' },
+      payload: { amountUsd6: '1000000' },
     });
     await expect(
       transition.execute({
@@ -173,7 +173,7 @@ describe('TransitionCheckoutSessionUseCase', () => {
     const r = await create.execute({
       issuerUserId: 'iss_1',
       metadata: makeMetadata(),
-      payload: { amountUsd6: '1' },
+      payload: { amountUsd6: '1000000' },
     });
     let captured = '';
     const fakeRes = {
@@ -237,7 +237,7 @@ describe('LookupCheckoutSessionUseCase', () => {
     const r = await create.execute({
       issuerUserId: 'iss_1',
       metadata: makeMetadata(),
-      payload: { amountUsd6: '1' },
+      payload: { amountUsd6: '1000000' },
     });
     const future = new Date(r.session.expiresAt.getTime() + 1000);
     const found = await lookup.execute({ sessionId: r.session.sessionId, now: future });

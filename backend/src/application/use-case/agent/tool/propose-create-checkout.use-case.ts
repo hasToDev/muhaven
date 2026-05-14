@@ -105,6 +105,15 @@ export class ProposeCreateCheckoutToolUseCase {
     if (amount <= 0n) {
       throw ApplicationHttpError.badRequest('amountUsd6 must be > 0.');
     }
+    // Plan B (2026-05-14 walkthrough): mirror the create-session
+    // use-case's ≥1 USDC floor so an LLM-proposed checkout returns a
+    // structured error instead of forwarding a doomed amount to the
+    // commit-time create step.
+    if (amount < 1_000_000n) {
+      throw ApplicationHttpError.badRequest(
+        'amountUsd6 must be ≥ 1_000_000 (1 USDC) — demo-NAV scaling rejects smaller amounts',
+      );
+    }
 
     const memo = input.memo?.trim() || null;
     const successUrl = input.successUrl || null;

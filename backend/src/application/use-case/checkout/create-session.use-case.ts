@@ -109,6 +109,15 @@ export class CreateCheckoutSessionUseCase {
         'amountUsd6 must be a positive integer (1-18 decimal digits, no leading zeros)',
       );
     }
+    // Plan B (2026-05-14 walkthrough): demo-NAV scaling on the buyer
+    // page requires ≥1 USDC. Issuers previously could mint sub-$1
+    // sessions; buyer page rejected with full-page error after the URL
+    // was already shared. Gate at create time across both surfaces.
+    if (BigInt(input.payload.amountUsd6) < 1_000_000n) {
+      throw ApplicationHttpError.badRequest(
+        'amountUsd6 must be ≥ 1_000_000 (1 USDC) — demo-NAV scaling rejects smaller amounts',
+      );
+    }
     if (input.payload.memo !== undefined && input.payload.memo.length > 280) {
       throw ApplicationHttpError.badRequest('memo must be ≤280 characters');
     }

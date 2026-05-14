@@ -63,7 +63,7 @@ describe('CreateCheckoutSessionUseCase', () => {
     const result = await uc.execute({
       issuerUserId: 'iss_1',
       metadata: makeMetadata(),
-      payload: { amountUsd6: '500000', memo: 'half a dollar' },
+      payload: { amountUsd6: '1500000', memo: 'one and a half dollars' },
     });
     const stored = await repo.findById(result.session.sessionId);
     expect(stored).not.toBeNull();
@@ -74,7 +74,7 @@ describe('CreateCheckoutSessionUseCase', () => {
     const aes = new CheckoutAesGcm();
     const keyBuf = b64urlDecode(result.fragmentKey);
     const decrypted = aes.decrypt(stored!.encPayload, Buffer.from(keyBuf));
-    expect(decrypted).toEqual({ amountUsd6: '500000', memo: 'half a dollar' });
+    expect(decrypted).toEqual({ amountUsd6: '1500000', memo: 'one and a half dollars' });
   });
 
   it('rejects amountUsd6 with non-digit characters', async () => {
@@ -96,7 +96,7 @@ describe('CreateCheckoutSessionUseCase', () => {
       uc.execute({
         issuerUserId: 'iss_1',
         metadata: makeMetadata(),
-        payload: { amountUsd6: '1' },
+        payload: { amountUsd6: '1000000' },
         ttlSec: 0,
       }),
     ).rejects.toThrow(/ttlSec/);
@@ -104,7 +104,7 @@ describe('CreateCheckoutSessionUseCase', () => {
       uc.execute({
         issuerUserId: 'iss_1',
         metadata: makeMetadata(),
-        payload: { amountUsd6: '1' },
+        payload: { amountUsd6: '1000000' },
         ttlSec: 86401,
       }),
     ).rejects.toThrow(/ttlSec/);
@@ -117,9 +117,28 @@ describe('CreateCheckoutSessionUseCase', () => {
       uc.execute({
         issuerUserId: 'iss_1',
         metadata: makeMetadata(),
-        payload: { amountUsd6: '1', memo: 'x'.repeat(281) },
+        payload: { amountUsd6: '1000000', memo: 'x'.repeat(281) },
       }),
     ).rejects.toThrow(/memo/);
+  });
+
+  it('rejects amountUsd6 < 1_000_000 (Plan B: ≥1 USDC floor)', async () => {
+    const repo = new MemoryCheckoutSessionRepository();
+    const uc = new CreateCheckoutSessionUseCase(repo, baseUrl, await makeUserRepo());
+    await expect(
+      uc.execute({
+        issuerUserId: 'iss_1',
+        metadata: makeMetadata(),
+        payload: { amountUsd6: '999999' },
+      }),
+    ).rejects.toThrow(/≥ 1_000_000/);
+    // Boundary: exactly 1 USDC is accepted.
+    const ok = await uc.execute({
+      issuerUserId: 'iss_1',
+      metadata: makeMetadata(),
+      payload: { amountUsd6: '1000000' },
+    });
+    expect(ok.session.sessionId).toMatch(/^cs_/);
   });
 
   it('rejects unapproved issuer (Phase 9.A · F2 lifecycle gate)', async () => {
@@ -134,7 +153,7 @@ describe('CreateCheckoutSessionUseCase', () => {
         uc.execute({
           issuerUserId: 'iss_1',
           metadata: makeMetadata(),
-          payload: { amountUsd6: '1' },
+          payload: { amountUsd6: '1000000' },
         }),
       ).rejects.toThrow(/Issuer onboarding required/);
     }
@@ -154,7 +173,7 @@ describe('CreateCheckoutSessionUseCase', () => {
       uc.execute({
         issuerUserId: 'iss_1',
         metadata: makeMetadata(),
-        payload: { amountUsd6: '1' },
+        payload: { amountUsd6: '1000000' },
       }),
     ).rejects.toThrow(/Issuer onboarding required/);
   });
@@ -170,7 +189,7 @@ describe('CreateCheckoutSessionUseCase', () => {
       uc.execute({
         issuerUserId: 'iss_unknown',
         metadata: makeMetadata(),
-        payload: { amountUsd6: '1' },
+        payload: { amountUsd6: '1000000' },
       }),
     ).rejects.toThrow(/Issuer onboarding required/);
   });
@@ -183,7 +202,7 @@ describe('CreateCheckoutSessionUseCase', () => {
       const r = await uc.execute({
         issuerUserId: 'iss_1',
         metadata: makeMetadata(),
-        payload: { amountUsd6: String(i + 1) },
+        payload: { amountUsd6: String(1_000_000 + i) },
       });
       ids.add(r.session.sessionId);
     }
