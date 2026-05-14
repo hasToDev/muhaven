@@ -1,9 +1,16 @@
 /**
  * URL fragment + path parsing for the hosted-checkout buyer page (P5).
  *
- * Expected URL shape:
+ * Expected URL shape (post-2026-05-15 subdomain-collapse migration):
  *
- *     <origin>/c/<sessionId>#k=<base64url(32B)>
+ *     <origin>/pay/c/<sessionId>#k=<base64url(32B)>
+ *
+ * The `/pay/` prefix is the migration's path lever: the buyer page now
+ * lives under the dashboard's apex origin (muhaven.app/pay/) so the
+ * dashboard's GPM-backed passkey credential is the buyer-page credential
+ * by construction (same origin = same authenticator routing). Vite's
+ * `base: '/pay/'` mints asset URLs with the prefix; GitHub Pages
+ * serves `muhaven-web/pay/404.html` as the SPA fallback.
  *
  * Both the sessionId AND the fragment key are required. A missing or
  * malformed key resolves to `null` so the page can show a clear
@@ -11,6 +18,11 @@
  *
  * The sessionId itself is sanitized against the same regex the backend
  * uses (`cs_<26 base32>`) to defeat path-traversal-style probes.
+ *
+ * Legacy URLs (`https://pay.muhaven.app/c/<id>#k=<key>`) minted before
+ * the migration are handled by a `window.location.replace` shim at the
+ * old origin that bounces them to `https://muhaven.app/pay/c/<id>#k=<key>`
+ * with the fragment preserved.
  */
 
 const SESSION_ID_RE = /^cs_[A-Z0-9]{26}$/;
@@ -22,10 +34,10 @@ export interface CheckoutLocation {
 }
 
 export function parseCheckoutLocation(loc: Location): CheckoutLocation | null {
-  // Path: /c/<sessionId>
+  // Path: /pay/c/<sessionId>
   const segments = loc.pathname.split('/').filter(Boolean);
-  if (segments.length !== 2 || segments[0] !== 'c') return null;
-  const sessionId = segments[1];
+  if (segments.length !== 3 || segments[0] !== 'pay' || segments[1] !== 'c') return null;
+  const sessionId = segments[2];
   if (!sessionId || !SESSION_ID_RE.test(sessionId)) return null;
 
   // Fragment: #k=<base64url>

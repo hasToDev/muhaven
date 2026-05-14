@@ -9,10 +9,10 @@ function loc(pathname: string, hash: string): Location {
   return {
     pathname,
     hash,
-    href: `https://pay.muhaven.app${pathname}${hash}`,
-    host: 'pay.muhaven.app',
-    hostname: 'pay.muhaven.app',
-    origin: 'https://pay.muhaven.app',
+    href: `https://muhaven.app${pathname}${hash}`,
+    host: 'muhaven.app',
+    hostname: 'muhaven.app',
+    origin: 'https://muhaven.app',
     port: '',
     protocol: 'https:',
     search: '',
@@ -26,7 +26,7 @@ function loc(pathname: string, hash: string): Location {
 describe('parseCheckoutLocation', () => {
   it('parses a well-formed URL', () => {
     const result = parseCheckoutLocation(
-      loc(`/c/${VALID_SESSION_ID}`, `#k=${VALID_FRAGMENT_KEY}`),
+      loc(`/pay/c/${VALID_SESSION_ID}`, `#k=${VALID_FRAGMENT_KEY}`),
     );
     expect(result).toEqual({
       sessionId: VALID_SESSION_ID,
@@ -35,59 +35,73 @@ describe('parseCheckoutLocation', () => {
   });
 
   it('rejects a path with the wrong segment count', () => {
-    expect(parseCheckoutLocation(loc('/c', `#k=${VALID_FRAGMENT_KEY}`))).toBeNull();
+    expect(parseCheckoutLocation(loc('/pay/c', `#k=${VALID_FRAGMENT_KEY}`))).toBeNull();
     expect(
-      parseCheckoutLocation(loc(`/c/${VALID_SESSION_ID}/extra`, `#k=${VALID_FRAGMENT_KEY}`)),
+      parseCheckoutLocation(loc(`/pay/c/${VALID_SESSION_ID}/extra`, `#k=${VALID_FRAGMENT_KEY}`)),
+    ).toBeNull();
+  });
+
+  it('rejects the legacy /c/<id> path shape (pre-2026-05-15 subdomain origin)', () => {
+    // Buyer pages served from the new origin only accept `/pay/c/<id>`.
+    // Legacy URLs are bounced via the muhaven-checkout-web JS redirect
+    // shim BEFORE they reach the buyer page, so the legacy shape never
+    // arrives here. Reject explicitly so a future code path that
+    // accidentally restores it is caught by the test.
+    expect(
+      parseCheckoutLocation(loc(`/c/${VALID_SESSION_ID}`, `#k=${VALID_FRAGMENT_KEY}`)),
     ).toBeNull();
   });
 
   it('rejects a path with the wrong leading segment', () => {
     expect(
-      parseCheckoutLocation(loc(`/x/${VALID_SESSION_ID}`, `#k=${VALID_FRAGMENT_KEY}`)),
+      parseCheckoutLocation(loc(`/x/c/${VALID_SESSION_ID}`, `#k=${VALID_FRAGMENT_KEY}`)),
+    ).toBeNull();
+    expect(
+      parseCheckoutLocation(loc(`/pay/x/${VALID_SESSION_ID}`, `#k=${VALID_FRAGMENT_KEY}`)),
     ).toBeNull();
   });
 
   it('rejects malformed sessionIds (path-traversal style probes)', () => {
     expect(
-      parseCheckoutLocation(loc(`/c/cs_../etc/passwd`, `#k=${VALID_FRAGMENT_KEY}`)),
+      parseCheckoutLocation(loc(`/pay/c/cs_../etc/passwd`, `#k=${VALID_FRAGMENT_KEY}`)),
     ).toBeNull();
     expect(
-      parseCheckoutLocation(loc(`/c/cs_short`, `#k=${VALID_FRAGMENT_KEY}`)),
+      parseCheckoutLocation(loc(`/pay/c/cs_short`, `#k=${VALID_FRAGMENT_KEY}`)),
     ).toBeNull();
     expect(
       parseCheckoutLocation(
-        loc(`/c/${'abcdefghijklmnopqrstuvwxyz'.toUpperCase()}`, `#k=${VALID_FRAGMENT_KEY}`),
+        loc(`/pay/c/${'abcdefghijklmnopqrstuvwxyz'.toUpperCase()}`, `#k=${VALID_FRAGMENT_KEY}`),
       ),
     ).toBeNull();
     // Lowercase letters not allowed in the 26-char body.
     expect(
-      parseCheckoutLocation(loc(`/c/cs_abcdefghijklmnopqrstuvwxyz`, `#k=${VALID_FRAGMENT_KEY}`)),
+      parseCheckoutLocation(loc(`/pay/c/cs_abcdefghijklmnopqrstuvwxyz`, `#k=${VALID_FRAGMENT_KEY}`)),
     ).toBeNull();
   });
 
   it('rejects when the fragment is missing', () => {
-    expect(parseCheckoutLocation(loc(`/c/${VALID_SESSION_ID}`, ''))).toBeNull();
+    expect(parseCheckoutLocation(loc(`/pay/c/${VALID_SESSION_ID}`, ''))).toBeNull();
   });
 
   it('rejects fragments without `k=`', () => {
     expect(
-      parseCheckoutLocation(loc(`/c/${VALID_SESSION_ID}`, `#somethingelse=${VALID_FRAGMENT_KEY}`)),
+      parseCheckoutLocation(loc(`/pay/c/${VALID_SESSION_ID}`, `#somethingelse=${VALID_FRAGMENT_KEY}`)),
     ).toBeNull();
   });
 
   it('rejects fragment keys with the wrong length', () => {
     // base64url(31B) is 42 chars; (33B) is 44 chars. Both must be rejected
     // because the AES-256 key is fixed at 32 bytes.
-    expect(parseCheckoutLocation(loc(`/c/${VALID_SESSION_ID}`, `#k=${'A'.repeat(42)}`))).toBeNull();
-    expect(parseCheckoutLocation(loc(`/c/${VALID_SESSION_ID}`, `#k=${'A'.repeat(44)}`))).toBeNull();
+    expect(parseCheckoutLocation(loc(`/pay/c/${VALID_SESSION_ID}`, `#k=${'A'.repeat(42)}`))).toBeNull();
+    expect(parseCheckoutLocation(loc(`/pay/c/${VALID_SESSION_ID}`, `#k=${'A'.repeat(44)}`))).toBeNull();
   });
 
   it('rejects fragment keys containing forbidden chars', () => {
-    expect(parseCheckoutLocation(loc(`/c/${VALID_SESSION_ID}`, `#k=${'!'.repeat(43)}`))).toBeNull();
+    expect(parseCheckoutLocation(loc(`/pay/c/${VALID_SESSION_ID}`, `#k=${'!'.repeat(43)}`))).toBeNull();
     // Standard base64 (uses `+` and `/`) must be rejected — base64URL only.
     expect(
       parseCheckoutLocation(
-        loc(`/c/${VALID_SESSION_ID}`, `#k=${'+'.repeat(43)}`),
+        loc(`/pay/c/${VALID_SESSION_ID}`, `#k=${'+'.repeat(43)}`),
       ),
     ).toBeNull();
   });
@@ -95,7 +109,7 @@ describe('parseCheckoutLocation', () => {
   it('handles fragments with a leading `#` and without it', () => {
     // Browsers always include the `#`, but be tolerant on the `slice(1)` path.
     expect(
-      parseCheckoutLocation(loc(`/c/${VALID_SESSION_ID}`, `k=${VALID_FRAGMENT_KEY}`)),
+      parseCheckoutLocation(loc(`/pay/c/${VALID_SESSION_ID}`, `k=${VALID_FRAGMENT_KEY}`)),
     ).toEqual({ sessionId: VALID_SESSION_ID, fragmentKey: VALID_FRAGMENT_KEY });
   });
 });

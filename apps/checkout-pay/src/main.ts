@@ -1132,15 +1132,19 @@ function truncateAddress(addr: string): string {
  * hostname. Stage / preview deploys label themselves so they don't
  * get mistaken for prod in screenshots / bug reports.
  *
- * Production (`pay.muhaven.app`) renders no chip — empty span.
+ * Production (`muhaven.app/pay/`) renders no chip — empty span. The
+ * legacy `pay.muhaven.app` hostname is retained because the redirect
+ * shim at that origin briefly loads on first navigation before
+ * bouncing to the new apex path; the chip should render as prod for
+ * the redirect tick rather than "preview".
  */
 function populateEnvironmentChip(): void {
   const el = document.querySelector<HTMLElement>('.brand .environment');
   if (!el) return;
   const host = window.location.hostname.toLowerCase();
   let label: string;
-  if (host === 'pay.muhaven.app') label = '';
-  else if (host === 'pay-stage.muhaven.app') label = 'stage';
+  if (host === 'muhaven.app' || host === 'pay.muhaven.app') label = '';
+  else if (host === 'stage.muhaven.app' || host === 'pay-stage.muhaven.app') label = 'stage';
   else if (host === 'localhost' || host === '127.0.0.1') label = 'local';
   else label = 'preview';
   el.textContent = label;

@@ -170,10 +170,17 @@ function generateSessionId(): string {
 
 /**
  * Build the buyer-facing URL. Fragment is everything after `#` so it
- * never reaches the server. Format chosen to match the locked decision
- * in `PROGRESS.md` §"Phase P5":
+ * never reaches the server.
  *
- *   https://pay.muhaven.app/c/<sessionId>#k=<base64url(32B)>
+ * Format after the 2026-05-15 subdomain-collapse migration:
+ *
+ *   https://muhaven.app/pay/c/<sessionId>#k=<base64url(32B)>
+ *
+ * The `/pay/` prefix lives in the `CHECKOUT_PUBLIC_URL` env var
+ * (e.g. `https://muhaven.app/pay`), not the template — the template
+ * stays origin-agnostic so a future path change is one env edit away.
+ * Pre-migration this was `https://pay.muhaven.app/c/<sessionId>#k=…`
+ * with `CHECKOUT_PUBLIC_URL=https://pay.muhaven.app`.
  */
 export function buildCheckoutUrl(
   baseUrl: string,

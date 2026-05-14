@@ -1,12 +1,17 @@
 #!/usr/bin/env node
 // Wave 4 P5 — sync the checkout-pay dist/ contents to the deploy-target repo.
 //
-// The hosted-checkout buyer page is served from a separate subdomain
-// (`pay.muhaven.app` / `pay-stage.muhaven.app`) so the kernel-passkey
-// RP-ID resolves correctly against the dashboard's apex. That means it
-// CANNOT ride along with `frontend/dist/` (which mirrors to
-// `muhaven-web` / `muhaven-web-stage` — different host, different CSP,
-// different SPA-fallback route).
+// 2026-05-15 subdomain-collapse migration: the buyer page is now
+// served from `muhaven.app/pay/` (a path under the dashboard apex)
+// rather than the legacy `pay.muhaven.app` subdomain. Deploy target
+// for prod is `../../../muhaven-web/pay` (a subdirectory of the
+// dashboard's sibling repo); stage is `../../../muhaven-web-stage/pay`.
+//
+// The legacy `muhaven-checkout-web` / `muhaven-checkout-web-stage`
+// sibling repos are retained — their `index.html` + `404.html` are
+// replaced with a tiny `window.location.replace` redirect shim so
+// pre-migration URLs (`https://pay.muhaven.app/c/<id>#k=<key>`) still
+// resolve to the new apex path with the fragment preserved.
 //
 // Target resolution (mirrors `frontend/scripts/deploy-to-muhaven-web.mjs`,
 // adjusted for the extra `apps/` directory level under muhaven/):

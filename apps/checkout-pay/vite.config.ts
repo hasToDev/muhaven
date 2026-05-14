@@ -4,15 +4,24 @@ import { nodePolyfills } from 'vite-plugin-node-polyfills';
 /**
  * Hosted-checkout buyer page (Wave 4 P5 → Wave-5 port).
  *
- * `base` is `/` so the URL pattern `/c/<sessionId>#k=<key>` is rendered
- * by the SPA's index.html for every path. In production the Cloudflare
- * tunnel rewrites every `/c/*` to `/index.html` so the page parses the
- * sessionId out of `location.pathname` itself.
+ * 2026-05-15 subdomain-collapse migration: served from `muhaven.app/pay/`
+ * (same origin as the dashboard) instead of the prior `pay.muhaven.app`
+ * subdomain. `base: '/pay/'` so Vite emits asset URLs as `/pay/assets/*`.
+ * The URL shape becomes `<origin>/pay/c/<sessionId>#k=<key>`; GitHub
+ * Pages serves `muhaven-web/pay/404.html` (nearest-up the tree) as the
+ * SPA fallback so any `/pay/c/*` path resolves to the buyer page index.
  *
- * Static-served deployment target: `pay.muhaven.app` (prod) /
- * `pay-stage.muhaven.app` (stage). ALL deployments share the dashboard's
- * apex RP ID (`muhaven.app`) so passkey kernels created here are
- * recoverable from the dashboard.
+ * Why moved off the subdomain: Plan C v1+v2 confirmed empirically that
+ * Chrome on Windows 11 defers the WebAuthn picker to the OS-native
+ * Windows Hello dialog for platform-bound credentials, which is blind
+ * to Chrome's GPM credential store. Apex-RPID + subdomain origin was
+ * spec-correct but didn't unlock GPM signing. Same-origin = the
+ * dashboard's GPM-backed credential becomes the buyer-page credential
+ * by construction, and Chrome stays in its in-browser picker.
+ *
+ * Legacy origin `pay.muhaven.app` is repurposed as a 2-line
+ * `window.location.replace` redirect shim (see muhaven-checkout-web
+ * post-migration) so in-flight URLs minted pre-cutover still work.
  *
  * Wave-5 buyer-side port (P1): added `vite-plugin-node-polyfills` for
  * `@zerodev/sdk`'s `events` / `buffer` / `process` imports (Node stdlib
@@ -27,7 +36,7 @@ export default defineConfig({
       globals: { Buffer: true, process: true },
     }),
   ],
-  base: '/',
+  base: '/pay/',
   build: {
     outDir: 'dist',
     emptyOutDir: true,
