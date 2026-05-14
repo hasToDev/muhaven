@@ -9,8 +9,9 @@ RUN pnpm install --frozen-lockfile --ignore-scripts
 RUN pnpm build
 
 FROM base AS runner
-COPY --from=build /app/node_modules node_modules/
-COPY --from=build /app/dist dist/
-COPY package.json ./
+COPY --from=build --chown=node:node /app/node_modules node_modules/
+COPY --from=build --chown=node:node /app/dist dist/
+COPY --chown=node:node package.json ./
+USER node
 EXPOSE 3003
 CMD ["node", "dist/index.js"]
