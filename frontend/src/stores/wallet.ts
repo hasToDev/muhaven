@@ -1,7 +1,12 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { ZeroDevProvider } from '@/providers/zerodev/zerodev.provider'
-import type { IWalletProvider, Call, ViemClients } from '@/providers/wallet-provider.interface'
+import type {
+  IWalletProvider,
+  Call,
+  ViemClients,
+  ExportedSessionKey,
+} from '@/providers/wallet-provider.interface'
 
 const STORAGE_KEY = 'muhaven-wallet'
 
@@ -121,6 +126,25 @@ export const useWalletStore = defineStore('wallet', () => {
     }
   }
 
+  /**
+   * Wave 4 Q1 — surface the session-key private half once for out-of-band
+   * copy (paste into broker daemon's `MUHAVEN_BROKER_SESSION_KEY`). Mints
+   * a fresh in-memory record if none exists; does NOT trigger an on-chain
+   * UserOp. Returns null when the underlying provider has no session
+   * support (currently only ZeroDevProvider implements it).
+   */
+  async function exportSessionKey(): Promise<ExportedSessionKey | null> {
+    await ensureConnected()
+    if (!provider || typeof provider.exportSessionKeyPrivateHalf !== 'function') {
+      throw new Error('Session keys not supported by this provider')
+    }
+    try {
+      return await provider.exportSessionKeyPrivateHalf()
+    } finally {
+      refreshSessionState()
+    }
+  }
+
   let reconnectPromise: Promise<void> | null = null
 
   async function ensureConnected(): Promise<void> {
@@ -195,6 +219,7 @@ export const useWalletStore = defineStore('wallet', () => {
     signMessage,
     sendUserOperation,
     installSessionKey,
+    exportSessionKey,
     getViemClients,
     restoreAddress,
     tryReconnect,

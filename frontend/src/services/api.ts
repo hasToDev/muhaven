@@ -1085,6 +1085,110 @@ export const agentToolsApi = {
   },
 }
 
+// ── Wave 4 Q1 — agent policy (tier transition + reveal) ──────────
+
+/**
+ * Mirror of backend `AgentUserStateDto` in
+ * `backend/src/application/dto/agent/policy.dto.ts`. Source of truth lives
+ * on the backend; this shape only carries the fields the dashboard
+ * /agent/policy/transition page consumes (tier picker + step-up gates).
+ */
+export interface AgentUserStateDto {
+  userId: string
+  surface: Surface
+  tier: Tier
+  pausedAt: string | null
+  pauseTrigger: string | null
+  pauseMetadata: Record<string, unknown> | null
+  enteredAt: string
+  validatorAddress: string | null
+  confirmedActionCount: number
+  riskQuestionnaireComplete: boolean
+  updatedAt: string
+}
+
+export interface PolicyStateResponseDto {
+  surfaces: AgentUserStateDto[]
+}
+
+export interface TierTransitionConfirmation {
+  token: string
+  actionHash: string
+  expiresAt: string
+}
+
+/**
+ * Backend `/policy/transition` returns one of two shapes depending on
+ * whether the requested transition is a step-up (requires passkey-bound
+ * confirmation token) or a step-down (auto-applies). The state-machine
+ * (see backend `transition-tier.use-case.ts`) decides which is which.
+ */
+export type RequestTierTransitionResponse =
+  | { requiresConfirmation: true; confirmation: TierTransitionConfirmation }
+  | { requiresConfirmation: false; state: AgentUserStateDto }
+
+export interface CommitTierTransitionResponse {
+  state: AgentUserStateDto
+}
+
+export const agentPolicyApi = {
+  getState(): Promise<PolicyStateResponseDto> {
+    return request('/agent/policy/state', { method: 'GET', auth: true })
+  },
+
+  /**
+   * Phase 1 of the two-phase transition. Returns either:
+   *   - `requiresConfirmation: false` for step-downs (apply immediately), OR
+   *   - `requiresConfirmation: true` for step-ups, carrying a single-use
+   *     confirmation token the caller must re-post via `commitTransition`.
+   */
+  requestTransition(args: {
+    surface: Surface
+    targetTier: Tier
+  }): Promise<RequestTierTransitionResponse> {
+    return request('/agent/policy/transition', {
+      method: 'POST',
+      body: { surface: args.surface, targetTier: args.targetTier },
+      auth: true,
+    })
+  },
+
+  /**
+   * Phase 2 — re-post with the confirmation token returned in phase 1.
+   * Backend re-validates the state machine before consuming the token,
+   * so a stale token against a concurrently-changed state still fails.
+   */
+  commitTransition(args: {
+    surface: Surface
+    targetTier: Tier
+    confirmationToken: string
+  }): Promise<CommitTierTransitionResponse> {
+    return request('/agent/policy/transition', {
+      method: 'POST',
+      body: {
+        surface: args.surface,
+        targetTier: args.targetTier,
+        confirmationToken: args.confirmationToken,
+      },
+      auth: true,
+    })
+  },
+
+  /**
+   * Resume from a paused surface. Per ADR-0 §"Allowed transitions" the
+   * post-pause landing is always Advisory — the user must re-traverse
+   * Confirm → PolicyBound to regain autonomy. Backend's
+   * ResumeAgentUseCase enforces the only-resumable-from-paused gate.
+   */
+  resume(args: { surface: Surface }): Promise<CommitTierTransitionResponse> {
+    return request('/agent/policy/resume', {
+      method: 'POST',
+      body: { surface: args.surface },
+      auth: true,
+    })
+  },
+}
+
 // ── Wave 4 §5 Path D + C — hosted-checkout dashboard ──────────────
 
 export type CheckoutSessionStatus =

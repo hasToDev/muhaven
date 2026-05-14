@@ -73,13 +73,27 @@ export async function runAgentAction(action: ActionDescriptor): Promise<RunResul
           ok: false,
           error: 'Rebalance ceremony lands in Wave 5 — please use /trade for now.',
         }
-      case 'set_policy':
-        // /policy/transition owns the passkey-signed validator install.
+      case 'set_policy': {
+        // Wave 4 Q1 — /agent/policy/transition owns the passkey-bound tier
+        // transition + session-key reveal flow (closes §3e⁶
+        // F-dashboard-policy-route-missing). The descriptor's `preview`
+        // carries the surface + targetTier the LLM proposed; the page
+        // reads them off the query string + pre-fills the picker so the
+        // HavenBot → ConfirmModal → page handoff is one click, not three.
+        const surface = readPreviewString(action.preview, 'surface')
+        const targetTier = readPreviewString(action.preview, 'targetTier')
+        const params = new URLSearchParams()
+        if (surface) params.set('surface', surface)
+        if (targetTier) params.set('target', targetTier)
+        const query = params.toString()
         return {
           ok: 'deferred',
-          redirectTo: '/portfolio',
-          reason: 'Tier change requires a passkey signature on the policy page.',
+          redirectTo: query
+            ? `/agent/policy/transition?${query}`
+            : '/agent/policy/transition',
+          reason: 'Tier change continues on the agent policy page.',
         }
+      }
       case 'pause':
         // Backend already executed the pause at proposal time
         // (PauseToolUseCase → PauseAgentUseCase). Commit is the
@@ -101,6 +115,22 @@ export async function runAgentAction(action: ActionDescriptor): Promise<RunResul
       error: err instanceof Error ? err.message : 'Action failed.',
     }
   }
+}
+
+/**
+ * Tolerant `preview[key]` reader for redirect-target URL building. The
+ * descriptor's `preview` is typed `Record<string, unknown>` (the LLM
+ * proposes the shape; the type is intentionally permissive). Returns
+ * undefined for anything not a non-empty string so a malformed payload
+ * lands the user on the plain `/agent/policy/transition` page without
+ * a broken querystring.
+ */
+function readPreviewString(
+  preview: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const v = preview[key]
+  return typeof v === 'string' && v.length > 0 ? v : undefined
 }
 
 async function runBuy(action: ActionDescriptor): Promise<string> {

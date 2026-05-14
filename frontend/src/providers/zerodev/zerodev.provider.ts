@@ -1,4 +1,4 @@
-import type { IWalletProvider, Call, ViemClients } from '../wallet-provider.interface';
+import type { IWalletProvider, Call, ViemClients, ExportedSessionKey } from '../wallet-provider.interface';
 import { toWebAuthnKey, WebAuthnMode, type WebAuthnKey } from '@zerodev/webauthn-key';
 import { toPasskeyValidator, PasskeyValidatorContractVersion } from '@zerodev/passkey-validator';
 import {
@@ -538,6 +538,39 @@ export class ZeroDevProvider implements IWalletProvider {
   getSessionExpirySeconds(): number {
     if (!this.sessionRecord) return 0;
     return expirySecondsRemaining(this.sessionRecord);
+  }
+
+  /**
+   * Wave 4 Q1 — surface the session-key private half for one-time copy
+   * into `MUHAVEN_BROKER_SESSION_KEY` on the operator's broker machine.
+   *
+   * Behaviour:
+   *   - If a valid in-memory `sessionRecord` exists, return its key.
+   *   - Otherwise call `installSessionKey()` to mint a fresh record + build
+   *     the scoped kernel. No on-chain UserOp fires here — the validator
+   *     enableSig is baked lazily on the first session-covered call.
+   *
+   * Privacy: privateKey lives only in `sessionStorage` (tab-scoped, cleared
+   * on close). Backend never receives it. The user is expected to copy it
+   * once, paste into broker env, then dismiss the modal — the existing
+   * lazy-persist contract in `doInstallSessionKey` keeps the partial
+   * record out of disk so reload re-mints a fresh key (acceptable for
+   * one-time export).
+   */
+  async exportSessionKeyPrivateHalf(): Promise<ExportedSessionKey | null> {
+    if (!this.kernelClient?.account) return null;
+
+    if (!this.sessionRecord || !this.hasSessionKey()) {
+      await this.installSessionKey();
+    }
+
+    if (!this.sessionRecord) return null;
+
+    return {
+      privateKey: this.sessionRecord.privateKey,
+      smartAccountAddress: this.sessionRecord.smartAccountAddress,
+      expiresAtSec: this.sessionRecord.expiresAt,
+    };
   }
 
   /**

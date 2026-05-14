@@ -27,4 +27,23 @@ export interface IWalletProvider {
   getSessionExpirySeconds?(): number;
   /** Install a scoped session key. No-op if one is already installed. */
   installSessionKey?(): Promise<void>;
+  /**
+   * Surface the session-key private half for one-time out-of-band copy
+   * (e.g., pasting into `MUHAVEN_BROKER_SESSION_KEY` on a different
+   * machine). Mints a fresh in-memory record if none exists yet — does
+   * NOT trigger an on-chain UserOp. The privateKey is held only in
+   * sessionStorage; the backend never sees it (privacy boundary).
+   *
+   * Returns `null` for providers without session support.
+   */
+  exportSessionKeyPrivateHalf?(): Promise<ExportedSessionKey | null>;
+}
+
+export interface ExportedSessionKey {
+  /** 0x-prefixed 32-byte hex private half. */
+  privateKey: `0x${string}`;
+  /** ZeroDev kernel smart-account address bound to this session. */
+  smartAccountAddress: `0x${string}`;
+  /** Unix seconds — when this session key expires (currently 1h default). */
+  expiresAtSec: number;
 }

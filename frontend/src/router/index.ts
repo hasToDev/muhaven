@@ -149,6 +149,14 @@ const router = createRouter({
       component: () => import('@/views/agent/OnboardingPage.vue'),
       meta: { title: 'Get started' },
     },
+    // Wave 4 Q1 — dashboard agent policy / tier transition + session-key
+    // reveal. Closes §3e⁶ F-dashboard-policy-route-missing. Dual-role —
+    // HavenBot is dual-surface, so investors and issuers both need this.
+    {
+      path: '/agent/policy/transition',
+      component: () => import('@/views/agent/PolicyTransitionPage.vue'),
+      meta: { title: 'Agent policy' },
+    },
     // Device-code authorization landing (Wave 4 P3 ADR-3 D5).
     // Cross-branch exception — see DEV_WAVE_4/ADR_LOG.md ADR-3.
     // NOT mounted under /agent/* — this is a leaf auth surface, not chat.
@@ -219,6 +227,7 @@ const UNAPPROVED_ISSUER_ALLOWLIST = new Set([
   '/agent',
   '/agent/confirm',
   '/agent/onboarding',
+  '/agent/policy/transition',
   '/link',
   '/cash',
 ])
