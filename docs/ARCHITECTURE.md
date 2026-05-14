@@ -281,7 +281,7 @@ Users authenticate with a **passkey** (WebAuthn) attached to a **ZeroDev smart a
 
 ### Agent security model (Wave 4 — in active development)
 
-The Wave 4 plan covers four agentic surfaces — **HavenBot** (in-dashboard streaming chat), **`@muhaven/mcp`** (MCPB-format MCP server), **OpenClaw skill** (`muhaven-rwa-skill` published to ClawHub), and **hosted checkout** (`pay.muhaven.app`) — plus a tiered-autonomy state machine (Advisory / Confirm-per-action / Policy-bound) and hybrid encrypted-policy storage (encrypted thresholds in `RiskParams.sol`, plaintext rule-shape in `@zerodev/permissions` validators).
+The Wave 4 plan covers four agentic surfaces — **HavenBot** (in-dashboard streaming chat), **`@muhaven/mcp`** (MCPB-format MCP server), **OpenClaw skill** (`muhaven-rwa-skill` published to ClawHub), and **hosted checkout** (`muhaven.app/pay`) — plus a tiered-autonomy state machine (Advisory / Confirm-per-action / Policy-bound) and hybrid encrypted-policy storage (encrypted thresholds in `RiskParams.sol`, plaintext rule-shape in `@zerodev/permissions` validators).
 
 The agent never holds a private key. It reuses the user's authenticated kernel + session keys, with additional permission constraints when an agent acts on the user's behalf (per-target selector allowlist, value cap per call, total cap per epoch, validity ≤ chat session). A deterministic policy gate sits between the LLM and the signing path (CaMeL planner/action split) so prompt injection cannot reach permission-grant or tx-submission surfaces.
 

@@ -17,7 +17,7 @@
 - **HavenBot** — in-dashboard streaming chat (Vue 3, Anthropic Claude Sonnet 4.5 via Vercel AI SDK).
 - **`@muhaven/mcp`** — MCPB-format MCP server with companion `muhaven-broker` daemon (OS-keychain credentials, Unix-socket signing).
 - **OpenClaw skill** (`muhaven-rwa-skill`) — published to ClawHub via Sigstore + GitHub OIDC; bundles a subset of the MCP toolset; Telegram surface with three confirmation tiers.
-- **Hosted checkout** (`pay.muhaven.app`) — Stripe-pattern URL with AES-256-GCM enc_payload + HMAC-SHA256 webhooks + ZeroDev passkey ceremony for first-time buyers.
+- **Hosted checkout** (`muhaven.app/pay`) — Stripe-pattern URL with AES-256-GCM enc_payload + HMAC-SHA256 webhooks + ZeroDev passkey ceremony for first-time buyers.
 
 Plus a **tiered-autonomy state machine** (Advisory / Confirm-per-action / Policy-bound) with hybrid policy storage (encrypted thresholds in `RiskParams.sol`, plaintext rule-shape in `@zerodev/permissions` validators).
 
@@ -108,10 +108,10 @@ Demo loop: install in Claude Desktop, ask "what's my yield this epoch?" → tool
 
 Demo loop: investor in Telegram says "buy $500 of TBILL1" → inline keyboard preview → deep-link to passkey → settles on Arbitrum.
 
-### Surface 4 — Hosted checkout `pay.muhaven.app`
+### Surface 4 — Hosted checkout `muhaven.app/pay`
 
 - Hono service deployed on Cloudflare Workers (or Bun); Drizzle/Postgres `checkout_sessions` table.
-- URL scheme: `https://pay.muhaven.app/c/<ulid>#k=<base64url(32B)>`. Server-side `enc_payload = AES-256-GCM(plaintext, key=HKDF(k))`; 30-min TTL. **The key never reaches the server** — fragments are not sent in `Referer`, so the server holds ciphertext useless without the key.
+- URL scheme: `https://muhaven.app/pay/c/<ulid>#k=<base64url(32B)>`. Server-side `enc_payload = AES-256-GCM(plaintext, key=HKDF(k))`; 30-min TTL. **The key never reaches the server** — fragments are not sent in `Referer`, so the server holds ciphertext useless without the key.
 - Webhook signing: `MuHaven-Signature: t=<unix>,v1=<HMAC-SHA256(t.body, whsec_…)>` over raw body, 5-min replay window. `Idempotency-Key` header dedupe. SSRF guard on outbound webhook URLs.
 - Realtime: in-process SSE channel (replaces Supabase Realtime — avoids leaking session metadata to third-party SaaS).
 - ZeroDev passkey ceremony for non-customer buyers: provisions kernel account on first use via `@zerodev/passkey-validator` + `createKernelAccount`. **Passkey RP ID** = `muhaven.app` (prod, eTLD+1) / `stage.muhaven.app` (stage subdomain) so kernels recovered at checkout work in the dashboard.
@@ -379,7 +379,7 @@ Phase tracking: `development/DEV_WAVE_4/PROGRESS.md` (parallel-branch state). Ar
 - HavenBot streaming chat + per-action confirm modals (P2)
 - `@muhaven/mcp` MCPB server + `muhaven-broker` daemon (P3)
 - OpenClaw skill + Telegram surface (P4)
-- Hosted checkout `pay.muhaven.app` (P5)
+- Hosted checkout `muhaven.app/pay` (P5)
 - Encrypted policy primitives in `RiskParams.sol` (P6)
 - **Issuer-side distribution wizard + KYC inline + audit copilot + setNAVAndUnpause (P7)** ← landed 2026-05-06 (commit `f8faf6d`)
 - Threat-model hardening + red-team (P8)

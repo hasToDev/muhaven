@@ -35,7 +35,7 @@ export const LANDING_FEATURES = [
 // Rendered below the three-card grid as a "Coming next" teaser.
 export const LANDING_AI_PREVIEW = {
   badge: 'Coming next',
-  text: 'HavenBot in-dashboard copilot · @muhaven/mcp server · OpenClaw skill · hosted checkout at pay.muhaven.app — agentic layer in active development.',
+  text: 'HavenBot in-dashboard copilot · @muhaven/mcp server · OpenClaw skill · hosted checkout at muhaven.app/pay — agentic layer in active development.',
 }
 
 export const LANDING_FAQ = [
