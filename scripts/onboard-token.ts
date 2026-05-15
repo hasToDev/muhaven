@@ -25,7 +25,10 @@
  * Optional env (with defaults):
  *   MUHAVEN_ENV                   prod | staging   (default: prod)
  *   MUHAVEN_ISSUER                issuer EOA       (default: deployer)
- *   MUHAVEN_NAV_WRITER            NAV writer hot key (default: issuer)
+ *   MUHAVEN_NAV_WRITER            NAV writer hot key — REQUIRED. Design A
+ *                                 (2026-05-17): defaults to the platform's
+ *                                 NAV-publisher signer, NOT the issuer.
+ *                                 See ARCHITECTURAL NOTE below.
  *   MUHAVEN_NAV_REQUESTER         Chainlink requester (default: issuer)
  *   MUHAVEN_NAV_INITIAL           initial cleartext NAV in PUSDC base units
  *                                 per share. Required when MUHAVEN_ORACLE_KIND
@@ -152,7 +155,29 @@ async function main() {
   const symbol = envOrThrow("MUHAVEN_TOKEN_SYMBOL");
   const tokenName = envOrThrow("MUHAVEN_TOKEN_NAME");
   const issuer = envOr("MUHAVEN_ISSUER", deployer.address);
-  const navWriter = envOr("MUHAVEN_NAV_WRITER", issuer);
+  // Design A (2026-05-17): platform-managed NAV by default.
+  //
+  // Previously this defaulted to `issuer` so issuer-onboarded tokens had
+  // the issuer's wallet as their on-chain navWriter. That works ONLY when
+  // the issuer runs their own NAV-publisher service. In practice many
+  // issuers use smart-account wallets where the platform only receives
+  // the address — there is no private key to drive setNAV. The oracle
+  // then goes stale silently after 36h and `Subscription.purchase`
+  // reverts `StaleNAV()`. The platform monitor can detect the staleness
+  // but cannot unstick it.
+  //
+  // The new default is the platform's NAV-publisher signer (matches
+  // `nav-publisher/.env` NAV_PUBLISHER_PRIVATE_KEY). Issuers who insist
+  // on self-managed NAV can opt out by setting MUHAVEN_NAV_WRITER to
+  // their own kernel/EOA at onboarding. The on-chain `maxDeviationBps`
+  // gate on the oracle constrains the platform from pushing wildly off-
+  // value NAVs; off-chain agreement governs the rest.
+  //
+  // Existing tokens with `navWriter = issuer` must be rotated via
+  // `scripts/rotate-nav-writers.ts` (oracle owner = prod deployer can do
+  // this). See `development/STATUS.md` "Design A platform-managed
+  // navWriter" 2026-05-17 entry for the decision narrative.
+  const navWriter = envOrThrow("MUHAVEN_NAV_WRITER");
   const navRequester = envOr("MUHAVEN_NAV_REQUESTER", issuer);
 
   const minInvestment = envOr("MUHAVEN_MIN_INVESTMENT", 1n);

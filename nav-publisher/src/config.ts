@@ -19,6 +19,24 @@ export interface Config {
   chainId: number;
   rpcUrl: string;
   oracleAddress: `0x${string}`;
+  /**
+   * `TokenRegistry` proxy address. Required since 2026-05-17 (Design A).
+   * `nav-publisher` enumerates active tokens from this registry at startup
+   * unless `NAV_PUBLISH_TOKENS` overrides explicitly. Static env-based
+   * roster missed apply-issuer-onboarded tokens; on-chain enumeration
+   * picks them up automatically on next container restart.
+   */
+  tokenRegistryAddress: `0x${string}`;
+  /**
+   * Token roster. After startup, this is either the explicit
+   * `NAV_PUBLISH_TOKENS` override (when set) or the result of enumerating
+   * active tokens from `TokenRegistry`. NOTE: this field is MUTATED
+   * once during `startup()` in `index.ts` — see `applyDiscoveredTokens`
+   * below. Callers that grab the array reference after startup see the
+   * resolved set; callers that grabbed it before startup would still see
+   * the empty placeholder. Since the only callers are scheduler-driven
+   * and run after startup completes, this is safe.
+   */
   tokens: `0x${string}`[];
   /** address (lower-case) → symbol — purely for log readability. */
   symbols: Map<string, string>;
@@ -96,10 +114,39 @@ export function getConfig(): Config {
   const rpcUrl = process.env.ARB_RPC_URL || 'https://sepolia-rollup.arbitrum.io/rpc';
   const oracleAddress = parseAddr('ORACLE_ADDRESS', requireEnv('ORACLE_ADDRESS'));
 
+  // NAV_PUBLISH_TOKENS is now an OVERRIDE (2026-05-17 Design A). When
+  // unset/empty, the publisher enumerates active tokens from
+  // TokenRegistry at startup. Override is useful for:
+  //   - testing against a subset of tokens
+  //   - sentinel exclusion (deliberately skip a problematic token while
+  //     keeping the rest of the roster live)
   const tokensRaw = (process.env.NAV_PUBLISH_TOKENS ?? '').trim();
   const tokens: `0x${string}`[] = tokensRaw === ''
     ? []
     : tokensRaw.split(',').map((t) => parseAddr('NAV_PUBLISH_TOKENS', t.trim()));
+
+  // TOKEN_REGISTRY_ADDRESS — required only when NAV_PUBLISH_TOKENS is
+  // empty (the new default mode). When the operator has set
+  // NAV_PUBLISH_TOKENS (existing prod .env state), the registry isn't
+  // consulted so we don't force them to touch their env file. After the
+  // first onboarding past 2026-05-17 they should drop the override and
+  // set TOKEN_REGISTRY_ADDRESS instead.
+  const tokenRegistryRaw = (process.env.TOKEN_REGISTRY_ADDRESS ?? '').trim();
+  if (tokens.length === 0 && tokenRegistryRaw === '') {
+    throw new Error(
+      'Either NAV_PUBLISH_TOKENS or TOKEN_REGISTRY_ADDRESS must be set. ' +
+        'Recommended (Design A 2026-05-17): set TOKEN_REGISTRY_ADDRESS and leave ' +
+        'NAV_PUBLISH_TOKENS unset so the publisher enumerates active tokens from chain.',
+    );
+  }
+  // Zero address is a structural placeholder when the operator only set
+  // NAV_PUBLISH_TOKENS and isn't using on-chain enumeration. The
+  // `discoverActiveTokens` path is gated on `tokens.length === 0` so
+  // this address is never read in override mode.
+  const tokenRegistryAddress: `0x${string}` =
+    tokenRegistryRaw === ''
+      ? '0x0000000000000000000000000000000000000000'
+      : parseAddr('TOKEN_REGISTRY_ADDRESS', tokenRegistryRaw);
 
   const symbolPairs = parsePairs(process.env.NAV_PUBLISH_TOKEN_SYMBOLS);
   const symbols = new Map<string, string>();
@@ -131,6 +178,7 @@ export function getConfig(): Config {
     chainId,
     rpcUrl,
     oracleAddress,
+    tokenRegistryAddress,
     tokens,
     symbols,
     publisherPrivateKey: pk as `0x${string}`,
@@ -140,6 +188,41 @@ export function getConfig(): Config {
   };
 
   return cached;
+}
+
+/**
+ * Apply tokens discovered from on-chain TokenRegistry. Called once by
+ * `startup()` in `index.ts` after `getChain()` succeeds.
+ *
+ * This MUTATES `cached.tokens` (and merges into `cached.symbols`) so
+ * scheduler.ts + publisher.ts pick up the discovered set on their first
+ * cycle. Yes, mutating cached state is icky — but contained to a single
+ * lifecycle point + the alternative (refactor every call-site to await
+ * an async tokens-getter) is much wider blast radius.
+ *
+ * Idempotent: a second call with the same addresses is a no-op.
+ * Override-aware: if `NAV_PUBLISH_TOKENS` was set (config.tokens non-empty
+ * at boot), this becomes a no-op so the operator's explicit override
+ * wins.
+ */
+export function applyDiscoveredTokens(
+  discovered: { address: `0x${string}`; symbol?: string }[],
+): { applied: number; skippedOverride: boolean } {
+  if (!cached) {
+    throw new Error('applyDiscoveredTokens called before getConfig()');
+  }
+  if (cached.tokens.length > 0) {
+    // NAV_PUBLISH_TOKENS override is in effect — operator-supplied
+    // roster takes precedence.
+    return { applied: 0, skippedOverride: true };
+  }
+  for (const t of discovered) {
+    cached.tokens.push(t.address.toLowerCase() as `0x${string}`);
+    if (t.symbol && t.symbol !== '') {
+      cached.symbols.set(t.address.toLowerCase(), t.symbol);
+    }
+  }
+  return { applied: discovered.length, skippedOverride: false };
 }
 
 /**

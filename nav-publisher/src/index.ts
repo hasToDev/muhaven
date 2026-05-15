@@ -12,9 +12,9 @@
  * rather than silently looping cycle after cycle on bad config.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { getConfig } from './config.js';
+import { getConfig, applyDiscoveredTokens } from './config.js';
 import { checkDbHealth, closeDb } from './db.js';
-import { getChain } from './chain.js';
+import { getChain, discoverActiveTokens } from './chain.js';
 import {
   startScheduler,
   stopScheduler,
@@ -42,8 +42,44 @@ async function startup(): Promise<void> {
   // private key, validating its shape before any cycle runs.
   const { account } = getChain();
   console.log(
-    `[nav-publisher] signer=${account.address} chainId=${config.chainId} oracle=${config.oracleAddress}`,
+    `[nav-publisher] signer=${account.address} chainId=${config.chainId} oracle=${config.oracleAddress} registry=${config.tokenRegistryAddress}`,
   );
+
+  // Design A (2026-05-17): discover active tokens from TokenRegistry
+  // unless NAV_PUBLISH_TOKENS override is set. Logs which roster source
+  // won so the operator can sanity-check at boot.
+  //
+  // Skipped entirely in override mode (NAV_PUBLISH_TOKENS set) — the
+  // registry address may not even be configured in that case (existing
+  // prod operators don't have to touch their .env).
+  if (config.tokens.length === 0) {
+    try {
+      const discovered = await discoverActiveTokens();
+      const { applied } = applyDiscoveredTokens(discovered);
+      console.log(
+        `[nav-publisher] discovered ${applied} active tokens from TokenRegistry: ${discovered
+          .map((t) => t.symbol ?? t.address.slice(0, 10))
+          .join(', ')}`,
+      );
+    } catch (err) {
+      // Bootstrap-time discovery failures shouldn't crash the service —
+      // a transient RPC blip would otherwise turn into a restart loop.
+      // Cycle-time errors are handled per-token by the publisher.
+      console.error(
+        '[nav-publisher] TokenRegistry enumeration FAILED at startup. Publisher will start with empty roster — set NAV_PUBLISH_TOKENS env to recover.',
+        err,
+      );
+    }
+  } else {
+    console.log(
+      `[nav-publisher] NAV_PUBLISH_TOKENS override in effect (${config.tokens.length} tokens). Skipping TokenRegistry enumeration.`,
+    );
+  }
+  if (config.tokens.length === 0) {
+    console.warn(
+      '[nav-publisher] roster is empty — no tokens will be published this cycle. Check TOKEN_REGISTRY_ADDRESS + RPC connectivity.',
+    );
+  }
 
   // Verify DB connection.
   const dbOk = await checkDbHealth();

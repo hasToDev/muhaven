@@ -22,6 +22,69 @@ import { getConfig } from './config.js';
  * the service avoids pulling in the full Hardhat artifacts pipeline.
  * Mirrors `scripts/refresh-oracle.ts`.
  */
+/**
+ * Minimal ABI for `TokenRegistry` — enumeration only. Used by
+ * `discoverActiveTokens()` at startup to populate the publisher's
+ * roster from on-chain state (Design A, 2026-05-17). Avoiding the full
+ * registry artifact keeps the dep surface flat.
+ */
+export const TOKEN_REGISTRY_ABI = [
+  {
+    type: 'function',
+    name: 'getRegisteredTokens',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'offset', type: 'uint256' },
+      { name: 'limit', type: 'uint256' },
+    ],
+    outputs: [{ type: 'address[]' }],
+  },
+  {
+    type: 'function',
+    name: 'registeredTokenCount',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'getConfig',
+    stateMutability: 'view',
+    inputs: [{ name: 'token', type: 'address' }],
+    outputs: [
+      {
+        type: 'tuple',
+        components: [
+          { name: 'active', type: 'bool' },
+          { name: 'treasury', type: 'address' },
+          { name: 'queue', type: 'address' },
+          { name: 'oracle', type: 'address' },
+          { name: 'issuer', type: 'address' },
+          { name: 'minInvestment', type: 'uint128' },
+          { name: 'instantRedeemCap', type: 'uint128' },
+          { name: 'epochDuration', type: 'uint32' },
+          { name: 'paused', type: 'bool' },
+        ],
+      },
+    ],
+  },
+] as const;
+
+/**
+ * Minimal ABI for ERC20 `symbol()` — used to enrich the publisher's
+ * log readability when on-chain enumeration discovers tokens not in the
+ * symbols map.
+ */
+export const ERC20_SYMBOL_ABI = [
+  {
+    type: 'function',
+    name: 'symbol',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'string' }],
+  },
+] as const;
+
 export const ORACLE_ABI = [
   {
     type: 'function',
@@ -170,4 +233,85 @@ export async function submitSetNav(
     throw new Error(`setNAV reverted (tx ${hash})`);
   }
   return hash;
+}
+
+/**
+ * Enumerate active tokens from on-chain `TokenRegistry` (Design A,
+ * 2026-05-17). Called once at startup when `NAV_PUBLISH_TOKENS` is
+ * empty so the publisher's roster reflects current on-chain state
+ * (including apply-issuer-onboarded tokens, which the prior static-env
+ * roster missed).
+ *
+ * Filters:
+ *   - `active = true` (the registry's lifecycle flag — inactive tokens
+ *     are deregistered or never fully wired).
+ *   - Paused tokens are STILL included: pausing freezes purchases but
+ *     does NOT change the staleness expectation. A paused token whose
+ *     NAV is allowed to drift would still revert any downstream call
+ *     once unpaused. Keep them in the roster so they stay fresh.
+ *
+ * Symbol enrichment is best-effort — a token without a `symbol()` view
+ * still gets enumerated; only the log-pretty name is missing.
+ */
+export async function discoverActiveTokens(): Promise<
+  { address: Address; symbol?: string }[]
+> {
+  const { publicClient } = getChain();
+  const config = getConfig();
+  const registry = config.tokenRegistryAddress;
+
+  const count: bigint = (await publicClient.readContract({
+    address: registry,
+    abi: TOKEN_REGISTRY_ABI,
+    functionName: 'registeredTokenCount',
+  })) as bigint;
+
+  const all: Address[] = [];
+  const pageSize = 100n;
+  for (let off = 0n; off < count; off += pageSize) {
+    const page = (await publicClient.readContract({
+      address: registry,
+      abi: TOKEN_REGISTRY_ABI,
+      functionName: 'getRegisteredTokens',
+      args: [off, pageSize],
+    })) as readonly Address[];
+    all.push(...page);
+  }
+
+  // Filter to active; collect oracle field too for sanity check that all
+  // active tokens point at our oracle (a token wired to a DIFFERENT
+  // oracle proxy is outside this publisher's responsibility).
+  const result: { address: Address; symbol?: string }[] = [];
+  for (const tokenAddr of all) {
+    const cfg = (await publicClient.readContract({
+      address: registry,
+      abi: TOKEN_REGISTRY_ABI,
+      functionName: 'getConfig',
+      args: [tokenAddr],
+    })) as {
+      active: boolean;
+      oracle: Address;
+      paused: boolean;
+    };
+    if (!cfg.active) continue;
+    if (cfg.oracle.toLowerCase() !== config.oracleAddress.toLowerCase()) {
+      // Token uses a different oracle proxy (e.g. Chainlink Functions).
+      // This publisher only manages the IssuerControlledOracle roster.
+      continue;
+    }
+
+    let symbol: string | undefined;
+    try {
+      symbol = (await publicClient.readContract({
+        address: tokenAddr,
+        abi: ERC20_SYMBOL_ABI,
+        functionName: 'symbol',
+      })) as string;
+    } catch {
+      // Token doesn't expose symbol() — fine, just no pretty name.
+    }
+    result.push({ address: tokenAddr, symbol });
+  }
+
+  return result;
 }
