@@ -145,6 +145,14 @@ const EnvSchema = z.object({
   IDENTITY_REGISTRY_ADDRESS: z.string().optional(),
   MODULAR_COMPLIANCE_ADDRESS: z.string().optional(),
   ISSUER_ORACLE_ADDRESS: z.string().optional(),
+  // 2026-05-17 Design A · PREVENTION — platform-managed NAV writer EOA.
+  // Address of the signer the platform uses to call
+  // `IssuerControlledOracle.setNAV` for all self-serve-onboarded tokens.
+  // Must equal the address derived from `PLATFORM_DEPLOYER_PRIVATE_KEY`
+  // (asserted at boot in `IssuerOracleNavWriterService`). Today this is
+  // the platform deployer EOA on prod (`0xe11E…6986`) — rotate to a
+  // dedicated EOA pre-mainnet.
+  PLATFORM_NAV_WRITER_ADDRESS: z.string().optional(),
   // Path to compiled contract artifacts inside the backend container.
   // Defaults to walking up to project root in dev; the Dockerfile bakes
   // artifacts into `/app/contracts-artifacts` for staging.

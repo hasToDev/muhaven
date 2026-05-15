@@ -9,7 +9,7 @@
  *   3. Economics (initial NAV, min investment, yield schedule)
  *   4. Review
  *   5. Deploy (SSE-streamed)
- *   6. First-NAV publish + unpause (kernel-prompted, deferred)
+ *   6. First-NAV publish (platform-signed, server-side) + unpause (kernel-signed)
  *
  * The wizard is server-driven: step 1 hits `/v1/issuer/apply` (sync),
  * step 5 hits `/v1/issuer/tokens/deploy` (202) + the SSE feed. State
@@ -586,7 +586,8 @@ function deployStepUi(key: DeployStepKey) {
               />
               <span class="font-sans text-[11px] text-cool">
                 Default <code class="font-mono">1000000</code> = 1.00 mhUSDC. Used by the
-                wizard's recap; the kernel publishes the live NAV in step 6.
+                wizard's recap; the platform publishes this NAV server-side at step 6 before
+                your kernel signs <code class="font-mono">setPaused(false)</code>.
               </span>
             </label>
             <label class="flex flex-col gap-1.5">
@@ -645,7 +646,7 @@ function deployStepUi(key: DeployStepKey) {
               <li>Compliance bundle: KYC required, no country allow-list, unlimited holders</li>
               <li>Epoch duration: 86400 s · Instant redeem cap: 100 mhUSDC</li>
               <li>Oracle: issuer-controlled (Chainlink path stays operator-only)</li>
-              <li>Token registers paused — kernel publishes first NAV + unpauses (step 6)</li>
+              <li>Token registers paused — platform publishes first NAV; kernel signs setPaused(false) at step 6</li>
             </ul>
           </div>
         </div>
@@ -760,10 +761,11 @@ function deployStepUi(key: DeployStepKey) {
           <Clock :size="48" :stroke-width="1.6" class="text-gold" />
           <p class="font-accent italic text-xl text-midnight dark:text-white tracking-tight">First NAV publish + unpause</p>
           <p class="font-sans text-sm text-cool max-w-md">
-            Two kernel-signed transactions: <code>oracle.setNAV</code> +
-            <code>tokenRegistry.setPaused(false)</code>. Step 6 ships in
-            a follow-up; for now, head to /tokens and the platform team
-            will unpause your token within ~15 minutes.
+            Open the HavenBot copilot and run
+            <code>muhaven_propose_unpause_token</code> from /tokens — the
+            platform publishes the initial NAV server-side and your
+            kernel signs <code>setPaused(false)</code> to open the token
+            for business.
           </p>
           <MButton variant="primary" size="sm" @click="router.push('/tokens')">Go to /tokens</MButton>
         </div>

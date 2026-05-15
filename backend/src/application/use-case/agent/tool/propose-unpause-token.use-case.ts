@@ -1,13 +1,16 @@
 import { randomUUID } from 'crypto';
+import type { Address } from 'viem';
 import type { IRwaTokenRepository } from '../../../../domain/token-registry/repository/rwa-token.repository.js';
 import type { IUserRepository } from '../../../../domain/auth/repository/user.repository.js';
 import { ApplicationHttpError } from '../../../../core/errors.js';
+import { getLogger } from '../../../../core/logger.js';
 import { Surface } from '../../../../domain/agent/model/surface.enum.js';
 import { Tier } from '../../../../domain/agent/model/tier.enum.js';
 import { AuditEventType } from '../../../../domain/agent/model/audit-event-type.enum.js';
 import type { GetPolicyStateUseCase } from '../policy/get-policy-state.use-case.js';
 import type { ConfirmTokenService } from '../policy/confirm-token.service.js';
 import type { AppendAuditEventUseCase } from '../policy/append-audit-event.use-case.js';
+import type { IIssuerOracleNavWriter } from '../../../../infrastructure/oracle/issuer-oracle-nav-writer.service.js';
 import type {
   ProposeUnpauseTokenDto,
 } from '../../../dto/agent/issuer-tool.dto.js';
@@ -24,34 +27,50 @@ export interface ProposeUnpauseTokenContext {
 /**
  * Wave 4 P7 — `muhaven_propose_unpause_token`.
  *
- * Closes the F2 self-serve issuer-onboarding wizard's deferred step 6:
- *   1. `IssuerControlledOracle.setNAV(token, initialNav)`
- *   2. `TokenRegistry.setPaused(token, false)`
+ * Closes the F2 self-serve issuer-onboarding wizard's deferred step 6.
  *
- * Both signed by the **applicant kernel** via the existing ZeroDev
- * session-key path. This is the production-trajectory shape — the
- * deployer-side `scripts/unpause-token.ts` is the demo-stage compromise;
- * the agent path moves the privilege to the right place (issuer owns
- * NAV, issuer signs).
+ * 2026-05-17 Design A · PREVENTION shape:
+ *   1. `IssuerControlledOracle.setNAV(token, initialNav)` — executed
+ *      **server-side** here, signed by the platform's NAV writer EOA
+ *      (`IssuerOracleNavWriterService`). The platform IS the registered
+ *      navWriter for self-serve-onboarded tokens (deploy library Step
+ *      7), so this is the right signer.
+ *   2. `TokenRegistry.setPaused(token, false)` — proposed to the
+ *      applicant kernel via the existing ZeroDev session-key path. The
+ *      applicant remains the registered `MUHAVEN_ISSUER` and is the
+ *      only party authorised to decide when the token opens for
+ *      business.
+ *
+ * Pre-Design-A shape had the applicant kernel signing BOTH txs (the
+ * applicant was the navWriter then). Splitting them means the applicant
+ * confirms ONE action — "unpause my token" — and the ConfirmModal shows
+ * the NAV-publish tx hash as provenance, not a second authorize step.
  *
  * Tier-2 (Confirm-per-action) is the natural posture: low blast radius
- * (single-issuer-scoped), easy mental model. Doesn't need Tier-3 policy
- * framing for v1.
+ * (single-issuer-scoped), easy mental model.
  *
- * Equivalence with the operator script: given the same token +
- * initialNav, on-chain state must converge. The script holds the deployer
- * EOA so it can rotate `setNavWriter` for itself; the agent holds the
- * applicant kernel so it can write NAV directly (the F2 wizard already
- * registered the kernel as nav writer at deploy time). The script needs
- * a temporary writer rotation; the agent does NOT — that's the savings.
+ * If the server-side setNAV reverts (deviation gate / zero NAV / RPC
+ * failure / oracle ownership misconfig), no confirm token is minted and
+ * the LLM/UI surface the underlying error — the applicant never sees a
+ * partial-state ConfirmModal.
  */
 export class ProposeUnpauseTokenToolUseCase {
+  // Lazy-init on first use to avoid touching `getEnv()` at instance
+  // construction (some tests instantiate the use case before priming
+  // the env schema's required vars). Cached after first call.
+  private _logger: ReturnType<typeof getLogger> | null = null;
+  private get logger(): ReturnType<typeof getLogger> {
+    if (!this._logger) this._logger = getLogger('ProposeUnpauseTokenToolUseCase');
+    return this._logger;
+  }
+
   constructor(
     private readonly rwaTokenRepo: IRwaTokenRepository,
     private readonly userRepo: IUserRepository,
     private readonly getPolicyState: GetPolicyStateUseCase,
     private readonly confirmTokens: ConfirmTokenService,
     private readonly appendAudit: AppendAuditEventUseCase,
+    private readonly oracleNavWriter: IIssuerOracleNavWriter | null = null,
     private readonly issuerOracleOverride: string | null = null,
     private readonly tokenRegistryOverride: string | null = null,
   ) {}
@@ -121,6 +140,41 @@ export class ProposeUnpauseTokenToolUseCase {
         'Issuer oracle / token registry not configured — set ISSUER_ORACLE_ADDRESS + TOKEN_REGISTRY_ADDRESS in backend env.',
       );
     }
+    if (!this.oracleNavWriter) {
+      throw new ApplicationHttpError(
+        503,
+        'Platform NAV writer not configured — set PLATFORM_NAV_WRITER_ADDRESS in backend env (must equal the address derived from PLATFORM_DEPLOYER_PRIVATE_KEY).',
+      );
+    }
+
+    // ── Server-side setNAV (platform-signed) ─────────────────────────
+    // 2026-05-17 Design A · PREVENTION: the platform is the registered
+    // navWriter for self-serve-onboarded tokens, so the backend signs
+    // setNAV. Any revert here (ZeroNAV / deviation gate / RPC failure /
+    // legacy token whose navWriter never got rotated) bubbles up before
+    // a confirm token is minted — the applicant never sees a half-done
+    // ConfirmModal.
+    let navPublishTxHash: string;
+    try {
+      const result = await this.oracleNavWriter.setNAV(
+        tokenAddress as Address,
+        initialNav,
+      );
+      navPublishTxHash = result.txHash;
+    } catch (err) {
+      // viem error stacks can be thousands of characters (sim+ABI+args).
+      // Log the full error for ops + audit; slice the response message
+      // so a 502 stays parseable in chat/Telegram surfaces.
+      this.logger.warn(
+        { err, tokenAddress, initialNav: initialNav.toString() },
+        'Server-side setNAV reverted; refusing to mint confirm token',
+      );
+      const raw = err instanceof Error ? err.message : String(err);
+      throw new ApplicationHttpError(
+        502,
+        `setNAV failed on IssuerControlledOracle: ${raw.slice(0, 500)}`,
+      );
+    }
 
     // R-3 mitigation: pin requestedAtSec + tool name into the action hash.
     const requestedAtSec = Math.floor(now.getTime() / 1000);
@@ -131,6 +185,7 @@ export class ProposeUnpauseTokenToolUseCase {
       initialNavUsd6: initialNav.toString(),
       issuerOracleAddress,
       tokenRegistryAddress,
+      navPublishTxHash,
       requestedAtSec,
     };
     const issued = await this.confirmTokens.issue({
@@ -148,6 +203,7 @@ export class ProposeUnpauseTokenToolUseCase {
         tool: 'muhaven_propose_unpause_token',
         tokenAddress,
         initialNavUsd6: initialNav.toString(),
+        navPublishTxHash,
         confirmTokenId: issued.token,
       },
     });
@@ -158,34 +214,26 @@ export class ProposeUnpauseTokenToolUseCase {
       toolCallId,
       confirmTokenId: issued.token,
       expiresAtSec: Math.floor(issued.expiresAt.getTime() / 1000),
-      summary: `Activate ${token.symbol} — set initial NAV ${displayUsd(initialNav)} + unpause registry.`,
+      summary: `Activate ${token.symbol} — initial NAV ${displayUsd(initialNav)} published, sign to unpause.`,
       preview: {
         tokenAddress,
         tokenSymbol: token.symbol,
         initialNavUsd6: initialNav.toString(),
         issuerOracleAddress,
         tokenRegistryAddress,
+        navPublishTxHash,
         requestedAtSec,
       },
       sdkCall: {
-        // Two sequential txs from the same kernel — frontend dispatches
-        // both via the issuer's session-key signer. Each `txs` entry maps
-        // to a real on-chain (address, function, args) tuple — no synthetic
-        // function names, the runner can resolve every selector.
-        contractName: 'IssuerOracle+TokenRegistry',
-        functionName: 'unpauseSequence',
+        // Single-tx descriptor — only `setPaused(false)` is left for the
+        // applicant kernel. setNAV already published server-side above.
+        contractName: 'TokenRegistry',
+        functionName: 'setPaused',
         args: {
-          oracle: issuerOracleAddress,
           tokenRegistry: tokenRegistryAddress,
           token: tokenAddress,
-          initialNav: initialNav.toString(),
+          paused: false,
           txs: [
-            {
-              contract: 'IssuerControlledOracle',
-              address: issuerOracleAddress,
-              fn: 'setNAV',
-              args: { token: tokenAddress, newNav: initialNav.toString() },
-            },
             {
               contract: 'TokenRegistry',
               address: tokenRegistryAddress,

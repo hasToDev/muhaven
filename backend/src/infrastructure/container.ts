@@ -53,8 +53,13 @@ import {
   DeployTokenLibrary,
   resolveArtifactsDir,
 } from './onboarding/deploy-token.library.js';
+import {
+  IssuerOracleNavWriterService,
+  type IIssuerOracleNavWriter,
+} from './oracle/issuer-oracle-nav-writer.service.js';
 import { getEnv } from '../core/config.js';
 import type { Address, Hex } from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
 import type { INonceRepository } from '../domain/nonce/repository/nonce.repository.js';
 import type { IUserRepository } from '../domain/auth/repository/user.repository.js';
 import type { ISessionRepository } from '../domain/auth/repository/session.repository.js';
@@ -375,6 +380,9 @@ function getDeployLibrary(): DeployTokenLibrary | null {
     STABLE_ADDRESS: env.STABLE_ADDRESS,
     ISSUER_ORACLE_ADDRESS: env.ISSUER_ORACLE_ADDRESS,
     KYC_ADAPTER_ADDRESS: env.KYC_ADAPTER_ADDRESS,
+    // 2026-05-17 Design A · PREVENTION — required since the library now
+    // registers `navWriter = platform.navWriter` (NOT `applicant`).
+    PLATFORM_NAV_WRITER_ADDRESS: env.PLATFORM_NAV_WRITER_ADDRESS,
   };
   const missing = Object.entries(required)
     .filter(([, v]) => !v)
@@ -391,6 +399,34 @@ function getDeployLibrary(): DeployTokenLibrary | null {
     );
     return null;
   }
+  if (!/^0x[0-9a-fA-F]{40}$/.test(env.PLATFORM_NAV_WRITER_ADDRESS!)) {
+    console.warn(
+      '[deploy-library] disabled — PLATFORM_NAV_WRITER_ADDRESS is not a 0x-prefixed 20-byte hex',
+    );
+    return null;
+  }
+  // 2026-05-17 Design A · PREVENTION — refuse to construct if the
+  // deployer-derived address doesn't match the registered navWriter.
+  // Without this guard a token could deploy with `navWriter = <env>` while
+  // the platform's signer is a DIFFERENT key, so the wizard-step-6
+  // server-side setNAV would always 503 (no private key for that
+  // navWriter). The IssuerOracleNavWriterService boot-asserts the same
+  // invariant — checking here too means the deploy endpoint itself
+  // refuses the misconfig instead of shipping a poisoned token.
+  {
+    const derived = privateKeyToAccount(
+      env.PLATFORM_DEPLOYER_PRIVATE_KEY! as Hex,
+    ).address.toLowerCase();
+    const expected = env.PLATFORM_NAV_WRITER_ADDRESS!.toLowerCase();
+    if (derived !== expected) {
+      console.warn(
+        `[deploy-library] disabled — PLATFORM_DEPLOYER_PRIVATE_KEY derives ${derived} ` +
+          `but PLATFORM_NAV_WRITER_ADDRESS is ${expected}. The two must match so the ` +
+          `server-side setNAV signer is the same EOA as the registered navWriter.`,
+      );
+      return null;
+    }
+  }
 
   _deployLibrary = new DeployTokenLibrary({
     rpcUrl: env.RPC_URL!,
@@ -405,10 +441,67 @@ function getDeployLibrary(): DeployTokenLibrary | null {
       stable: env.STABLE_ADDRESS! as Address,
       issuerOracle: env.ISSUER_ORACLE_ADDRESS! as Address,
       kycAdapter: env.KYC_ADAPTER_ADDRESS! as Address,
+      navWriter: env.PLATFORM_NAV_WRITER_ADDRESS! as Address,
     },
     artifactsDir: resolveArtifactsDir(),
   });
   return _deployLibrary;
+}
+
+/**
+ * 2026-05-17 Design A · PREVENTION — server-side NAV writer used by the
+ * wizard step-6 unpause flow (`ProposeUnpauseTokenToolUseCase`). Lazy
+ * singleton with the same null-when-unconfigured posture as the deploy
+ * library; the use case surfaces 503 when this returns null.
+ */
+let _navWriterService: IIssuerOracleNavWriter | null = null;
+let _navWriterAttempted = false;
+function getNavWriterService(): IIssuerOracleNavWriter | null {
+  if (_navWriterService) return _navWriterService;
+  if (_navWriterAttempted) return null;
+  _navWriterAttempted = true;
+
+  const env = getEnv();
+  if (
+    !env.RPC_URL ||
+    !env.PLATFORM_DEPLOYER_PRIVATE_KEY ||
+    !env.PLATFORM_NAV_WRITER_ADDRESS ||
+    !env.ISSUER_ORACLE_ADDRESS
+  ) {
+    console.warn(
+      '[nav-writer-service] disabled — RPC_URL / PLATFORM_DEPLOYER_PRIVATE_KEY / PLATFORM_NAV_WRITER_ADDRESS / ISSUER_ORACLE_ADDRESS not all set',
+    );
+    return null;
+  }
+  if (!/^0x[0-9a-fA-F]{64}$/.test(env.PLATFORM_DEPLOYER_PRIVATE_KEY)) {
+    console.warn(
+      '[nav-writer-service] disabled — PLATFORM_DEPLOYER_PRIVATE_KEY is not a 0x-prefixed 32-byte hex',
+    );
+    return null;
+  }
+  if (!/^0x[0-9a-fA-F]{40}$/.test(env.PLATFORM_NAV_WRITER_ADDRESS)) {
+    console.warn(
+      '[nav-writer-service] disabled — PLATFORM_NAV_WRITER_ADDRESS is not a 0x-prefixed 20-byte hex',
+    );
+    return null;
+  }
+
+  try {
+    _navWriterService = new IssuerOracleNavWriterService({
+      rpcUrl: env.RPC_URL,
+      navWriterPrivateKey: env.PLATFORM_DEPLOYER_PRIVATE_KEY as Hex,
+      expectedNavWriterAddress: env.PLATFORM_NAV_WRITER_ADDRESS as Address,
+      issuerOracleAddress: env.ISSUER_ORACLE_ADDRESS as Address,
+    });
+  } catch (err) {
+    console.warn(
+      `[nav-writer-service] disabled — constructor threw: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return null;
+  }
+  return _navWriterService;
 }
 
 // ── Wave 4 P2 — HavenBot tool surface singletons ─────────────────────
@@ -507,6 +600,7 @@ function getToolDispatcher(): ToolDispatcher {
       getPolicyState,
       confirmTokens,
       appendAudit,
+      getNavWriterService(),
     ),
     auditQuery: new AuditQueryToolUseCase(agentRepos.agentAuditRepo),
     // ── Wave 4 P11 — governance / protection / KYC tools ───────────────

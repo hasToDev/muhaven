@@ -437,6 +437,15 @@ export interface UnpauseTokenActionDescriptor extends ActionDescriptorBase {
     initialNavUsd6: string;
     issuerOracleAddress: string;
     tokenRegistryAddress: string;
+    /**
+     * 2026-05-17 Design A · PREVENTION — `setNAV` is performed
+     * server-side by the platform's NAV writer signer BEFORE this
+     * descriptor is minted. The applicant kernel only signs the
+     * follow-up `setPaused(false)` (single tx). This field surfaces the
+     * NAV-publish tx hash so the ConfirmModal can show "NAV already
+     * published" provenance and link to Arbiscan.
+     */
+    navPublishTxHash: string;
     requestedAtSec: number;
   };
 }

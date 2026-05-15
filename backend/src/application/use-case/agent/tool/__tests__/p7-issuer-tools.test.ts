@@ -28,6 +28,11 @@ import {
 import { User } from '../../../../../domain/auth/model/user.js';
 import { RwaToken, type AssetClass } from '../../../../../domain/token-registry/model/rwa-token.js';
 import type { IRwaTokenRepository } from '../../../../../domain/token-registry/repository/rwa-token.repository.js';
+import type {
+  IIssuerOracleNavWriter,
+  IssuerOracleNavWriteResult,
+} from '../../../../../infrastructure/oracle/issuer-oracle-nav-writer.service.js';
+import type { Address, Hex } from 'viem';
 
 const NOW = new Date('2026-05-06T00:00:00.000Z');
 const ISSUER_USER_ID = 'issuer-user-1';
@@ -113,6 +118,22 @@ function activeToken(opts?: { issuerAddress?: string; status?: 'active' | 'pause
   });
 }
 
+/**
+ * 2026-05-17 Design A · PREVENTION — test double for the platform NAV
+ * writer. Records every `setNAV` call so assertions can verify the
+ * server-side step ran before the confirm token was minted.
+ */
+class FakeOracleNavWriter implements IIssuerOracleNavWriter {
+  calls: { token: Address; newNav: bigint }[] = [];
+  txHash: Hex = '0xfeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface';
+  failWith: Error | null = null;
+  async setNAV(token: Address, newNav: bigint): Promise<IssuerOracleNavWriteResult> {
+    if (this.failWith) throw this.failWith;
+    this.calls.push({ token, newNav });
+    return { txHash: this.txHash };
+  }
+}
+
 function pausedToken(): RwaToken {
   return new RwaToken({
     id: 'tok_2',
@@ -156,6 +177,10 @@ describe('Wave 4 P7 — issuer-side tool use cases', () => {
     process.env.KYC_ADAPTER_ADDRESS = '0x' + 'aa'.repeat(20);
     process.env.ISSUER_ORACLE_ADDRESS = '0x' + 'bb'.repeat(20);
     process.env.TOKEN_REGISTRY_ADDRESS = '0x' + 'cc'.repeat(20);
+    // Required by `getLogger` → `getEnv` for the unpause-token use case's
+    // catch-branch logger.warn. Mirrors deploy-token.use-case.test.ts.
+    process.env.JWT_SECRET = 'test-secret-that-is-at-least-32-chars-long';
+    process.env.JWT_ISSUER = 'test-issuer';
   });
 
   afterEach(() => {
@@ -422,39 +447,76 @@ describe('Wave 4 P7 — issuer-side tool use cases', () => {
   });
 
   describe('ProposeUnpauseTokenToolUseCase', () => {
-    it('mints a descriptor for a paused token with two-tx sequence (setNAV + setPaused)', async () => {
+    it('publishes NAV server-side then mints a single-tx setPaused descriptor (Design A · PREVENTION)', async () => {
       rwaTokenRepo.tokens.set(TOKEN, pausedToken());
+      const navWriter = new FakeOracleNavWriter();
       const uc = new ProposeUnpauseTokenToolUseCase(
         rwaTokenRepo,
         userRepo,
         getPolicy,
         confirmTokens,
         appendAudit,
+        navWriter,
       );
       const out = await uc.execute(
         { userId: ISSUER_USER_ID, walletAddress: ISSUER_WALLET, surface: Surface.HavenBot },
         { tokenAddress: TOKEN, initialNavUsd6: '1000000' },
         NOW,
       );
+      // Server-side setNAV ran exactly once with the right inputs.
+      expect(navWriter.calls).toHaveLength(1);
+      expect(navWriter.calls[0]?.token.toLowerCase()).toBe(TOKEN.toLowerCase());
+      expect(navWriter.calls[0]?.newNav).toBe(1_000_000n);
+      // Descriptor surfaces the NAV publish tx hash + just the setPaused leg.
       expect(out.kind).toBe('unpause_token');
       expect(out.preview.initialNavUsd6).toBe('1000000');
+      expect(out.preview.navPublishTxHash).toBe(navWriter.txHash);
       expect(out.preview.requestedAtSec).toBe(Math.floor(NOW.getTime() / 1000));
       const txs = out.sdkCall.args.txs as Array<{ fn: string; contract: string }>;
-      expect(txs).toHaveLength(2);
-      expect(txs[0]?.fn).toBe('setNAV');
-      expect(txs[0]?.contract).toBe('IssuerControlledOracle');
-      expect(txs[1]?.fn).toBe('setPaused');
-      expect(txs[1]?.contract).toBe('TokenRegistry');
+      expect(txs).toHaveLength(1);
+      expect(txs[0]?.fn).toBe('setPaused');
+      expect(txs[0]?.contract).toBe('TokenRegistry');
     });
 
-    it('rejects when the token is already active (idempotent)', async () => {
-      // Default fixture is active.
+    it('persists navPublishTxHash + tool name in the action payload + audit metadata', async () => {
+      rwaTokenRepo.tokens.set(TOKEN, pausedToken());
+      const navWriter = new FakeOracleNavWriter();
       const uc = new ProposeUnpauseTokenToolUseCase(
         rwaTokenRepo,
         userRepo,
         getPolicy,
         confirmTokens,
         appendAudit,
+        navWriter,
+      );
+      const out = await uc.execute(
+        { userId: ISSUER_USER_ID, walletAddress: ISSUER_WALLET, surface: Surface.HavenBot },
+        { tokenAddress: TOKEN, initialNavUsd6: '1000000' },
+        NOW,
+      );
+      const tok = await confirmRepo.findByToken(out.confirmTokenId);
+      expect(tok?.actionPayload).toMatchObject({
+        tool: 'muhaven_propose_unpause_token',
+        navPublishTxHash: navWriter.txHash,
+        requestedAtSec: Math.floor(NOW.getTime() / 1000),
+      });
+      const audits = await auditRepo.findByUserId(ISSUER_USER_ID);
+      expect(audits.items[0]?.metadata).toMatchObject({
+        tool: 'muhaven_propose_unpause_token',
+        navPublishTxHash: navWriter.txHash,
+      });
+    });
+
+    it('rejects when the token is already active (idempotent)', async () => {
+      // Default fixture is active.
+      const navWriter = new FakeOracleNavWriter();
+      const uc = new ProposeUnpauseTokenToolUseCase(
+        rwaTokenRepo,
+        userRepo,
+        getPolicy,
+        confirmTokens,
+        appendAudit,
+        navWriter,
       );
       await expect(
         uc.execute(
@@ -463,17 +525,21 @@ describe('Wave 4 P7 — issuer-side tool use cases', () => {
           NOW,
         ),
       ).rejects.toMatchObject({ statusCode: 409 });
+      // Idempotency check must run BEFORE the server-side setNAV.
+      expect(navWriter.calls).toHaveLength(0);
     });
 
     it('rejects when ISSUER_ORACLE_ADDRESS is unset', async () => {
       rwaTokenRepo.tokens.set(TOKEN, pausedToken());
       delete process.env.ISSUER_ORACLE_ADDRESS;
+      const navWriter = new FakeOracleNavWriter();
       const uc = new ProposeUnpauseTokenToolUseCase(
         rwaTokenRepo,
         userRepo,
         getPolicy,
         confirmTokens,
         appendAudit,
+        navWriter,
       );
       await expect(
         uc.execute(
@@ -482,6 +548,51 @@ describe('Wave 4 P7 — issuer-side tool use cases', () => {
           NOW,
         ),
       ).rejects.toMatchObject({ statusCode: 503 });
+      // Env-config gate must run BEFORE the server-side setNAV.
+      expect(navWriter.calls).toHaveLength(0);
+    });
+
+    it('rejects when the platform NAV writer service is unavailable (503)', async () => {
+      rwaTokenRepo.tokens.set(TOKEN, pausedToken());
+      const uc = new ProposeUnpauseTokenToolUseCase(
+        rwaTokenRepo,
+        userRepo,
+        getPolicy,
+        confirmTokens,
+        appendAudit,
+        null, // Misconfig: no oracle nav writer wired.
+      );
+      await expect(
+        uc.execute(
+          { userId: ISSUER_USER_ID, walletAddress: ISSUER_WALLET, surface: Surface.HavenBot },
+          { tokenAddress: TOKEN, initialNavUsd6: '1000000' },
+          NOW,
+        ),
+      ).rejects.toMatchObject({ statusCode: 503 });
+    });
+
+    it('returns 502 when server-side setNAV reverts; does NOT mint a confirm token', async () => {
+      rwaTokenRepo.tokens.set(TOKEN, pausedToken());
+      const navWriter = new FakeOracleNavWriter();
+      navWriter.failWith = new Error('execution reverted: ZeroNAV()');
+      const uc = new ProposeUnpauseTokenToolUseCase(
+        rwaTokenRepo,
+        userRepo,
+        getPolicy,
+        confirmTokens,
+        appendAudit,
+        navWriter,
+      );
+      await expect(
+        uc.execute(
+          { userId: ISSUER_USER_ID, walletAddress: ISSUER_WALLET, surface: Surface.HavenBot },
+          { tokenAddress: TOKEN, initialNavUsd6: '1000000' },
+          NOW,
+        ),
+      ).rejects.toMatchObject({ statusCode: 502 });
+      // No audit row written because no confirm token was issued.
+      const audits = await auditRepo.findByUserId(ISSUER_USER_ID);
+      expect(audits.items).toHaveLength(0);
     });
   });
 

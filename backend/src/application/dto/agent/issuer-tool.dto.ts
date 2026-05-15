@@ -88,9 +88,13 @@ export type ProposeKycRemoveDto = z.infer<typeof ProposeKycRemoveDtoSchema>;
 // Tool 12 — muhaven_propose_unpause_token
 // ─────────────────────────────────────────────────────────────────────
 //
-// Closes the F2 wizard's deferred step 6: oracle.setNAV(token, initialNav)
-// + tokenRegistry.setPaused(token, false). Both signed by the applicant
-// kernel. See `scripts/unpause-token.ts` for the deployer-side analog.
+// Closes the F2 wizard's deferred step 6 with the 2026-05-17 Design A
+// PREVENTION split: `oracle.setNAV(token, initialNav)` runs server-side
+// (signed by the platform's NAV writer EOA — the platform IS the
+// registered navWriter for self-serve-onboarded tokens since Design A),
+// and `tokenRegistry.setPaused(token, false)` is the single tx proposed
+// to the applicant kernel. See `scripts/unpause-token.ts` for the
+// deployer-side operator analog.
 
 export const ProposeUnpauseTokenDtoSchema = z
   .object({

@@ -192,7 +192,7 @@ Every MuHaven contract follows these patterns. Breaking any of them causes silen
 1. Applicant connects passkey → KYB gate (auto-approved on testnet `devMode`; mainnet path runs full ERC-3643 claim verification).
 2. Wizard collects token metadata (name, symbol, NAV oracle binding, compliance module set), validates per-step in the browser.
 3. Single transaction batch deploys per-token contract triple — `MuHavenToken` + `MuHavenTreasury` + `RedemptionQueue` proxies — registers the token in `TokenRegistry`, binds compliance modules, and grants `SUBSCRIPTION_ROLE` to `MuHavenSubscription` and `BURN_ROLE` to `RedemptionQueue` on the new token.
-4. Token registers paused; operator (or wizard step 6) runs `scripts/unpause-token.ts` to set initial NAV and flip `paused=false` (this script is hardened with explicit `MUHAVEN_ENV` + try/finally restore on the navWriter rotation — see DEV_LOG entry 2026-05-04).
+4. Token registers paused; the deploy library registers `navWriter = platform.navWriter` (2026-05-18 Design A · PREVENTION). Wizard step 6 runs via the HavenBot `muhaven_propose_unpause_token` tool: backend publishes initial NAV server-side via `IssuerOracleNavWriterService` (the platform owns the navWriter key) and the applicant kernel signs a single `setPaused(false)` tx through the ConfirmModal. Operator analog `scripts/unpause-token.ts` is still available with try/finally navWriter restore (see DEV_LOG entry 2026-05-04) — useful for legacy tokens or when HavenBot is unavailable.
 
 ---
 

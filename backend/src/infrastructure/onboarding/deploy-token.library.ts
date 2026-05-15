@@ -17,10 +17,16 @@
  *     `tokenRegistry.registerToken(token, { issuer: applicant, … })`).
  *   - Oracle kind is hard-locked to `issuer` for self-serve. Chainlink
  *     stays operator-only via `pnpm hardhat run scripts/onboard-token.ts`.
- *   - Token is registered **paused** because the deployer ≠ navWriter
- *     (applicant is). The wizard's step 6 prompts the kernel for a
- *     post-deploy `oracle.setNAV` + `tokenRegistry.setPaused(false)`
- *     — those are NOT done here.
+ *   - 2026-05-17 Design A · PREVENTION: the registered `navWriter` is
+ *     the platform-managed signer (`PlatformAddresses.navWriter`), NOT
+ *     the applicant. The applicant remains the registered
+ *     `MUHAVEN_ISSUER` (treasury owner + `setPaused` caller). The
+ *     `nav-publisher` service keeps the oracle fresh indefinitely
+ *     without issuer-side action.
+ *   - Token is registered **paused** because the oracle has no NAV yet.
+ *     The wizard's step 6 publishes the initial NAV server-side (the
+ *     platform owns the writer key) and prompts the applicant kernel for
+ *     `tokenRegistry.setPaused(false)` to open the token for business.
  *   - Treasury seed is skipped (deployer doesn't hold legacy PUSDC for
  *     a self-serve flow). Issuer funds the treasury post-deploy.
  *
@@ -73,7 +79,11 @@ export interface DeployTokenInput {
    * treasury.
    */
   applicant: Address;
-  /** Initial NAV in PUSDC base units / share (the oracle is paused-on-deploy because deployer ≠ navWriter, so this is a wizard-recorded hint, not a setNAV value). */
+  /** Initial NAV in mhUSDC base units / share — wizard-recorded hint
+   *  only; the actual on-chain setNAV happens at wizard step 6
+   *  (server-side via the platform's nav writer signer, see
+   *  `IssuerOracleNavWriterService`). Stored in the onboarding row so
+   *  the issuer's previously-entered value pre-fills the unpause UI. */
   initialNav: bigint;
   /** Cleartext min-investment hint. */
   minInvestment: bigint;
@@ -93,6 +103,18 @@ export interface PlatformAddresses {
   stable: Address;
   issuerOracle: Address;
   kycAdapter: Address;
+  /**
+   * Platform-managed NAV writer for `IssuerControlledOracle`. Registered
+   * as `navWriter` for every token deployed through this library so the
+   * platform's `nav-publisher` service can keep the oracle fresh
+   * indefinitely without issuer-side action. Closes the 2026-05-17
+   * Design A onboarding gap (issuer-controlled smart-account navWriters
+   * had no platform-held key → 36h staleness → `Subscription.purchase`
+   * reverts `StaleNAV` for every buyer). Required — must equal the
+   * server-side signer that performs setNAV in the wizard step 6 flow
+   * (see `IssuerOracleNavWriterService`).
+   */
+  navWriter: Address;
 }
 
 export interface DeployTokenLibraryConfig {
@@ -401,40 +423,30 @@ export class DeployTokenLibrary {
       [tokenAddress, 250n],
       advance,
     );
-    // ⚠ 2026-05-17 Design A GAP: this library still sets navWriter to
-    // the applicant's kernel. That is the same pattern Design A flipped
-    // on the operator-driven `scripts/onboard-token.ts` — issuer-controlled
-    // navWriters re-create the stale-oracle problem because the platform
-    // cannot sign setNAV for issuer smart-account wallets.
-    //
-    // For now, the operator runs `scripts/rotate-nav-writers.ts` after
-    // each apply-issuer wizard completion to switch this token's
-    // navWriter to the platform's NAV publisher. That's REMEDIATION, not
-    // PREVENTION — a follow-up should:
-    //   1. Add a `navWriter?: Address` field to `PlatformAddresses` (or
-    //      a new `DeployTokenInput.navWriter` override).
-    //   2. Default to the platform's NAV publisher signer.
-    //   3. Update the wizard step 6 flow (propose-unpause-token use case)
-    //      so `setNAV(initialNav)` is signed by the platform (server-side)
-    //      not the applicant — the applicant just signs `setPaused(false)`.
-    //
-    // Tracked as a Design A follow-up; not blocking the current cohort
-    // because rotate-nav-writers.ts works as a post-deploy operator step.
+    // 2026-05-17 Design A · PREVENTION closed: navWriter is now the
+    // platform-managed signer (matches the operator-driven onboarding
+    // path). The `nav-publisher` service can keep the oracle fresh
+    // indefinitely without issuer-side action. The applicant remains the
+    // registered `MUHAVEN_ISSUER` (treasury owner + `setPaused` caller)
+    // — only NAV publish rights move to the platform.
     await this.sendAndAwait(
       'configure_oracle',
       this.platform.issuerOracle,
       oracleConfigAbi,
       'setNavWriter',
-      [tokenAddress, input.applicant],
+      [tokenAddress, this.platform.navWriter],
       advance,
     );
-    // Initial NAV write deferred to wizard step 6 — applicant signs
-    // `setNAV(initialNav)` from their kernel after deploy completes.
+    // Initial NAV write deferred to wizard step 6 — the platform's NAV
+    // writer signer publishes `setNAV(initialNav)` server-side (see
+    // `IssuerOracleNavWriterService`), then the applicant kernel signs
+    // `setPaused(false)`.
     await advance('configure_oracle', 'mined');
 
     // ── Step 8: TokenRegistry.registerToken ────────────────────────────
-    // Token is registered PAUSED because deployer ≠ navWriter, so the
-    // oracle still has nav=0. Wizard step 6 unpauses post-setNAV.
+    // Token is registered PAUSED because the oracle has no NAV yet.
+    // Wizard step 6 publishes initial NAV (server-side, platform signer)
+    // then proposes `setPaused(false)` to the applicant kernel.
     await advance('register_token', 'pending');
     const registerHash = await this.walletClient.writeContract({
       account: this.deployerAccount,
