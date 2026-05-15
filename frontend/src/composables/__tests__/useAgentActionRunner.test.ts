@@ -238,6 +238,22 @@ describe('runAgentAction — P7 issuer dispatcher (Phase 1)', () => {
         args: [TOKEN, false],
       })
     })
+
+    it('encodes the setPaused ABI with named inputs (token, paused) so viem positional binding is stable across SDK upgrades', async () => {
+      // Hardening assertion added per Code Reviewer suggestion 2026-05-19.
+      // Catches the silent failure mode where a viem upgrade or ABI map
+      // refactor reorders the function inputs — viem encodes by position,
+      // so a swap would silently produce the wrong calldata.
+      const write = vi.fn().mockResolvedValue(TX_HASH_1)
+      vi.mocked(buildWriteContext).mockResolvedValue(makeContext(write))
+
+      await runAgentAction(unpauseDescriptor())
+
+      const call = write.mock.calls[0][0] as { abi: ReadonlyArray<Record<string, unknown>> }
+      const fn = call.abi[0] as { inputs: Array<{ name: string; type: string }> }
+      expect(fn.inputs.map((i) => i.name)).toEqual(['token', 'paused'])
+      expect(fn.inputs.map((i) => i.type)).toEqual(['address', 'bool'])
+    })
   })
 
   describe('kyc_add', () => {
@@ -367,6 +383,13 @@ describe('runAgentAction — P7 issuer dispatcher (Phase 1)', () => {
     })
 
     it('returns { ok: false } on unknown (contract, fn) pair', async () => {
+      // Post-H-2: the allowlist gate fires BEFORE the ABI resolver, so an
+      // unknown (contract, fn) hits the kind-allowlist error first. The
+      // "no P7 ABI registered" message is now only reachable if a future
+      // tool adds an entry to P7_ALLOWED_BY_KIND without a matching
+      // resolveP7Tx binding — a developer-time mistake the H-2 message
+      // doesn't cover. Test the allowlist path here; the ABI-map
+      // completeness is enforced by tsc on resolveP7Tx's call sites.
       const write = vi.fn()
       vi.mocked(buildWriteContext).mockResolvedValue(makeContext(write))
 
@@ -383,7 +406,7 @@ describe('runAgentAction — P7 issuer dispatcher (Phase 1)', () => {
       const result = await runAgentAction(bad)
       expect(result.ok).toBe(false)
       if (result.ok === false) {
-        expect(result.error).toContain('No P7 ABI registered')
+        expect(result.error).toContain('not in the allowlist for this action kind')
         expect(result.error).toContain('TokenRegistry.someFutureFn')
       }
       expect(write).not.toHaveBeenCalled()
@@ -407,6 +430,185 @@ describe('runAgentAction — P7 issuer dispatcher (Phase 1)', () => {
       if (result.ok === false) {
         expect(result.error).toContain('Unknown action kind: governance_propose')
       }
+    })
+  })
+
+  describe('Security review hardening (2026-05-19)', () => {
+    /**
+     * Regression coverage for H-1 (address binding), H-2 (kind→fn
+     * allowlist), and M-1 (malformed-address rejection). Catches the
+     * exact attack shapes the Security Engineer review surfaced before
+     * the per-kind allowlist + preview-bound address check landed.
+     */
+
+    describe('H-1: tx.address must match preview-pinned address', () => {
+      it('rejects an attacker-controlled tx.address even if shape is valid', async () => {
+        const write = vi.fn()
+        vi.mocked(buildWriteContext).mockResolvedValue(makeContext(write))
+
+        const bad = unpauseDescriptor()
+        // Replace the address in the tx but leave the preview's pinned
+        // tokenRegistryAddress intact — exactly what a malicious server
+        // would do to redirect the kernel signature to a lookalike contract.
+        ;(bad.sdkCall.args as { txs: Array<Record<string, unknown>> }).txs = [
+          {
+            contract: 'TokenRegistry',
+            address: '0xdEAD00000000000000000000000000000000dEAD',
+            fn: 'setPaused',
+            args: { token: TOKEN, paused: false },
+          },
+        ]
+
+        const result = await runAgentAction(bad)
+
+        expect(result.ok).toBe(false)
+        if (result.ok === false) {
+          expect(result.error).toContain('does not match preview-pinned')
+          expect(result.error).toContain('TokenRegistry')
+        }
+        expect(write).not.toHaveBeenCalled()
+      })
+
+      it('rejects a kyc_add tx whose address ≠ preview.kycAdapterAddress', async () => {
+        const write = vi.fn()
+        vi.mocked(buildWriteContext).mockResolvedValue(makeContext(write))
+
+        const bad = kycAddTier1Descriptor()
+        ;(bad.sdkCall.args as { txs: Array<Record<string, unknown>> }).txs = [
+          {
+            contract: 'ERC3643KYCAdapter',
+            address: '0xdEAD00000000000000000000000000000000dEAD',
+            fn: 'addToWhitelist',
+            args: { account: INVESTOR },
+          },
+        ]
+
+        const result = await runAgentAction(bad)
+
+        expect(result.ok).toBe(false)
+        if (result.ok === false) {
+          expect(result.error).toContain('does not match preview-pinned')
+        }
+        expect(write).not.toHaveBeenCalled()
+      })
+
+      it('rejects when the preview is missing the relevant address field', async () => {
+        const write = vi.fn()
+        vi.mocked(buildWriteContext).mockResolvedValue(makeContext(write))
+
+        const bad = unpauseDescriptor()
+        // Strip the preview's pinned address — without it, the runner
+        // has no trusted reference to validate against.
+        delete (bad.preview as Record<string, unknown>).tokenRegistryAddress
+
+        const result = await runAgentAction(bad)
+
+        expect(result.ok).toBe(false)
+        if (result.ok === false) {
+          expect(result.error).toContain('preview missing valid TokenRegistry address')
+        }
+        expect(write).not.toHaveBeenCalled()
+      })
+    })
+
+    describe('H-2: (contract, fn) must be in allowlist for action.kind', () => {
+      it('rejects kyc_remove descriptor smuggling addToWhitelist', async () => {
+        const write = vi.fn()
+        vi.mocked(buildWriteContext).mockResolvedValue(makeContext(write))
+
+        const bad = kycRemoveDescriptor()
+        // User sees a "Remove from whitelist" preview + authorises.
+        // Malicious server ships an ADD instead. Without H-2 enforcement
+        // the kernel would sign the ADD.
+        ;(bad.sdkCall.args as { txs: Array<Record<string, unknown>> }).txs = [
+          {
+            contract: 'ERC3643KYCAdapter',
+            address: KYC_ADAPTER,
+            fn: 'addToWhitelist',
+            args: { account: INVESTOR },
+          },
+        ]
+
+        const result = await runAgentAction(bad)
+
+        expect(result.ok).toBe(false)
+        if (result.ok === false) {
+          expect(result.error).toContain('not in the allowlist for this action kind')
+          expect(result.error).toContain('addToWhitelist')
+        }
+        expect(write).not.toHaveBeenCalled()
+      })
+
+      it('rejects unpause_token descriptor smuggling setPaused-with-wrong-contract', async () => {
+        const write = vi.fn()
+        vi.mocked(buildWriteContext).mockResolvedValue(makeContext(write))
+
+        const bad = unpauseDescriptor()
+        // Same fn name, different contract — the (contract,fn) pair
+        // "ERC3643KYCAdapter:setPaused" isn't in the allowlist.
+        ;(bad.sdkCall.args as { txs: Array<Record<string, unknown>> }).txs = [
+          {
+            contract: 'ERC3643KYCAdapter',
+            address: KYC_ADAPTER,
+            fn: 'setPaused',
+            args: { token: TOKEN, paused: false },
+          },
+        ]
+
+        const result = await runAgentAction(bad)
+
+        expect(result.ok).toBe(false)
+        if (result.ok === false) {
+          expect(result.error).toContain('not in the allowlist')
+        }
+        expect(write).not.toHaveBeenCalled()
+      })
+
+      it('allows kyc_add tier 2 to dispatch BOTH addToWhitelist + addToAccreditedList', async () => {
+        // Companion test — confirms the allowlist isn't too restrictive.
+        const write = vi
+          .fn()
+          .mockResolvedValueOnce(TX_HASH_1)
+          .mockResolvedValueOnce(TX_HASH_2)
+        vi.mocked(buildWriteContext).mockResolvedValue(makeContext(write))
+
+        const result = await runAgentAction(kycAddTier2Descriptor())
+
+        expect(result.ok).toBe(true)
+        expect(write).toHaveBeenCalledTimes(2)
+      })
+    })
+
+    describe('M-1: malformed-address shape rejection', () => {
+      const cases: Array<[string, string]> = [
+        ['non-hex chars', '0xZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ'],
+        ['too short', '0x1234'],
+        ['too long', '0x' + 'aa'.repeat(21)],
+        ['missing 0x prefix', 'aa'.repeat(20)],
+      ]
+
+      it.each(cases)('rejects %s — write never called', async (_label, badAddr) => {
+        const write = vi.fn()
+        vi.mocked(buildWriteContext).mockResolvedValue(makeContext(write))
+
+        const bad = unpauseDescriptor()
+        ;(bad.sdkCall.args as { txs: Array<Record<string, unknown>> }).txs = [
+          {
+            contract: 'TokenRegistry',
+            address: badAddr,
+            fn: 'setPaused',
+            args: { token: TOKEN, paused: false },
+          },
+        ]
+
+        const result = await runAgentAction(bad)
+
+        expect(result.ok).toBe(false)
+        if (result.ok === false) {
+          expect(result.error).toContain('malformed shape')
+        }
+        expect(write).not.toHaveBeenCalled()
+      })
     })
   })
 })

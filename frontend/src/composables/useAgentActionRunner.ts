@@ -260,6 +260,68 @@ function isP7TxSpec(v: unknown): v is P7TxSpec {
 }
 
 /**
+ * Per-kind allowlist of legal `(contract, fn)` pairs.
+ *
+ * Closes Security review finding H-2 (2026-05-19): without this gate, a
+ * malicious or drift-broken backend could mint a descriptor with
+ * `kind: 'kyc_remove'` (which the user sees as "remove from whitelist"
+ * in the ConfirmModal) but ship `txs: [{ fn: 'addToWhitelist', ... }]`.
+ * `resolveP7Tx` would happily resolve the binding (it's in the ABI
+ * map) so the kernel would sign an ADD while the user authorised a
+ * REMOVE. This map binds each `action.kind` to the exact set of
+ * `(contract, fn)` pairs the backend propose use-case is allowed to
+ * mint — drift surfaces as a clear error before the kernel signs.
+ *
+ * Ordering within `txs[]` is NOT enforced here (the contract enforces
+ * its own preconditions; e.g. `addToAccreditedList` standalone is a
+ * no-harm op without a prior whitelist). Set membership is enough.
+ */
+const P7_ALLOWED_BY_KIND: Record<string, ReadonlySet<string>> = {
+  unpause_token: new Set(['TokenRegistry:setPaused']),
+  kyc_add: new Set([
+    'ERC3643KYCAdapter:addToWhitelist',
+    'ERC3643KYCAdapter:addToAccreditedList',
+  ]),
+  kyc_remove: new Set(['ERC3643KYCAdapter:removeFromWhitelist']),
+}
+
+/**
+ * Resolve the expected `tx.address` for a given `(action.kind,
+ * contract)` from the descriptor's action-hash-bound `preview` fields.
+ *
+ * Closes Security review finding H-1 (2026-05-19): `isP7TxSpec`
+ * validates address SHAPE but not WHICH address. A malicious server
+ * could ship `tx.address = 0xATTACKER` and the kernel would sign
+ * a UserOp against the attacker's contract (most legs would revert
+ * on `onlyAdmin` but the kernel still pays gas, and a sufficiently-
+ * crafted look-alike contract could log the call). The preview's
+ * `tokenRegistryAddress` / `kycAdapterAddress` ARE bound into the
+ * propose-time action-hash (`ConfirmTokenService.consume` rejects
+ * any commit whose hash drifts), so trusting them is safe — they're
+ * cryptographically pinned to the user's confirm token.
+ */
+function expectedAddressFromPreview(
+  action: ActionDescriptor,
+  contract: string,
+): Address {
+  const preview = action.preview as Record<string, unknown>
+  let raw: unknown
+  if (contract === 'TokenRegistry') raw = preview.tokenRegistryAddress
+  else if (contract === 'ERC3643KYCAdapter') raw = preview.kycAdapterAddress
+  else {
+    throw new AgentActionRunnerError(
+      `No preview address binding for contract ${contract}`,
+    )
+  }
+  if (typeof raw !== 'string' || !/^0x[a-fA-F0-9]{40}$/.test(raw)) {
+    throw new AgentActionRunnerError(
+      `ActionDescriptor (${action.kind}) preview missing valid ${contract} address`,
+    )
+  }
+  return raw.toLowerCase() as Address
+}
+
+/**
  * Dispatch every tx in an issuer-side ActionDescriptor's
  * `sdkCall.args.txs` through the ZeroDev kernel sender, in order.
  *
@@ -271,8 +333,19 @@ function isP7TxSpec(v: unknown): v is P7TxSpec {
  * runner throws mid-loop and the modal surfaces a clear error — the
  * issuer can then manually re-propose `kyc_remove` to roll back the
  * half-state (on-chain rollback isn't possible per-UserOp).
+ *
+ * Security gates (H-1 + H-2, 2026-05-19):
+ *   - Per-tx `(contract, fn)` MUST be in P7_ALLOWED_BY_KIND[kind].
+ *   - Per-tx `address` MUST equal the preview's pinned address
+ *     for that contract (preview fields are action-hash-bound).
  */
 async function dispatchActionTxs(action: ActionDescriptor): Promise<Hash> {
+  const allowed = P7_ALLOWED_BY_KIND[action.kind]
+  if (!allowed) {
+    throw new AgentActionRunnerError(
+      `No P7 dispatch allowlist for action kind ${action.kind}`,
+    )
+  }
   const rawArgs = action.sdkCall?.args as { txs?: unknown } | undefined
   const txs = rawArgs?.txs
   if (!Array.isArray(txs) || txs.length === 0) {
@@ -287,6 +360,25 @@ async function dispatchActionTxs(action: ActionDescriptor): Promise<Hash> {
     if (!isP7TxSpec(tx)) {
       throw new AgentActionRunnerError(
         `ActionDescriptor (${action.kind}) txs[${i}] has malformed shape`,
+      )
+    }
+    // H-2: gate (contract, fn) by action.kind allowlist BEFORE looking
+    // up the ABI binding. resolveP7Tx is permissive across kinds (the
+    // ABI map only knows the function exists, not which kind may use
+    // it); the allowlist is the kind→fn binding.
+    const pairKey = `${tx.contract}:${tx.fn}`
+    if (!allowed.has(pairKey)) {
+      throw new AgentActionRunnerError(
+        `ActionDescriptor (${action.kind}) txs[${i}] uses (${tx.contract}.${tx.fn}) which is not in the allowlist for this action kind`,
+      )
+    }
+    // H-1: address must equal the action-hash-bound preview value.
+    // Lowercased both sides — backend always emits lowercase but a
+    // future bridge layer might mixed-case the field; equality stays.
+    const expectedAddr = expectedAddressFromPreview(action, tx.contract)
+    if ((tx.address as string).toLowerCase() !== expectedAddr) {
+      throw new AgentActionRunnerError(
+        `ActionDescriptor (${action.kind}) txs[${i}] address ${tx.address} does not match preview-pinned ${tx.contract} address ${expectedAddr}`,
       )
     }
     let binding
@@ -318,10 +410,17 @@ async function dispatchActionTxs(action: ActionDescriptor): Promise<Hash> {
       )
     }
   }
-  // Loop guarantees txs.length >= 1, so lastTxHash is always assigned by
-  // here. Cast keeps the function signature honest without a runtime
-  // assertion that would never fire.
-  return lastTxHash as Hash
+  // Loop guarantees txs.length >= 1 and the assignment runs unless
+  // sender.write throws (which would already have bubbled out). The
+  // null check below is L-1 from the 2026-05-19 self-review: an
+  // explicit throw is more defensible than `as Hash` if a future
+  // refactor adds a `continue` branch that could skip the assignment.
+  if (lastTxHash === null) {
+    throw new AgentActionRunnerError(
+      `dispatchActionTxs (${action.kind}) completed loop without dispatching a tx — unreachable under current logic`,
+    )
+  }
+  return lastTxHash
 }
 
 /**

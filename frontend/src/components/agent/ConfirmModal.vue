@@ -357,12 +357,17 @@ function extractActionPayload(a: ActionDescriptor): Record<string, unknown> {
       }
     case 'kyc_add':
       // Mirror propose-kyc-add.use-case.ts:112 actionPayload byte-for-byte.
+      // M-2 (2026-05-19 self-review): `kycTier` is coerced via Number()
+      // to guard against an SSE drift sending a string "1" / "2".
+      // stableStringify on the backend hashes `2` as a number; a string
+      // "2" would hash differently and 403 every commit. Cheap belt-
+      // and-suspenders since the backend zod schema enforces number.
       return {
         tool: 'muhaven_propose_kyc_add',
         action: 'kyc_add',
         tokenAddress: a.preview.tokenAddress as string,
         investorAddress: a.preview.investorAddress as string,
-        kycTier: a.preview.kycTier as 1 | 2,
+        kycTier: Number(a.preview.kycTier) as 1 | 2,
         kycAdapterAddress: a.preview.kycAdapterAddress as string,
         requestedAtSec: a.preview.requestedAtSec as number,
       }
