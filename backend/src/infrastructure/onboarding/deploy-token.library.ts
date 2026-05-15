@@ -401,6 +401,25 @@ export class DeployTokenLibrary {
       [tokenAddress, 250n],
       advance,
     );
+    // ⚠ 2026-05-17 Design A GAP: this library still sets navWriter to
+    // the applicant's kernel. That is the same pattern Design A flipped
+    // on the operator-driven `scripts/onboard-token.ts` — issuer-controlled
+    // navWriters re-create the stale-oracle problem because the platform
+    // cannot sign setNAV for issuer smart-account wallets.
+    //
+    // For now, the operator runs `scripts/rotate-nav-writers.ts` after
+    // each apply-issuer wizard completion to switch this token's
+    // navWriter to the platform's NAV publisher. That's REMEDIATION, not
+    // PREVENTION — a follow-up should:
+    //   1. Add a `navWriter?: Address` field to `PlatformAddresses` (or
+    //      a new `DeployTokenInput.navWriter` override).
+    //   2. Default to the platform's NAV publisher signer.
+    //   3. Update the wizard step 6 flow (propose-unpause-token use case)
+    //      so `setNAV(initialNav)` is signed by the platform (server-side)
+    //      not the applicant — the applicant just signs `setPaused(false)`.
+    //
+    // Tracked as a Design A follow-up; not blocking the current cohort
+    // because rotate-nav-writers.ts works as a post-deploy operator step.
     await this.sendAndAwait(
       'configure_oracle',
       this.platform.issuerOracle,

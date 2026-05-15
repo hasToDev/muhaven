@@ -87,6 +87,26 @@ echo "    MUHAVEN_NAV_INITIAL     = ${MUHAVEN_NAV_INITIAL:-<unset>}"
 echo "    MUHAVEN_INSTANT_CAP     = ${MUHAVEN_INSTANT_CAP:-<unset>}"
 echo "    MUHAVEN_MAX_DEVIATION_BPS = ${MUHAVEN_MAX_DEVIATION_BPS:-<unset>}"
 echo "    MUHAVEN_ORACLE_KIND     = ${MUHAVEN_ORACLE_KIND:-<unset>}"
+echo "    MUHAVEN_NAV_WRITER      = ${MUHAVEN_NAV_WRITER:-<unset>}"
+
+# 2026-05-17 Design A: navWriter is REQUIRED. Fail-loud before invoking
+# hardhat so the operator sees the error inside their shell (instantly)
+# vs waiting for tsx + ethers boot (~10s) to surface the same throw.
+# See .env.example for guidance on what address to set.
+if [[ -z "${MUHAVEN_NAV_WRITER:-}" ]]; then
+  echo "" >&2
+  echo "ERROR: MUHAVEN_NAV_WRITER is required (Design A 2026-05-17)." >&2
+  echo "" >&2
+  echo "Set it in your root .env or export it before running this script:" >&2
+  echo "  export MUHAVEN_NAV_WRITER=0xe11E83398C33A37CaC02C01c43F14A7f95876986  # prod deployer (also nav-publisher signer)" >&2
+  echo "" >&2
+  echo "Rationale: this is the EOA that holds setNAV rights on the new" >&2
+  echo "token's oracle. Defaulting to the issuer's wallet (the prior" >&2
+  echo "behaviour) creates a stale-oracle problem when the issuer uses a" >&2
+  echo "smart account whose private key the platform doesn't hold. See" >&2
+  echo "development/STATUS.md Design A entry for the full narrative." >&2
+  exit 1
+fi
 
 if [[ "$ENV" == "prod" ]]; then
   echo "==> Onboarding (PROD) — pnpm run onboard-token:testnet"

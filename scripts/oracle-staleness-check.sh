@@ -21,12 +21,21 @@
 #   TELEGRAM_BOT_TOKEN       — required for alerts; otherwise stdout-only.
 #   TELEGRAM_OPERATOR_CHAT_ID — required for alerts; otherwise stdout-only.
 #
-# Token roster + oracle address are hardcoded against the prod
-# deployment file (`deployments/arb-sepolia-v2.json`). If a new token
-# is onboarded, append to the TOKENS array below + redeploy. The
-# `MUHAVEN_NAV_TOKEN_ROSTER` env var below lets you override at runtime
-# without editing the file (one or more `addr:symbol` pairs separated
-# by spaces).
+# Roster source (2026-05-17 Design A): the token list is enumerated
+# from the on-chain `TokenRegistry` at each run — apply-issuer-onboarded
+# tokens are picked up automatically with no script edit. Oracle address
+# is still pinned to the prod IssuerControlledOracle proxy below; only
+# tokens wired to that oracle are monitored (a token using a different
+# oracle, e.g. Chainlink Functions, is filtered out).
+#
+# The `MUHAVEN_NAV_TOKEN_ROSTER` env var (one or more `addr:symbol`
+# pairs separated by spaces) bypasses TokenRegistry enumeration entirely
+# — useful for testing a sentinel-stale token or excluding a specific
+# token without touching the script.
+#
+# Note on pagination: registeredTokenCount > 100 is not supported by
+# the single-page enumeration below — the script silently truncates.
+# Fix when the registry approaches the cap (Hackathon scope: 5 tokens).
 #
 # Crontab (operator-installed, see HOMELAB_DEPLOY.md):
 #   */30 * * * * cd /home/muhaven/Project/Fhenix/MuHaven && \

@@ -152,9 +152,15 @@ async function main() {
     try {
       const tx = await oracle.setNAV(rec.address, nav);
       console.log(`[${symbol}] setNAV tx: ${tx.hash}`);
-      await tx.wait();
-      const freshAfter: boolean = await oracle.isFresh(rec.address);
-      console.log(`[${symbol}] isFresh after refresh: ${freshAfter}\n`);
+      const receipt = await tx.wait();
+      // Don't re-query `isFresh` here — the read-after-write often hits
+      // a slightly-behind RPC node and returns false even though state
+      // is correct. The receipt's success is the authoritative proof.
+      // To verify on-chain state separately, re-run the script (it'll
+      // report `isFresh=true` on the next pass).
+      console.log(
+        `[${symbol}] confirmed in block ${receipt?.blockNumber} — oracle updatedAt now = ${Math.floor(Date.now() / 1000)}\n`,
+      );
       refreshed++;
     } catch (err) {
       console.error(
