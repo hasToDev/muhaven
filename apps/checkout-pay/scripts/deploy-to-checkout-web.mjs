@@ -17,17 +17,22 @@
 // adjusted for the extra `apps/` directory level under muhaven/):
 //   - MUHAVEN_CHECKOUT_WEB_TARGET_DIR env var, resolved with `apps/checkout-pay/`
 //     as base (the `..` prefix on the resolve call walks one up from `scripts/`),
-//     if set
-//   - otherwise ../../../../muhaven-checkout-web (sibling of muhaven/, the default).
-//     Four `..` are needed because scriptDir is `apps/checkout-pay/scripts/` —
+//     if set. Post-2026-05-15 migration, both prod + stage build scripts in
+//     package.json pass this env var explicitly:
+//       prod  → ../../../muhaven-web/pay
+//       stage → ../../../muhaven-web-stage/pay
+//   - otherwise the default is ../../../../muhaven-web/pay (the post-migration
+//     prod target). Four `..` because scriptDir is `apps/checkout-pay/scripts/` —
 //     four levels under the parent of muhaven (scripts → checkout-pay → apps →
 //     muhaven → Fhenix). The frontend twin only needs three because
 //     `frontend/scripts/` is one level shallower.
 //
-// Stage build sets:
-//   MUHAVEN_CHECKOUT_WEB_TARGET_DIR=../../../muhaven-checkout-web-stage
-// (three `..` because the env value is resolved from `apps/checkout-pay/`, not
-// from `scripts/` — same shape as the frontend's `MUHAVEN_WEB_TARGET_DIR`.)
+// Why the default moved (2026-05-15): the migration retired the legacy
+// `muhaven-checkout-web` sibling (now a JS-redirect shim hosting pay.muhaven.app).
+// A build with no env var used to silently write into that shim, overwriting it
+// with the new SPA bundle. Aliasing the default to muhaven-web/pay makes
+// accidental env-var omission land at the right place instead of trashing the
+// redirect shim.
 //
 // Root-level files (CNAME, README.md, .nojekyll — anything not under
 // assets/) are NEVER deleted, only overwritten. If the target doesn't
@@ -43,7 +48,7 @@ const dist = resolve(scriptDir, '../dist');
 const targetOverride = process.env.MUHAVEN_CHECKOUT_WEB_TARGET_DIR;
 const target = targetOverride
   ? resolve(scriptDir, '..', targetOverride)
-  : resolve(scriptDir, '../../../../muhaven-checkout-web');
+  : resolve(scriptDir, '../../../../muhaven-web/pay');
 
 async function exists(p) {
   try {
@@ -56,8 +61,8 @@ async function exists(p) {
 
 async function main() {
   if (!(await exists(target))) {
-    console.warn(`⚠ muhaven-checkout-web repo not found at ${target} — skipping sync.`);
-    console.warn('  (This is expected for CI builds. Clone the deploy-target repo as a sibling of muhaven to enable local deploy.)');
+    console.warn(`⚠ deploy target not found at ${target} — skipping sync.`);
+    console.warn('  (This is expected for CI builds. Clone the deploy-target repo as a sibling of muhaven, or create the /pay subdir under an existing muhaven-web[-stage] checkout, to enable local deploy.)');
     return;
   }
   if (!(await exists(dist))) {

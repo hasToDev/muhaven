@@ -121,15 +121,19 @@ describe('connectOrCreate', () => {
     expect(calls[1]?.passkeyName).toBe('Custom Passkey');
   });
 
-  it('throws PasskeyError(passkey_cancelled) when Login is user-cancelled', async () => {
-    // NotAllowedError on Login = user cancelled. Don't try Register —
-    // the user clearly didn't want to proceed.
+  it('falls through to Register when Login throws NotAllowedError (no-credential OR user-cancelled)', async () => {
+    // 2026-05-17 behavior change: Chrome surfaces (a) no-credential
+    // and (b) user-cancelled BOTH as `NotAllowedError`, so we cannot
+    // distinguish them at the catch site. Falling through to Register
+    // is the right call for new buyers; if the user genuinely meant
+    // to cancel, they can cancel the Register dialog too (the next
+    // test covers that branch).
     setConfig({ loginThrows: makeNotAllowedError() });
-    await expect(connectOrCreate()).rejects.toMatchObject({
-      name: 'PasskeyError',
-      code: 'passkey_cancelled',
-    });
-    expect(calls).toHaveLength(1);
+    const result = await connectOrCreate();
+    expect(result.newlyRegistered).toBe(true);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.mode).toBe('login');
+    expect(calls[1]?.mode).toBe('register');
   });
 
   it('throws PasskeyError(passkey_cancelled) when Register is user-cancelled', async () => {

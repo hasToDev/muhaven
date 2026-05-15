@@ -1,13 +1,13 @@
 {
   "name": "@muhaven/checkout-pay",
-  "version": "0.1.16",
+  "version": "0.1.18",
   "private": true,
   "description": "Hosted checkout buyer page for MuHaven (pay.muhaven.app). Renders the issuer label + decrypted amount, runs the ZeroDev passkey ceremony, and walks the buyer through fund → wrap → buy.",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && cp dist/index.html dist/404.html && node scripts/deploy-to-checkout-web.mjs",
-    "build:stage": "vite build --mode stage && cp dist/index.html dist/404.html && MUHAVEN_CHECKOUT_WEB_TARGET_DIR=../../../muhaven-checkout-web-stage node scripts/deploy-to-checkout-web.mjs",
+    "build": "vite build && cp dist/index.html dist/404.html && MUHAVEN_CHECKOUT_WEB_TARGET_DIR=../../../muhaven-web/pay node scripts/deploy-to-checkout-web.mjs",
+    "build:stage": "vite build --mode stage && cp dist/index.html dist/404.html && MUHAVEN_CHECKOUT_WEB_TARGET_DIR=../../../muhaven-web-stage/pay node scripts/deploy-to-checkout-web.mjs",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"

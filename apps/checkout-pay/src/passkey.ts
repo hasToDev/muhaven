@@ -31,13 +31,6 @@
 import {
   toWebAuthnKey,
   WebAuthnMode,
-  b64ToBytes,
-  base64FromUint8Array,
-  findQuoteIndices,
-  hexStringToUint8Array,
-  isRIP7212SupportedNetwork,
-  parseAndNormalizeSig,
-  uint8ArrayToHexString,
   type WebAuthnKey,
 } from '@zerodev/webauthn-key';
 import {
@@ -52,11 +45,8 @@ import {
   type KernelAccountClient,
 } from '@zerodev/sdk';
 import {
-  encodeAbiParameters,
   http,
   type Address,
-  type Hex,
-  type SignableMessage,
 } from 'viem';
 import { entryPoint07Address } from 'viem/account-abstraction';
 import {
@@ -109,16 +99,16 @@ export async function connectOrCreate(
   } catch (err) {
     // Login can fail because (a) no credential exists for this RP-ID
     // (the common new-buyer case), (b) the user cancelled the OS
-    // dialog, (c) network error. We can't reliably distinguish (a)
-    // from (b) without inspecting the error message, but in practice
-    // both should fall through to the Register prompt — if the user
-    // genuinely meant to cancel they can cancel the register dialog
-    // too. Network errors will fail Register as well, surfacing the
-    // real problem.
-    if (isUserCancelError(err)) {
-      throw new PasskeyError('passkey_cancelled', 'Passkey sign-in was cancelled.');
-    }
-    // Fall through to register.
+    // dialog, (c) network error. Chrome surfaces (a) AND (b) BOTH as
+    // `NotAllowedError` so we cannot distinguish them at this layer.
+    //
+    // 2026-05-17 fix: previously we early-threw on NotAllowedError,
+    // which blocked new buyers — Register never ran. Now we ALWAYS
+    // fall through to Register on any Login failure (matching what the
+    // long-standing comment claimed but the code didn't do). UX trade:
+    // a user who DID cancel sees a Register dialog they didn't ask for,
+    // but they can cancel that too and the Register-cancel branch
+    // surfaces the `passkey_cancelled` error cleanly.
   }
 
   if (!webAuthnKey) {
@@ -143,56 +133,24 @@ export async function connectOrCreate(
     }
   }
 
-  // Plan C v2 (2026-05-15, post-walkthrough revision) — install a
-  // GPM-friendly signMessage callback on the webAuthnKey BEFORE
-  // building the kernel.
-  //
-  // What v1 (initial Plan C) shipped + WHY it didn't trip GPM:
-  //   - Added `mediation: 'optional'` to the assertion options
-  //     →  NO-OP. `@simplewebauthn/browser`'s startAuthentication only
-  //        sets the outer `CredentialRequestOptions.mediation` when
-  //        `useBrowserAutofill=true`. Our value got spread into the
-  //        inner `publicKey` where the WebAuthn spec ignores it.
-  //        'optional' is the spec default anyway — even setting it
-  //        at the right level changes nothing.
-  //   - Added `transports: ['hybrid', 'internal']` per credential
-  //     →  preserved correctly into `navigator.credentials.get(...)`
-  //        BUT: the presence of `'internal'` in the transport hint
-  //        causes Chrome on Windows 11 to defer the picker to the
-  //        OS-native `webauthn.dll` dialog. That OS dialog does NOT
-  //        consult Chrome's Google Password Manager credential store
-  //        (GPM is mediated by Chrome's own `PasskeyModelImpl`).
-  //        Net effect: Windows Hello only, GPM invisible.
-  //
-  // Diagnosis source: research agent + Chrome for Developers blog
-  // "passkeys-gpm-desktop" + 1Password community thread describing
-  // the same Windows-Hello-hijack pattern triggered by `transports:
-  // ['internal']`.
-  //
-  // What v2 changes:
-  //   - Drop the no-op `mediation` field entirely.
-  //   - Replace `transports: ['hybrid', 'internal']` with
-  //     `transports: ['hybrid']`. The 'hybrid' hint keeps Chrome in
-  //     its in-browser picker (not OS-deferred), which can surface
-  //     BOTH GPM-stored credentials AND offer the phone-cross-device
-  //     QR flow when applicable.
-  //   - Add console.debug logging so the operator can verify in
-  //     DevTools that the callback IS firing + see the exact options
-  //     handed to startAuthentication.
-  //
-  // If v2 still routes to Windows Hello, the empirical conclusion is
-  // that the credential simply isn't in GPM — the fix then has to be
-  // architectural (Proposal 1: move buyer page to muhaven.app/pay/
-  // so the dashboard's GPM-backed credential is reachable via same-
-  // origin instead of subdomain-of-apex).
-  //
-  // Cast: upstream's `signMessageCallback` types `allowCredentials`
-  // against `PublicKeyCredentialDescriptorJSON` (from
-  // @simplewebauthn/types — not a direct dep). Our locally-typed
-  // shape is structurally compatible at runtime; the cast pins the
-  // assignment without pulling the upstream type lib.
-  webAuthnKey.signMessageCallback =
-    signMessageWithGpmFriendlyAssertion as unknown as typeof webAuthnKey.signMessageCallback;
+  // DO NOT override `webAuthnKey.signMessageCallback` on Windows.
+  // Plan C v1+v2+v3 (2026-05-14 → 2026-05-15) tried `transports:
+  // ['hybrid', 'internal']`, then `['hybrid']`, then subdomain-
+  // collapse to muhaven.app/pay/. All three were empirically
+  // refuted (2026-05-15+, walkthroughs on Win+Chrome+GPM): for
+  // platform-bound credentials, Windows 11 controls the assertion
+  // dialog at the OS level and ignores Chrome-side hints/transports
+  // entirely (corbado.com/blog/webauthn-public-key-credential-hints).
+  // Worse: passing a narrowed transports array that Windows can't
+  // satisfy actively shrinks the picker (Chrome dropped the "Use a
+  // different device" QR option that upstream's no-transports path
+  // surfaces by default). Letting upstream's signMessageUsingWebAuthn
+  // run unmodified is the correct path — its default `[{id, type}]`
+  // descriptor lets Chrome+Windows surface every available signing
+  // route (Windows Hello + cross-device QR). Users wanting GPM-direct
+  // signing must register a hybrid-discoverable credential (phone QR
+  // or Mac/iCloud Keychain); platform-bound Windows Hello credentials
+  // sign via Windows Hello, by OS design.
 
   const kernelClient = await buildKernelClient(webAuthnKey);
   const account = kernelClient.account;
@@ -208,146 +166,6 @@ export async function connectOrCreate(
     webAuthnKey,
     newlyRegistered,
   };
-}
-
-/**
- * Plan C v2 (2026-05-15, post-walkthrough revision) — signMessage
- * callback that keeps Chrome in its in-browser picker (so GPM-stored
- * credentials remain visible) instead of being deferred to the OS-
- * native Windows Hello dialog.
- *
- * Re-implements the signature encoding from `signMessageUsingWebAuthn`
- * in @zerodev/passkey-validator (see
- * `development/reference/ZeroDev/sdk/plugins/passkey/toPasskeyValidator.ts`),
- * changing only the assertion-dialog hints:
- *   - Drops the no-op `mediation` field (v1 placed it inside `publicKey`
- *     where the spec doesn't define it — net-zero effect).
- *   - Sets `transports: ['hybrid']` per credential. 'hybrid' is the
- *     cross-device / phone-as-authenticator transport. CRITICALLY,
- *     the list does NOT include 'internal' — including 'internal'
- *     is what causes Chrome on Windows 11 to defer to webauthn.dll's
- *     OS dialog, which can only see Windows Hello + TPM credentials
- *     and is blind to GPM's credential store.
- *
- * The signature encoding (ABI-encoded tuple of authenticatorData,
- * clientDataJSON, responseTypeLocation, r, s, usePrecompiled) is
- * byte-identical to the upstream implementation so the on-chain
- * WebAuthn verifier accepts it without contract changes. Only the
- * authentication-dialog options differ.
- *
- * Diagnostic instrumentation: console.debug lines log the callback
- * invocation + the actual assertion options. Filter the DevTools
- * console by `[Plan C v2]` to verify the callback fired + the
- * options the browser saw.
- *
- * Test matrix targeted by this fix: Chrome+Windows (GPM signed-in),
- * Edge+Windows, Chrome+Mac, Safari+Mac. Mac platforms already work;
- * Windows-Chrome is the regression this revision targets.
- */
-async function signMessageWithGpmFriendlyAssertion(
-  message: SignableMessage,
-  _rpId: string,
-  chainId: number,
-  allowCredentials?: Array<{ id: string; type: 'public-key'; transports?: AuthenticatorTransport[] }>,
-): Promise<Hex> {
-  // Plan C v2 diagnostic — confirms the override is installed +
-  // visible in DevTools so we can rule out "callback never fired"
-  // as a failure mode on the next walkthrough.
-  console.debug('[Plan C v2] signMessageCallback fired', {
-    chainId,
-    allowCredentialsCount: allowCredentials?.length ?? 0,
-  });
-
-  let messageContent: string;
-  if (typeof message === 'string') {
-    messageContent = message;
-  } else if ('raw' in message && typeof message.raw === 'string') {
-    messageContent = message.raw;
-  } else if ('raw' in message && message.raw instanceof Uint8Array) {
-    messageContent = message.raw.toString();
-  } else {
-    throw new Error('Unsupported message format');
-  }
-
-  const formattedMessage = messageContent.startsWith('0x')
-    ? messageContent.slice(2)
-    : messageContent;
-
-  const challenge = base64FromUint8Array(
-    hexStringToUint8Array(formattedMessage),
-    true,
-  );
-
-  // Plan C v2 — replace each allowCredentials entry's transports
-  // with `['hybrid']` only. Upstream passes no transports at all
-  // (browser default = consider every authenticator), which on
-  // Windows means the OS picker still wins. v1 added 'internal' to
-  // the list, which paradoxically triggered the exact OS-deferral
-  // we're trying to escape. v2 keeps only 'hybrid' to bias the
-  // browser toward its in-process picker.
-  const enrichedAllowCredentials = allowCredentials?.map((c) => ({
-    id: c.id,
-    type: c.type,
-    transports: ['hybrid'] as AuthenticatorTransport[],
-  }));
-
-  const assertionOptions = {
-    challenge,
-    allowCredentials: enrichedAllowCredentials,
-    userVerification: 'required' as const,
-  };
-
-  console.debug('[Plan C v2] assertionOptions sent to startAuthentication', {
-    userVerification: assertionOptions.userVerification,
-    allowCredentialsTransports: enrichedAllowCredentials?.map((c) => c.transports),
-    challengeLen: challenge.length,
-  });
-
-  // @simplewebauthn/browser is a direct dep — runtime resolution +
-  // types both work. Dynamic import keeps the cold-start path lean
-  // (matches the upstream pattern).
-  const wAuthn = (await import(
-    /* @vite-ignore */ '@simplewebauthn/browser'
-  )) as { startAuthentication: (opts: unknown) => Promise<{
-    response: {
-      authenticatorData: string;
-      clientDataJSON: string;
-      signature: string;
-    };
-  }> };
-  const cred = await wAuthn.startAuthentication(assertionOptions);
-  console.debug('[Plan C v2] startAuthentication returned credential', {
-    hasResponse: !!cred?.response,
-  });
-
-  const { authenticatorData } = cred.response;
-  const authenticatorDataHex = uint8ArrayToHexString(b64ToBytes(authenticatorData));
-  const clientDataJSON = atob(cred.response.clientDataJSON);
-  const { beforeType } = findQuoteIndices(clientDataJSON);
-  const { signature } = cred.response;
-  const signatureHex = uint8ArrayToHexString(b64ToBytes(signature));
-  const { r, s } = parseAndNormalizeSig(signatureHex);
-
-  // ABI encoding MUST match toPasskeyValidator.ts exactly — order +
-  // types of the tuple are pinned by the WebAuthn verifier contract.
-  return encodeAbiParameters(
-    [
-      { name: 'authenticatorData', type: 'bytes' },
-      { name: 'clientDataJSON', type: 'string' },
-      { name: 'responseTypeLocation', type: 'uint256' },
-      { name: 'r', type: 'uint256' },
-      { name: 's', type: 'uint256' },
-      { name: 'usePrecompiled', type: 'bool' },
-    ],
-    [
-      authenticatorDataHex,
-      clientDataJSON,
-      beforeType,
-      BigInt(r),
-      BigInt(s),
-      isRIP7212SupportedNetwork(chainId),
-    ],
-  );
 }
 
 async function buildKernelClient(

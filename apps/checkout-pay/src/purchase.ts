@@ -250,7 +250,7 @@ export async function executePurchase(
   // skip signal — legacy PUSDC has a CLEARTEXT `balanceOf(address)`
   // shadow alongside its confidential balance (per
   // LegacyPusdcService:38).
-  report('wrap_pusdc', 2, 'Wrapping USDC into PUSDC…');
+  report('wrap_pusdc', 2, 'Wrapping USDC into mhUSDC…');
   const pusdcCleartextBalance = (await publicClient.readContract({
     address: legacyPusdc,
     abi: erc20Abi,
@@ -264,9 +264,9 @@ export async function executePurchase(
       functionName: 'wrap',
       args: [buyerAddress, amountUsd6],
     });
-    report('wrap_pusdc', 2, 'USDC wrapped into PUSDC', { txHash: wrapPusdcHash });
+    report('wrap_pusdc', 2, 'USDC wrapped into mhUSDC', { txHash: wrapPusdcHash });
   } else {
-    report('wrap_pusdc', 2, 'PUSDC balance already sufficient', { skipped: true });
+    report('wrap_pusdc', 2, 'mhUSDC balance already sufficient', { skipped: true });
   }
 
   // ── Step 3: LegacyPusdc.setOperator(MuHavenStable, until) ────────
@@ -300,7 +300,7 @@ export async function executePurchase(
   // Cleartext PUSDC → confidential mhUSDC. Encrypted via the SDK's
   // StableClient — the cofhe encryption + `FHE.allow(handle, eph)`
   // happen inside StableClient.wrap.
-  report('wrap_mhusdc', 4, 'Sealing PUSDC into confidential mhUSDC…');
+  report('wrap_mhusdc', 4, 'Sealing into confidential mhUSDC…');
   const ctx = await buildBuyerContext(kernelClient, buyerAddress);
   const stableClient = new StableClient(ctx, muHavenStable);
   const wrapMhusdcHash = await stableClient.wrap(amountUsd6, ephemeralEOA);

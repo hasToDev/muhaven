@@ -943,7 +943,7 @@ function setBuyCtaState(stateName: 'idle' | 'busy'): void {
 
 const PURCHASE_STAGE_COPY: Record<PurchaseStage, string> = {
   approve_usdc: 'Step 1 of 6 · Authorise USDC',
-  wrap_pusdc: 'Step 2 of 6 · Wrap into PUSDC',
+  wrap_pusdc: 'Step 2 of 6 · Wrap into mhUSDC',
   grant_pusdc_operator: 'Step 3 of 6 · Authorise the wrapper',
   wrap_mhusdc: 'Step 4 of 6 · Seal into confidential mhUSDC',
   grant_mhusdc_operator: 'Step 5 of 6 · Authorise Subscription',
