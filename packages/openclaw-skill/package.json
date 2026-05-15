@@ -33,7 +33,8 @@
     "clean": "rimraf dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "verify-subset": "tsx scripts/verify-subset.ts"
+    "verify-subset": "tsx scripts/verify-subset.ts",
+    "verify-versions": "tsx scripts/verify-versions.ts"
   },
   "devDependencies": {
     "@muhaven/mcp": "workspace:*",

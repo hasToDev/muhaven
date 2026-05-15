@@ -54,9 +54,11 @@ describe('OpenClaw skill manifest/SKILL.md/config consistency', () => {
     // `workspace:*` → the live `@muhaven/mcp` version, which ClawHub
     // consumers will then resolve from npm. The CI publish workflow
     // (openclaw-skill-publish.yml "Version-match check" step) enforces
-    // the manifest ↔ packages/mcp side; this test enforces it locally so
-    // a tag-push doesn't fail 20 minutes into the publish run, AND it
-    // also pulls SKILL.md into the gate (CI doesn't check that file).
+    // skill-version equality across all four file sites (package.json +
+    // manifest.json + config.json + SKILL.md) AND the manifest ↔
+    // packages/mcp bundled-version pin via `scripts/verify-versions.ts`.
+    // This test mirrors the gate locally so a tag-push doesn't fail
+    // 20 minutes into the publish run.
     expect(manifest.mcp?.bundled_version, 'manifest.json#mcp.bundled_version').toBe(mcpPkg.version);
     expect(frontmatterField(fm, 'bundled_version'), 'SKILL.md mcp.bundled_version').toBe(
       mcpPkg.version,
