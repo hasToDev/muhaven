@@ -8,7 +8,10 @@
     "dev:stage": "vite --mode stage",
     "build": "vite build && cp dist/index.html dist/404.html && MODE=prod node scripts/bundle-telegram-mini-app.mjs && node scripts/deploy-to-muhaven-web.mjs",
     "build:stage": "vite build --mode stage && cp dist/index.html dist/404.html && MODE=stage node scripts/bundle-telegram-mini-app.mjs && MUHAVEN_WEB_TARGET_DIR=../../muhaven-web-stage node scripts/deploy-to-muhaven-web.mjs",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@cofhe/sdk": "^0.5.1",
@@ -41,11 +44,15 @@
     "@tailwindcss/vite": "^4.1.0",
     "@types/qrcode": "^1.5.6",
     "@vitejs/plugin-vue": "^5.2.3",
+    "@vitest/coverage-v8": "^3.2.4",
+    "@vue/test-utils": "^2.4.6",
+    "happy-dom": "^16.7.0",
     "tailwindcss": "^4.1.0",
     "typescript": "^5.7.3",
     "vite": "^6.3.2",
     "vite-plugin-node-polyfills": "^0.26.0",
     "vite-plugin-wasm": "^3.6.0",
+    "vitest": "^3.2.4",
     "vue-tsc": "^2.2.8"
   }
 }
