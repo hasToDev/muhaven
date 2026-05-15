@@ -877,10 +877,14 @@ export interface ActionDescriptor {
     | 'create_checkout'
     // Wave 4 P7 issuer-side propose tools. Backend mints these descriptors
     // (see backend/src/application/dto/agent/tool.dto.ts:432+). Phase 2
-    // adds 'distribute_yield' once the SDK-pipeline runner lands.
+    // (2026-05-20) adds `distribute_yield` — runner drives the
+    // MuHavenClient.distributeYield 3-stage pipeline (startDistribution →
+    // createYieldEscrows → fundEscrows) and reports progress via the
+    // shared `useAgentDistributeProgress` bus the ConfirmModal subscribes to.
     | 'unpause_token'
     | 'kyc_add'
     | 'kyc_remove'
+    | 'distribute_yield'
   toolCallId: string
   confirmTokenId: string
   expiresAtSec: number

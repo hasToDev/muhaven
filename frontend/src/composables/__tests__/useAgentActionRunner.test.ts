@@ -25,16 +25,80 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ActionDescriptor } from '@/services/api'
 
+// ── Shared stub state for distribute_yield mocks ────────────────────
+// vi.mock factories are hoisted to the top of the file — `const`
+// declarations below them are NOT visible at factory-evaluation time.
+// `vi.hoisted` is the supported escape hatch: the callback is also
+// hoisted, so the holder it returns is in scope by the time each
+// vi.mock factory runs.
+const distributeStubs = vi.hoisted(() => ({
+  kernelAddress: '0x1111111111111111111111111111111111111111' as string | null,
+  issuerTokens: [{ address: '0xaaaa000000000000000000000000000000000001' }] as Array<{ address: string }>,
+  loadFn: vi.fn(),
+  resetFn: vi.fn(),
+  setOperator: vi.fn(),
+  fheInit: vi.fn(),
+  muHavenClientCtor: vi.fn(),
+  distributeYieldFn: vi.fn(),
+}))
+
 // `useAgentActionRunner` lazy-imports `@/stores/issuer-tokens` +
 // `@/stores/issuer-investors` inside `invalidateIssuerCachesAfterP7Write`.
 // Pre-stub them to no-op stores so the post-dispatch cache reset doesn't
-// pull Pinia into the unit-test boot path.
+// pull Pinia into the unit-test boot path. The issuer-tokens stub also
+// satisfies runDistribute's preview.tokenAddress registration check.
 vi.mock('@/stores/issuer-tokens', () => ({
-  useIssuerTokensStore: () => ({ reset: vi.fn() }),
+  useIssuerTokensStore: () => ({
+    reset: distributeStubs.resetFn,
+    get tokens() {
+      return distributeStubs.issuerTokens
+    },
+    load: distributeStubs.loadFn,
+  }),
 }))
 vi.mock('@/stores/issuer-investors', () => ({
   useIssuerInvestorsStore: () => ({ reset: vi.fn() }),
 }))
+
+// wallet store — runDistribute reads `wallet.address` to bind against
+// preview.issuerAddress. The kernelAddress holder lets each test rewrite
+// it without re-mocking the module.
+vi.mock('@/stores/wallet', () => ({
+  useWalletStore: () => ({
+    get address() {
+      return distributeStubs.kernelAddress
+    },
+  }),
+}))
+
+// MuHavenStableService.setOperator is invoked as the runDistribute
+// pre-flight on every successful path. Resolves to a fake tx hash by
+// default; tests can mockRejectedValue to simulate revert.
+vi.mock('@/services/contracts/MuHavenStableService', () => ({
+  setOperator: distributeStubs.setOperator,
+}))
+
+// useFhe.initialize() is awaited before buildWriteContext. The wider
+// useFhe API isn't used by runDistribute — only initialize().
+vi.mock('@/composables/useFhe', () => ({
+  useFhe: () => ({ initialize: distributeStubs.fheInit }),
+}))
+
+// MuHavenClient constructor is called to drive distributeYield. The
+// constructor stub records the config; the returned instance has a
+// distributeYield() method backed by the per-test stub.
+// SubscriptionClient stays un-mocked here — runBuy isn't tested in this
+// file and the import is tree-shaken on the runDistribute path.
+vi.mock('@muhaven/sdk', async () => {
+  const actual = await vi.importActual<typeof import('@muhaven/sdk')>('@muhaven/sdk')
+  return {
+    ...actual,
+    MuHavenClient: vi.fn().mockImplementation((cfg: unknown) => {
+      distributeStubs.muHavenClientCtor(cfg)
+      return { distributeYield: distributeStubs.distributeYieldFn }
+    }),
+  }
+})
 
 // The context module's other exports (`buildReadContext`, `getPublicClient`)
 // aren't touched by the P7 runner — only `buildWriteContext` matters.
@@ -45,6 +109,7 @@ vi.mock('@/services/v35/context', () => ({
 
 import { buildWriteContext } from '@/services/v35/context'
 import { runAgentAction } from '../useAgentActionRunner'
+import { useAgentDistributeProgress } from '@/composables/useAgentDistributeProgress'
 
 interface FakeSender {
   address: `0x${string}`
@@ -609,6 +674,364 @@ describe('runAgentAction — P7 issuer dispatcher (Phase 1)', () => {
         }
         expect(write).not.toHaveBeenCalled()
       })
+    })
+  })
+})
+
+// ────────────────────────────────────────────────────────────────────
+// Phase 2 (2026-05-20) — distribute_yield runner
+// ────────────────────────────────────────────────────────────────────
+
+const ISSUER = '0x1111111111111111111111111111111111111111' as const
+const DISTRIBUTE_TOKEN = '0xaaaa000000000000000000000000000000000001' as const
+const FUND_HASH_1 = ('0x' + 'd1'.repeat(32)) as `0x${string}`
+const FUND_HASH_2 = ('0x' + 'd2'.repeat(32)) as `0x${string}`
+
+function distributeDescriptor(overrides: Partial<{
+  totalYieldUsd6: string
+  tokenAddress: string
+  issuerAddress: string
+  label: string
+}> = {}): ActionDescriptor {
+  return {
+    kind: 'distribute_yield',
+    toolCallId: 'tc_test_distribute',
+    confirmTokenId: 'ct_test_distribute',
+    expiresAtSec: Math.floor(Date.now() / 1000) + 300,
+    summary: 'Distribute $1.00 of yield across all TESTRUN2 holders.',
+    preview: {
+      tokenAddress: overrides.tokenAddress ?? DISTRIBUTE_TOKEN,
+      tokenSymbol: 'TESTRUN2',
+      totalYieldUsd6: overrides.totalYieldUsd6 ?? '1000000',
+      label: overrides.label ?? 'Yield distribution for TESTRUN2',
+      issuerAddress: overrides.issuerAddress ?? ISSUER,
+      requestedAtSec: Math.floor(Date.now() / 1000),
+    },
+    sdkCall: {
+      contractName: 'MuHavenClient',
+      functionName: 'distributeYield',
+      args: { totalYield: overrides.totalYieldUsd6 ?? '1000000' },
+    },
+  }
+}
+
+describe('runAgentAction — distribute_yield (P7 Phase 2)', () => {
+  beforeEach(() => {
+    vi.mocked(buildWriteContext).mockReset()
+    distributeStubs.kernelAddress = ISSUER
+    distributeStubs.issuerTokens = [{ address: DISTRIBUTE_TOKEN }]
+    distributeStubs.loadFn.mockReset()
+    distributeStubs.resetFn.mockReset()
+    distributeStubs.setOperator.mockReset().mockResolvedValue('0xabc')
+    distributeStubs.fheInit.mockReset().mockResolvedValue(undefined)
+    distributeStubs.muHavenClientCtor.mockReset()
+    distributeStubs.distributeYieldFn.mockReset().mockResolvedValue({
+      distributionId: 1n,
+      escrowIds: [10n, 11n],
+      createTxHashes: [FUND_HASH_1],
+      fundTxHashes: [FUND_HASH_1, FUND_HASH_2],
+    })
+    // Reset the module-level progress bus between tests so phase-state
+    // assertions don't leak across cases.
+    useAgentDistributeProgress().reset()
+
+    const write = vi.fn()
+    const ctx = {
+      publicClient: {} as never,
+      sender: {
+        address: ISSUER,
+        getChainId: async () => 421614,
+        write,
+      },
+      cofheClient: { encryptInputs: vi.fn() } as never,
+    }
+    vi.mocked(buildWriteContext).mockResolvedValue(ctx)
+  })
+
+  it('runs the full pipeline + returns the last fund tx hash', async () => {
+    const result = await runAgentAction(distributeDescriptor())
+
+    expect(result).toEqual({ ok: true, txHash: FUND_HASH_2 })
+    // Pre-flight grant fires exactly once.
+    expect(distributeStubs.setOperator).toHaveBeenCalledTimes(1)
+    expect(distributeStubs.fheInit).toHaveBeenCalledTimes(1)
+    // SDK client is constructed with all four required addresses.
+    expect(distributeStubs.muHavenClientCtor).toHaveBeenCalledTimes(1)
+    const cfg = distributeStubs.muHavenClientCtor.mock.calls[0][0] as {
+      addresses: Record<string, string>
+    }
+    expect(cfg.addresses.yieldDistributor).toBeTruthy()
+    expect(cfg.addresses.muhavenEscrow).toBeTruthy()
+    expect(cfg.addresses.investorRegistry).toBeTruthy()
+    expect(cfg.addresses.yieldGate).toBeTruthy()
+    // distributeYield is called with the cleartext totalYield (cofhe
+    // encrypts client-side inside the SDK).
+    expect(distributeStubs.distributeYieldFn).toHaveBeenCalledTimes(1)
+    const args = distributeStubs.distributeYieldFn.mock.calls[0]
+    expect(args[0]).toBe(1_000_000n)
+    expect(typeof args[1].onProgress).toBe('function')
+  })
+
+  it('progress bus advances to settled after distributeYield resolves', async () => {
+    const progress = useAgentDistributeProgress()
+    await runAgentAction(distributeDescriptor())
+    expect(progress.state.value.phase).toBe('settled')
+  })
+
+  it('onProgress callback feeds the shared progress bus', async () => {
+    distributeStubs.distributeYieldFn.mockImplementation(async (_amount, opts) => {
+      // Simulate the SDK emitting through the full pipeline.
+      opts.onProgress?.({ stage: 'encrypt', current: 1, total: 1 })
+      opts.onProgress?.({ stage: 'startDistribution', current: 1, total: 1, txHash: '0xstart' })
+      opts.onProgress?.({ stage: 'batchCreate', current: 1, total: 2 })
+      opts.onProgress?.({ stage: 'processBatch', current: 1, total: 2 })
+      return {
+        distributionId: 1n,
+        escrowIds: [10n],
+        createTxHashes: [FUND_HASH_1],
+        fundTxHashes: [FUND_HASH_2],
+      }
+    })
+
+    const progress = useAgentDistributeProgress()
+    await runAgentAction(distributeDescriptor())
+    expect(progress.state.value.phase).toBe('settled')
+  })
+
+  it('rejects when preview.issuerAddress does not match the connected kernel', async () => {
+    distributeStubs.kernelAddress = '0x9999999999999999999999999999999999999999'
+    const result = await runAgentAction(distributeDescriptor())
+    expect(result.ok).toBe(false)
+    if (result.ok === false) {
+      expect(result.error).toContain('does not match connected kernel')
+    }
+    // setOperator + SDK construction MUST NOT happen on a binding failure.
+    expect(distributeStubs.setOperator).not.toHaveBeenCalled()
+    expect(distributeStubs.muHavenClientCtor).not.toHaveBeenCalled()
+  })
+
+  it('rejects when preview.tokenAddress is not in the issuer-tokens store (after refresh)', async () => {
+    distributeStubs.issuerTokens = []
+    // Make load() a no-op so the refresh leaves the registry empty.
+    distributeStubs.loadFn.mockResolvedValue(undefined)
+    const result = await runAgentAction(distributeDescriptor())
+    expect(result.ok).toBe(false)
+    if (result.ok === false) {
+      expect(result.error).toContain('not registered to this issuer kernel')
+    }
+    expect(distributeStubs.setOperator).not.toHaveBeenCalled()
+  })
+
+  it('accepts the action when the empty store loads in the registered token on refresh', async () => {
+    distributeStubs.issuerTokens = []
+    distributeStubs.loadFn.mockImplementation(async () => {
+      distributeStubs.issuerTokens = [{ address: DISTRIBUTE_TOKEN }]
+    })
+    const result = await runAgentAction(distributeDescriptor())
+    expect(result.ok).toBe(true)
+    expect(distributeStubs.loadFn).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects malformed totalYieldUsd6 BEFORE setOperator', async () => {
+    const bad = distributeDescriptor()
+    ;(bad.preview as Record<string, unknown>).totalYieldUsd6 = '1.5'
+    const result = await runAgentAction(bad)
+    expect(result.ok).toBe(false)
+    if (result.ok === false) {
+      expect(result.error).toContain('valid totalYieldUsd6')
+    }
+    expect(distributeStubs.setOperator).not.toHaveBeenCalled()
+  })
+
+  it('rejects zero totalYieldUsd6 BEFORE setOperator', async () => {
+    const result = await runAgentAction(distributeDescriptor({ totalYieldUsd6: '0' }))
+    expect(result.ok).toBe(false)
+    if (result.ok === false) {
+      expect(result.error).toContain('must be > 0')
+    }
+    expect(distributeStubs.setOperator).not.toHaveBeenCalled()
+  })
+
+  it('rejects missing preview.issuerAddress BEFORE setOperator', async () => {
+    const bad = distributeDescriptor()
+    delete (bad.preview as Record<string, unknown>).issuerAddress
+    const result = await runAgentAction(bad)
+    expect(result.ok).toBe(false)
+    if (result.ok === false) {
+      expect(result.error).toContain('missing valid issuerAddress')
+    }
+    expect(distributeStubs.setOperator).not.toHaveBeenCalled()
+  })
+
+  it('rejects when the wallet is disconnected', async () => {
+    distributeStubs.kernelAddress = null
+    const result = await runAgentAction(distributeDescriptor())
+    expect(result.ok).toBe(false)
+    if (result.ok === false) {
+      expect(result.error).toContain('No connected kernel address')
+    }
+    expect(distributeStubs.setOperator).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a setOperator revert as a runner error', async () => {
+    distributeStubs.setOperator.mockRejectedValue(new Error('user rejected request'))
+    const result = await runAgentAction(distributeDescriptor())
+    expect(result.ok).toBe(false)
+    if (result.ok === false) {
+      expect(result.error).toContain('user rejected request')
+    }
+    // SDK never constructed if pre-flight grant failed.
+    expect(distributeStubs.muHavenClientCtor).not.toHaveBeenCalled()
+  })
+
+  it('throws on an SDK return missing fundTxHashes', async () => {
+    distributeStubs.distributeYieldFn.mockResolvedValue({
+      distributionId: 1n,
+      escrowIds: [],
+      createTxHashes: [],
+      fundTxHashes: [],
+    })
+    const result = await runAgentAction(distributeDescriptor())
+    expect(result.ok).toBe(false)
+    if (result.ok === false) {
+      expect(result.error).toContain('without a fund tx hash')
+    }
+  })
+
+  it('case-insensitive kernel binding: mixed-case kernel still matches lowercased preview', async () => {
+    distributeStubs.kernelAddress = ISSUER.toUpperCase()
+    const result = await runAgentAction(
+      distributeDescriptor({ issuerAddress: ISSUER }),
+    )
+    expect(result.ok).toBe(true)
+  })
+
+  // ── Self-review fixes (parallel multi-agent pass 2026-05-20) ─────
+
+  describe('Code Reviewer H-1: SDK throw marks the bus failed', () => {
+    it('flips the bus to failed when distributeYield rejects', async () => {
+      distributeStubs.distributeYieldFn.mockRejectedValue(
+        new Error('CoFHE batchCreate reverted: bus stuck'),
+      )
+      const progress = useAgentDistributeProgress()
+      const result = await runAgentAction(distributeDescriptor())
+      expect(result.ok).toBe(false)
+      expect(progress.state.value.phase).toBe('failed')
+    })
+
+    it('failedAt anchors to the active phase at throw time', async () => {
+      // Simulate the SDK advancing to 'escrows' then throwing — the
+      // bus must record failedAt='escrows' so the modal paints the
+      // right step red.
+      distributeStubs.distributeYieldFn.mockImplementation(async (_amount, opts) => {
+        opts.onProgress?.({ stage: 'startDistribution', current: 1, total: 1 })
+        opts.onProgress?.({ stage: 'batchCreate', current: 1, total: 2 })
+        throw new Error('batch 2 reverted')
+      })
+      const progress = useAgentDistributeProgress()
+      await runAgentAction(distributeDescriptor())
+      expect(progress.state.value.phase).toBe('failed')
+      expect(progress.state.value.failedAt).toBe('escrows')
+    })
+
+    it('pre-flight setOperator throw still marks the bus failed (failedAt=start)', async () => {
+      distributeStubs.setOperator.mockRejectedValue(new Error('user rejected'))
+      const progress = useAgentDistributeProgress()
+      const result = await runAgentAction(distributeDescriptor())
+      expect(result.ok).toBe(false)
+      expect(progress.state.value.phase).toBe('failed')
+      expect(progress.state.value.failedAt).toBe('start')
+    })
+  })
+
+  describe('Code Reviewer M-3 / Security M-1: concurrent-distribution guard', () => {
+    it('rejects a new distribute when the bus is mid-flight (phase=start)', async () => {
+      // Simulate a previous distribution still in flight.
+      const progress = useAgentDistributeProgress()
+      progress.applyEvent({ stage: 'startDistribution', current: 1, total: 1 })
+      const result = await runAgentAction(distributeDescriptor())
+      expect(result.ok).toBe(false)
+      if (result.ok === false) {
+        expect(result.error).toContain('previous yield distribution is still in progress')
+      }
+      // No setOperator, no SDK construction.
+      expect(distributeStubs.setOperator).not.toHaveBeenCalled()
+      expect(distributeStubs.muHavenClientCtor).not.toHaveBeenCalled()
+    })
+
+    it('allows a new distribute when the previous bus is settled', async () => {
+      const progress = useAgentDistributeProgress()
+      progress.applyEvent({ stage: 'processBatch', current: 1, total: 1 })
+      progress.markSettled()
+      const result = await runAgentAction(distributeDescriptor())
+      expect(result.ok).toBe(true)
+    })
+
+    it('allows a new distribute when the previous bus failed', async () => {
+      const progress = useAgentDistributeProgress()
+      progress.applyEvent({ stage: 'batchCreate', current: 1, total: 1 })
+      progress.markFailed()
+      const result = await runAgentAction(distributeDescriptor())
+      expect(result.ok).toBe(true)
+    })
+  })
+
+  describe('Security M-2: totalYield uint64 cap', () => {
+    it('rejects amounts above the $100M cap', async () => {
+      // 100_000_000_000_001 = cap + 1 (one base-6 unit over $100M).
+      const result = await runAgentAction(
+        distributeDescriptor({ totalYieldUsd6: '100000000000001' }),
+      )
+      expect(result.ok).toBe(false)
+      if (result.ok === false) {
+        expect(result.error).toContain('exceeds the')
+        expect(result.error).toContain('cap')
+      }
+      expect(distributeStubs.setOperator).not.toHaveBeenCalled()
+    })
+
+    it('rejects a uint64-max amount (~$18.4T) the malicious-LLM threat shape', async () => {
+      const result = await runAgentAction(
+        distributeDescriptor({ totalYieldUsd6: '18446744073709551615' }),
+      )
+      expect(result.ok).toBe(false)
+      if (result.ok === false) {
+        expect(result.error).toContain('exceeds the')
+      }
+    })
+
+    it('accepts amounts at exactly the cap', async () => {
+      const result = await runAgentAction(
+        distributeDescriptor({ totalYieldUsd6: '100000000000000' }),
+      )
+      expect(result.ok).toBe(true)
+    })
+  })
+
+  describe('Security M-3: label length client-side cap', () => {
+    it('rejects label > 200 chars', async () => {
+      const longLabel = 'A'.repeat(201)
+      const result = await runAgentAction(distributeDescriptor({ label: longLabel }))
+      expect(result.ok).toBe(false)
+      if (result.ok === false) {
+        expect(result.error).toContain('≤ 200 chars')
+      }
+    })
+
+    it('rejects label that is not a string', async () => {
+      const bad = distributeDescriptor()
+      ;(bad.preview as Record<string, unknown>).label = 123 // wrong type
+      const result = await runAgentAction(bad)
+      expect(result.ok).toBe(false)
+      if (result.ok === false) {
+        expect(result.error).toContain('label')
+      }
+    })
+
+    it('accepts a 200-char label at the cap boundary', async () => {
+      const exactly200 = 'B'.repeat(200)
+      const result = await runAgentAction(distributeDescriptor({ label: exactly200 }))
+      expect(result.ok).toBe(true)
     })
   })
 })

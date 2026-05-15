@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { ShieldCheck, Lock, X, Loader2, AlertTriangle, ExternalLink, ArrowRight, Send } from 'lucide-vue-next'
+import { ShieldCheck, Lock, X, Loader2, AlertTriangle, AlertCircle, ExternalLink, ArrowRight, Send } from 'lucide-vue-next'
 import {
   agentToolsApi,
   checkoutAgentApi,
@@ -9,6 +9,10 @@ import {
   type CreateCheckoutActionPayload,
 } from '@/services/api'
 import CreateCheckoutSuccessCard from '@/components/agent/CreateCheckoutSuccessCard.vue'
+import {
+  useAgentDistributeProgress,
+  type DistributeProgressPhase,
+} from '@/composables/useAgentDistributeProgress'
 
 const router = useRouter()
 
@@ -81,17 +85,117 @@ const deferredReason = ref<string | null>(null)
 // AgentPage.tryAcquireFireLock dedupes the on-chain leg).
 const useDashboardFallback = ref(false)
 
+// P7 Phase 2 — distribute_yield progress bus. Subscribes for every modal
+// instance but only renders the 3-phase bar when the active action is
+// `distribute_yield`. The runner writes to the same bus.
+const distributeProgress = useAgentDistributeProgress()
+
 watch(
   () => props.action?.toolCallId,
-  () => {
+  (newId, oldId) => {
     // Reset on every new action.
     status.value = 'idle'
     txHash.value = null
     errorMsg.value = null
     useDashboardFallback.value = false
     checkoutResult.value = null
+    // Reset the distribute progress bus so a prior settled / failed
+    // distribution doesn't bleed into the modal's preview of the next
+    // action. Self-review guard (Frontend H-1, 2026-05-20): only reset
+    // when the bus is in a terminal state. If the bus is mid-flight
+    // (the user is still authorizing the previous distribute_yield)
+    // we leave the state alone — wiping it now would collapse the
+    // progress bar to idle while the SDK keeps emitting events for
+    // the previous descriptor. The toolCallId watcher fires on a
+    // descriptor SWAP (e.g. HavenBot lands a new tool_call mid-flight),
+    // not on the close+reopen of a single action.
+    if (newId === oldId) return
+    const phase = distributeProgress.state.value.phase
+    if (phase === 'idle' || phase === 'settled' || phase === 'failed') {
+      distributeProgress.reset()
+    }
   },
 )
+
+const isDistribute = computed(() => props.action?.kind === 'distribute_yield')
+
+/** Phase metadata for the 3-phase progress bar. Order matches the SDK
+ *  pipeline (startDistribution → createYieldEscrows → fundEscrows).
+ *  Labels rewritten 2026-05-20 per UX review HIGH-2 — issuer-facing
+ *  outcome language rather than developer-log shorthand. */
+const distributePhaseMeta: ReadonlyArray<{
+  key: Exclude<DistributeProgressPhase, 'idle' | 'settled' | 'failed'>
+  label: string
+  hint: string
+}> = [
+  { key: 'start',   label: 'Prepare batch',       hint: 'Encrypting yield and broadcasting the start tx' },
+  { key: 'escrows', label: 'Allocate to holders', hint: 'Creating one encrypted escrow per investor' },
+  { key: 'fund',    label: 'Transfer mhUSDC',     hint: 'Funding each escrow from your mhUSDC balance' },
+]
+
+function distributePhaseState(
+  key: Exclude<DistributeProgressPhase, 'idle' | 'settled' | 'failed'>,
+): 'pending' | 'active' | 'done' | 'failed' {
+  const phase = distributeProgress.state.value.phase
+  if (phase === 'failed') {
+    // The phase that was active when the runner threw is painted red;
+    // earlier phases stay 'done', later phases stay 'pending'.
+    const failedAt = distributeProgress.state.value.failedAt
+    if (failedAt === key) return 'failed'
+    const failedIdx = failedAt ? distributePhaseMeta.findIndex((p) => p.key === failedAt) : -1
+    const keyIdx = distributePhaseMeta.findIndex((p) => p.key === key)
+    if (failedIdx >= 0 && keyIdx < failedIdx) return 'done'
+    return 'pending'
+  }
+  const order = ['idle', 'start', 'escrows', 'fund', 'settled'] as const
+  const phaseIdx = order.indexOf(phase as typeof order[number])
+  const keyIdx = order.indexOf(key)
+  if (phaseIdx > keyIdx) return 'done'
+  if (phaseIdx === keyIdx) return 'active'
+  return 'pending'
+}
+
+/**
+ * Q2 operator pick (2026-05-19) — disable Cancel once any distribute
+ * phase has advanced past idle. The SDK has no abort signal mid-flight;
+ * a Cancel click at that point would only close the modal while the
+ * on-chain pipeline kept running, then the audit-commit wouldn't fire.
+ *
+ * Self-review fix (Code Reviewer H-1, 2026-05-20): include 'failed' in
+ * the cancellable set. When the runner throws mid-pipeline the bus is
+ * pinned to 'failed' + the modal's `status === 'error'` surface
+ * renders; the issuer needs Cancel to dismiss the modal.
+ */
+const isDistributeRunning = computed(() => {
+  if (!isDistribute.value) return false
+  const phase = distributeProgress.state.value.phase
+  return phase !== 'idle' && phase !== 'settled' && phase !== 'failed'
+})
+
+const distributeBatchHint = computed(() => {
+  if (!isDistribute.value) return null
+  const s = distributeProgress.state.value
+  if (s.total <= 1) return s.message ?? null
+  return `${s.current}/${s.total}${s.message ? ` — ${s.message}` : ''}`
+})
+
+/** Header step counter: "Distributing yield · step 2 of 3". Surfaces
+ *  the one-action-three-stages framing (UX review HIGH-3). 'settled'
+ *  renders the dedicated "Settled" header instead. */
+const distributeStepLabel = computed(() => {
+  const phase = distributeProgress.state.value.phase
+  if (phase === 'settled') return 'Distribution settled'
+  if (phase === 'failed') {
+    const failedAt = distributeProgress.state.value.failedAt
+    const idx = failedAt ? distributePhaseMeta.findIndex((p) => p.key === failedAt) : -1
+    if (idx >= 0) return `Distribution failed at step ${idx + 1} of ${distributePhaseMeta.length}`
+    return 'Distribution failed'
+  }
+  const order = ['start', 'escrows', 'fund'] as const
+  const idx = order.indexOf(phase as typeof order[number])
+  if (idx >= 0) return `Distributing yield · step ${idx + 1} of ${distributePhaseMeta.length}`
+  return 'Distributing yield'
+})
 
 const isExpired = computed(() => {
   if (!props.action) return false
@@ -381,6 +485,23 @@ function extractActionPayload(a: ActionDescriptor): Record<string, unknown> {
         kycAdapterAddress: a.preview.kycAdapterAddress as string,
         requestedAtSec: a.preview.requestedAtSec as number,
       }
+    case 'distribute_yield':
+      // Mirror propose-distribute-yield.use-case.ts:110 actionPayload
+      // byte-for-byte. Order matches the backend object-literal so a
+      // future field reorder doesn't drift the hash check. Address
+      // fields are lowercased on both sides (Security review L-1,
+      // 2026-05-20) — backend always lowercases at line 74+116 of the
+      // use case; this client-side normalization is belt-and-suspenders
+      // against a future backend edit that drops the lower() call.
+      return {
+        tool: 'muhaven_propose_distribute_yield',
+        action: 'distribute_yield',
+        tokenAddress: (a.preview.tokenAddress as string).toLowerCase(),
+        totalYieldUsd6: a.preview.totalYieldUsd6 as string,
+        label: a.preview.label as string,
+        issuerAddress: (a.preview.issuerAddress as string).toLowerCase(),
+        requestedAtSec: a.preview.requestedAtSec as number,
+      }
     default:
       return {}
   }
@@ -460,6 +581,20 @@ const previewRows = computed(() => {
         { label: 'Investor', value: shortAddr(String(props.action.preview.investorAddress)) },
         { label: 'Action', value: 'Remove from whitelist' },
       ]
+    case 'distribute_yield':
+      // P7 Phase 2 — Wave 3 yield-pipeline driver (NOT the Wave 3.5
+      // YieldSnapshot path). Surfaces the total yield (cleartext on the
+      // wire — the backend hashes it into the action payload) so the
+      // issuer knows what they're funding before authorizing the
+      // 1-2 min SDK call.
+      return [
+        { label: 'Token', value: `${props.action.preview.tokenSymbol}` },
+        { label: 'Total yield', value: displayUsd(String(props.action.preview.totalYieldUsd6)) },
+        ...(props.action.preview.label
+          ? [{ label: 'Label', value: String(props.action.preview.label) }]
+          : []),
+        { label: 'Action', value: 'Distribute to all holders' },
+      ]
     default:
       return []
   }
@@ -504,7 +639,7 @@ const arbiscanUrl = computed(() =>
     <!-- Backdrop -->
     <div
       class="absolute inset-0 bg-midnight/70 backdrop-blur-sm"
-      @click="status === 'idle' || status === 'error' ? close() : null"
+      @click="(status === 'idle' || status === 'error') && !isDistributeRunning ? close() : null"
       aria-hidden="true"
     />
 
@@ -582,6 +717,120 @@ const arbiscanUrl = computed(() =>
           <ShieldCheck :size="14" :stroke-width="1.8" class="text-compute dark:text-signal flex-shrink-0" />
           <p class="font-sans text-xs text-cool leading-relaxed">
             FHE-encrypted on Arbitrum Sepolia. Only your passkey can authorize this transaction.
+          </p>
+        </div>
+
+        <!-- P7 Phase 2 — 3-phase progress bar for distribute_yield.
+             Renders once the pipeline starts (i.e. phase has advanced past
+             idle) and stays visible after settle / failure so the "all
+             three done" frame (or the "failed at step N" frame) is the
+             last thing the issuer sees before they dismiss. Operator pick
+             2026-05-19 Q1: inside-modal location. -->
+        <div
+          v-if="isDistribute && distributeProgress.state.value.phase !== 'idle'"
+          data-testid="agent-confirm-distribute-progress"
+          role="status"
+          aria-live="polite"
+          aria-atomic="false"
+          class="rounded-xl border px-4 py-3 mb-5"
+          :class="distributeProgress.state.value.phase === 'failed'
+            ? 'border-negative/25 bg-negative/5'
+            : 'border-haze dark:border-white/10 bg-mist/40 dark:bg-[#0d0e10]'"
+        >
+          <div class="flex items-center gap-2 mb-3">
+            <Loader2
+              v-if="isDistributeRunning"
+              :size="14"
+              :stroke-width="2"
+              class="animate-spin text-compute dark:text-signal flex-shrink-0"
+            />
+            <ShieldCheck
+              v-else-if="distributeProgress.state.value.phase === 'settled'"
+              :size="14"
+              :stroke-width="2"
+              class="text-positive flex-shrink-0"
+            />
+            <AlertCircle
+              v-else-if="distributeProgress.state.value.phase === 'failed'"
+              :size="14"
+              :stroke-width="2"
+              class="text-negative flex-shrink-0"
+            />
+            <p
+              data-testid="agent-confirm-distribute-step-label"
+              class="font-sans text-[10px] uppercase tracking-[0.18em] font-semibold"
+              :class="{
+                'text-positive': distributeProgress.state.value.phase === 'settled',
+                'text-negative': distributeProgress.state.value.phase === 'failed',
+                'text-compute dark:text-signal': isDistributeRunning,
+              }"
+            >
+              {{ distributeStepLabel }}
+            </p>
+          </div>
+          <ol role="list" class="space-y-2.5">
+            <li
+              v-for="(phase, idx) in distributePhaseMeta"
+              :key="phase.key"
+              :data-testid="`agent-confirm-distribute-phase-${phase.key}`"
+              :data-state="distributePhaseState(phase.key)"
+              :aria-current="distributePhaseState(phase.key) === 'active' ? 'step' : undefined"
+              class="flex items-start gap-3"
+            >
+              <span
+                class="mt-0.5 w-5 h-5 rounded-full border flex items-center justify-center
+                       flex-shrink-0 text-[11px] font-semibold font-sans transition-colors"
+                :class="{
+                  'border-haze dark:border-white/15 text-cool bg-white dark:bg-[#1f1e1e]':
+                    distributePhaseState(phase.key) === 'pending',
+                  'border-compute/50 dark:border-signal/50 text-compute dark:text-signal bg-gold/15 dark:bg-signal/10':
+                    distributePhaseState(phase.key) === 'active',
+                  'border-positive/50 text-positive bg-positive/10':
+                    distributePhaseState(phase.key) === 'done',
+                  'border-negative/50 text-negative bg-negative/10':
+                    distributePhaseState(phase.key) === 'failed',
+                }"
+              >
+                <ShieldCheck
+                  v-if="distributePhaseState(phase.key) === 'done'"
+                  :size="11"
+                  :stroke-width="2.4"
+                />
+                <AlertCircle
+                  v-else-if="distributePhaseState(phase.key) === 'failed'"
+                  :size="11"
+                  :stroke-width="2.4"
+                />
+                <span v-else>{{ idx + 1 }}</span>
+              </span>
+              <div class="flex-1 min-w-0">
+                <p
+                  class="font-sans text-sm font-medium leading-tight"
+                  :class="distributePhaseState(phase.key) === 'pending'
+                    ? 'text-cool'
+                    : distributePhaseState(phase.key) === 'failed'
+                      ? 'text-negative'
+                      : 'text-midnight dark:text-white'"
+                >
+                  {{ phase.label }}
+                </p>
+                <p class="font-sans text-xs text-cool leading-snug mt-0.5">
+                  <template v-if="distributePhaseState(phase.key) === 'active' && distributeBatchHint">
+                    {{ distributeBatchHint }}
+                  </template>
+                  <template v-else>
+                    {{ phase.hint }}
+                  </template>
+                </p>
+              </div>
+            </li>
+          </ol>
+          <p
+            v-if="isDistributeRunning"
+            class="font-sans text-[11px] text-cool leading-snug mt-3"
+          >
+            On-chain pipeline can't be cancelled mid-flight — closing this
+            modal now stops the audit-commit but the txs will still settle.
           </p>
         </div>
 
@@ -698,14 +947,19 @@ const arbiscanUrl = computed(() =>
                    hover:bg-mist dark:hover:bg-[#252323]
                    text-midnight dark:text-white
                    transition-colors cursor-pointer"
-            :disabled="status === 'awaiting' || status === 'submitting' || status === 'committing'"
+            :disabled="status === 'awaiting' || status === 'submitting' || status === 'committing' || isDistributeRunning"
+            :title="isDistributeRunning
+              ? 'Pipeline mid-flight — wait for it to settle. See the progress bar above.'
+              : undefined"
           >
             {{
-              status === 'error'
-                ? 'Close'
-                : status === 'deferred'
-                  ? 'Done'
-                  : 'Cancel'
+              isDistributeRunning
+                ? 'Running…'
+                : status === 'error'
+                  ? 'Close'
+                  : status === 'deferred'
+                    ? 'Done'
+                    : 'Cancel'
             }}
           </button>
           <!-- Q6 (i) — passive "Waiting" pill replaces the Authorize CTA

@@ -1,11 +1,13 @@
 import {
   SubscriptionClient,
+  MuHavenClient,
   // RedemptionQueueClient — not yet wired into agent claim path; see Wave 5 follow-up note.
 } from '@muhaven/sdk'
 import type { Address, Hash } from 'viem'
-import { v35Addresses, isZeroAddress } from '@/contracts/addresses'
+import { addresses, v35Addresses, isZeroAddress } from '@/contracts/addresses'
 import { buildWriteContext } from '@/services/v35/context'
 import { useFhe } from '@/composables/useFhe'
+import { useAgentDistributeProgress } from '@/composables/useAgentDistributeProgress'
 import * as MuHavenStableService from '@/services/contracts/MuHavenStableService'
 import { resolveP7Tx, UnknownP7TxError } from '@/services/v35/p7-tx-abis'
 import type { ActionDescriptor } from '@/services/api'
@@ -128,6 +130,28 @@ export async function runAgentAction(action: ActionDescriptor): Promise<RunResul
         await invalidateIssuerCachesAfterP7Write()
         return { ok: true, txHash }
       }
+      case 'distribute_yield': {
+        // Wave 4 P7 Phase 2 — drives the MuHavenClient.distributeYield
+        // 3-stage pipeline (startDistribution → createYieldEscrows →
+        // fundEscrows). Unlike the unpause/kyc tools this is NOT a
+        // dispatchActionTxs path — the SDK owns the encryption + batching
+        // + tx loop. The runner just wires the kernel + mhUSDC operator
+        // grant + progress bus, then returns the LAST fund tx hash.
+        try {
+          const txHash = await runDistribute(action)
+          await invalidateIssuerCachesAfterP7Write()
+          return { ok: true, txHash }
+        } catch (err) {
+          // Self-review fix 2026-05-20: pin the progress bus to
+          // 'failed' so the modal paints the failing phase red AND
+          // `isDistributeRunning` flips false → Cancel button is
+          // re-enabled. Without this, the bus stays mid-phase + the
+          // modal becomes undismissable. Re-throw so the outer catch
+          // surfaces the error to the user as ok:false.
+          useAgentDistributeProgress().markFailed()
+          throw err
+        }
+      }
       default:
         return { ok: false, error: `Unknown action kind: ${(action as ActionDescriptor).kind}` }
     }
@@ -226,6 +250,244 @@ async function runBuy(action: ActionDescriptor): Promise<string> {
 
   const hash = await sub.purchase(tokenAddress, shares, maxSharesHint, ephemeralEOA)
   return hash
+}
+
+/**
+ * Wave 4 P7 Phase 2 — drive the SDK's distributeYield pipeline.
+ *
+ * Pipeline (per SDK JSDoc `MuHavenClient.distributeYield` at
+ * `packages/sdk/src/client.ts:230-283`):
+ *   1. Pre-flight: `mhUSDC.setOperator(yieldDistributor, expiry)` —
+ *      same idempotent-long-expiry posture as `runBuy`'s
+ *      `MuHavenStableService.setOperator(subscription, expiry)`. Without
+ *      this, YieldDistributor's confidentialTransferFrom pull reverts.
+ *   2. Build write context (ZeroDev kernel sender + cofhe-ephemeral-EOA).
+ *   3. Construct `MuHavenClient` against the Wave-3 contract addresses
+ *      (`yieldDistributor`, `muhavenEscrow`, `investorRegistry`,
+ *      `yieldGate` — these live on `addresses`, not `v35Addresses`).
+ *   4. Call `distributeYield(totalYield, { onProgress })`. SDK runs
+ *      startDistribution → createYieldEscrows → fundEscrows internally,
+ *      emitting ProgressEvents the modal renders via the shared bus.
+ *   5. Return the LAST fund tx hash so the audit-commit POST anchors to
+ *      the "completed-when" tx (mirrors dispatchActionTxs' return policy).
+ *
+ * Defense-in-depth checks BEFORE any FHE work (operator pick 2026-05-19
+ * Q4 — mirrors Phase 1 H-1 binding):
+ *   - `preview.issuerAddress` MUST equal the connected kernel address.
+ *     Both fields are action-hash-bound on the backend's confirm token,
+ *     so this is a redundant client-side check that catches drift /
+ *     malicious-server cases before we pay gas on a kernel signature
+ *     against the wrong issuer of record.
+ *   - `preview.tokenAddress` MUST exist in `useIssuerTokensStore`.
+ *
+ *     CAVEAT (Security review HIGH-1, 2026-05-20): the SDK's
+ *     `distributeYield(totalYield)` does NOT take a tokenAddress. The
+ *     on-chain YieldDistributor singleton is wired to ONE MuHavenToken
+ *     at deploy time; the descriptor's `tokenAddress` is audit-metadata
+ *     only. Today on Arb Sepolia only one YieldDistributor exists, so
+ *     the registry-membership check is the strongest binding available
+ *     without resolving per-token distributors from the registry. If
+ *     Wave 5+ rolls out per-token YieldDistributors, this check needs
+ *     to upgrade to "preview.tokenAddress resolves to a per-token
+ *     YieldDistributor and that distributor's bound MuHavenToken
+ *     matches" — see follow-up in development/STATUS.md.
+ *
+ * Cancellation semantics (operator pick 2026-05-19 Q2): no SDK abort
+ * signal. The progress bus advances past 'idle' the moment the first
+ * stage fires; ConfirmModal disables Cancel from that point on.
+ *
+ * Concurrent-distribution guard (Code Reviewer M-3 / Security M-1,
+ * 2026-05-20): the bus is module-level so two distribute_yield runners
+ * in flight at the same time would interleave their progress events and
+ * mislead the modal. Fail closed if a prior distribution is still
+ * mid-pipeline.
+ */
+async function runDistribute(action: ActionDescriptor): Promise<string> {
+  if (action.kind !== 'distribute_yield') {
+    throw new AgentActionRunnerError('not a distribute_yield')
+  }
+
+  // Required addresses must be deployed. Zero-address signals a
+  // misconfigured env — fail closed BEFORE any FHE work or operator grant.
+  for (const slot of [
+    ['yieldDistributor', addresses.yieldDistributor],
+    ['muhavenEscrow', addresses.muhavenEscrow],
+    ['investorRegistry', addresses.investorRegistry],
+    ['yieldGate', addresses.yieldGate],
+  ] as const) {
+    if (isZeroAddress(slot[1])) {
+      throw new AgentActionRunnerError(
+        `MuHaven Wave-3 contract ${slot[0]} not deployed in this environment.`,
+      )
+    }
+  }
+
+  // Concurrent-distribution guard (Code Reviewer M-3 / Security M-1).
+  // Two runs writing to the same module-level bus would interleave
+  // progress events + corrupt the modal's "phase 2/3" display. Fail
+  // closed before any FHE / setOperator work. 'failed' and 'settled'
+  // are both terminal sentinel states the next distribution is allowed
+  // to reset over.
+  const progress = useAgentDistributeProgress()
+  const currentPhase = progress.state.value.phase
+  if (currentPhase !== 'idle' && currentPhase !== 'settled' && currentPhase !== 'failed') {
+    throw new AgentActionRunnerError(
+      'A previous yield distribution is still in progress — wait for it to settle before proposing another.',
+    )
+  }
+
+  // Action-hash-bound preview field reads. The backend pins these into
+  // the confirm token's action hash (see propose-distribute-yield.use-case.ts),
+  // so trusting them for binding checks is safe — any drift breaks the
+  // commit POST's hash equality check anyway.
+  const previewIssuer = readLowerAddress(action.preview, 'issuerAddress')
+  const previewToken = readLowerAddress(action.preview, 'tokenAddress')
+  const totalYieldRaw = action.preview.totalYieldUsd6
+  if (typeof totalYieldRaw !== 'string' || !/^\d+$/.test(totalYieldRaw)) {
+    throw new AgentActionRunnerError(
+      'ActionDescriptor (distribute_yield) preview missing valid totalYieldUsd6',
+    )
+  }
+  const totalYield = BigInt(totalYieldRaw)
+  if (totalYield <= 0n) {
+    throw new AgentActionRunnerError('distribute_yield totalYieldUsd6 must be > 0')
+  }
+  // Sanity cap (Security M-2): the on-chain encrypted-amount type is
+  // `euint64` so anything above 2^64-1 would either silently truncate
+  // or revert deep in CoFHE land. Cap at $100M (1e8 USD, 1e14 units
+  // base-6) — a per-distribution number well above any realistic
+  // hackathon-demo amount. A malicious LLM proposing `'18446744073709551615'`
+  // (uint64 max ≈ $18.4T) is the threat shape this closes.
+  const MAX_TOTAL_YIELD_USD6 = 100_000_000_000_000n // $100M in base-6 USDC
+  if (totalYield > MAX_TOTAL_YIELD_USD6) {
+    throw new AgentActionRunnerError(
+      `distribute_yield totalYieldUsd6 exceeds the ${MAX_TOTAL_YIELD_USD6} cap (~$100M). Propose a smaller distribution.`,
+    )
+  }
+
+  // Label length (Security M-3): backend caps at 200 chars before
+  // hashing the actionPayload (propose-distribute-yield.use-case.ts:102).
+  // Mirror the cap client-side so a future backend bug doesn't ship a
+  // 1MB label that floods the audit POST.
+  const labelRaw = action.preview.label
+  if (typeof labelRaw !== 'string' || labelRaw.length > 200) {
+    throw new AgentActionRunnerError(
+      'ActionDescriptor (distribute_yield) preview.label must be a string ≤ 200 chars',
+    )
+  }
+
+  // H-1 analog — kernel binding. Lazy import keeps the runner usable
+  // from non-Vue contexts (mirrors runBuy's lazy useWalletStore import).
+  const { useWalletStore } = await import('@/stores/wallet')
+  const wallet = useWalletStore()
+  const kernelAddress = wallet.address as string | null
+  if (!kernelAddress) {
+    throw new AgentActionRunnerError(
+      'No connected kernel address — sign in before distributing yield.',
+    )
+  }
+  if (kernelAddress.toLowerCase() !== previewIssuer) {
+    throw new AgentActionRunnerError(
+      `distribute_yield preview.issuerAddress (${previewIssuer}) does not match connected kernel (${kernelAddress.toLowerCase()})`,
+    )
+  }
+
+  // H-1 analog — token registry binding. Auto-refresh once if the
+  // store is empty (typical pre-load state); after refresh, an absent
+  // token is a hard failure.
+  const { useIssuerTokensStore } = await import('@/stores/issuer-tokens')
+  const issuerTokens = useIssuerTokensStore()
+  let hasToken = issuerTokens.tokens.some(
+    (t: { address: string }) => t.address.toLowerCase() === previewToken,
+  )
+  if (!hasToken && typeof issuerTokens.load === 'function' && issuerTokens.tokens.length === 0) {
+    try {
+      await issuerTokens.load()
+      hasToken = issuerTokens.tokens.some(
+        (t: { address: string }) => t.address.toLowerCase() === previewToken,
+      )
+    } catch (err) {
+      console.warn('[runDistribute] issuer tokens load failed:', err)
+    }
+  }
+  if (!hasToken) {
+    throw new AgentActionRunnerError(
+      `distribute_yield preview.tokenAddress (${previewToken}) is not registered to this issuer kernel`,
+    )
+  }
+
+  const fhe = useFhe()
+  await fhe.initialize?.()
+
+  // Pre-flight operator grant on mhUSDC → yieldDistributor. Same
+  // idempotent-long-expiry posture as runBuy's setOperator on the
+  // Subscription contract. Required because YieldDistributor pulls
+  // mhUSDC from the issuer via `confidentialTransferFrom` during
+  // fundEscrows; without an operator approval the pull reverts and
+  // the FHE.select silent-fail short-circuits the payout. The
+  // wrapper rotation (see memory `reference_phase7_5_pusdc_rotation`)
+  // means YieldDistributor's on-chain `pusdc` field now points at
+  // MuHavenStable, so MuHavenStableService is the right target.
+  const expiry = BigInt(Math.floor(Date.now() / 1000) + OPERATOR_EXPIRY_SECONDS)
+  await MuHavenStableService.setOperator(addresses.yieldDistributor, expiry)
+
+  // Reset the progress bus so a prior settled / failed distribution
+  // doesn't bleed into this one. ConfirmModal also resets on
+  // `props.action.toolCallId` change, but resetting here keeps the
+  // runner self-contained for tests.
+  progress.reset()
+
+  const ctx = await buildWriteContext()
+  const sdk = new MuHavenClient({
+    publicClient: ctx.publicClient,
+    sender: ctx.sender,
+    cofheClient: ctx.cofheClient,
+    addresses: {
+      muhavenEscrow: addresses.muhavenEscrow,
+      yieldDistributor: addresses.yieldDistributor,
+      investorRegistry: addresses.investorRegistry,
+      yieldGate: addresses.yieldGate,
+    },
+  })
+
+  const result = await sdk.distributeYield(totalYield, {
+    onProgress: (evt) => {
+      try {
+        progress.applyEvent(evt)
+      } catch (err) {
+        // Bus updates are best-effort — a thrown handler must never
+        // abort the SDK pipeline mid-flight. Worst case the modal's
+        // progress bar freezes; the on-chain pipeline still finishes
+        // and the audit-commit fires on the runner's return value.
+        console.warn('[runDistribute] progress bus failed:', err)
+      }
+    },
+  })
+
+  progress.markSettled()
+
+  // Return the LAST fund tx hash. `fundTxHashes` is guaranteed non-empty
+  // by the SDK's contract — startDistribution reverts on empty registry,
+  // so by here we always have escrows to fund. If this invariant ever
+  // changes upstream we'd rather throw than silently lose the audit anchor.
+  const lastFundHash = result.fundTxHashes[result.fundTxHashes.length - 1]
+  if (!lastFundHash) {
+    throw new AgentActionRunnerError(
+      'distribute_yield completed without a fund tx hash — unexpected SDK state',
+    )
+  }
+  return lastFundHash
+}
+
+/** Address reader that lowercases + validates the shape. Throws on miss. */
+function readLowerAddress(preview: Record<string, unknown>, field: string): string {
+  const raw = preview[field]
+  if (typeof raw !== 'string' || !/^0x[a-fA-F0-9]{40}$/.test(raw)) {
+    throw new AgentActionRunnerError(
+      `distribute_yield preview missing valid ${field}`,
+    )
+  }
+  return raw.toLowerCase()
 }
 
 /**
