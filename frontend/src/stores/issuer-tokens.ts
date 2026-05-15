@@ -44,8 +44,24 @@ export const useIssuerTokensStore = defineStore('issuer-tokens', () => {
     activeTokens: activeTokenCount.value,
   }))
 
+  /**
+   * Pick a token in the master-detail view. Address is normalized to
+   * lowercase before storage so the `selected` computed can do a
+   * case-insensitive `find` without worrying about whether the caller
+   * passed a checksummed or lowercase address. Matters because
+   * ApplyPage's post-deploy "View {SYMBOL}" CTA passes
+   * `wizard.tokenAddress` (raw from the SSE deploy event, casing varies
+   * by viem version), while `issuerApi.getTokens()` echoes back the
+   * Postgres row's `address` field which is canonical-lowercase per
+   * the address-case-at-repo-boundary rule.
+   *
+   * Closes parallel-review HIGH 2026-05-19: pre-fix a checksummed
+   * SSE address paired against a lowercase tokens-list silently fell
+   * through `find` → `list[0]` fallback → user landed on the WRONG
+   * token's detail panel after a successful deploy.
+   */
   function selectToken(address: string) {
-    selectedAddress.value = address
+    selectedAddress.value = address.toLowerCase()
   }
 
   async function load() {

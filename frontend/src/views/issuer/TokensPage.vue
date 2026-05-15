@@ -47,10 +47,21 @@ const aggregate = computed(() => store.aggregateStats)
 // first active / first overall token), so this just looks it up; the
 // `?? store.tokens[0]` is a belt-and-suspenders fallback for the brief
 // moment between tokens populating and the default being set.
+//
+// Comparison is case-insensitive because `selectedAddress` may be
+// lowercased (store.selectToken normalises) OR raw (default-select in
+// store.load passes through whatever `t.address` was). `t.address` is
+// likewise the API-supplied case. Strict `===` here previously caused a
+// silent wrong-selection bug when ApplyPage's "View {SYMBOL}" CTA
+// passed a checksummed SSE address against the lowercased Postgres
+// echo (parallel-review HIGH 2026-05-19). Match every comparison via
+// lower() to stay on the same rule used at every backend repo
+// boundary (memory: feedback_address_case_at_repo_boundary).
 const selected = computed(() => {
   const list = store.tokens
   if (list.length === 0) return null
-  return list.find(t => t.address === store.selectedAddress) ?? list[0] ?? null
+  const target = store.selectedAddress?.toLowerCase() ?? null
+  return list.find(t => t.address.toLowerCase() === target) ?? list[0] ?? null
 })
 </script>
 

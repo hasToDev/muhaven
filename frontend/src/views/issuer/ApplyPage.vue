@@ -396,9 +396,36 @@ function nextStep() {
   wizard.setStep((wizard.step + 1) as 1 | 2 | 3 | 4 | 5 | 6)
 }
 
+/**
+ * Lowest reachable internal step for the current route mode.
+ *
+ * - `/apply-issuer` (become-issuer): step 1 (Welcome+KYB) is the floor.
+ * - `/tokens/new` (new-token): step 2 (Token basics) is the floor — the
+ *   Welcome step is hidden from the stepper and the body for that step
+ *   is the first-time KYB form (which an approved issuer can't and
+ *   shouldn't see).
+ *
+ * Closes parallel-review HIGH 2026-05-19: pre-fix, `prevStep` from step 2
+ * in new-token mode would land step on 1 → `<div v-if="wizard.step === 1">`
+ * Welcome+KYB body would render with no matching pill in the stepper.
+ */
+const minStep = computed(() => (isNewTokenMode.value ? 2 : 1))
+
+/**
+ * Map an internal wizard step (1-5) to the number rendered to the user
+ * in the resume-dialog copy. In new-token mode the Welcome pill is
+ * filtered out of the stepper, so internal step 2 reads as "step 1" to
+ * the user; quoting "step 2" in the dialog while the pill bar shows 4
+ * positions would be confusing.
+ */
+const resumeDisplayStep = computed(() => {
+  const entry = STEP_LABELS.value.find((s) => s.idx === wizard.step)
+  return entry?.displayNumber ?? wizard.step
+})
+
 function prevStep() {
   formError.value = null
-  if (wizard.step <= 1) return
+  if (wizard.step <= minStep.value) return
   wizard.setStep((wizard.step - 1) as 1 | 2 | 3 | 4 | 5 | 6)
 }
 
@@ -500,7 +527,11 @@ function goToTokensWithSelect() {
       class="rounded-xl border border-gold/30 bg-gold/8 dark:bg-signal/5 px-6 py-4 flex flex-col md:flex-row md:items-center gap-3"
     >
       <p class="font-sans text-sm text-midnight dark:text-white flex-1">
-        Resume your application from step {{ wizard.step }}?
+        {{
+          isNewTokenMode
+            ? `Resume your in-flight token deploy from step ${resumeDisplayStep}?`
+            : `Resume your application from step ${resumeDisplayStep}?`
+        }}
       </p>
       <div class="flex items-center gap-2">
         <MButton variant="outline" size="sm" @click="discardDraft">Discard</MButton>
@@ -855,7 +886,7 @@ function goToTokensWithSelect() {
           class="flex items-center justify-between gap-3 pt-4 border-t border-haze/40 dark:border-white/5"
         >
           <button
-            v-if="wizard.step > 1"
+            v-if="wizard.step > minStep"
             type="button"
             class="font-sans text-xs text-cool hover:text-compute dark:hover:text-signal transition-colors"
             @click="prevStep"
