@@ -9,6 +9,12 @@ deployment.json
 .env.stage
 .env.stage.local
 
+# Oracle staleness monitor (scripts/oracle-staleness-check.sh) — carries
+# Telegram bot token + operator chat ID. The `.example` variant in
+# scripts/ stays tracked.
+.monitor.env
+.monitor.env.local
+
 # Dependencies
 node_modules/
 bun.lockb
