@@ -69,7 +69,7 @@ export interface DeployProgressEvent {
 export type DeployProgressCallback = (event: DeployProgressEvent) => void | Promise<void>;
 
 export interface DeployTokenInput {
-  /** Token symbol (3-8 chars uppercase, pre-checked unique). */
+  /** Token symbol (3-10 chars uppercase, pre-checked unique). */
   symbol: string;
   /** Token display name. */
   name: string;

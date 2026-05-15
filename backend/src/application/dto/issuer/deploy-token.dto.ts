@@ -12,9 +12,9 @@ export const DeployTokenDtoSchema = z.object({
     .string()
     .trim()
     .min(3)
-    .max(8)
+    .max(10)
     .toUpperCase()
-    .regex(/^[A-Z0-9]+$/, 'Symbol must be 3-8 uppercase alphanumeric chars'),
+    .regex(/^[A-Z0-9]+$/, 'Symbol must be 3-10 uppercase alphanumeric chars'),
   name: z.string().trim().min(2).max(64),
   asset_class: z.enum([
     'treasury',

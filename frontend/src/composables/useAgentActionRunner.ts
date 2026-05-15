@@ -110,7 +110,7 @@ export async function runAgentAction(action: ActionDescriptor): Promise<RunResul
         return { ok: true, txHash: null }
       case 'unpause_token':
       case 'kyc_add':
-      case 'kyc_remove':
+      case 'kyc_remove': {
         // Wave 4 P7 issuer-side propose tools. All three share the same
         // backend descriptor shape: `sdkCall.args.txs[]` carrying one or
         // two `(contract, address, fn, args)` tuples. dispatchActionTxs
@@ -118,7 +118,16 @@ export async function runAgentAction(action: ActionDescriptor): Promise<RunResul
         // the "completed-when" tx (operator pick 2026-05-19; kyc_add
         // tier-2 partial-revert surfaces a clear error so the issuer can
         // manually re-propose kyc_remove for rollback).
-        return { ok: true, txHash: await dispatchActionTxs(action) }
+        const txHash = await dispatchActionTxs(action)
+        // Invalidate the issuer-side caches so /tokens + /investors
+        // re-fetch on the next visit. Without this, ConfirmModal closes
+        // showing "Settled" but the issuer's /tokens page still renders
+        // the pre-action snapshot (e.g. status=paused for a token we
+        // just unpaused) until a manual reload. Mirrors the
+        // invalidateIssuerCaches() pattern in ApplyPage.vue 2026-05-09.
+        await invalidateIssuerCachesAfterP7Write()
+        return { ok: true, txHash }
+      }
       default:
         return { ok: false, error: `Unknown action kind: ${(action as ActionDescriptor).kind}` }
     }
@@ -313,4 +322,28 @@ async function dispatchActionTxs(action: ActionDescriptor): Promise<Hash> {
   // here. Cast keeps the function signature honest without a runtime
   // assertion that would never fire.
   return lastTxHash as Hash
+}
+
+/**
+ * Invalidate the issuer-side stores so /tokens + /investors re-fetch on
+ * the next visit. Called after a successful P7 issuer-side write
+ * (unpause_token, kyc_add, kyc_remove). Reuses the same pattern as
+ * ApplyPage.vue's invalidateIssuerCaches() post-deploy hook (commit
+ * 869eee1, 2026-05-09).
+ *
+ * Stores are imported lazily so this composable stays usable from
+ * non-Vue contexts (e.g. future Node-side dispatchers); mirrors the
+ * runBuy mhUSDC-balance gate's lazy `useWalletStore` import.
+ */
+async function invalidateIssuerCachesAfterP7Write(): Promise<void> {
+  try {
+    const { useIssuerTokensStore } = await import('@/stores/issuer-tokens')
+    const { useIssuerInvestorsStore } = await import('@/stores/issuer-investors')
+    useIssuerTokensStore().reset()
+    useIssuerInvestorsStore().reset()
+  } catch (err) {
+    // Non-fatal — the action already settled on-chain. Worst case the
+    // issuer reloads /tokens manually (the pre-fix behaviour).
+    console.warn('[runner] post-P7-write cache invalidate failed:', err)
+  }
 }

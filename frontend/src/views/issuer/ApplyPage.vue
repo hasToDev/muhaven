@@ -322,7 +322,7 @@ async function pollOnce(deployId: string) {
 // ── Step navigation guards ─────────────────────────────────────────
 const canAdvanceFromStep2 = computed(() => {
   const f = wizard.formData
-  return /^[A-Z0-9]{3,8}$/.test(f.symbol.trim().toUpperCase()) && f.name.trim().length >= 2
+  return /^[A-Z0-9]{3,10}$/.test(f.symbol.trim().toUpperCase()) && f.name.trim().length >= 2
 })
 const canAdvanceFromStep3 = computed(() => {
   const f = wizard.formData
@@ -331,7 +331,7 @@ const canAdvanceFromStep3 = computed(() => {
 
 function nextStep() {
   if (wizard.step === 2 && !canAdvanceFromStep2.value) {
-    formError.value = 'Symbol (3-8 uppercase alphanumeric) and name (2+ chars) required'
+    formError.value = 'Symbol (3-10 uppercase alphanumeric) and name (2+ chars) required'
     return
   }
   if (wizard.step === 3 && !canAdvanceFromStep3.value) {
@@ -511,12 +511,12 @@ function deployStepUi(key: DeployStepKey) {
             <div class="flex flex-col gap-4">
               <label class="flex flex-col gap-1.5">
                 <span class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool font-semibold">
-                  Symbol (3-8 uppercase)
+                  Symbol (3-10 uppercase)
                 </span>
                 <input
                   v-model="wizard.formData.symbol"
                   type="text"
-                  maxlength="8"
+                  maxlength="10"
                   class="px-3 py-2 rounded-lg bg-white dark:bg-white/5 border border-haze dark:border-white/10 font-mono text-sm uppercase focus:outline-none focus:border-gold/60 transition-colors"
                   placeholder="TBILL2"
                   @input="(e: Event) => wizard.updateForm({ symbol: ((e.target as HTMLInputElement).value || '').toUpperCase() })"
