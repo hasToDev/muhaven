@@ -13,10 +13,24 @@
 #     down the monitor.
 #
 # Configuration (env vars):
-#   THRESHOLD_HR             — staleness alert threshold (default 12h).
-#                              Contract's max-staleness is 36h, so 12h
-#                              gives ~24h of slack to act before
-#                              Subscription.purchase reverts.
+#   THRESHOLD_HR             — staleness alert threshold (default 28h).
+#                              Contract's max-staleness is 36h. The
+#                              nav-publisher refreshes a token only when
+#                              its age crosses ½ of max-staleness (= 18h
+#                              for a 36h window — see
+#                              `nav-publisher/src/publisher.ts:232`), so
+#                              under normal operation a token's age
+#                              oscillates between 0 and ~27h (18h refresh
+#                              trigger + up to 9h until the next cycle
+#                              fires). 28h leaves the 8h hard-slack
+#                              before contract reverts but stays above
+#                              the publisher's normal cadence so we
+#                              only alert on REAL stalls.
+#                              History: defaulted to 12h between
+#                              2026-05-17 (monitor ship) and 2026-05-19
+#                              (this bump) which caused false-alarm
+#                              alerts whenever a token sat in the 12-18h
+#                              "publisher considers fresh" window.
 #   ARB_SEPOLIA_RPC_URL      — RPC endpoint (default public Arb Sepolia).
 #   TELEGRAM_BOT_TOKEN       — required for alerts; otherwise stdout-only.
 #   TELEGRAM_OPERATOR_CHAT_ID — required for alerts; otherwise stdout-only.
@@ -61,7 +75,7 @@ if [ -f "$MONITOR_ENV_FILE" ]; then
   set +a
 fi
 
-THRESHOLD_HR="${THRESHOLD_HR:-12}"
+THRESHOLD_HR="${THRESHOLD_HR:-28}"
 RPC_URL="${ARB_SEPOLIA_RPC_URL:-https://sepolia-rollup.arbitrum.io/rpc}"
 ORACLE_ADDR="0xD30069114dFC83C714B04d6036dEfa64d2E9d583"
 
