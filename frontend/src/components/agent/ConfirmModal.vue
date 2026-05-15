@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ShieldCheck, Lock, X, Loader2, AlertTriangle, AlertCircle, ExternalLink, ArrowRight, Send } from 'lucide-vue-next'
 import {
@@ -87,12 +87,19 @@ const useDashboardFallback = ref(false)
 
 // P7 Phase 2 — distribute_yield progress bus. Subscribes for every modal
 // instance but only renders the 3-phase bar when the active action is
-// `distribute_yield`. The runner writes to the same bus.
+// `distribute_yield` AND the bus belongs to the displayed descriptor
+// (bus.toolCallId === props.action.toolCallId — closes the
+// descriptor-swap-mid-flight UX bug surfaced by the second-pass review).
+// The runner writes to the same bus via runId-tied methods.
 const distributeProgress = useAgentDistributeProgress()
+
+/** Ref used to programmatically move focus to the 3-phase bar after
+ *  Authorize, so keyboard / SR users don't land on `<body>` (a11y F2). */
+const distributeProgressRef = ref<HTMLElement | null>(null)
 
 watch(
   () => props.action?.toolCallId,
-  (newId, oldId) => {
+  () => {
     // Reset on every new action.
     status.value = 'idle'
     txHash.value = null
@@ -101,18 +108,15 @@ watch(
     checkoutResult.value = null
     // Reset the distribute progress bus so a prior settled / failed
     // distribution doesn't bleed into the modal's preview of the next
-    // action. Self-review guard (Frontend H-1, 2026-05-20): only reset
-    // when the bus is in a terminal state. If the bus is mid-flight
-    // (the user is still authorizing the previous distribute_yield)
-    // we leave the state alone — wiping it now would collapse the
-    // progress bar to idle while the SDK keeps emitting events for
-    // the previous descriptor. The toolCallId watcher fires on a
-    // descriptor SWAP (e.g. HavenBot lands a new tool_call mid-flight),
-    // not on the close+reopen of a single action.
-    if (newId === oldId) return
+    // action. Second-pass review (2026-05-21): only reset when the bus
+    // is in a terminal state. If the bus is mid-flight, the runner
+    // owns the runId — the modal's `v-if` on the 3-phase bar already
+    // gates rendering by `bus.toolCallId === props.action.toolCallId`,
+    // so a stale mid-flight bus state stays invisible for the new
+    // descriptor without us touching the bus.
     const phase = distributeProgress.state.value.phase
     if (phase === 'idle' || phase === 'settled' || phase === 'failed') {
-      distributeProgress.reset()
+      distributeProgress.reset(null)
     }
   },
 )
@@ -156,21 +160,67 @@ function distributePhaseState(
 }
 
 /**
+ * The bus belongs to the descriptor currently displayed by this modal.
+ * Second-pass review (Reality F7, 2026-05-21): on a descriptor swap
+ * mid-flight, the bus may still be tagged with A's toolCallId while
+ * the modal renders B's preview. Without this gate, B would render
+ * with A's progress bar + A's failure attribution. Gating every
+ * bus-driven render on this match keeps B clean.
+ */
+const isBusForCurrentAction = computed(() => {
+  const a = props.action
+  if (!a) return false
+  return distributeProgress.state.value.toolCallId === a.toolCallId
+})
+
+/**
+ * The 3-phase progress bar renders iff (a) this is a distribute_yield
+ * descriptor, (b) the bus has advanced past idle, AND (c) the bus
+ * belongs to this descriptor's toolCallId. Failed/settled bars still
+ * render so the user sees the final state before dismissing.
+ */
+const showDistributeBar = computed(() => {
+  if (!isDistribute.value) return false
+  if (!isBusForCurrentAction.value) return false
+  return distributeProgress.state.value.phase !== 'idle'
+})
+
+/**
  * Q2 operator pick (2026-05-19) — disable Cancel once any distribute
  * phase has advanced past idle. The SDK has no abort signal mid-flight;
  * a Cancel click at that point would only close the modal while the
  * on-chain pipeline kept running, then the audit-commit wouldn't fire.
  *
- * Self-review fix (Code Reviewer H-1, 2026-05-20): include 'failed' in
- * the cancellable set. When the runner throws mid-pipeline the bus is
- * pinned to 'failed' + the modal's `status === 'error'` surface
- * renders; the issuer needs Cancel to dismiss the modal.
+ * Self-review fix 2026-05-20: include 'failed' in the cancellable set.
+ * When the runner throws mid-pipeline the bus is pinned to 'failed' +
+ * the modal's `status === 'error'` surface renders; the issuer needs
+ * Cancel to dismiss the modal. Also gated on `isBusForCurrentAction`
+ * so a stale A-run bus doesn't lock B's Cancel button.
  */
 const isDistributeRunning = computed(() => {
   if (!isDistribute.value) return false
+  if (!isBusForCurrentAction.value) return false
   const phase = distributeProgress.state.value.phase
   return phase !== 'idle' && phase !== 'settled' && phase !== 'failed'
 })
+
+/**
+ * Cancel-disabled predicate. Used as `aria-disabled` rather than the
+ * native `disabled` attribute (a11y F4) so the button stays focusable
+ * and assistive tech still announces it + the tooltip. The click
+ * handler manually no-ops when disabled.
+ */
+const cancelIsDisabled = computed(() =>
+  status.value === 'awaiting' ||
+  status.value === 'submitting' ||
+  status.value === 'committing' ||
+  isDistributeRunning.value,
+)
+
+function onCancelClick(): void {
+  if (cancelIsDisabled.value) return
+  close()
+}
 
 const distributeBatchHint = computed(() => {
   if (!isDistribute.value) return null
@@ -304,6 +354,17 @@ async function authorize(): Promise<void> {
   }
   status.value = 'awaiting'
   emit('confirm', props.action)
+  // a11y F2: after Authorize, the Authorize CTA is replaced by a non-
+  // focusable spinner pill — keyboard / screen-reader users would lose
+  // focus to <body>. Move focus to the progress container (for
+  // `distribute_yield` only; for the simpler kinds the spinner pill is
+  // short-lived enough that the focus-loss is acceptable today). The
+  // ref is `tabindex="-1"` so it can be programmatically focused without
+  // joining the tab order.
+  if (props.action.kind === 'distribute_yield') {
+    await nextTick()
+    distributeProgressRef.value?.focus()
+  }
 }
 
 /**
@@ -634,6 +695,7 @@ const arbiscanUrl = computed(() =>
     aria-labelledby="confirm-modal-title"
     data-testid="agent-confirm-modal"
     :data-status="status"
+    :aria-busy="isDistributeRunning || status === 'awaiting' || status === 'submitting' || status === 'committing'"
     class="fixed inset-0 z-50 flex items-center justify-center px-4"
   >
     <!-- Backdrop -->
@@ -722,17 +784,18 @@ const arbiscanUrl = computed(() =>
 
         <!-- P7 Phase 2 — 3-phase progress bar for distribute_yield.
              Renders once the pipeline starts (i.e. phase has advanced past
-             idle) and stays visible after settle / failure so the "all
-             three done" frame (or the "failed at step N" frame) is the
-             last thing the issuer sees before they dismiss. Operator pick
-             2026-05-19 Q1: inside-modal location. -->
+             idle) for the CURRENT descriptor (bus toolCallId match). Stays
+             visible after settle / failure so the "all three done" frame
+             (or the "failed at step N" frame) is the last thing the issuer
+             sees before they dismiss. Operator pick 2026-05-19 Q1:
+             inside-modal location. Focus moves here from the Authorize CTA
+             on click (a11y F2) so keyboard / SR users don't lose context. -->
         <div
-          v-if="isDistribute && distributeProgress.state.value.phase !== 'idle'"
+          v-if="showDistributeBar"
+          ref="distributeProgressRef"
+          tabindex="-1"
           data-testid="agent-confirm-distribute-progress"
-          role="status"
-          aria-live="polite"
-          aria-atomic="false"
-          class="rounded-xl border px-4 py-3 mb-5"
+          class="rounded-xl border px-4 py-3 mb-5 focus:outline-none"
           :class="distributeProgress.state.value.phase === 'failed'
             ? 'border-negative/25 bg-negative/5'
             : 'border-haze dark:border-white/10 bg-mist/40 dark:bg-[#0d0e10]'"
@@ -742,22 +805,32 @@ const arbiscanUrl = computed(() =>
               v-if="isDistributeRunning"
               :size="14"
               :stroke-width="2"
-              class="animate-spin text-compute dark:text-signal flex-shrink-0"
+              aria-hidden="true"
+              class="motion-safe:animate-spin text-compute dark:text-signal flex-shrink-0"
             />
             <ShieldCheck
               v-else-if="distributeProgress.state.value.phase === 'settled'"
               :size="14"
               :stroke-width="2"
+              aria-hidden="true"
               class="text-positive flex-shrink-0"
             />
             <AlertCircle
               v-else-if="distributeProgress.state.value.phase === 'failed'"
               :size="14"
               :stroke-width="2"
+              aria-hidden="true"
               class="text-negative flex-shrink-0"
             />
+            <!-- a11y F1+F3+F5: the header is the ONLY live-region carrier
+                 for the bar, so per-batch progress ticks below don't spam
+                 AT. `role="status"` already implies aria-live="polite";
+                 don't duplicate. The header transition to "Distribution
+                 settled" / "Distribution failed at step N of 3" gets
+                 announced; the per-batch counter does NOT. -->
             <p
               data-testid="agent-confirm-distribute-step-label"
+              role="status"
               class="font-sans text-[10px] uppercase tracking-[0.18em] font-semibold"
               :class="{
                 'text-positive': distributeProgress.state.value.phase === 'settled',
@@ -768,20 +841,19 @@ const arbiscanUrl = computed(() =>
               {{ distributeStepLabel }}
             </p>
           </div>
-          <ol role="list" class="space-y-2.5">
+          <ol role="list" aria-hidden="true" class="space-y-2.5">
             <li
               v-for="(phase, idx) in distributePhaseMeta"
               :key="phase.key"
               :data-testid="`agent-confirm-distribute-phase-${phase.key}`"
               :data-state="distributePhaseState(phase.key)"
-              :aria-current="distributePhaseState(phase.key) === 'active' ? 'step' : undefined"
               class="flex items-start gap-3"
             >
               <span
                 class="mt-0.5 w-5 h-5 rounded-full border flex items-center justify-center
                        flex-shrink-0 text-[11px] font-semibold font-sans transition-colors"
                 :class="{
-                  'border-haze dark:border-white/15 text-cool bg-white dark:bg-[#1f1e1e]':
+                  'border-haze dark:border-white/15 text-midnight/55 dark:text-cool bg-white dark:bg-[#1f1e1e]':
                     distributePhaseState(phase.key) === 'pending',
                   'border-compute/50 dark:border-signal/50 text-compute dark:text-signal bg-gold/15 dark:bg-signal/10':
                     distributePhaseState(phase.key) === 'active',
@@ -795,11 +867,13 @@ const arbiscanUrl = computed(() =>
                   v-if="distributePhaseState(phase.key) === 'done'"
                   :size="11"
                   :stroke-width="2.4"
+                  aria-hidden="true"
                 />
                 <AlertCircle
                   v-else-if="distributePhaseState(phase.key) === 'failed'"
                   :size="11"
                   :stroke-width="2.4"
+                  aria-hidden="true"
                 />
                 <span v-else>{{ idx + 1 }}</span>
               </span>
@@ -807,14 +881,14 @@ const arbiscanUrl = computed(() =>
                 <p
                   class="font-sans text-sm font-medium leading-tight"
                   :class="distributePhaseState(phase.key) === 'pending'
-                    ? 'text-cool'
+                    ? 'text-midnight/65 dark:text-cool'
                     : distributePhaseState(phase.key) === 'failed'
                       ? 'text-negative'
                       : 'text-midnight dark:text-white'"
                 >
                   {{ phase.label }}
                 </p>
-                <p class="font-sans text-xs text-cool leading-snug mt-0.5">
+                <p class="font-sans text-xs text-midnight/65 dark:text-cool leading-snug mt-0.5">
                   <template v-if="distributePhaseState(phase.key) === 'active' && distributeBatchHint">
                     {{ distributeBatchHint }}
                   </template>
@@ -825,9 +899,20 @@ const arbiscanUrl = computed(() =>
               </div>
             </li>
           </ol>
+          <!-- a11y F5: assertive live region for the failed-state error
+               message. role="alert" ensures the failure is announced
+               IMMEDIATELY rather than queued behind the header's polite
+               announcements. -->
+          <p
+            v-if="distributeProgress.state.value.phase === 'failed' && errorMsg"
+            role="alert"
+            class="sr-only"
+          >
+            Distribution failed: {{ errorMsg }}
+          </p>
           <p
             v-if="isDistributeRunning"
-            class="font-sans text-[11px] text-cool leading-snug mt-3"
+            class="font-sans text-[11px] text-midnight/65 dark:text-cool leading-snug mt-3"
           >
             On-chain pipeline can't be cancelled mid-flight — closing this
             modal now stops the audit-commit but the txs will still settle.
@@ -939,15 +1024,18 @@ const arbiscanUrl = computed(() =>
           <button
             v-if="status !== 'success'"
             type="button"
-            @click="close"
+            @click="onCancelClick"
             data-testid="agent-confirm-cancel-cta"
             class="flex-1 py-3 px-4 rounded-xl font-sans text-sm font-medium
                    border border-haze dark:border-white/10
                    bg-white dark:bg-[#1f1e1e]
                    hover:bg-mist dark:hover:bg-[#252323]
                    text-midnight dark:text-white
-                   transition-colors cursor-pointer"
-            :disabled="status === 'awaiting' || status === 'submitting' || status === 'committing' || isDistributeRunning"
+                   transition-colors"
+            :class="cancelIsDisabled
+              ? 'cursor-not-allowed opacity-60'
+              : 'cursor-pointer'"
+            :aria-disabled="cancelIsDisabled ? 'true' : undefined"
             :title="isDistributeRunning
               ? 'Pipeline mid-flight — wait for it to settle. See the progress bar above.'
               : undefined"

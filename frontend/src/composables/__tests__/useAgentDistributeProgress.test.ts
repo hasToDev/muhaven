@@ -3,143 +3,241 @@
  * the runDistribute composable writes to + ConfirmModal reads from.
  *
  * Scope:
- *   - Stage → phase mapping.
- *   - Monotonic phase advance (no regression on stale events).
- *   - Reset semantics between distributions.
- *   - markFailed pinning + late-event refusal after failure.
+ *   - reset returns a fresh runId + stores the toolCallId.
+ *   - Stage → phase mapping with monotonic advance.
+ *   - runId staleness — events for an old runId are dropped.
+ *   - Terminal-state guards on applyEvent / markSettled / markFailed.
+ *   - markFailed records the active phase as failedAt.
  */
 import { describe, it, expect, beforeEach } from 'vitest'
 import { useAgentDistributeProgress } from '../useAgentDistributeProgress'
 
+function freshBus() {
+  // Reset twice to ensure we start from a known runId (the module-level
+  // state persists across tests within a file).
+  const bus = useAgentDistributeProgress()
+  bus.reset(null)
+  return bus
+}
+
 describe('useAgentDistributeProgress', () => {
   beforeEach(() => {
-    useAgentDistributeProgress().reset()
+    // Reset to a clean baseline before each test. runId monotonically
+    // increments — tests don't assert specific runId numbers, only
+    // before/after relationships.
+    useAgentDistributeProgress().reset(null)
   })
 
-  it('starts in idle with no failedAt', () => {
-    const p = useAgentDistributeProgress()
-    expect(p.state.value.phase).toBe('idle')
-    expect(p.state.value.failedAt).toBeNull()
+  describe('reset', () => {
+    it('returns a monotonically increasing runId', () => {
+      const bus = useAgentDistributeProgress()
+      const a = bus.reset(null)
+      const b = bus.reset(null)
+      const c = bus.reset(null)
+      expect(b).toBeGreaterThan(a)
+      expect(c).toBeGreaterThan(b)
+    })
+
+    it('stores the toolCallId for downstream modal gating', () => {
+      const bus = useAgentDistributeProgress()
+      bus.reset('tc_abc123')
+      expect(bus.state.value.toolCallId).toBe('tc_abc123')
+    })
+
+    it('clears every per-run field back to idle', () => {
+      const bus = useAgentDistributeProgress()
+      const runId = bus.reset('tc_one')
+      bus.applyEventForRun(runId, {
+        stage: 'startDistribution',
+        current: 1,
+        total: 1,
+        txHash: '0xabc',
+        message: 'mid',
+      })
+      bus.markFailedForRun(runId)
+      bus.reset(null)
+      expect(bus.state.value.phase).toBe('idle')
+      expect(bus.state.value.failedAt).toBeNull()
+      expect(bus.state.value.toolCallId).toBeNull()
+      expect(bus.state.value.lastTxHash).toBeNull()
+      expect(bus.state.value.message).toBeNull()
+      expect(bus.state.value.current).toBe(0)
+      expect(bus.state.value.total).toBe(0)
+    })
   })
 
-  it('advances idle → start on startDistribution stage', () => {
-    const p = useAgentDistributeProgress()
-    p.applyEvent({ stage: 'startDistribution', current: 1, total: 1, txHash: '0xstart' })
-    expect(p.state.value.phase).toBe('start')
-    expect(p.state.value.lastStage).toBe('startDistribution')
-    expect(p.state.value.lastTxHash).toBe('0xstart')
+  describe('applyEventForRun — phase advance', () => {
+    it('idle → start on startDistribution', () => {
+      const bus = freshBus()
+      const runId = bus.reset(null)
+      bus.applyEventForRun(runId, { stage: 'startDistribution', current: 1, total: 1, txHash: '0xstart' })
+      expect(bus.state.value.phase).toBe('start')
+      expect(bus.state.value.lastStage).toBe('startDistribution')
+      expect(bus.state.value.lastTxHash).toBe('0xstart')
+    })
+
+    it('start → escrows on batchCreate', () => {
+      const bus = freshBus()
+      const runId = bus.reset(null)
+      bus.applyEventForRun(runId, { stage: 'startDistribution', current: 1, total: 1 })
+      bus.applyEventForRun(runId, { stage: 'batchCreate', current: 1, total: 2 })
+      expect(bus.state.value.phase).toBe('escrows')
+      expect(bus.state.value.current).toBe(1)
+      expect(bus.state.value.total).toBe(2)
+    })
+
+    it('escrows → fund on processBatch', () => {
+      const bus = freshBus()
+      const runId = bus.reset(null)
+      bus.applyEventForRun(runId, { stage: 'startDistribution', current: 1, total: 1 })
+      bus.applyEventForRun(runId, { stage: 'batchCreate', current: 2, total: 2 })
+      bus.applyEventForRun(runId, { stage: 'processBatch', current: 1, total: 1 })
+      expect(bus.state.value.phase).toBe('fund')
+    })
+
+    it('setEscrowIds also bumps phase to fund', () => {
+      const bus = freshBus()
+      const runId = bus.reset(null)
+      bus.applyEventForRun(runId, { stage: 'startDistribution', current: 1, total: 1 })
+      bus.applyEventForRun(runId, { stage: 'batchCreate', current: 1, total: 1 })
+      bus.applyEventForRun(runId, { stage: 'setEscrowIds', current: 1, total: 1 })
+      expect(bus.state.value.phase).toBe('fund')
+    })
+
+    it('late "encrypt" event after escrows does NOT regress to start', () => {
+      const bus = freshBus()
+      const runId = bus.reset(null)
+      bus.applyEventForRun(runId, { stage: 'startDistribution', current: 1, total: 1 })
+      bus.applyEventForRun(runId, { stage: 'batchCreate', current: 1, total: 2 })
+      bus.applyEventForRun(runId, { stage: 'encrypt', current: 1, total: 1 })
+      expect(bus.state.value.phase).toBe('escrows')
+    })
+
+    it('late startDistribution after fund does NOT regress', () => {
+      const bus = freshBus()
+      const runId = bus.reset(null)
+      bus.applyEventForRun(runId, { stage: 'startDistribution', current: 1, total: 1 })
+      bus.applyEventForRun(runId, { stage: 'processBatch', current: 1, total: 1 })
+      bus.applyEventForRun(runId, { stage: 'startDistribution', current: 1, total: 1 })
+      expect(bus.state.value.phase).toBe('fund')
+    })
   })
 
-  it('advances start → escrows on batchCreate stage', () => {
-    const p = useAgentDistributeProgress()
-    p.applyEvent({ stage: 'startDistribution', current: 1, total: 1 })
-    p.applyEvent({ stage: 'batchCreate', current: 1, total: 2 })
-    expect(p.state.value.phase).toBe('escrows')
-    expect(p.state.value.current).toBe(1)
-    expect(p.state.value.total).toBe(2)
+  describe('runId staleness', () => {
+    it('drops applyEvent calls whose runId no longer matches the bus', () => {
+      // A starts, advances to 'fund'. Then B resets (new runId). A's
+      // late onProgress fires with A's captured runId — must be ignored.
+      const bus = freshBus()
+      const runIdA = bus.reset('tc_A')
+      bus.applyEventForRun(runIdA, { stage: 'processBatch', current: 1, total: 1 })
+      expect(bus.state.value.phase).toBe('fund')
+
+      const runIdB = bus.reset('tc_B')
+      expect(runIdB).not.toBe(runIdA)
+      expect(bus.state.value.phase).toBe('idle')
+
+      // A's stale onProgress (theoretical late SDK callback): silently dropped.
+      bus.applyEventForRun(runIdA, { stage: 'batchCreate', current: 1, total: 1 })
+      expect(bus.state.value.phase).toBe('idle')
+      expect(bus.state.value.toolCallId).toBe('tc_B')
+    })
+
+    it('drops markSettled for a stale runId', () => {
+      const bus = freshBus()
+      const runIdA = bus.reset(null)
+      bus.applyEventForRun(runIdA, { stage: 'processBatch', current: 1, total: 1 })
+      bus.reset(null) // new runId
+      bus.markSettledForRun(runIdA)
+      expect(bus.state.value.phase).toBe('idle')
+    })
+
+    it('drops markFailed for a stale runId', () => {
+      const bus = freshBus()
+      const runIdA = bus.reset(null)
+      bus.applyEventForRun(runIdA, { stage: 'batchCreate', current: 1, total: 1 })
+      bus.reset(null) // new runId
+      bus.markFailedForRun(runIdA)
+      expect(bus.state.value.phase).toBe('idle')
+    })
   })
 
-  it('advances escrows → fund on processBatch stage', () => {
-    const p = useAgentDistributeProgress()
-    p.applyEvent({ stage: 'startDistribution', current: 1, total: 1 })
-    p.applyEvent({ stage: 'batchCreate', current: 2, total: 2 })
-    p.applyEvent({ stage: 'processBatch', current: 1, total: 1 })
-    expect(p.state.value.phase).toBe('fund')
-  })
+  describe('terminal-state guards', () => {
+    it('applyEvent after markSettled does NOT mutate phase', () => {
+      // Late onProgress arriving after the runner has resolved must not
+      // demote 'settled' or mutate side fields (Reality F11).
+      const bus = freshBus()
+      const runId = bus.reset(null)
+      bus.applyEventForRun(runId, { stage: 'processBatch', current: 1, total: 1 })
+      bus.markSettledForRun(runId)
+      bus.applyEventForRun(runId, { stage: 'batchCreate', current: 99, total: 99 })
+      expect(bus.state.value.phase).toBe('settled')
+      // Side fields should also stay frozen post-settle.
+      expect(bus.state.value.current).toBe(1)
+      expect(bus.state.value.total).toBe(1)
+    })
 
-  it('setEscrowIds also bumps phase to fund', () => {
-    const p = useAgentDistributeProgress()
-    p.applyEvent({ stage: 'startDistribution', current: 1, total: 1 })
-    p.applyEvent({ stage: 'batchCreate', current: 1, total: 1 })
-    p.applyEvent({ stage: 'setEscrowIds', current: 1, total: 1 })
-    expect(p.state.value.phase).toBe('fund')
-  })
+    it('applyEvent after markFailed does NOT mutate phase', () => {
+      const bus = freshBus()
+      const runId = bus.reset(null)
+      bus.applyEventForRun(runId, { stage: 'batchCreate', current: 1, total: 1 })
+      bus.markFailedForRun(runId)
+      bus.applyEventForRun(runId, { stage: 'processBatch', current: 99, total: 99 })
+      expect(bus.state.value.phase).toBe('failed')
+      expect(bus.state.value.failedAt).toBe('escrows')
+    })
 
-  it('a late "encrypt" event after escrows does NOT regress to start', () => {
-    const p = useAgentDistributeProgress()
-    p.applyEvent({ stage: 'startDistribution', current: 1, total: 1 })
-    p.applyEvent({ stage: 'batchCreate', current: 1, total: 2 })
-    p.applyEvent({ stage: 'encrypt', current: 1, total: 1 })
-    expect(p.state.value.phase).toBe('escrows')
-  })
+    it('markSettled after markFailed is a no-op (failed sticks)', () => {
+      const bus = freshBus()
+      const runId = bus.reset(null)
+      bus.applyEventForRun(runId, { stage: 'processBatch', current: 1, total: 1 })
+      bus.markFailedForRun(runId)
+      bus.markSettledForRun(runId)
+      expect(bus.state.value.phase).toBe('failed')
+    })
 
-  it('a startDistribution event after we are already in fund does NOT regress', () => {
-    const p = useAgentDistributeProgress()
-    p.applyEvent({ stage: 'startDistribution', current: 1, total: 1 })
-    p.applyEvent({ stage: 'processBatch', current: 1, total: 1 })
-    p.applyEvent({ stage: 'startDistribution', current: 1, total: 1 })
-    expect(p.state.value.phase).toBe('fund')
-  })
-
-  it('markSettled flips phase to settled', () => {
-    const p = useAgentDistributeProgress()
-    p.applyEvent({ stage: 'processBatch', current: 1, total: 1 })
-    p.markSettled()
-    expect(p.state.value.phase).toBe('settled')
-  })
-
-  it('reset returns to idle / clears tx hash / message / counters / failedAt', () => {
-    const p = useAgentDistributeProgress()
-    p.applyEvent({ stage: 'startDistribution', current: 5, total: 10, txHash: '0xabc', message: 'mid' })
-    p.markFailed()
-    p.reset()
-    expect(p.state.value.phase).toBe('idle')
-    expect(p.state.value.failedAt).toBeNull()
-    expect(p.state.value.lastTxHash).toBeNull()
-    expect(p.state.value.message).toBeNull()
-    expect(p.state.value.current).toBe(0)
-    expect(p.state.value.total).toBe(0)
+    it('markFailed after markSettled is a no-op (settled sticks)', () => {
+      // Code Reviewer H-2 / Reality F12: settle-then-fail must not
+      // overwrite the success state.
+      const bus = freshBus()
+      const runId = bus.reset(null)
+      bus.applyEventForRun(runId, { stage: 'processBatch', current: 1, total: 1 })
+      bus.markSettledForRun(runId)
+      bus.markFailedForRun(runId)
+      expect(bus.state.value.phase).toBe('settled')
+      expect(bus.state.value.failedAt).toBeNull()
+    })
   })
 
   describe('markFailed', () => {
-    it('flips phase to failed + pins failedAt to the active phase', () => {
-      const p = useAgentDistributeProgress()
-      p.applyEvent({ stage: 'batchCreate', current: 1, total: 3 })
-      p.markFailed()
-      expect(p.state.value.phase).toBe('failed')
-      expect(p.state.value.failedAt).toBe('escrows')
+    it('pins failedAt to the active phase at throw time', () => {
+      const bus = freshBus()
+      const runId = bus.reset(null)
+      bus.applyEventForRun(runId, { stage: 'batchCreate', current: 1, total: 3 })
+      bus.markFailedForRun(runId)
+      expect(bus.state.value.phase).toBe('failed')
+      expect(bus.state.value.failedAt).toBe('escrows')
     })
 
-    it('failedAt defaults to "start" for a pre-flight failure (phase still idle)', () => {
-      // Pre-flight reverts (e.g. setOperator rejected) happen before
-      // any onProgress event lands. The bar should still paint the
-      // first phase red rather than show three pending circles.
-      const p = useAgentDistributeProgress()
-      p.markFailed()
-      expect(p.state.value.phase).toBe('failed')
-      expect(p.state.value.failedAt).toBe('start')
-    })
-
-    it('late onProgress after markFailed is ignored', () => {
-      // Code Reviewer H-1 fix: once marked failed the bus is inert.
-      // A late callback from the SDK (e.g. an in-flight encrypt
-      // resolving after the catch ran) MUST NOT flip the bar back to
-      // active and leave the user with a spinner over a failed run.
-      const p = useAgentDistributeProgress()
-      p.applyEvent({ stage: 'batchCreate', current: 1, total: 1 })
-      p.markFailed()
-      p.applyEvent({ stage: 'processBatch', current: 1, total: 1 })
-      expect(p.state.value.phase).toBe('failed')
-      expect(p.state.value.failedAt).toBe('escrows')
-    })
-
-    it('markSettled after markFailed is a no-op', () => {
-      const p = useAgentDistributeProgress()
-      p.applyEvent({ stage: 'processBatch', current: 1, total: 1 })
-      p.markFailed()
-      p.markSettled()
-      expect(p.state.value.phase).toBe('failed')
+    it('defensive fallback: failedAt="start" if called from idle phase', () => {
+      // The runner gates markFailed calls behind a "phase is SDK-set"
+      // check, so this branch should be unreachable in production. Kept
+      // as defensive coverage in case a future caller forgets the gate.
+      const bus = freshBus()
+      const runId = bus.reset(null)
+      bus.markFailedForRun(runId)
+      expect(bus.state.value.phase).toBe('failed')
+      expect(bus.state.value.failedAt).toBe('start')
     })
   })
 
-  it('different composable callers see the same module-level state', () => {
-    // Module-level singleton invariant — every call into the composable
-    // returns the SAME reactive ref. Critical because the runner writes
-    // from one component and the modal reads from another.
-    const a = useAgentDistributeProgress()
-    const b = useAgentDistributeProgress()
-    a.applyEvent({ stage: 'processBatch', current: 7, total: 7 })
-    expect(b.state.value.phase).toBe('fund')
-    expect(b.state.value.current).toBe(7)
+  describe('singleton identity', () => {
+    it('two composable calls share the same module-level state', () => {
+      const a = useAgentDistributeProgress()
+      const b = useAgentDistributeProgress()
+      const runId = a.reset(null)
+      a.applyEventForRun(runId, { stage: 'processBatch', current: 7, total: 7 })
+      expect(b.state.value.phase).toBe('fund')
+      expect(b.state.value.current).toBe(7)
+    })
   })
 })

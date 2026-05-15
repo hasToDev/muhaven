@@ -18,16 +18,31 @@
  *                     stage 'batchCreate'
  *   phase 'fund'    ← stage 'setEscrowIds', stage 'processBatch'
  *   phase 'settled' ← runner posts this once distributeYield resolves
+ *   phase 'failed'  ← runner posts this if the SDK pipeline throws
+ *                     mid-flight (pre-flight throws do NOT reach this —
+ *                     see runner JSDoc)
  *
  * Phases are monotonic: once we advance to 'escrows' we never regress
  * to 'start' even if the SDK happens to emit a stray earlier-stage event
- * mid-pipeline. The phase order is enforced via PHASE_ORDER below.
+ * mid-pipeline.
  *
- * Cancellation semantics (operator pick 2026-05-19 Q2): once we've
- * advanced past 'start' the modal disables Cancel. The flag
- * `canCancel.value` is the derived read; it flips from true → false on
- * the first SDK callback that names a phase other than 'start' AND once
- * we've emitted at least one txHash (= the on-chain start tx is broadcast).
+ * Cross-run isolation (second-pass review 2026-05-21):
+ *   - Each `reset()` call captures the descriptor's `toolCallId` AND
+ *     bumps an internal `runId`. The runner threads `runId` through
+ *     every subsequent `applyEvent` / `markSettled` / `markFailed`
+ *     call; any call whose `runId` doesn't match the current bus state
+ *     is silently dropped. This closes the "stale `onProgress` from a
+ *     prior run mutates the new run's bar" race (Code Reviewer H-1).
+ *   - The `toolCallId` is exposed to the modal so the 3-phase bar can
+ *     gate its v-if on `bus.toolCallId === props.action.toolCallId` —
+ *     when a descriptor swaps in mid-flight, the bar hides for the new
+ *     descriptor (preventing the "B's preview rows + A's progress bar"
+ *     confusion surfaced by the Reality Checker descriptor-swap walk).
+ *
+ * Terminal-state guards (second-pass review):
+ *   - `applyEvent` early-returns on `phase === 'failed' | 'settled'`.
+ *   - `markSettled` early-returns on `failed` (never demote a fail).
+ *   - `markFailed` early-returns on `settled` (never demote a success).
  *
  * Refresh semantics (operator pick 2026-05-19 Q3): NO sessionStorage
  * persistence. A mid-distribute page refresh loses the modal state
@@ -37,22 +52,12 @@ import { ref, type Ref } from 'vue'
 import type { ProgressEvent } from '@muhaven/sdk'
 
 /**
- * 'failed' is sticky-on-the-phase-we-died-in: when the SDK pipeline
- * throws mid-flight the runner calls `markFailed()`; the bus keeps
- * `failedAt` set to the phase that was active so the modal can paint
- * the right step red without losing the "phase 1+2 done" history.
- * Self-review fix landed 2026-05-20 (Code Reviewer H-1 + UX H-1).
+ * Phase states. `'failed'` is non-monotonic: it overrides via a
+ * dedicated `markFailed` call. `'idle'` is the post-reset / no-run-yet
+ * state — the modal hides the 3-phase bar while phase is idle so
+ * pre-flight failures don't paint a misleading red step-1.
  */
 export type DistributeProgressPhase = 'idle' | 'start' | 'escrows' | 'fund' | 'settled' | 'failed'
-
-export const PHASE_ORDER: readonly DistributeProgressPhase[] = [
-  'idle',
-  'start',
-  'escrows',
-  'fund',
-  'settled',
-  'failed',
-] as const
 
 const ACTIVE_ORDER: readonly DistributeProgressPhase[] = [
   'idle',
@@ -71,9 +76,26 @@ function activeRank(phase: DistributeProgressPhase): number {
 export interface DistributeProgressState {
   phase: DistributeProgressPhase
   /**
+   * Monotonic counter bumped on every `reset`. Runner captures the
+   * value at the start of `runDistribute` and threads it through every
+   * subsequent call — stale events from a previous run are dropped.
+   */
+  runId: number
+  /**
+   * The descriptor's `toolCallId` this run belongs to. `null` outside
+   * an active run. The modal gates the 3-phase bar's visibility on
+   * `bus.toolCallId === props.action.toolCallId` so a descriptor-swap
+   * mid-flight doesn't show B's preview with A's progress bar.
+   */
+  toolCallId: string | null
+  /**
    * The phase that was active when `markFailed` flipped `phase` to
    * 'failed'. `null` outside the failed state. Lets the modal paint
    * the failing step red while still showing earlier steps as done.
+   *
+   * Always `'start' | 'escrows' | 'fund'` when set — the runner only
+   * calls `markFailed` after the SDK pipeline has emitted at least one
+   * onProgress event, so pre-flight throws never reach here.
    */
   failedAt: Exclude<DistributeProgressPhase, 'idle' | 'settled' | 'failed'> | null
   /** Last SDK stage event we saw — for sub-step labelling ("encrypting…", "batch 2/4…"). */
@@ -87,18 +109,24 @@ export interface DistributeProgressState {
   message: string | null
 }
 
+function initialState(): DistributeProgressState {
+  return {
+    phase: 'idle',
+    runId: 0,
+    toolCallId: null,
+    failedAt: null,
+    lastStage: null,
+    current: 0,
+    total: 0,
+    lastTxHash: null,
+    message: null,
+  }
+}
+
 // Module-level state — initialised lazily on first composable call.
 // Lives outside the composable so every component sees the SAME ref and
 // reactive updates propagate without prop drilling.
-const state: Ref<DistributeProgressState> = ref({
-  phase: 'idle',
-  failedAt: null,
-  lastStage: null,
-  current: 0,
-  total: 0,
-  lastTxHash: null,
-  message: null,
-})
+const state: Ref<DistributeProgressState> = ref(initialState())
 
 /**
  * Map an SDK `ProgressEvent.stage` to the user-facing 3-phase bucket.
@@ -127,12 +155,15 @@ function stageToPhase(stage: ProgressEvent['stage']): DistributeProgressPhase | 
   }
 }
 
-function applyEvent(evt: ProgressEvent): void {
-  // Refuse to overwrite a 'failed' phase. Once the runner has marked
-  // the bus failed, late-arriving onProgress events (e.g. an SDK
-  // post-throw cleanup) MUST NOT flip the modal back to "in progress"
-  // and leave the user staring at a spinner with no recovery path.
-  if (state.value.phase === 'failed') return
+/**
+ * Apply an SDK progress event, but only if the runId matches the
+ * current run. Stale events from a prior runner whose closure is still
+ * being scheduled are silently dropped. Also no-ops on terminal phase
+ * so a post-settle onProgress doesn't mutate visible state.
+ */
+function applyEventForRun(runId: number, evt: ProgressEvent): void {
+  if (state.value.runId !== runId) return
+  if (state.value.phase === 'failed' || state.value.phase === 'settled') return
 
   state.value.lastStage = evt.stage
   state.value.current = evt.current
@@ -145,59 +176,75 @@ function applyEvent(evt: ProgressEvent): void {
   }
 }
 
-function markSettled(): void {
+/**
+ * Flip the bus to 'settled' for the given runId. No-op if a different
+ * run has since taken over (runId mismatch) or if the bus is already
+ * 'failed' (never demote a failure).
+ */
+function markSettledForRun(runId: number): void {
+  if (state.value.runId !== runId) return
   if (state.value.phase === 'failed') return
   state.value.phase = 'settled'
 }
 
 /**
- * Flip the bus to 'failed'. Self-review fix 2026-05-20:
- * `failedAt` records the phase that was active so the modal can paint
- * the failing step red. Called by the runner's catch block when
- * `sdk.distributeYield` (or any pre-flight) throws. After this, the
- * bus is INERT — `applyEvent` and `markSettled` both no-op until
- * `reset()` is called (typically when a new descriptor lands).
+ * Flip the bus to 'failed' for the given runId, recording the active
+ * phase at throw time so the modal can paint the right step red. No-op
+ * if a different run owns the bus or if the bus is already 'settled'
+ * (never demote a success).
+ *
+ * Callers MUST only invoke this if the SDK pipeline has actually
+ * emitted at least one onProgress event (i.e. `phase` is 'start' /
+ * 'escrows' / 'fund'). Pre-flight failures should NOT call this — the
+ * runner gates the call accordingly so the 3-phase bar isn't painted
+ * with a fake red step-1 for client-side validation errors.
  */
-function markFailed(): void {
+function markFailedForRun(runId: number): void {
+  if (state.value.runId !== runId) return
+  if (state.value.phase === 'settled') return
+  // Defensive: if a caller violates the "only call after SDK started"
+  // contract, fall back to step 1 anchoring. The runner's guard prevents
+  // this in practice; the fallback exists so a bug elsewhere doesn't
+  // leave `failedAt: null` on a `phase: 'failed'` bus.
   const wasActive = state.value.phase
   if (wasActive === 'start' || wasActive === 'escrows' || wasActive === 'fund') {
     state.value.failedAt = wasActive
   } else {
-    // Pre-flight failures (e.g. setOperator revert, kernel-binding
-    // mismatch) happen before any SDK progress event lands — phase is
-    // still 'idle'. Anchor the red icon at the first phase so the
-    // user sees a coherent "Start failed" indication rather than an
-    // all-pending bar with a separate error surface.
     state.value.failedAt = 'start'
   }
   state.value.phase = 'failed'
 }
 
-function reset(): void {
+/**
+ * Reset the bus to idle and bump the runId. Returns the new runId so
+ * the runner can thread it through subsequent `applyEventForRun` /
+ * `markSettledForRun` / `markFailedForRun` calls.
+ *
+ * `toolCallId` is stored so the modal can verify the bus belongs to the
+ * currently-displayed descriptor before rendering the 3-phase bar.
+ */
+function reset(toolCallId: string | null = null): number {
+  const newRunId = state.value.runId + 1
   state.value = {
-    phase: 'idle',
-    failedAt: null,
-    lastStage: null,
-    current: 0,
-    total: 0,
-    lastTxHash: null,
-    message: null,
+    ...initialState(),
+    runId: newRunId,
+    toolCallId,
   }
+  return newRunId
 }
 
 /**
  * Vue composable exposing the shared distribute-progress state plus
- * helpers the runner calls (`applyEvent`, `markSettled`, `markFailed`,
- * `reset`). Derived flags like "is the modal cancellable" live on the
- * ConfirmModal side because they need to combine the bus state with
- * the modal's own `status` ref.
+ * helpers. Modal callers only need `state` (for reactive reads); runner
+ * callers use `reset` / `applyEventForRun` / `markSettledForRun` /
+ * `markFailedForRun`.
  */
 export function useAgentDistributeProgress(): {
   state: Ref<DistributeProgressState>
-  applyEvent: (evt: ProgressEvent) => void
-  markSettled: () => void
-  markFailed: () => void
-  reset: () => void
+  reset: (toolCallId?: string | null) => number
+  applyEventForRun: (runId: number, evt: ProgressEvent) => void
+  markSettledForRun: (runId: number) => void
+  markFailedForRun: (runId: number) => void
 } {
-  return { state, applyEvent, markSettled, markFailed, reset }
+  return { state, reset, applyEventForRun, markSettledForRun, markFailedForRun }
 }

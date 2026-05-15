@@ -885,6 +885,10 @@ describe('runAgentAction — distribute_yield (P7 Phase 2)', () => {
   })
 
   it('throws on an SDK return missing fundTxHashes', async () => {
+    // SDK returns no events fired → bus stays idle → no markFailed call
+    // (the invariant check throws but the pre-flight gate keeps the bar
+    // hidden; user sees error banner only). Covered more fully in the
+    // "SDK invariant" describe-block below.
     distributeStubs.distributeYieldFn.mockResolvedValue({
       distributionId: 1n,
       escrowIds: [],
@@ -908,18 +912,21 @@ describe('runAgentAction — distribute_yield (P7 Phase 2)', () => {
 
   // ── Self-review fixes (parallel multi-agent pass 2026-05-20) ─────
 
-  describe('Code Reviewer H-1: SDK throw marks the bus failed', () => {
-    it('flips the bus to failed when distributeYield rejects', async () => {
-      distributeStubs.distributeYieldFn.mockRejectedValue(
-        new Error('CoFHE batchCreate reverted: bus stuck'),
-      )
+  describe('SDK throw mid-pipeline marks the bus failed at the active phase', () => {
+    it('flips the bus to failed when distributeYield rejects mid-flight', async () => {
+      // Simulate the SDK advancing past idle then throwing — gating
+      // condition for the runner's markFailedForRun call.
+      distributeStubs.distributeYieldFn.mockImplementation(async (_amount, opts) => {
+        opts.onProgress?.({ stage: 'startDistribution', current: 1, total: 1 })
+        throw new Error('CoFHE batchCreate reverted: bus stuck')
+      })
       const progress = useAgentDistributeProgress()
       const result = await runAgentAction(distributeDescriptor())
       expect(result.ok).toBe(false)
       expect(progress.state.value.phase).toBe('failed')
     })
 
-    it('failedAt anchors to the active phase at throw time', async () => {
+    it('failedAt anchors to the active phase at throw time (escrows)', async () => {
       // Simulate the SDK advancing to 'escrows' then throwing — the
       // bus must record failedAt='escrows' so the modal paints the
       // right step red.
@@ -934,21 +941,72 @@ describe('runAgentAction — distribute_yield (P7 Phase 2)', () => {
       expect(progress.state.value.failedAt).toBe('escrows')
     })
 
-    it('pre-flight setOperator throw still marks the bus failed (failedAt=start)', async () => {
+    it('failedAt anchors to fund when the SDK throws after processBatch starts', async () => {
+      distributeStubs.distributeYieldFn.mockImplementation(async (_amount, opts) => {
+        opts.onProgress?.({ stage: 'startDistribution', current: 1, total: 1 })
+        opts.onProgress?.({ stage: 'batchCreate', current: 1, total: 1 })
+        opts.onProgress?.({ stage: 'processBatch', current: 1, total: 2 })
+        throw new Error('fund-batch 2 reverted')
+      })
+      const progress = useAgentDistributeProgress()
+      await runAgentAction(distributeDescriptor())
+      expect(progress.state.value.phase).toBe('failed')
+      expect(progress.state.value.failedAt).toBe('fund')
+    })
+  })
+
+  describe('Pre-flight failures leave the bus IDLE (no fake step-1 red bar)', () => {
+    // Second-pass review (my H-A + Code Reviewer M-1 + Reality F2):
+    // pre-flight throws (kernel binding mismatch, totalYield cap,
+    // setOperator revert) happen BEFORE the SDK emits any onProgress.
+    // The runner's catch checks bus phase before calling markFailed —
+    // so the 3-phase bar's render-guard `phase !== 'idle'` keeps the
+    // bar HIDDEN for client-side errors. User sees the standard error
+    // banner only, not a misleading "Step 1 (Prepare batch) failed".
+
+    it('setOperator revert leaves bus at idle', async () => {
       distributeStubs.setOperator.mockRejectedValue(new Error('user rejected'))
       const progress = useAgentDistributeProgress()
       const result = await runAgentAction(distributeDescriptor())
       expect(result.ok).toBe(false)
-      expect(progress.state.value.phase).toBe('failed')
-      expect(progress.state.value.failedAt).toBe('start')
+      expect(progress.state.value.phase).toBe('idle')
+      expect(progress.state.value.failedAt).toBeNull()
+    })
+
+    it('kernel-binding mismatch leaves bus at idle', async () => {
+      distributeStubs.kernelAddress = '0x9999999999999999999999999999999999999999'
+      const progress = useAgentDistributeProgress()
+      const result = await runAgentAction(distributeDescriptor())
+      expect(result.ok).toBe(false)
+      expect(progress.state.value.phase).toBe('idle')
+    })
+
+    it('totalYield cap reject leaves bus at idle', async () => {
+      const progress = useAgentDistributeProgress()
+      const result = await runAgentAction(
+        distributeDescriptor({ totalYieldUsd6: '18446744073709551615' }),
+      )
+      expect(result.ok).toBe(false)
+      expect(progress.state.value.phase).toBe('idle')
+    })
+
+    it('label-length reject leaves bus at idle', async () => {
+      const progress = useAgentDistributeProgress()
+      const result = await runAgentAction(
+        distributeDescriptor({ label: 'X'.repeat(201) }),
+      )
+      expect(result.ok).toBe(false)
+      expect(progress.state.value.phase).toBe('idle')
     })
   })
 
-  describe('Code Reviewer M-3 / Security M-1: concurrent-distribution guard', () => {
+  describe('Concurrent-distribution guard', () => {
     it('rejects a new distribute when the bus is mid-flight (phase=start)', async () => {
-      // Simulate a previous distribution still in flight.
+      // Simulate a previous distribution still in flight by hand-driving
+      // the bus past idle, then attempting a new run.
       const progress = useAgentDistributeProgress()
-      progress.applyEvent({ stage: 'startDistribution', current: 1, total: 1 })
+      const priorRunId = progress.reset('tc_prior')
+      progress.applyEventForRun(priorRunId, { stage: 'startDistribution', current: 1, total: 1 })
       const result = await runAgentAction(distributeDescriptor())
       expect(result.ok).toBe(false)
       if (result.ok === false) {
@@ -961,18 +1019,85 @@ describe('runAgentAction — distribute_yield (P7 Phase 2)', () => {
 
     it('allows a new distribute when the previous bus is settled', async () => {
       const progress = useAgentDistributeProgress()
-      progress.applyEvent({ stage: 'processBatch', current: 1, total: 1 })
-      progress.markSettled()
+      const priorRunId = progress.reset('tc_prior')
+      progress.applyEventForRun(priorRunId, { stage: 'processBatch', current: 1, total: 1 })
+      progress.markSettledForRun(priorRunId)
       const result = await runAgentAction(distributeDescriptor())
       expect(result.ok).toBe(true)
     })
 
     it('allows a new distribute when the previous bus failed', async () => {
       const progress = useAgentDistributeProgress()
-      progress.applyEvent({ stage: 'batchCreate', current: 1, total: 1 })
-      progress.markFailed()
+      const priorRunId = progress.reset('tc_prior')
+      progress.applyEventForRun(priorRunId, { stage: 'batchCreate', current: 1, total: 1 })
+      progress.markFailedForRun(priorRunId)
       const result = await runAgentAction(distributeDescriptor())
       expect(result.ok).toBe(true)
+    })
+  })
+
+  describe('Bus toolCallId tagging (cross-descriptor isolation)', () => {
+    it('tags the bus with the descriptor toolCallId on reset', async () => {
+      const progress = useAgentDistributeProgress()
+      const desc = distributeDescriptor()
+      await runAgentAction(desc)
+      expect(progress.state.value.toolCallId).toBe(desc.toolCallId)
+    })
+
+    it('stale onProgress for the prior run is silently dropped', async () => {
+      // Capture a runId from a settled run, then run a new distribution
+      // and inject a stale onProgress for the prior runId. The bus
+      // should ignore the stale event and reflect only the new run's state.
+      const progress = useAgentDistributeProgress()
+      const staleRunId = progress.reset('tc_stale')
+      progress.applyEventForRun(staleRunId, { stage: 'processBatch', current: 1, total: 1 })
+      progress.markSettledForRun(staleRunId)
+
+      // New run starts (different toolCallId, new runId).
+      let capturedRunId = -1
+      distributeStubs.distributeYieldFn.mockImplementation(async (_amount, opts) => {
+        capturedRunId = progress.state.value.runId
+        opts.onProgress?.({ stage: 'startDistribution', current: 1, total: 1 })
+        return {
+          distributionId: 1n,
+          escrowIds: [10n],
+          createTxHashes: [FUND_HASH_1],
+          fundTxHashes: [FUND_HASH_2],
+        }
+      })
+      await runAgentAction(distributeDescriptor())
+      expect(capturedRunId).not.toBe(staleRunId)
+
+      // Inject a stale-runId event AFTER the new run settled.
+      progress.applyEventForRun(staleRunId, { stage: 'batchCreate', current: 99, total: 99 })
+      expect(progress.state.value.phase).toBe('settled')
+    })
+  })
+
+  describe('SDK invariant: fundTxHashes non-empty', () => {
+    it('marks the bus failed (not settled) when fundTxHashes is empty', async () => {
+      // Reality F12: previously markSettled ran BEFORE the invariant
+      // check, causing a settled-then-failed flicker. Now the check
+      // runs first; failure marks the bus correctly.
+      distributeStubs.distributeYieldFn.mockImplementation(async (_amount, opts) => {
+        opts.onProgress?.({ stage: 'processBatch', current: 1, total: 1 })
+        return {
+          distributionId: 1n,
+          escrowIds: [],
+          createTxHashes: [],
+          fundTxHashes: [],
+        }
+      })
+      const progress = useAgentDistributeProgress()
+      const result = await runAgentAction(distributeDescriptor())
+      expect(result.ok).toBe(false)
+      if (result.ok === false) {
+        expect(result.error).toContain('without a fund tx hash')
+      }
+      // Phase should be 'failed' at 'fund' (we got onProgress for processBatch),
+      // NOT 'settled' — the invariant check fires BEFORE markSettled.
+      expect(progress.state.value.phase).toBe('failed')
+      expect(progress.state.value.failedAt).toBe('fund')
     })
   })
 
