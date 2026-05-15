@@ -340,6 +340,42 @@ function extractActionPayload(a: ActionDescriptor): Record<string, unknown> {
       }
       return payload as unknown as Record<string, unknown>
     }
+    case 'unpause_token':
+      // Mirror propose-unpause-token.use-case.ts:181 actionPayload
+      // byte-for-byte. Order matches the backend object-literal so a
+      // future field reorder doesn't drift the hash check. R-3
+      // mitigation: requestedAtSec + tool are pinned and replayed.
+      return {
+        tool: 'muhaven_propose_unpause_token',
+        action: 'unpause_token',
+        tokenAddress: a.preview.tokenAddress as string,
+        initialNavUsd6: a.preview.initialNavUsd6 as string,
+        issuerOracleAddress: a.preview.issuerOracleAddress as string,
+        tokenRegistryAddress: a.preview.tokenRegistryAddress as string,
+        navPublishTxHash: a.preview.navPublishTxHash as string,
+        requestedAtSec: a.preview.requestedAtSec as number,
+      }
+    case 'kyc_add':
+      // Mirror propose-kyc-add.use-case.ts:112 actionPayload byte-for-byte.
+      return {
+        tool: 'muhaven_propose_kyc_add',
+        action: 'kyc_add',
+        tokenAddress: a.preview.tokenAddress as string,
+        investorAddress: a.preview.investorAddress as string,
+        kycTier: a.preview.kycTier as 1 | 2,
+        kycAdapterAddress: a.preview.kycAdapterAddress as string,
+        requestedAtSec: a.preview.requestedAtSec as number,
+      }
+    case 'kyc_remove':
+      // Mirror propose-kyc-remove.use-case.ts:97 actionPayload byte-for-byte.
+      return {
+        tool: 'muhaven_propose_kyc_remove',
+        action: 'kyc_remove',
+        tokenAddress: a.preview.tokenAddress as string,
+        investorAddress: a.preview.investorAddress as string,
+        kycAdapterAddress: a.preview.kycAdapterAddress as string,
+        requestedAtSec: a.preview.requestedAtSec as number,
+      }
     default:
       return {}
   }
@@ -390,10 +426,49 @@ const previewRows = computed(() => {
           ? [{ label: 'Memo', value: String(props.action.preview.memo) }]
           : []),
       ]
+    case 'unpause_token':
+      // P7 — Design A · PREVENTION shape (2026-05-17). Backend has
+      // already published the initial NAV server-side; the kernel only
+      // signs setPaused(false). Surface the initial NAV + the
+      // NAV-publish tx hash so the issuer sees provenance, not just
+      // "Authorize" with no detail.
+      return [
+        { label: 'Token', value: `${props.action.preview.tokenSymbol}` },
+        { label: 'Initial NAV', value: displayUsd(String(props.action.preview.initialNavUsd6)) },
+        { label: 'Action', value: 'Set paused → false' },
+        { label: 'NAV tx', value: shortTx(String(props.action.preview.navPublishTxHash)) },
+      ]
+    case 'kyc_add':
+      return [
+        { label: 'Token', value: `${props.action.preview.tokenSymbol}` },
+        { label: 'Investor', value: shortAddr(String(props.action.preview.investorAddress)) },
+        {
+          label: 'KYC tier',
+          value: props.action.preview.kycTier === 2
+            ? '2 — accredited (2 txs)'
+            : '1 — retail (1 tx)',
+        },
+      ]
+    case 'kyc_remove':
+      return [
+        { label: 'Token', value: `${props.action.preview.tokenSymbol}` },
+        { label: 'Investor', value: shortAddr(String(props.action.preview.investorAddress)) },
+        { label: 'Action', value: 'Remove from whitelist' },
+      ]
     default:
       return []
   }
 })
+
+function shortAddr(addr: string): string {
+  if (!addr || addr.length < 10) return addr || '—'
+  return `${addr.slice(0, 6)}…${addr.slice(-4)}`
+}
+
+function shortTx(hash: string): string {
+  if (!hash || hash.length < 12) return hash || '—'
+  return `${hash.slice(0, 10)}…${hash.slice(-6)}`
+}
 
 function displayUsd(usd6: string): string {
   try {

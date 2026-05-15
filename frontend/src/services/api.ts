@@ -875,6 +875,12 @@ export interface ActionDescriptor {
     | 'resume'
     // Wave 4 §5 Path C — hosted-checkout session via agent
     | 'create_checkout'
+    // Wave 4 P7 issuer-side propose tools. Backend mints these descriptors
+    // (see backend/src/application/dto/agent/tool.dto.ts:432+). Phase 2
+    // adds 'distribute_yield' once the SDK-pipeline runner lands.
+    | 'unpause_token'
+    | 'kyc_add'
+    | 'kyc_remove'
   toolCallId: string
   confirmTokenId: string
   expiresAtSec: number

@@ -2,10 +2,12 @@ import {
   SubscriptionClient,
   // RedemptionQueueClient — not yet wired into agent claim path; see Wave 5 follow-up note.
 } from '@muhaven/sdk'
+import type { Address, Hash } from 'viem'
 import { v35Addresses, isZeroAddress } from '@/contracts/addresses'
 import { buildWriteContext } from '@/services/v35/context'
 import { useFhe } from '@/composables/useFhe'
 import * as MuHavenStableService from '@/services/contracts/MuHavenStableService'
+import { resolveP7Tx, UnknownP7TxError } from '@/services/v35/p7-tx-abis'
 import type { ActionDescriptor } from '@/services/api'
 
 const OPERATOR_EXPIRY_SECONDS = 365 * 24 * 60 * 60 // 1 year, mirrors TradePage
@@ -106,6 +108,17 @@ export async function runAgentAction(action: ActionDescriptor): Promise<RunResul
         // `checkoutAgentApi.commitCreateCheckout` directly inside its
         // committing branch and renders the returned URL on success.
         return { ok: true, txHash: null }
+      case 'unpause_token':
+      case 'kyc_add':
+      case 'kyc_remove':
+        // Wave 4 P7 issuer-side propose tools. All three share the same
+        // backend descriptor shape: `sdkCall.args.txs[]` carrying one or
+        // two `(contract, address, fn, args)` tuples. dispatchActionTxs
+        // returns the LAST tx hash so the audit-commit POST anchors to
+        // the "completed-when" tx (operator pick 2026-05-19; kyc_add
+        // tier-2 partial-revert surfaces a clear error so the issuer can
+        // manually re-propose kyc_remove for rollback).
+        return { ok: true, txHash: await dispatchActionTxs(action) }
       default:
         return { ok: false, error: `Unknown action kind: ${(action as ActionDescriptor).kind}` }
     }
@@ -204,4 +217,100 @@ async function runBuy(action: ActionDescriptor): Promise<string> {
 
   const hash = await sub.purchase(tokenAddress, shares, maxSharesHint, ephemeralEOA)
   return hash
+}
+
+/**
+ * Wave 4 P7 — runtime-guarded shape for backend's `sdkCall.args.txs[]`.
+ * The backend pins this shape via `propose-{unpause-token,kyc-add,
+ * kyc-remove}.use-case.ts` + the p7-issuer-tools.test.ts C1+C2 asserts,
+ * but the frontend's `ActionDescriptor.sdkCall.args` is typed
+ * `Record<string, unknown>` (the descriptor union is intentionally
+ * permissive so a future tool addition doesn't gate on a frontend
+ * compile). The guard below is the runtime version of those backend
+ * test asserts: if a future tool change drops the shape, the runner
+ * errors clearly instead of silently calling viem with `undefined`.
+ */
+interface P7TxSpec {
+  contract: string
+  address: Address
+  fn: string
+  args: Record<string, unknown>
+}
+
+function isP7TxSpec(v: unknown): v is P7TxSpec {
+  if (!v || typeof v !== 'object') return false
+  const t = v as Record<string, unknown>
+  return (
+    typeof t.contract === 'string' &&
+    typeof t.address === 'string' &&
+    /^0x[a-fA-F0-9]{40}$/.test(t.address) &&
+    typeof t.fn === 'string' &&
+    !!t.args &&
+    typeof t.args === 'object'
+  )
+}
+
+/**
+ * Dispatch every tx in an issuer-side ActionDescriptor's
+ * `sdkCall.args.txs` through the ZeroDev kernel sender, in order.
+ *
+ * Returns the LAST tx hash so the audit-commit POST records the
+ * "completed-when" tx (operator pick 2026-05-19 over the first-tx
+ * "audit-anchor" alternative). For kyc_add tier-2 specifically, this
+ * means the audit log captures `addToAccreditedList`'s hash; if
+ * `addToWhitelist` succeeds but `addToAccreditedList` reverts, the
+ * runner throws mid-loop and the modal surfaces a clear error — the
+ * issuer can then manually re-propose `kyc_remove` to roll back the
+ * half-state (on-chain rollback isn't possible per-UserOp).
+ */
+async function dispatchActionTxs(action: ActionDescriptor): Promise<Hash> {
+  const rawArgs = action.sdkCall?.args as { txs?: unknown } | undefined
+  const txs = rawArgs?.txs
+  if (!Array.isArray(txs) || txs.length === 0) {
+    throw new AgentActionRunnerError(
+      `ActionDescriptor (${action.kind}) is missing sdkCall.args.txs[]`,
+    )
+  }
+  const ctx = await buildWriteContext()
+  let lastTxHash: Hash | null = null
+  for (let i = 0; i < txs.length; i++) {
+    const tx = txs[i]
+    if (!isP7TxSpec(tx)) {
+      throw new AgentActionRunnerError(
+        `ActionDescriptor (${action.kind}) txs[${i}] has malformed shape`,
+      )
+    }
+    let binding
+    try {
+      binding = resolveP7Tx(tx.contract, tx.fn)
+    } catch (err) {
+      if (err instanceof UnknownP7TxError) {
+        throw new AgentActionRunnerError(err.message)
+      }
+      throw err
+    }
+    try {
+      lastTxHash = await ctx.sender.write({
+        address: tx.address,
+        abi: binding.abi,
+        functionName: tx.fn,
+        args: binding.orderArgs(tx.args),
+      })
+    } catch (err) {
+      // Mid-loop revert (e.g. kyc_add tier-2 second tx reverts) — surface
+      // step index so the issuer + operator can tell exactly which leg
+      // failed. The successful prior leg(s) are NOT rolled back; the
+      // issuer must manually re-propose kyc_remove if a clean-up is
+      // needed (operator pick 2026-05-19; partial-revert UX deferred to
+      // a Wave 5 issuer-side multicall wrapper).
+      const msg = err instanceof Error ? err.message : String(err)
+      throw new AgentActionRunnerError(
+        `${action.kind} step ${i + 1}/${txs.length} (${tx.contract}.${tx.fn}) reverted: ${msg}`,
+      )
+    }
+  }
+  // Loop guarantees txs.length >= 1, so lastTxHash is always assigned by
+  // here. Cast keeps the function signature honest without a runtime
+  // assertion that would never fire.
+  return lastTxHash as Hash
 }
