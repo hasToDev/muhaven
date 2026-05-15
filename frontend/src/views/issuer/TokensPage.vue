@@ -88,7 +88,7 @@ const selected = computed(() => {
         type="button"
         class="btn-gold-sweep mt-2 px-6 py-3 rounded-lg font-sans font-semibold text-xs tracking-[0.18em] uppercase flex items-center gap-2"
         data-testid="tokens-empty-deploy-cta"
-        @click="router.push('/apply-issuer?skip-welcome')"
+        @click="router.push('/tokens/new')"
       >
         <Plus :size="14" :stroke-width="2.2" aria-hidden="true" />
         Issue your first token
@@ -184,7 +184,7 @@ const selected = computed(() => {
             class="btn-gold-sweep px-5 py-2.5 rounded-lg font-sans font-semibold text-[11px] tracking-[0.18em] uppercase
                    flex items-center gap-2 cursor-pointer"
             data-testid="tokens-new-token-cta"
-            @click="router.push('/apply-issuer?skip-welcome')"
+            @click="router.push('/tokens/new')"
           >
             <Plus :size="13" :stroke-width="2.2" aria-hidden="true" />
             New token

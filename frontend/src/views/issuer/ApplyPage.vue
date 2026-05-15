@@ -58,13 +58,43 @@ function invalidateIssuerCaches() {
   investorsStore.reset()
 }
 
-const STEP_LABELS: Array<{ idx: number; label: string }> = [
+/**
+ * 2026-05-19 Item B — same component now serves two routes:
+ *   - `/apply-issuer` (become-issuer mode): renders the full 5-pill
+ *     stepper starting at Welcome+KYB.
+ *   - `/tokens/new` (new-token mode): drops the Welcome pill from the
+ *     stepper, renumbers display 1-4, swaps page header copy. Wizard's
+ *     INTERNAL step state stays 2-5 so existing per-step rendering /
+ *     navigation logic continues working unchanged.
+ *
+ * Eyebrow / heading / description / success-card copy all branch off
+ * `isNewTokenMode` below.
+ */
+const isNewTokenMode = computed(() => route.path === '/tokens/new')
+
+interface StepLabel {
+  /** Internal wizard step (1-5). Stable across modes. */
+  idx: number
+  label: string
+  /** Display number rendered on the pill. In new-token mode the
+   *  Welcome step is gone, so what was idx=2 displays as "1". */
+  displayNumber: number
+}
+
+const ALL_STEP_LABELS: ReadonlyArray<{ idx: number; label: string }> = [
   { idx: 1, label: 'Welcome' },
   { idx: 2, label: 'Token' },
   { idx: 3, label: 'Economics' },
   { idx: 4, label: 'Review' },
   { idx: 5, label: 'Deploy' },
 ]
+
+const STEP_LABELS = computed<StepLabel[]>(() => {
+  const source = isNewTokenMode.value
+    ? ALL_STEP_LABELS.filter((s) => s.idx !== 1)
+    : ALL_STEP_LABELS
+  return source.map((s, i) => ({ ...s, displayNumber: i + 1 }))
+})
 
 const DEPLOY_STEP_LABELS: Record<DeployStepKey, string> = {
   deploy_token: 'Token (fhERC-20)',
@@ -102,18 +132,35 @@ const showResumeDialog = ref(false)
 let eventSource: EventSource | null = null
 
 onMounted(async () => {
+  // 2026-05-19 Item B — new-token-mode reset. If the user is here from
+  // /tokens/new and their last deploy SUCCEEDED, clear the wizard state
+  // so they don't see stale token-symbol / NAV / yield-schedule values
+  // pre-filled from the prior attempt. In-flight (deployId+!finalize)
+  // and failed (finalizeStatus==='failed') drafts are left alone so the
+  // existing resume dialog / retry button paths still work.
+  const hadDraft = wizard.hydrate()
+  if (isNewTokenMode.value && wizard.finalizeStatus === 'succeeded') {
+    wizard.reset()
+  }
+
   // Skip-welcome shortcut: already-approved issuers landing here from
   // /tokens' empty state jump straight to step 2 without the
-  // welcome+KYB form.
-  const hadDraft = wizard.hydrate()
-  if (route.query['skip-welcome'] !== undefined && wizard.step < 2) {
+  // welcome+KYB form. /tokens/new triggers the same skip implicitly —
+  // the Welcome step is filtered out of the stepper entirely.
+  if (
+    (isNewTokenMode.value || route.query['skip-welcome'] !== undefined)
+    && wizard.step < 2
+  ) {
     wizard.setStep(2)
   } else if (hadDraft && wizard.step > 1 && wizard.finalizeStatus === null) {
     showResumeDialog.value = true
   }
 
   if (!authStore.isAuthenticated) {
-    router.replace({ path: '/login', query: { redirect: '/apply-issuer' } })
+    // Preserve the current route on the login round-trip so /tokens/new
+    // → /login → /tokens/new (was hard-coded to /apply-issuer pre-Item B,
+    // which would have flipped an approved-issuer's URL on auth re-grant).
+    router.replace({ path: '/login', query: { redirect: route.fullPath } })
     return
   }
 
@@ -137,6 +184,7 @@ onMounted(async () => {
   if (
     authStore.issuerStatus === 'approved'
     && route.query['skip-welcome'] === undefined
+    && !isNewTokenMode.value
     && wizard.step < 2
     && wizard.finalizeStatus === null
   ) {
@@ -364,21 +412,38 @@ function shortAddr(a: string): string {
 function deployStepUi(key: DeployStepKey) {
   return wizard.deploySteps.find((s) => s.key === key)
 }
+
+/**
+ * 2026-05-19 Item B — success-state primary CTA. Navigates to /tokens
+ * and pre-selects the freshly-deployed token in the master-detail view
+ * so the issuer lands directly on its summary card. Falls back to a
+ * plain /tokens push if `wizard.tokenAddress` isn't set yet (race with
+ * the finalize event; very brief).
+ */
+function goToTokensWithSelect() {
+  if (wizard.tokenAddress) {
+    tokensStore.selectToken(wizard.tokenAddress)
+  }
+  router.push('/tokens')
+}
 </script>
 
 <template>
   <div class="max-w-3xl mx-auto flex flex-col gap-8">
-    <!-- Header -->
+    <!-- Header — copy branches on route mode (Item B 2026-05-19). -->
     <header class="flex flex-col gap-3">
       <p class="font-mono text-[10px] tracking-[0.32em] uppercase text-cool/70">
-        Issuer onboarding
+        {{ isNewTokenMode ? 'Token issuance' : 'Issuer onboarding' }}
       </p>
       <h1 class="font-accent italic text-3xl md:text-4xl tracking-tight text-midnight dark:text-white">
-        Become an issuer
+        {{ isNewTokenMode ? 'Issue a new token' : 'Become an issuer' }}
       </h1>
       <p class="font-sans text-sm text-cool max-w-2xl">
-        Register your SPV, deploy a confidential RWA token, and start
-        accepting subscriptions — all from one wizard.
+        {{
+          isNewTokenMode
+            ? 'Configure and deploy another confidential RWA token under your SPV.'
+            : 'Register your SPV, deploy a confidential RWA token, and start accepting subscriptions — all from one wizard.'
+        }}
       </p>
     </header>
 
@@ -401,7 +466,7 @@ function deployStepUi(key: DeployStepKey) {
               ]"
             >
               <Check v-if="wizard.step > s.idx" :size="13" :stroke-width="2.5" />
-              <span v-else class="font-sans text-[10px] font-bold tabular-nums">{{ s.idx }}</span>
+              <span v-else class="font-sans text-[10px] font-bold tabular-nums">{{ s.displayNumber }}</span>
             </div>
             <span
               :class="[
@@ -717,7 +782,7 @@ function deployStepUi(key: DeployStepKey) {
             </ul>
           </div>
 
-          <!-- Success card -->
+          <!-- Success card — copy branches on route mode (Item B 2026-05-19). -->
           <div
             v-if="wizard.finalizeStatus === 'succeeded'"
             data-testid="apply-deploy-success"
@@ -725,14 +790,25 @@ function deployStepUi(key: DeployStepKey) {
           >
             <CheckCircle2 :size="56" :stroke-width="1.6" class="text-positive" />
             <p class="font-accent italic text-2xl tracking-tight text-midnight dark:text-white">
-              Issuer stack deployed
+              {{
+                isNewTokenMode && wizard.formData.symbol
+                  ? `${wizard.formData.symbol} is live`
+                  : 'Issuer stack deployed'
+              }}
+            </p>
+            <p v-if="isNewTokenMode" class="font-sans text-sm text-cool text-center max-w-md">
+              Your new token is registered and ready for subscriptions.
             </p>
             <p v-if="wizard.tokenAddress" class="font-mono text-xs text-cool">
               Token · <a :href="`${arbiscanBase}/address/${wizard.tokenAddress}`" target="_blank" rel="noopener noreferrer" class="text-compute dark:text-signal hover:underline">{{ shortAddr(wizard.tokenAddress) }}</a>
             </p>
             <div class="flex items-center gap-2 mt-2">
-              <MButton variant="outline" size="sm" @click="wizard.reset(); jumpTo(2)">New token</MButton>
-              <MButton variant="primary" size="sm" @click="router.push('/tokens')">Go to /tokens</MButton>
+              <MButton variant="outline" size="sm" @click="wizard.reset(); jumpTo(2)">
+                {{ isNewTokenMode ? 'Issue another' : 'New token' }}
+              </MButton>
+              <MButton variant="primary" size="sm" @click="goToTokensWithSelect">
+                {{ isNewTokenMode && wizard.formData.symbol ? `View ${wizard.formData.symbol}` : 'Go to /tokens' }}
+              </MButton>
             </div>
           </div>
 

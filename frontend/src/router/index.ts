@@ -100,6 +100,17 @@ const router = createRouter({
       component: () => import('@/views/issuer/ApplyPage.vue'),
       meta: { title: 'Become an Issuer', layout: 'apply' },
     },
+    // 2026-05-19 Item B — approved-issuer entry to issue ANOTHER token.
+    // Mounts the same ApplyPage wizard but the component detects this
+    // route and drops the Welcome+KYB step from the stepper + adjusts
+    // copy to "Issue a new token" framing. Gated to approved issuers
+    // via ISSUER_ROUTES (and the unapproved-issuer guard at
+    // router.beforeEach bounces pending/unregistered to /apply-issuer).
+    {
+      path: '/tokens/new',
+      component: () => import('@/views/issuer/ApplyPage.vue'),
+      meta: { title: 'Issue a new token', layout: 'apply' },
+    },
     {
       path: '/distribute',
       component: () => import('@/views/issuer/DistributePage.vue'),
@@ -190,6 +201,10 @@ const router = createRouter({
 // gate per-role internally in Wave 4).
 const ISSUER_ROUTES = new Set([
   '/tokens',
+  // 2026-05-19 Item B — issuer-only entry for additional tokens.
+  // Unapproved issuers are bounced to /apply-issuer by the
+  // UNAPPROVED_ISSUER_ALLOWLIST guard; investors bounce to /portfolio.
+  '/tokens/new',
   '/distribute',
   '/investors',
   '/compliance',
