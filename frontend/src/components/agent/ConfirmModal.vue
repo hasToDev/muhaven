@@ -13,6 +13,7 @@ import {
   useAgentDistributeProgress,
   type DistributeProgressPhase,
 } from '@/composables/useAgentDistributeProgress'
+import { formatMhUsdcBigInt } from '@/lib/money'
 
 const router = useRouter()
 
@@ -716,14 +717,10 @@ function shortTx(hash: string): string {
 }
 
 function displayUsd(usd6: string): string {
-  try {
-    const v = BigInt(usd6)
-    const whole = v / 1_000_000n
-    const frac = (v % 1_000_000n).toString().padStart(6, '0').replace(/0+$/, '')
-    return frac ? `$${whole.toString()}.${frac}` : `$${whole.toString()}`
-  } catch {
-    return `$${usd6}`
-  }
+  // Delegate to the shared helper; preserves historical "strip trailing
+  // zeros all the way down" (minFractionDigits=0) behaviour so previews
+  // like "$1" don't bloat to "$1.00" for whole-dollar amounts.
+  return formatMhUsdcBigInt(usd6, { minFractionDigits: 0, withSign: true })
 }
 
 const arbiscanUrl = computed(() =>

@@ -16,6 +16,7 @@ import * as SnapshotService from '@/services/v35/SnapshotService'
 import type { TokenRegistryConfig } from '@/services/v35/SnapshotService'
 import { resolveP7Tx, UnknownP7TxError } from '@/services/v35/p7-tx-abis'
 import type { ActionDescriptor } from '@/services/api'
+import { formatMhUsdcBigInt } from '@/lib/money'
 
 const OPERATOR_EXPIRY_SECONDS = 365 * 24 * 60 * 60 // 1 year, mirrors TradePage
 
@@ -261,10 +262,12 @@ async function runBuy(action: ActionDescriptor): Promise<string> {
       }
       const have = portfolio.pusdcConfidentialBalance
       if (have !== null && have < needed) {
-        const haveUsd = (Number(have) / 1_000_000).toFixed(2)
-        const needUsd = (Number(needed) / 1_000_000).toFixed(2)
+        // BigInt formatter preserves precision past Number.MAX_SAFE_INTEGER
+        // (which `Number(units) / 1e6` would lose above ~$9B mhUSDC).
+        const haveUsd = formatMhUsdcBigInt(have, { withSign: true })
+        const needUsd = formatMhUsdcBigInt(needed, { withSign: true })
         throw new AgentActionRunnerError(
-          `Insufficient mhUSDC balance: you have $${haveUsd} but this purchase needs $${needUsd}. Wrap more USDC into mhUSDC on the Cash page first.`,
+          `Insufficient mhUSDC balance: you have ${haveUsd} but this purchase needs ${needUsd}. Wrap more USDC into mhUSDC on the Cash page first.`,
         )
       }
     }
@@ -540,10 +543,14 @@ async function runDistribute(action: ActionDescriptor): Promise<RunDistributeRes
       }
       const have = portfolio.pusdcConfidentialBalance
       if (have !== null && have < totalYield) {
-        const haveUsd = (Number(have) / 1_000_000).toFixed(2)
-        const needUsd = (Number(totalYield) / 1_000_000).toFixed(2)
+        // BigInt formatter preserves precision past Number.MAX_SAFE_INTEGER
+        // (which `Number(units) / 1e6` would lose above ~$9B mhUSDC — the
+        // conservation-gate error copy could otherwise misreport balance vs.
+        // need on institutional-scale distributions).
+        const haveUsd = formatMhUsdcBigInt(have, { withSign: true })
+        const needUsd = formatMhUsdcBigInt(totalYield, { withSign: true })
         throw new AgentActionRunnerError(
-          `Insufficient mhUSDC balance: you have $${haveUsd} but this distribution needs $${needUsd}. Wrap more USDC into mhUSDC on the Cash page first.`,
+          `Insufficient mhUSDC balance: you have ${haveUsd} but this distribution needs ${needUsd}. Wrap more USDC into mhUSDC on the Cash page first.`,
         )
       }
     }
@@ -742,8 +749,14 @@ async function runDistribute(action: ActionDescriptor): Promise<RunDistributeRes
       // 1_000_000 so the minimum viable totalYield is
       // `ceil(supply / RATE_SCALE)` base-6 mhUSDC units.
       const minTotalYield = (supply + RATE_SCALE - 1n) / RATE_SCALE // ceil
+      // Render the human-readable mhUSDC amount with full 6-decimal
+      // precision; minTotalYield can be as small as 1 base unit (= 0.000001
+      // mhUSDC) when supply ≈ RATE_SCALE.
+      const minTotalYieldUsd = formatMhUsdcBigInt(minTotalYield, {
+        minFractionDigits: 6,
+      })
       throw new AgentActionRunnerError(
-        `totalYield (${totalYield}) is too small for snapshot supply (${supply}) — per-share rate would round down to zero. Increase totalYield to at least ${minTotalYield} mhUSDC base units (${(Number(minTotalYield) / 1_000_000).toFixed(6)} mhUSDC).`,
+        `totalYield (${totalYield}) is too small for snapshot supply (${supply}) — per-share rate would round down to zero. Increase totalYield to at least ${minTotalYield} mhUSDC base units (${minTotalYieldUsd} mhUSDC).`,
       )
     }
     // CR-M-1 (round-1 review): unreachable under the current

@@ -3,7 +3,7 @@ import { ref, computed, watch, nextTick, onMounted } from 'vue'
 import { useMediaQuery } from '@vueuse/core'
 import { useAgentStore } from '@/stores/agent'
 import { cn } from '@/lib/utils'
-import { renderMarkdownSafe } from '@/lib/markdown'
+import { renderMarkdownSafe, renderMarkdownStreaming } from '@/lib/markdown'
 import ActionCard from '@/components/agent/ActionCard.vue'
 import ConfirmModal from '@/components/agent/ConfirmModal.vue'
 import { runAgentAction } from '@/composables/useAgentActionRunner'
@@ -410,6 +410,61 @@ const visibleMessages = computed(() =>
   }),
 )
 
+// Thread 10 polish — split each agent message into a markdown-rendered
+// "stable" prefix + a plain-text "inflight" tail while the SSE stream
+// is in flight. Settled messages (and the only-one in-flight message
+// once `isTyping` flips false) render fully through `renderMarkdownSafe`.
+// The split solves two issues:
+//   (a) v-html re-renders the WHOLE subtree on every string change.
+//       The streaming split limits this: BETWEEN boundary crossings,
+//       the stable prefix's HTML string is identical → Vue v-html
+//       short-circuits the DOM write → focus on prior anchors survives.
+//       AT boundary crossings (new paragraph, new list item) the
+//       stable HTML grows and the subtree IS replaced — focus survival
+//       narrows to "within a boundary-crossing window." Settled
+//       messages (different `msg.id`, branch below) never re-render
+//       regardless of streaming activity, so focus on their anchors
+//       always survives. See `renderMarkdownStreaming`'s JSDoc for
+//       the full focus-survival scope contract.
+//   (b) An unclosed `\`\`\`js` fence mid-stream would render
+//       prose-after-fence as `<pre>` until the closing fence arrives.
+//       The streaming split keeps the in-flight fence + its body in the
+//       plain-text bucket until the closing fence lands.
+// Both `renderMarkdownSafe` and the underlying split helper use a
+// memoized cache so a long conversation (~20 settled bubbles) doesn't
+// re-run marked.parse + DOMPurify.sanitize 20× on each SSE delta.
+//
+// Render map is recomputed when `visibleMessages` or `agentStore.isTyping`
+// changes. For each message it produces `{ stableHtml, inflightText }`;
+// the template binds the former via v-html and the latter via plain
+// `{{ }}` interpolation.
+interface RenderedAgentMessage {
+  stableHtml: string
+  inflightText: string
+}
+
+const renderedMessages = computed(() => {
+  const map = new Map<number, RenderedAgentMessage>()
+  // CR-1 (Thread-10 review): key the inflight predicate off the
+  // store's `inflightAgentMessageId` ref (cleared AFTER finalText
+  // assigns) rather than `isTyping` (flips earlier inside chat.send's
+  // finally). Closes a one-microtask race that routed a mid-fence
+  // partial message through the settled branch and reintroduced the
+  // `<pre>` snap-back. See `useAgentStore` for the lifecycle pin.
+  const inflightId = agentStore.inflightAgentMessageId
+  for (const msg of visibleMessages.value) {
+    if (msg.role !== 'agent') continue
+    if (msg.id === inflightId) {
+      const { stableHtml, inflightText } = renderMarkdownStreaming(msg.text)
+      map.set(msg.id, { stableHtml, inflightText })
+    } else {
+      // Settled — render the full text through the memoized pipeline.
+      map.set(msg.id, { stableHtml: renderMarkdownSafe(msg.text), inflightText: '' })
+    }
+  }
+  return map
+})
+
 function sendMessage(text?: string) {
   const msg = text || input.value.trim()
   if (!msg) return
@@ -565,6 +620,7 @@ onMounted(() => {
                   ? 'bg-midnight dark:bg-[#171717] text-white border border-transparent dark:border-white/5 rounded-tr-sm text-right shadow-xl px-4 py-3.5'
                   : 'overflow-hidden bg-mist/40 dark:bg-[#0d0e10] text-midnight dark:text-white border border-haze dark:border-white/5 rounded-tl-sm shadow-2xl pl-5 pr-4 py-3.5',
               )"
+              :aria-busy="msg.role === 'agent' && msg.id === agentStore.inflightAgentMessageId ? 'true' : undefined"
             >
               <span
                 v-if="msg.role === 'agent'"
@@ -574,16 +630,34 @@ onMounted(() => {
               <!-- Agent replies render through a sanitized markdown
                    pipeline (LLM emits **bold** / lists / code fences /
                    links). User messages stay plain-text — never run
-                   user input through v-html. The streaming watcher in
-                   the agent store mutates msg.text mid-flight; v-html
-                   re-renders reactively. Empty msg.text renders an
-                   empty string (no <p></p>) so the typing-indicator
-                   pulse stays visually quiet pre-first-delta. -->
-              <div
-                v-if="msg.role === 'agent'"
-                class="markdown-body"
-                v-html="renderMarkdownSafe(msg.text)"
-              />
+                   user input through v-html.
+                   Streaming split (Thread 10): stable prefix → v-html
+                   (memoized; identical string across deltas → Vue v-html
+                   short-circuits → focus on prior anchors survives).
+                   Inflight tail → plain `{{ }}` interpolation (no
+                   `<pre>` snap-back when an unclosed code fence is
+                   mid-stream). `whitespace-pre-wrap` preserves the
+                   LLM's newlines while typing. -->
+              <template v-if="msg.role === 'agent'">
+                <div class="markdown-body">
+                  <!-- Stable prefix: v-html target. Wrapper uses
+                       `display:contents` (see scoped CSS below) so the
+                       stable <p>/<ul>/<pre>/... elements appear as
+                       direct siblings of the inflight <p> below. That
+                       makes the existing `:deep(p + p) { margin-top:
+                       0.65em }` rule fire on the boundary flush —
+                       eliminates the inline-vs-block vertical jump
+                       the FD review (H-1) caught. -->
+                  <div
+                    class="markdown-stable"
+                    v-html="renderedMessages.get(msg.id)?.stableHtml ?? ''"
+                  />
+                  <p
+                    v-if="renderedMessages.get(msg.id)?.inflightText"
+                    class="agent-stream-tail whitespace-pre-wrap"
+                  >{{ renderedMessages.get(msg.id)?.inflightText }}</p>
+                </div>
+              </template>
               <p v-else>{{ msg.text }}</p>
             </div>
 
@@ -794,6 +868,30 @@ onMounted(() => {
    chat bubble's `text-base leading-relaxed`; bullet/number indent
    sized so list items hang correctly inside the gold-accent bubble
    without colliding with the left bar. */
+
+/* Thread-10 streaming split: the stable-prefix v-html target uses
+   `display: contents` so its rendered <p>/<ul>/<pre>/... become
+   layout-siblings of the inflight <p class="agent-stream-tail"> that
+   follows. That lets the existing `:deep(p + p) { margin-top: 0.65em }`
+   rule fire across the stable→inflight boundary, eliminating the
+   inline-vs-block vertical jump the FD review (Thread-10 H-1) caught.
+   `display:contents` is supported in every browser MuHaven targets
+   (Chrome/Firefox/Safari ≥ 18.4). Modern AT navigates correctly. */
+.markdown-body :deep(.markdown-stable) {
+  display: contents;
+}
+/* Inflight tail style hook (UX L-2): keep visual rhythm aligned with
+   the existing markdown <p> rules so the boundary flush doesn't
+   reflow. The `:deep(p) { margin: 0 }` rule below already nullifies
+   the default p margin; the `p + p` rule pairs the inflight <p> with
+   its preceding sibling stable <p> when one exists. No italic /
+   opacity treatment — a stylistic shift on flush would actually be
+   more disorienting than a quiet append. */
+.markdown-body :deep(.agent-stream-tail) {
+  /* margin already at 0 via :deep(p); explicit for grep-ability. */
+  margin: 0;
+}
+
 .markdown-body :deep(p) {
   margin: 0;
 }

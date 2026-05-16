@@ -7,6 +7,7 @@ import {
   type AgentCardType,
 } from '@/services/api'
 import { useAgentChat } from '@/composables/useAgentChat'
+import { findStableBoundary, clearMarkdownCache } from '@/lib/markdown'
 
 /**
  * Wave 4 P2 — agent chat store.
@@ -51,12 +52,28 @@ export const useAgentStore = defineStore('agent', () => {
   // Live-stream the streamingText into the latest in-progress agent
   // message so the existing AgentPage.vue render path picks it up
   // without changing the template (msg.text reactivity wins).
-  let inflightAgentMessageId: number | null = null
+  //
+  // CR-1 (round-1 Thread-10 review): exposed as a `ref` (was a `let`
+  // local) so AgentPage's `renderedMessages` computed can key its
+  // inflight-vs-settled branch off the EXACT lifecycle window. The
+  // race the change closes: `chat.isStreaming` flips false inside
+  // `chat.send()`'s `finally` BEFORE `agentMessage.text = finalText`
+  // runs at line 119 below. Vue's scheduler can flush in that
+  // microtask gap; if `renderedMessages` keys off `isStreaming`, it
+  // sees `isStreaming=false` + a stale partial `msg.text` that may
+  // still contain an unclosed code fence → settled-branch routes the
+  // mid-fence text through `renderMarkdownSafe` → exactly the
+  // `<pre>` snap-back the streaming split is meant to eliminate, for
+  // one tick. Keying off `inflightAgentMessageId` instead (which we
+  // clear AFTER `agentMessage.text = finalText` lands) closes the
+  // window: the inflight branch stays in force until the SETTLED
+  // text replaces the partial.
+  const inflightAgentMessageId = ref<number | null>(null)
   watch(
     () => chat.streamingText.value,
     (text) => {
-      if (inflightAgentMessageId === null) return
-      const msg = messages.value.find((m) => m.id === inflightAgentMessageId)
+      if (inflightAgentMessageId.value === null) return
+      const msg = messages.value.find((m) => m.id === inflightAgentMessageId.value)
       if (msg) msg.text = text
     },
   )
@@ -74,9 +91,19 @@ export const useAgentStore = defineStore('agent', () => {
     chat.reset()
     messages.value = []
     pendingPrompt.value = ''
-    inflightAgentMessageId = null
+    inflightAgentMessageId.value = null
     nextId = 1
     useStreaming.value = true
+    // SE L-1 (Thread-10 review): drop the module-level markdown render
+    // cache on auth-boundary teardown. The cache stores HTML keyed by
+    // markdown text — output is a pure function of input, so no PII
+    // can leak across the boundary today. But the
+    // `feedback_auth_boundary_teardown` invariant ("every user-scoped
+    // state clears on switch") is worth honoring explicitly: a future
+    // change that adds per-user customisation to the render path
+    // (e.g. locale-aware anchor `aria-label`) would otherwise quietly
+    // serve User A's renders to User B until 64 evictions later.
+    clearMarkdownCache()
   }
 
   async function sendMessage(text: string): Promise<void> {
@@ -109,7 +136,7 @@ export const useAgentStore = defineStore('agent', () => {
     const agentMessage = messages.value.find((m) => m.id === agentMessageId)!
 
     if (useStreaming.value) {
-      inflightAgentMessageId = agentMessage.id
+      inflightAgentMessageId.value = agentMessage.id
       try {
         const { text: finalText, actions, toolsCalled, suggestions } = await chat.send({
           message: text,
@@ -162,7 +189,20 @@ export const useAgentStore = defineStore('agent', () => {
           err instanceof Error
           && (err.name === 'AbortError' || (err as { code?: number }).code === 20)
         if (isAbort) {
-          inflightAgentMessageId = null
+          // CR-2 (Thread-10 round-1 review): truncate the partial msg.text
+          // to the last STABLE boundary before clearing the inflight slot.
+          // Otherwise an aborted stream that stopped mid-fence leaves the
+          // unclosed `\`\`\`` in msg.text; the next render routes through
+          // the settled branch which calls `renderMarkdownSafe` on the
+          // partial → marked treats the unclosed fence as code-to-EOI →
+          // user sees `<pre>` containing any trailing prose, the exact
+          // snap-back this PR is meant to eliminate. Truncation preserves
+          // every CLOSED paragraph and drops only the in-flight tail.
+          if (agentMessage.text) {
+            const boundary = findStableBoundary(agentMessage.text)
+            agentMessage.text = agentMessage.text.slice(0, boundary)
+          }
+          inflightAgentMessageId.value = null
           // The orphan agentMessage already-empty text is harmless —
           // the bus reset/teardown that triggered the abort also
           // typically clears `messages`, so the stub never renders.
@@ -172,13 +212,20 @@ export const useAgentStore = defineStore('agent', () => {
         }
         // Non-abort stream failure — surface + fall back to legacy
         // keyword endpoint so the user still sees something. The
-        // composable already set `chat.lastError` for surfacing.
+        // composable already set `chat.lastError` for surfacing. Same
+        // truncation rationale as above: an error mid-fence shouldn't
+        // leave the unclosed fence baked into msg.text once we route
+        // through the settled-render branch. The fallback-error sentence
+        // we ASSIGN below replaces the partial text outright, so this is
+        // belt-and-suspenders rather than load-bearing — but it keeps the
+        // invariant tight in case future error-handling code paths read
+        // `agentMessage.text` before overwriting it.
         agentMessage.text = `Streaming error — using fallback. ${
           err instanceof Error ? err.message : ''
         }`.trim()
         useStreaming.value = false
       } finally {
-        inflightAgentMessageId = null
+        inflightAgentMessageId.value = null
       }
     }
 
@@ -220,6 +267,14 @@ export const useAgentStore = defineStore('agent', () => {
   return {
     messages,
     isTyping: chat.isStreaming,
+    /**
+     * id of the currently-streaming agent message, or `null` when no
+     * stream is in flight. Cleared AFTER `agentMessage.text = finalText`
+     * lands so consumers (AgentPage's `renderedMessages` computed)
+     * can use it as a tight inflight predicate without racing
+     * `isTyping` (which flips earlier — see CR-1 in DEV_LOG).
+     */
+    inflightAgentMessageId,
     streamingText: chat.streamingText,
     pendingActions: chat.pendingActions,
     pendingTelegramLink: chat.pendingTelegramLink,
