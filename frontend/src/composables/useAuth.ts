@@ -98,6 +98,15 @@ async function tearDownUserStores(): Promise<void> {
     // messages + pendingActions + pendingTelegramLink + streamingText
     // + lastError + pendingPrompt + nextId counter.
     import('@/stores/agent').then((m) => m.useAgentStore().reset()),
+    // 2026-05-23 — Wave 5+ per-token YieldSnapshot binding. The
+    // runtime registration map holds backend-projected snapshot
+    // addresses keyed by token address. A passkey switch could
+    // theoretically expose User A's per-token addresses to User B if
+    // the cross-tenant invariant ever breaks; clearing on teardown
+    // keeps the new session's `getYieldSnapshot()` reads coming
+    // fresh from User B's token load. Pure-data clear; no async
+    // work.
+    import('@/contracts/addresses').then((m) => m.clearYieldSnapshotRegistry()),
   ])
 }
 

@@ -147,13 +147,81 @@ export function getQueue(token: `0x${string}`): `0x${string}` | null {
   return v35Addresses.queues[token.toLowerCase()] ?? null
 }
 
+// ── Runtime per-token YieldSnapshot map ─────────────────────────────
+//
+// Wave 5+ per-token YieldSnapshot proxy binding (2026-05-23). The F2
+// wizard deploys a fresh `YieldSnapshot` proxy per RWA token and the
+// address lands in `rwa_tokens.yield_snapshot_address`, surfaced to
+// the frontend through `TokenResponseDto.yield_snapshot_address`.
+// Token stores (issuer-tokens, marketplace, portfolio — anywhere a
+// `/v1/tokens` or `/v1/issuer/tokens` response is parsed) call
+// `registerYieldSnapshot(addr, snapshot)` on load so the runtime map
+// is populated before any consumer (SnapshotService, runner) resolves.
+//
+// Why a runtime map instead of replacing the env-var maps entirely:
+// the env-var maps stay as a build-time fallback for environments
+// where the backend can't be reached at boot (smoke tests, offline
+// dev, indexer-only scripts), and the legacy seed rows (which
+// predate per-token snapshots) carry a `null` `yield_snapshot_address`
+// — those resolve through the singleton fallback chain unchanged.
+const dynamicYieldSnapshots: Record<string, `0x${string}`> = {}
+
+/**
+ * Register a per-token YieldSnapshot proxy address from a backend
+ * response. Token-store consumers call this in their `load()` hooks
+ * before any UI consumer reads `getYieldSnapshot(token)`. Silent
+ * no-op for null/empty/zero-address values so callers don't have to
+ * guard around legacy rows. Always lower-cases the token key so the
+ * runtime + env-var maps share the same lookup convention.
+ */
+export function registerYieldSnapshot(
+  token: `0x${string}` | string | null | undefined,
+  snapshot: `0x${string}` | string | null | undefined,
+): void {
+  if (!token || !snapshot) return
+  if (typeof token !== 'string' || typeof snapshot !== 'string') return
+  // Pick B round-1 SE MED (2026-05-23): symmetric address validation
+  // on BOTH ends. The map key must be a real hex address — a malicious
+  // or buggy backend response with `token = "<script>"` or an
+  // arbitrary garbage string would otherwise poison the map. Mirrors
+  // the snapshot regex.
+  if (!/^0x[0-9a-fA-F]{40}$/.test(token)) return
+  if (!/^0x[0-9a-fA-F]{40}$/.test(snapshot)) return
+  // Round-2 CR N-2 (2026-05-23): block zero-address on both ends, not
+  // just the snapshot. A zero-address token key would silently land in
+  // the map — untriggered today (backend never returns 0x000…0000) but
+  // symmetric to the snapshot check.
+  if (token.toLowerCase() === ZERO) return
+  if (snapshot === ZERO) return
+  dynamicYieldSnapshots[token.toLowerCase()] = snapshot as `0x${string}`
+}
+
+/**
+ * Clear the runtime per-token snapshot map. Auth-boundary teardown
+ * hook for `useAuth.tearDownUserStores`: a fresh login should not
+ * carry the prior session's snapshot-address registrations into the
+ * new session (especially if the new user's issuer onboarding rotates
+ * a snapshot proxy between sessions).
+ */
+export function clearYieldSnapshotRegistry(): void {
+  for (const k of Object.keys(dynamicYieldSnapshots)) {
+    delete dynamicYieldSnapshots[k]
+  }
+}
+
 export function getYieldSnapshot(token: `0x${string}`): `0x${string}` | null {
+  // Resolution order (Wave 5+):
+  //   1. Runtime registration from backend `TokenResponseDto` — the
+  //      authoritative per-token address as of the wizard's
+  //      `deploy_yield_snapshot` step.
+  //   2. Build-time env-var per-token map (VITE_YIELD_SNAPSHOTS_JSON) —
+  //      legacy fallback for tokens deployed before per-token snapshots.
+  //   3. Singleton (VITE_YIELD_SNAPSHOT_ADDRESS) — covers legacy seed
+  //      rows where the env-var map has no entry.
+  const runtime = dynamicYieldSnapshots[token.toLowerCase()]
+  if (runtime && !isZeroAddress(runtime)) return runtime
   const perToken = v35Addresses.yieldSnapshots[token.toLowerCase()]
   if (perToken && !isZeroAddress(perToken)) return perToken
-  // Singleton fallback — covers wizard-deployed tokens absent from the
-  // static per-token JSON map. The Wave 3.5 deployment shares one
-  // YieldSnapshot proxy across every RWA token, so the fallback is
-  // structurally correct.
   if (!isZeroAddress(v35Addresses.yieldSnapshot)) return v35Addresses.yieldSnapshot
   return null
 }

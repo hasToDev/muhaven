@@ -6,7 +6,7 @@ import * as TokenService from '@/services/contracts/TokenService'
 import * as Erc20Service from '@/services/contracts/Erc20Service'
 import * as LegacyPusdcService from '@/services/contracts/LegacyPusdcService'
 import * as MuHavenStableService from '@/services/contracts/MuHavenStableService'
-import { addresses, v35Addresses, isZeroAddress } from '@/contracts/addresses'
+import { addresses, v35Addresses, isZeroAddress, registerYieldSnapshot } from '@/contracts/addresses'
 import { buildReadContext } from '@/services/v35/context'
 
 export interface PortfolioHolding {
@@ -231,6 +231,18 @@ export const usePortfolioStore = defineStore('portfolio', () => {
       const tokenMap = new Map<string, TokenResponseDto>()
       for (const t of tokensRes.tokens) {
         tokenMap.set(t.address.toLowerCase(), t)
+      }
+
+      // Wave 5+ per-token YieldSnapshot binding (2026-05-23): register
+      // backend-projected snapshot addresses into the runtime resolver
+      // map so YieldsPage's claim flow routes to the per-token proxy.
+      // The portfolio page is the most likely entry point for the
+      // claim path (investor lands here on auth, sees their holdings,
+      // navigates to /yields → calls claimYield against the snapshot
+      // resolved via getYieldSnapshot(token)). Marketplace + portfolio
+      // stores both register on load so either entry order works.
+      for (const t of tokensRes.tokens) {
+        registerYieldSnapshot(t.address, t.yield_snapshot_address)
       }
 
       // Auto-discover positions for marketplace tokens NOT in the backend's

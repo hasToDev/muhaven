@@ -130,6 +130,15 @@ export interface DeployTokenResult {
   tokenAddress: Address;
   treasuryAddress: Address;
   queueAddress: Address;
+  /**
+   * Wave 5+ per-token YieldSnapshot proxy (2026-05-23). One deployment
+   * per RWA token: each issuer's epoch state, encrypted-balance ACLs,
+   * and claim payouts are isolated from other tenants. The address is
+   * also persisted to `rwa_tokens.yield_snapshot_address` so the
+   * frontend's runtime resolver can route per-token snapshot calls
+   * without depending on the env-var maps.
+   */
+  yieldSnapshotAddress: Address;
   registeredOracle: Address;
   txHashes: Record<DeployStepKey, Hex[]>;
 }
@@ -180,6 +189,7 @@ export class DeployTokenLibrary {
   private readonly tokenArtifact: CompiledArtifact;
   private readonly queueArtifact: CompiledArtifact;
   private readonly treasuryArtifact: CompiledArtifact;
+  private readonly yieldSnapshotArtifact: CompiledArtifact;
   private readonly tupArtifact: CompiledArtifact;
 
   constructor(config: DeployTokenLibraryConfig) {
@@ -197,6 +207,7 @@ export class DeployTokenLibrary {
     this.tokenArtifact = loadArtifact(config.artifactsDir, 'MuHavenToken');
     this.queueArtifact = loadArtifact(config.artifactsDir, 'RedemptionQueue');
     this.treasuryArtifact = loadArtifact(config.artifactsDir, 'MuHavenTreasury');
+    this.yieldSnapshotArtifact = loadArtifact(config.artifactsDir, 'YieldSnapshot');
     this.tupArtifact = loadTupArtifact();
   }
 
@@ -252,6 +263,52 @@ export class DeployTokenLibrary {
         logger.warn({ err, step, status }, 'Progress callback threw');
       }
     };
+
+    // ── Pre-flight: mhUSDC wrapper ownership ──────────────────────────
+    // Pick B round-1 CR-M1 (2026-05-23): the per-token snapshot's
+    // `grant_trusted_payer` step calls `MuHavenStable.setTrustedPayer`
+    // which is `onlyOwner`. If the wrapper's owner has been rotated
+    // (multisig in prod), that call fails AFTER ~5 minutes of wizard
+    // progress + 3 deployed proxies. Fail fast instead: read
+    // `mhUSDC.owner()` upfront and abort with a clear, recovery-
+    // pointing error before signing the first deploy tx. The platform
+    // deployer EOA owns the wrapper in staging + early prod; rotation
+    // is a Wave 5+ event, gated by a separate ownership-transfer-back
+    // step before any wizard run.
+    //
+    // Round-2 RC-LOW-2 (2026-05-23): wrap the `readContract` in
+    // try/catch so an uninitialised wrapper address / misconfigured
+    // `PlatformAddresses.stable` surfaces as a curated operator
+    // message instead of the raw "execution reverted at 0x…" RPC
+    // error.
+    let wrapperOwner: Address;
+    try {
+      wrapperOwner = (await this.publicClient.readContract({
+        address: this.platform.stable,
+        abi: mhUsdcOwnerAbi,
+        functionName: 'owner',
+      })) as Address;
+    } catch (err) {
+      throw new Error(
+        `Pre-flight read of mhUSDC.owner() failed at wrapper address ` +
+          `${this.platform.stable}. This usually means the configured ` +
+          'mhUSDC address is wrong or the wrapper is not deployed at that ' +
+          'address. Verify `PlatformAddresses.stable` matches the live ' +
+          `MuHavenStable proxy. Underlying error: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+      );
+    }
+    if (wrapperOwner.toLowerCase() !== this.deployerAccount.address.toLowerCase()) {
+      throw new Error(
+        `mhUSDC wrapper owner (${wrapperOwner}) is not the platform deployer ` +
+          `(${this.deployerAccount.address}). The per-token YieldSnapshot's ` +
+          '`grant_trusted_payer` step requires the deployer to be the wrapper ' +
+          'owner. Either transfer wrapper ownership back to the deployer, or ' +
+          'run `scripts/grant-trusted-payer.ts` manually for each per-token ' +
+          'snapshot after deploy completes. Aborting before any tx is signed.',
+      );
+    }
 
     // ── Step 1: MuHavenToken proxy ──────────────────────────────────────
     await advance('deploy_token', 'pending');
@@ -316,7 +373,57 @@ export class DeployTokenLibrary {
       advance,
     );
 
-    // ── Step 4: Wire MuHavenToken pointers ─────────────────────────────
+    // ── Step 4: Per-token YieldSnapshot proxy (Wave 5+ tenant isolation) ──
+    // YieldSnapshot.initialize(owner, tokenRegistry, pusdc): we wire the
+    // platform deployer as owner so admin paths (setMaxConfirmations,
+    // setClaimExpiry, etc.) stay platform-controlled; the per-token
+    // issuer authorization is resolved at write time via
+    // `TokenRegistry.getConfig(token).issuer`, so the snapshot is a
+    // multi-token-CAPABLE contract — we just never register more than
+    // one token against it. The `mhUSDC` slot (named `pusdc` in the
+    // initialize signature for historical-schema reasons — see memory
+    // reference_phase7_5_pusdc_rotation) gets the platform's
+    // `MuHavenStable` address (the deployed wrapper, not the legacy
+    // ReineiraOS PUSDC).
+    await advance('deploy_yield_snapshot', 'pending');
+    const yieldSnapshotInitData = encodeFunctionData({
+      abi: this.yieldSnapshotArtifact.abi,
+      functionName: 'initialize',
+      args: [
+        this.deployerAccount.address, // _owner — platform deployer (admin paths)
+        this.platform.tokenRegistry,
+        this.platform.stable, // mhUSDC
+      ],
+    });
+    const yieldSnapshotAddress = await this.deployBehindProxy(
+      this.yieldSnapshotArtifact,
+      yieldSnapshotInitData,
+      'deploy_yield_snapshot',
+      advance,
+    );
+
+    // ── Step 5: Register snapshot as trusted payer on mhUSDC ──────────
+    // `YieldSnapshot.claimYield` calls `IMuHavenStable.trustedPayout(...)`
+    // which loud-reverts `NotTrustedPayer` until this grant lands.
+    // Equivalent to `scripts/grant-trusted-payer.ts` folded into the
+    // wizard. The wrapper's `owner()` MUST be the platform deployer for
+    // this to land — if ownership has been rotated (multisig), the
+    // deploy fails fast and the operator runs `grant-trusted-payer.ts`
+    // separately after a manual ownership transfer-back step. We
+    // intentionally do NOT swallow the revert: deploying a snapshot
+    // proxy that can never serve claims would be a silent footgun.
+    await advance('grant_trusted_payer', 'pending');
+    await this.sendAndAwait(
+      'grant_trusted_payer',
+      this.platform.stable,
+      mhUsdcTrustedPayerAbi,
+      'setTrustedPayer',
+      [yieldSnapshotAddress, true],
+      advance,
+    );
+    await advance('grant_trusted_payer', 'mined');
+
+    // ── Step 6: Wire MuHavenToken pointers ─────────────────────────────
     await advance('wire_token_pointers', 'pending');
     await this.sendAndAwait(
       'wire_token_pointers',
@@ -334,12 +441,16 @@ export class DeployTokenLibrary {
       [queueAddress],
       advance,
     );
+    // Per-token YieldSnapshot wireup (Wave 5+): point this token at its
+    // own freshly-deployed proxy. Replaces the prior "singleton snapshot
+    // shared across every token" posture inherited from the platform
+    // PlatformAddresses.yieldSnapshot env-var.
     await this.sendAndAwait(
       'wire_token_pointers',
       tokenAddress,
       this.tokenArtifact.abi,
       'setYieldSnapshot',
-      [this.platform.yieldSnapshot],
+      [yieldSnapshotAddress],
       advance,
     );
     await this.sendAndAwait(
@@ -480,6 +591,7 @@ export class DeployTokenLibrary {
       tokenAddress,
       treasuryAddress,
       queueAddress,
+      yieldSnapshotAddress,
       registeredOracle: this.platform.issuerOracle,
       txHashes,
     };
@@ -662,6 +774,29 @@ const modularComplianceAuthAbi: Abi = [
       { name: 'authorized', type: 'bool' },
     ],
     outputs: [],
+  },
+];
+
+const mhUsdcTrustedPayerAbi: Abi = [
+  {
+    type: 'function',
+    name: 'setTrustedPayer',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'payer', type: 'address' },
+      { name: 'allowed', type: 'bool' },
+    ],
+    outputs: [],
+  },
+];
+
+const mhUsdcOwnerAbi: Abi = [
+  {
+    type: 'function',
+    name: 'owner',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'address' }],
   },
 ];
 

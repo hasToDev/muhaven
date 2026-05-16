@@ -169,6 +169,11 @@ export class DeployTokenUseCase {
               assetClass: config.asset_class,
               minInvestment: config.min_investment,
               status: 'paused',
+              // Wave 5+ per-token snapshot proxy (2026-05-23) — the
+              // frontend's `getYieldSnapshot(token)` routes to this
+              // address when registered, falling back to the env-var
+              // singleton for legacy rows missing the column.
+              yieldSnapshotAddress: result.yieldSnapshotAddress,
               createdAt: now,
               updatedAt: now,
               pausedAt: now,

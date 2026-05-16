@@ -47,6 +47,7 @@ function toDto(
     asset_class: token.assetClass,
     min_investment: token.minInvestment ?? null,
     status: token.status,
+    yield_snapshot_address: token.yieldSnapshotAddress ?? null,
     created_at: token.createdAt.toISOString(),
     updated_at: token.updatedAt.toISOString(),
     latest_nav: latestNav ? navToDto(latestNav) : null,

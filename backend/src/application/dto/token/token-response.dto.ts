@@ -43,6 +43,14 @@ export interface TokenResponseDto {
   asset_class: string;
   min_investment: string | null;
   status: string;
+  /**
+   * Wave 5+ per-token YieldSnapshot proxy address (2026-05-23).
+   * `null` for legacy tokens (deployed before per-token snapshots
+   * shipped); frontend's `getYieldSnapshot(token)` falls back to the
+   * env-baked singleton when this is null. Wizard-deployed tokens
+   * always populate this at the `deploy_yield_snapshot` step.
+   */
+  yield_snapshot_address: string | null;
   created_at: string;
   updated_at: string;
   latest_nav: LatestNavDto | null;

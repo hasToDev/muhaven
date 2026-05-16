@@ -6,6 +6,7 @@ import {
   type IssuerStatsDto,
 } from '@/services/api'
 import * as RegistryService from '@/services/contracts/RegistryService'
+import { registerYieldSnapshot } from '@/contracts/addresses'
 
 export interface IssuerTokenView {
   address: string
@@ -99,6 +100,16 @@ export const useIssuerTokensStore = defineStore('issuer-tokens', () => {
       status: t.status,
       assetClass: t.asset_class,
     }))
+
+    // Wave 5+ per-token YieldSnapshot binding: register each token's
+    // backend-projected snapshot address into the runtime map so the
+    // distribute_yield runner + SnapshotService resolve to the
+    // per-token proxy. Issuers hit this store on every issuer-side
+    // page (Tokens, Distribute, Investors); registering here covers
+    // the issuer side of the deploy → distribute chain.
+    for (const t of tokensRes.value.tokens) {
+      registerYieldSnapshot(t.address, t.yield_snapshot_address)
+    }
 
     // Default the master-detail selection to the first active token (or
     // first overall) so the right-hand panel always has something to render

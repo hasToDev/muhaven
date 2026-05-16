@@ -100,6 +100,12 @@ const DEPLOY_STEP_LABELS: Record<DeployStepKey, string> = {
   deploy_token: 'Token (fhERC-20)',
   deploy_queue: 'RedemptionQueue',
   deploy_treasury: 'Treasury',
+  // Wave 5+ per-token YieldSnapshot binding (2026-05-23) — two new
+  // wizard steps land between Treasury and pointer-wireup. The proxy
+  // deployment fires first; the trusted-payer grant on mhUSDC is the
+  // follow-up wire-up that unlocks `claimYield` post-fund.
+  deploy_yield_snapshot: 'YieldSnapshot (per-token proxy)',
+  grant_trusted_payer: 'mhUSDC · grant trusted payer',
   wire_token_pointers: 'Wire pointers',
   authorize_investor_registry: 'InvestorRegistry · authorize',
   authorize_compliance_callers: 'Compliance · authorize callers',

@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { tokensApi, type TokenResponseDto, type AssetClass } from '@/services/api'
+import { registerYieldSnapshot } from '@/contracts/addresses'
 
 export const useMarketplaceStore = defineStore('marketplace', () => {
   const tokens = ref<TokenResponseDto[]>([])
@@ -46,6 +47,15 @@ export const useMarketplaceStore = defineStore('marketplace', () => {
     try {
       const res = await tokensApi.getAll()
       tokens.value = res.tokens
+      // Wave 5+ per-token YieldSnapshot binding: register each token's
+      // backend-projected snapshot address into the runtime map so
+      // SnapshotService + runner can resolve to the per-token proxy.
+      // Investors hit this store on /marketplace + on buy-flow entry,
+      // so registering here covers the investor side of the deploy →
+      // claim chain.
+      for (const t of res.tokens) {
+        registerYieldSnapshot(t.address, t.yield_snapshot_address)
+      }
       loaded.value = true
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to load tokens'

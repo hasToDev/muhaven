@@ -31,6 +31,7 @@ import type { Address, Hex } from 'viem';
 
 const WALLET = '0xabCDEF1234567890ABcDEF1234567890aBCDeF12' as Address;
 const TOKEN_ADDR = '0xfEED11FEED2222FEED3333FEED4444FEED5555AA' as Address;
+const YIELD_SNAPSHOT_ADDR = '0xbEEBee11BEEBee2222BEEbEE3333BeEbeE4444Cc' as Address;
 
 class StubDeployRepo implements IIssuerTokenDeployRepository {
   rows = new Map<string, IssuerTokenDeploy>();
@@ -149,6 +150,11 @@ function makeStubLibrary(opts: {
         tokenAddress: TOKEN_ADDR,
         treasuryAddress: '0xTreasury' as Address,
         queueAddress: '0xQueue' as Address,
+        // Wave 5+ per-token YieldSnapshot binding (2026-05-23): the
+        // library now deploys a per-token snapshot proxy and returns
+        // its address. The use case persists this into
+        // `rwa_tokens.yield_snapshot_address`.
+        yieldSnapshotAddress: YIELD_SNAPSHOT_ADDR,
         registeredOracle: '0xOracle' as Address,
         txHashes: {} as Record<DeployStepKey, Hex[]>,
       };
@@ -246,6 +252,30 @@ describe('DeployTokenUseCase', () => {
     expect(row?.status).toBe('succeeded');
   });
 
+  it('persists the per-token YieldSnapshot address on the rwa_tokens row (Pick B)', async () => {
+    // Wave 5+ per-token YieldSnapshot binding (2026-05-23): the F2
+    // wizard deploys a per-token snapshot proxy and returns its
+    // address; the use case must persist this so the frontend's
+    // `getYieldSnapshot(token)` resolves to the per-token proxy
+    // instead of the env-baked singleton. Without this assertion the
+    // tenant-isolation guarantee silently regresses (legacy resolution
+    // path still works via fallback, but every issuer would share one
+    // snapshot's epoch state and ACLs).
+    const useCase = new DeployTokenUseCase(
+      userRepo,
+      deployRepo,
+      makeStubLibrary({}),
+      rwaTokenRepo,
+    );
+    await useCase.start('user-1', DTO);
+    await new Promise((r) => setTimeout(r, 50));
+
+    const written = await rwaTokenRepo.findByAddress(TOKEN_ADDR);
+    expect(written?.yieldSnapshotAddress?.toLowerCase()).toBe(
+      YIELD_SNAPSHOT_ADDR.toLowerCase(),
+    );
+  });
+
   it('skips rwa_tokens write when row already exists (race with seed:tokens:v35)', async () => {
     // Pre-populate as if `pnpm seed:tokens:v35` ran between register_token
     // mining and this branch — second insert would violate the address PK.
@@ -277,6 +307,15 @@ describe('DeployTokenUseCase', () => {
     );
     expect(matches.length).toBe(1);
     expect(matches[0]?.id).toBe('pre-seeded');
+    // Pick B round-1 CR-L2 (2026-05-23): re-seed must NOT clobber
+    // the wizard's `yield_snapshot_address` column. The pre-seeded
+    // row had no snapshot; the wizard write was skipped on this path,
+    // so the column stays null — but the SET-clause exclusion in
+    // `pg-rwa-token.repository.ts` is the load-bearing guard the
+    // PRODUCTION re-seed would respect (this test stub uses an
+    // in-memory array, so we pin the no-clobber invariant at the
+    // row-shape level).
+    expect(matches[0]?.yieldSnapshotAddress).toBeUndefined();
   });
 
   it('still finalises succeeded when rwa_tokens write throws (operator falls back to seed:tokens:v35)', async () => {

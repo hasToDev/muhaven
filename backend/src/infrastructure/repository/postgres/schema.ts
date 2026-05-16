@@ -270,6 +270,12 @@ export const rwaTokens = pgTable(
     assetClass: assetClassEnum('asset_class').notNull().default('other'),
     minInvestment: numeric('min_investment'),
     status: tokenStatusEnum('status').notNull().default('active'),
+    // Wave 5+ per-token YieldSnapshot proxy (2026-05-23). Nullable
+    // because legacy seed rows predate per-token snapshots — those
+    // tokens fall back to the singleton snapshot proxy resolved via
+    // the frontend's `VITE_YIELD_SNAPSHOT_ADDRESS` env-var on
+    // `getYieldSnapshot()` miss.
+    yieldSnapshotAddress: text('yield_snapshot_address'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow(),
     pausedAt: timestamp('paused_at'),

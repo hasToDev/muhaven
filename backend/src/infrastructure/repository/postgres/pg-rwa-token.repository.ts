@@ -30,6 +30,7 @@ export class PgRwaTokenRepository implements IRwaTokenRepository {
         assetClass: token.assetClass,
         minInvestment: token.minInvestment,
         status: token.status,
+        yieldSnapshotAddress: token.yieldSnapshotAddress,
         createdAt: token.createdAt,
         updatedAt: token.updatedAt,
         pausedAt: token.pausedAt,
@@ -47,6 +48,13 @@ export class PgRwaTokenRepository implements IRwaTokenRepository {
           assetClass: token.assetClass,
           minInvestment: token.minInvestment,
           status: token.status,
+          // `yieldSnapshotAddress` is INTENTIONALLY omitted from the SET
+          // clause for the same reason as `issuerAddress`: this path is
+          // also the re-seed bootstrap (`seed:tokens:v35` → `save()`),
+          // and keeping the column out of the conflict-update guarantees
+          // a re-seed cannot clobber a per-token snapshot address the F2
+          // wizard wrote at deploy time. Inserts (first call) DO write
+          // it via the `values` clause above.
           updatedAt: token.updatedAt,
           pausedAt: token.pausedAt,
           windingDownAt: token.windingDownAt,
@@ -164,6 +172,7 @@ export class PgRwaTokenRepository implements IRwaTokenRepository {
       assetClass: row.assetClass as AssetClass,
       minInvestment: row.minInvestment ?? undefined,
       status: row.status as TokenStatus,
+      yieldSnapshotAddress: row.yieldSnapshotAddress ?? undefined,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       pausedAt: row.pausedAt ?? undefined,

@@ -252,6 +252,14 @@ export interface TokenResponseDto {
   asset_class: AssetClass
   min_investment: string | null
   status: TokenStatus
+  /**
+   * Wave 5+ per-token YieldSnapshot proxy address (2026-05-23).
+   * `null` for legacy tokens deployed before per-token snapshots
+   * shipped — those tokens resolve to the singleton snapshot proxy
+   * via `getYieldSnapshot()` fallback. Tokens deployed through the
+   * F2 wizard always populate this.
+   */
+  yield_snapshot_address: string | null
   created_at: string
   updated_at: string
   latest_nav: LatestNavDto | null
@@ -704,6 +712,13 @@ export type DeployStepKey =
   | 'deploy_token'
   | 'deploy_queue'
   | 'deploy_treasury'
+  // Wave 5+ per-token YieldSnapshot binding (2026-05-23) — mirror of
+  // the backend's `DeployStepKey` widening. Keeps the wizard's progress
+  // rail (DEPLOY_STEP_LABELS in ApplyPage.vue) and the SSE handler's
+  // step-name switch in sync with the SSE events the deploy library
+  // emits. Order matters: progress rail renders in this order.
+  | 'deploy_yield_snapshot'
+  | 'grant_trusted_payer'
   | 'wire_token_pointers'
   | 'authorize_investor_registry'
   | 'authorize_compliance_callers'
@@ -714,6 +729,8 @@ export const DEPLOY_STEPS: readonly DeployStepKey[] = [
   'deploy_token',
   'deploy_queue',
   'deploy_treasury',
+  'deploy_yield_snapshot',
+  'grant_trusted_payer',
   'wire_token_pointers',
   'authorize_investor_registry',
   'authorize_compliance_callers',

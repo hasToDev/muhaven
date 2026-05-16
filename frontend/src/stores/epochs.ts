@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { Address } from 'viem'
 import { YieldSnapshotClient, type EpochView } from '@muhaven/sdk'
-import { v35Addresses, isZeroAddress } from '@/contracts/addresses'
+import { v35Addresses, isZeroAddress, getYieldSnapshot } from '@/contracts/addresses'
 import { buildReadContext } from '@/services/v35/context'
 import { useMarketplaceStore } from '@/stores/marketplace'
 
@@ -90,26 +90,34 @@ export const useEpochsStore = defineStore('epochs', () => {
       // `getEpoch(i)` to discover the actual `epoch.token`, then resolve
       // metadata from that.
       //
-      // Augment the static per-token map with marketplace tokens missing
-      // entries — the F2 wizard deploys new RWA tokens at runtime, but the
-      // VITE_YIELD_SNAPSHOTS_JSON env-var map is baked at build time. The
-      // singleton `v35Addresses.yieldSnapshot` is the structural fallback;
-      // every wizard-deployed token routes to it.
+      // Wave 5+ per-token YieldSnapshot binding (2026-05-23): resolve each
+      // marketplace token's proxy via `getYieldSnapshot(t.address)`. The
+      // resolver consults (in order) the runtime registration map
+      // (populated by marketplace.load() above via
+      // `registerYieldSnapshot`), the env-var per-token map, and the
+      // singleton fallback. Wizard-deployed tokens route to their OWN
+      // per-token proxy; legacy tokens route to the env-map / singleton.
+      // The grouping reduces duplicates naturally — staging's
+      // multi-token-per-singleton bucket stays one walk.
       const byProxy = new Map<Address, Address[]>()
-      for (const [tokenAddrLower, snapshotAddr] of Object.entries(v35Addresses.yieldSnapshots)) {
-        const list = byProxy.get(snapshotAddr) ?? []
-        list.push(tokenAddrLower as Address)
-        byProxy.set(snapshotAddr, list)
+      for (const t of marketplace.tokens) {
+        const proxy = getYieldSnapshot(t.address as `0x${string}`)
+        if (!proxy || isZeroAddress(proxy)) continue
+        const list = byProxy.get(proxy) ?? []
+        list.push(t.address.toLowerCase() as Address)
+        byProxy.set(proxy, list)
       }
-      const singleton = v35Addresses.yieldSnapshot
-      if (!isZeroAddress(singleton)) {
-        const knownLower = new Set(Object.keys(v35Addresses.yieldSnapshots))
-        const list = byProxy.get(singleton) ?? []
-        for (const t of marketplace.tokens) {
-          const lower = t.address.toLowerCase()
-          if (!knownLower.has(lower)) list.push(lower as Address)
+      // Defensive: also walk the static env-var map for any token that
+      // marketplace happened to omit (e.g. legacy active-token catalog
+      // out of sync). This is the legacy-coverage backstop only; in the
+      // common case `marketplace.tokens` is the authoritative list.
+      for (const [tokenAddrLower, snapshotAddr] of Object.entries(v35Addresses.yieldSnapshots)) {
+        if (!snapshotAddr || isZeroAddress(snapshotAddr)) continue
+        const list = byProxy.get(snapshotAddr) ?? []
+        if (!list.some((a) => a.toLowerCase() === tokenAddrLower.toLowerCase())) {
+          list.push(tokenAddrLower as Address)
+          byProxy.set(snapshotAddr, list)
         }
-        if (list.length > 0) byProxy.set(singleton, list)
       }
       if (byProxy.size === 0) {
         items.value = []

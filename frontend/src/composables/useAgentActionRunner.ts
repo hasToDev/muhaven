@@ -410,10 +410,38 @@ async function runDistribute(action: ActionDescriptor): Promise<RunDistributeRes
   // value, no drift.
   const previewToken = readLowerAddress(action.preview, 'tokenAddress')
 
+  // Pre-load the issuer-tokens store BEFORE snapshot resolution
+  // (Pick B SE HIGH, 2026-05-23). The Wave 5+ per-token YieldSnapshot
+  // proxy binding registers each token's snapshot address via the
+  // store's `load()` call (which loops `registerYieldSnapshot` over
+  // the API response). If the issuer's first post-login action is the
+  // chat path (never visited /tokens or /distribute), the runtime map
+  // is empty when `SnapshotService.snapshotProxyFor` resolves below
+  // → fallback to env-var singleton (wrong address for wizard-deployed
+  // tokens) → UserOp signed against a snapshot that's NOT registered
+  // for this token → on-chain revert (`OnlyIssuer` / `OnlyYieldSnapshot`).
+  // The load is idempotent + tolerated-on-failure so the runner stays
+  // usable when the store can't reach the backend (env config), with
+  // the singleton fallback retained as a last-resort path for the
+  // legacy-tokens-only case.
+  const { useIssuerTokensStore } = await import('@/stores/issuer-tokens')
+  const issuerTokens = useIssuerTokensStore()
+  if (issuerTokens.tokens.length === 0 && typeof issuerTokens.load === 'function') {
+    try {
+      await issuerTokens.load()
+    } catch (err) {
+      console.warn(
+        '[runDistribute] pre-flight issuer-tokens load failed (proceeding with env-var fallback):',
+        err,
+      )
+    }
+  }
+
   // Snapshot proxy address must resolve. `getYieldSnapshot` checks the
-  // per-token map first, then falls back to the singleton — covers
-  // wizard-deployed tokens absent from the static JSON map. Zero-address
-  // signals a misconfigured env.
+  // runtime map first (populated by `issuerTokens.load()` above), then
+  // the per-token env-var map, then the singleton — covers
+  // wizard-deployed tokens absent from the static JSON map.
+  // Zero-address signals a misconfigured env.
   const snapshotAddr = SnapshotService.snapshotProxyFor(previewToken as Address)
   if (!snapshotAddr || isZeroAddress(snapshotAddr)) {
     // Env-config bug — not actionable for issuers. Surface enough
@@ -555,24 +583,15 @@ async function runDistribute(action: ActionDescriptor): Promise<RunDistributeRes
       }
     }
 
-    // H-1 analog — token registry binding. Auto-refresh once if the
-    // store is empty (typical pre-load state); after refresh, an absent
-    // token is a hard failure.
-    const { useIssuerTokensStore } = await import('@/stores/issuer-tokens')
-    const issuerTokens = useIssuerTokensStore()
+    // H-1 analog — token registry binding. The store was already
+    // pre-loaded BEFORE snapshot resolution (Pick B SE HIGH fix above);
+    // reuse the same `issuerTokens` proxy. If the token is still absent
+    // after that load, surface a hard failure — the chat-first path
+    // would otherwise resolve through the env-var singleton fallback
+    // and route to a snapshot that doesn't own this token.
     let hasToken = issuerTokens.tokens.some(
       (t: { address: string }) => t.address.toLowerCase() === previewToken,
     )
-    if (!hasToken && typeof issuerTokens.load === 'function' && issuerTokens.tokens.length === 0) {
-      try {
-        await issuerTokens.load()
-        hasToken = issuerTokens.tokens.some(
-          (t: { address: string }) => t.address.toLowerCase() === previewToken,
-        )
-      } catch (err) {
-        console.warn('[runDistribute] issuer tokens load failed:', err)
-      }
-    }
     if (!hasToken) {
       throw new AgentActionRunnerError(
         `distribute_yield preview.tokenAddress (${previewToken}) is not registered to this issuer kernel`,

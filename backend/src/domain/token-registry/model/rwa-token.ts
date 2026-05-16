@@ -13,6 +13,17 @@ export interface RwaTokenParams {
   assetClass: AssetClass;
   minInvestment?: string;
   status: TokenStatus;
+  /**
+   * Wave 5+ per-token YieldSnapshot proxy address (2026-05-23).
+   * Populated by the F2 wizard's `deploy_yield_snapshot` step at deploy
+   * time. Nullable for backward compat with legacy seed rows that
+   * predate per-token snapshots (those tokens share the singleton
+   * snapshot proxy from `VITE_YIELD_SNAPSHOT_ADDRESS`). The frontend's
+   * `getYieldSnapshot(token)` consults this field first via the
+   * runtime registration map, then falls back to the env-var maps and
+   * the singleton.
+   */
+  yieldSnapshotAddress?: string;
   createdAt: Date;
   updatedAt: Date;
   pausedAt?: Date;
@@ -32,6 +43,7 @@ export class RwaToken {
   readonly assetClass: AssetClass;
   readonly minInvestment?: string;
   status: TokenStatus;
+  readonly yieldSnapshotAddress?: string;
   readonly createdAt: Date;
   updatedAt: Date;
   pausedAt?: Date;
@@ -50,6 +62,7 @@ export class RwaToken {
     this.assetClass = params.assetClass;
     this.minInvestment = params.minInvestment;
     this.status = params.status;
+    this.yieldSnapshotAddress = params.yieldSnapshotAddress;
     this.createdAt = params.createdAt;
     this.updatedAt = params.updatedAt;
     this.pausedAt = params.pausedAt;

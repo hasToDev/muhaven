@@ -16,6 +16,13 @@ export type DeployStepKey =
   | 'deploy_token'
   | 'deploy_queue'
   | 'deploy_treasury'
+  // Wave 5+ per-token YieldSnapshot proxy (2026-05-23). The wizard
+  // deploys a fresh `YieldSnapshot` proxy per RWA token so each
+  // issuer's epoch state, encrypted-balance ACLs, and claim payouts
+  // are isolated from other tenants. Replaces the prior
+  // "singleton snapshot proxy shared across every token" posture.
+  | 'deploy_yield_snapshot'
+  | 'grant_trusted_payer'
   | 'wire_token_pointers'
   | 'authorize_investor_registry'
   | 'authorize_compliance_callers'
@@ -26,6 +33,8 @@ export const DEPLOY_STEPS: readonly DeployStepKey[] = [
   'deploy_token',
   'deploy_queue',
   'deploy_treasury',
+  'deploy_yield_snapshot',
+  'grant_trusted_payer',
   'wire_token_pointers',
   'authorize_investor_registry',
   'authorize_compliance_callers',
