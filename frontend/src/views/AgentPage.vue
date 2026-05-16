@@ -3,6 +3,7 @@ import { ref, computed, watch, nextTick, onMounted } from 'vue'
 import { useMediaQuery } from '@vueuse/core'
 import { useAgentStore } from '@/stores/agent'
 import { cn } from '@/lib/utils'
+import { renderMarkdownSafe } from '@/lib/markdown'
 import ActionCard from '@/components/agent/ActionCard.vue'
 import ConfirmModal from '@/components/agent/ConfirmModal.vue'
 import { runAgentAction } from '@/composables/useAgentActionRunner'
@@ -556,7 +557,20 @@ onMounted(() => {
                 aria-hidden="true"
                 class="absolute top-0 bottom-0 left-0 w-1.5 bg-gold dark:bg-signal"
               />
-              <p>{{ msg.text }}</p>
+              <!-- Agent replies render through a sanitized markdown
+                   pipeline (LLM emits **bold** / lists / code fences /
+                   links). User messages stay plain-text — never run
+                   user input through v-html. The streaming watcher in
+                   the agent store mutates msg.text mid-flight; v-html
+                   re-renders reactively. Empty msg.text renders an
+                   empty string (no <p></p>) so the typing-indicator
+                   pulse stays visually quiet pre-first-delta. -->
+              <div
+                v-if="msg.role === 'agent'"
+                class="markdown-body"
+                v-html="renderMarkdownSafe(msg.text)"
+              />
+              <p v-else>{{ msg.text }}</p>
             </div>
 
             <!-- Recommended Actions card (always ActionCard, normalized in
@@ -758,3 +772,118 @@ onMounted(() => {
     </Teleport>
   </div>
 </template>
+
+<style scoped>
+/* Agent-chat markdown styling. Targets `v-html`-mounted content via
+   Vue 3's `:deep()` selector so scoped CSS still reaches the
+   dynamically-inserted nodes. Keep the type scale matched to the
+   chat bubble's `text-base leading-relaxed`; bullet/number indent
+   sized so list items hang correctly inside the gold-accent bubble
+   without colliding with the left bar. */
+.markdown-body :deep(p) {
+  margin: 0;
+}
+.markdown-body :deep(p + p) {
+  margin-top: 0.65em;
+}
+.markdown-body :deep(strong) {
+  font-weight: 600;
+}
+.markdown-body :deep(em) {
+  font-style: italic;
+}
+.markdown-body :deep(ul),
+.markdown-body :deep(ol) {
+  margin: 0.5em 0;
+  padding-left: 1.4em;
+}
+.markdown-body :deep(ul) {
+  list-style: disc outside;
+}
+.markdown-body :deep(ol) {
+  list-style: decimal outside;
+}
+.markdown-body :deep(li) {
+  margin: 0.2em 0;
+}
+.markdown-body :deep(li > p) {
+  margin: 0;
+}
+.markdown-body :deep(li > ul),
+.markdown-body :deep(li > ol) {
+  margin: 0.25em 0;
+}
+.markdown-body :deep(code) {
+  font-family: 'DM Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.88em;
+  padding: 0.1em 0.35em;
+  border-radius: 0.35em;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+.markdown-body :deep(pre) {
+  margin: 0.65em 0;
+  padding: 0.75em 0.9em;
+  border-radius: 0.6em;
+  background: color-mix(in srgb, currentColor 6%, transparent);
+  overflow-x: auto;
+  font-size: 0.85em;
+  line-height: 1.5;
+}
+.markdown-body :deep(pre code) {
+  padding: 0;
+  background: transparent;
+  font-size: inherit;
+}
+.markdown-body :deep(a) {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+  text-underline-offset: 2px;
+}
+.markdown-body :deep(a:hover) {
+  text-decoration-color: currentColor;
+}
+.markdown-body :deep(blockquote) {
+  margin: 0.65em 0;
+  padding-left: 0.9em;
+  border-left: 2px solid color-mix(in srgb, currentColor 25%, transparent);
+  font-style: italic;
+  opacity: 0.85;
+}
+.markdown-body :deep(h1),
+.markdown-body :deep(h2),
+.markdown-body :deep(h3),
+.markdown-body :deep(h4),
+.markdown-body :deep(h5),
+.markdown-body :deep(h6) {
+  margin: 0.65em 0 0.3em;
+  font-weight: 600;
+  line-height: 1.25;
+}
+.markdown-body :deep(h1) { font-size: 1.25em; }
+.markdown-body :deep(h2) { font-size: 1.15em; }
+.markdown-body :deep(h3) { font-size: 1.05em; }
+.markdown-body :deep(h4),
+.markdown-body :deep(h5),
+.markdown-body :deep(h6) { font-size: 1em; }
+.markdown-body :deep(hr) {
+  margin: 0.8em 0;
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+}
+.markdown-body :deep(table) {
+  margin: 0.65em 0;
+  border-collapse: collapse;
+  font-size: 0.92em;
+}
+.markdown-body :deep(th),
+.markdown-body :deep(td) {
+  padding: 0.35em 0.6em;
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  text-align: left;
+}
+.markdown-body :deep(th) {
+  font-weight: 600;
+  background: color-mix(in srgb, currentColor 5%, transparent);
+}
+</style>

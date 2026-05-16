@@ -1,6 +1,6 @@
 {
   "name": "muhaven-frontend",
-  "version": "0.3.52",
+  "version": "0.3.53",
   "private": true,
   "type": "module",
   "scripts": {
@@ -17,6 +17,7 @@
     "@cofhe/sdk": "^0.5.1",
     "@fontsource-variable/inter": "^5.2.8",
     "@muhaven/sdk": "file:../packages/sdk",
+    "@types/dompurify": "^3.2.0",
     "@vueuse/core": "^13.0.0",
     "@vueuse/motion": "^3.0.0",
     "@zerodev/ecdsa-validator": "^5.4.9",
@@ -26,7 +27,9 @@
     "@zerodev/webauthn-key": "^5.5.0",
     "chart.js": "^4.4.0",
     "clsx": "^2.1.1",
+    "dompurify": "^3.4.2",
     "lucide-vue-next": "^0.500.0",
+    "marked": "^18.0.3",
     "pinia": "^3.0.0",
     "qrcode": "^1.5.4",
     "tailwind-merge": "^3.5.0",
