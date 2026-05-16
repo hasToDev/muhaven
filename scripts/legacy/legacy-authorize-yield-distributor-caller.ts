@@ -1,5 +1,18 @@
 /**
- * scripts/authorize-yield-distributor-caller.ts
+ * scripts/legacy/legacy-authorize-yield-distributor-caller.ts
+ *
+ * TOMBSTONED 2026-05-22 — Wave-3 YieldDistributor maintenance only. The
+ * HavenBot `distribute_yield` runner now drives the Wave-3.5
+ * YieldSnapshot pipeline (rewire commit; see
+ * `development/DEV_WAVE_4/PHASE_2_YIELD_SNAPSHOT_REWIRE.md`), which
+ * gates writes via `_issuerOf(token)` from `TokenRegistry.getConfig`
+ * — there is NO `authorizedCallers` map on YieldSnapshot, so this
+ * script does NOT need to be run for the new pipeline. Retained
+ * because it was run on prod 2026-05-21 as REMEDIATION on the legacy
+ * YieldDistributor + MuHavenEscrow contracts, and the legacy contracts
+ * remain in place for ops fallback / historical test fixtures.
+ *
+ * Original purpose (preserved verbatim):
  *
  * Operator-only: add an issuer kernel to the `authorizedCallers` map of the
  * yield-distribution pipeline contracts so it can drive `distribute_yield`

@@ -1,5 +1,19 @@
 /**
- * scripts/rotate-yield-distributor-pusdc.ts
+ * scripts/legacy/legacy-rotate-yield-distributor-pusdc.ts
+ *
+ * TOMBSTONED 2026-05-22 — Wave-3 YieldDistributor maintenance only. The
+ * HavenBot `distribute_yield` runner now drives the Wave-3.5
+ * YieldSnapshot pipeline (rewire commit; see
+ * `development/DEV_WAVE_4/PHASE_2_YIELD_SNAPSHOT_REWIRE.md`).
+ * YieldSnapshot's `pusdc` storage was already rotated to MuHavenStable
+ * at the Phase 7.5 cutover (per memory
+ * `reference_phase7_5_pusdc_rotation`), so this script does NOT need to
+ * be run for the new pipeline. Retained because it was run on prod
+ * 2026-05-21 as REMEDIATION on the legacy YieldDistributor, and the
+ * legacy contract remains in place for ops fallback / historical
+ * test fixtures.
+ *
+ * Original purpose (preserved verbatim):
  *
  * Operator-only ONE-SHOT cutover: rotate `YieldDistributor.pusdc` from the
  * legacy ConfidentialUSDC (Privara pUSDC) to MuHavenStable (mhUSDC).

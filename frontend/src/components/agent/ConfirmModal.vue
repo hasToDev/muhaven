@@ -123,18 +123,23 @@ watch(
 
 const isDistribute = computed(() => props.action?.kind === 'distribute_yield')
 
-/** Phase metadata for the 3-phase progress bar. Order matches the SDK
- *  pipeline (startDistribution → createYieldEscrows → fundEscrows).
- *  Labels rewritten 2026-05-20 per UX review HIGH-2 — issuer-facing
- *  outcome language rather than developer-log shorthand. */
+/** Phase metadata for the 3-phase progress bar. Order matches the
+ *  YieldSnapshot lifecycle (openEpoch → snapshotAll + finalizeSnapshot
+ *  → fundEpoch). Labels + hints rewritten 2026-05-22 in the rewire +
+ *  round-1 review (UX-M-1) — the prior copy ("Prepare batch",
+ *  "Creating one encrypted escrow per investor", "Funding each
+ *  escrow") described the deprecated Wave-3 YieldDistributor pipeline.
+ *  New copy uses issuer-facing outcome language; "epoch" jargon
+ *  intentionally absent from user-visible strings (kept in internal
+ *  phase keys + JSDoc). */
 const distributePhaseMeta: ReadonlyArray<{
   key: Exclude<DistributeProgressPhase, 'idle' | 'settled' | 'failed'>
   label: string
   hint: string
 }> = [
-  { key: 'start',   label: 'Prepare batch',       hint: 'Encrypting yield and broadcasting the start tx' },
-  { key: 'escrows', label: 'Allocate to holders', hint: 'Creating one encrypted escrow per investor' },
-  { key: 'fund',    label: 'Transfer mhUSDC',     hint: 'Funding each escrow from your mhUSDC balance' },
+  { key: 'start',   label: 'Open distribution',   hint: 'Starting a new distribution round on-chain' },
+  { key: 'escrows', label: 'Allocate to holders', hint: 'Recording each holder\'s balance and locking allocations' },
+  { key: 'fund',    label: 'Transfer mhUSDC',     hint: 'Transferring mhUSDC from your wallet to fund payouts' },
 ]
 
 function distributePhaseState(
@@ -227,6 +232,45 @@ const distributeBatchHint = computed(() => {
   const s = distributeProgress.state.value
   if (s.total <= 1) return s.message ?? null
   return `${s.current}/${s.total}${s.message ? ` — ${s.message}` : ''}`
+})
+
+/**
+ * AA-HIGH-1 (round-2 review): SR-only mirror of the synthetic
+ * dead-window hints from `runDistribute.setMessageForRun`. We surface
+ * only the synthetic copy (`'Reading encrypted supply…'`,
+ * `'Computing per-share rate…'`), NOT every per-batch tick — the
+ * per-batch slot already has a dozen events per snapshot and feeding
+ * them through a live region spams AT. Heuristic: synthetic messages
+ * are written while `lastStage === 'finalizeSnapshot'` (the last
+ * stage the SDK emitted before the dead window opened) AND the
+ * message slot deviates from the finalize-event's own message
+ * pattern. Cheaper and more correct: gate on `lastStage` being
+ * `'finalizeSnapshot'` — the only window in which `setMessageForRun`
+ * fires today. Returns empty string when not in the dead window so
+ * the role="status" region stays a stable empty mount + only
+ * triggers on the synthetic-message transitions.
+ */
+const distributeSyntheticHintForSr = computed(() => {
+  if (!isDistribute.value) return ''
+  if (!isBusForCurrentAction.value) return ''
+  const s = distributeProgress.state.value
+  if (s.lastStage !== 'finalizeSnapshot') return ''
+  return s.message ?? ''
+})
+
+/**
+ * AA-MED-1 (round-2 review): always-rendered failed-state alert text
+ * for the persistent `role="alert"` region. Returns empty string
+ * outside the failed state so the region stays a stable empty mount;
+ * the populate-when-fails transition reliably triggers the SR
+ * announcement (some NVDA/browser combos miss the announcement when
+ * the element mounts in the same tick the text appears).
+ */
+const distributeFailedAlertText = computed(() => {
+  if (!isDistribute.value) return ''
+  if (distributeProgress.state.value.phase !== 'failed') return ''
+  if (!errorMsg.value) return ''
+  return `Distribution failed: ${errorMsg.value}`
 })
 
 /** Header step counter: "Distributing yield · step 2 of 3". Surfaces
@@ -643,11 +687,11 @@ const previewRows = computed(() => {
         { label: 'Action', value: 'Remove from whitelist' },
       ]
     case 'distribute_yield':
-      // P7 Phase 2 — Wave 3 yield-pipeline driver (NOT the Wave 3.5
-      // YieldSnapshot path). Surfaces the total yield (cleartext on the
-      // wire — the backend hashes it into the action payload) so the
-      // issuer knows what they're funding before authorizing the
-      // 1-2 min SDK call.
+      // P7 Phase 2 (rewired 2026-05-22 to YieldSnapshot — see
+      // `development/DEV_WAVE_4/PHASE_2_YIELD_SNAPSHOT_REWIRE.md`).
+      // Surfaces the total yield (cleartext on the wire — the backend
+      // hashes it into the action payload) so the issuer knows what
+      // they're funding before authorizing the 1-2 min SDK call.
       return [
         { label: 'Token', value: `${props.action.preview.tokenSymbol}` },
         { label: 'Total yield', value: displayUsd(String(props.action.preview.totalYieldUsd6)) },
@@ -794,6 +838,8 @@ const arbiscanUrl = computed(() =>
           v-if="showDistributeBar"
           ref="distributeProgressRef"
           tabindex="-1"
+          role="region"
+          aria-labelledby="agent-confirm-distribute-progress-label"
           data-testid="agent-confirm-distribute-progress"
           class="rounded-xl border px-4 py-3 mb-5 focus:outline-none"
           :class="distributeProgress.state.value.phase === 'failed'
@@ -822,13 +868,19 @@ const arbiscanUrl = computed(() =>
               aria-hidden="true"
               class="text-negative flex-shrink-0"
             />
-            <!-- a11y F1+F3+F5: the header is the ONLY live-region carrier
-                 for the bar, so per-batch progress ticks below don't spam
-                 AT. `role="status"` already implies aria-live="polite";
-                 don't duplicate. The header transition to "Distribution
-                 settled" / "Distribution failed at step N of 3" gets
-                 announced; the per-batch counter does NOT. -->
+            <!-- a11y F1+F3+F5 (round 1) + AA-HIGH-2 (round 2): the
+                 header is the ONLY live-region carrier for per-phase
+                 transitions, so per-batch progress ticks below don't
+                 spam AT. `role="status"` already implies
+                 aria-live="polite"; don't duplicate. The header
+                 transition to "Distribution settled" / "Distribution
+                 failed at step N of 3" gets announced; the per-batch
+                 counter does NOT. The `id` here is referenced by the
+                 wrapper's `aria-labelledby` so AT announces this
+                 label when the wrapper receives programmatic focus
+                 post-Authorize. -->
             <p
+              id="agent-confirm-distribute-progress-label"
               data-testid="agent-confirm-distribute-step-label"
               role="status"
               class="font-sans text-[10px] uppercase tracking-[0.18em] font-semibold"
@@ -899,16 +951,40 @@ const arbiscanUrl = computed(() =>
               </div>
             </li>
           </ol>
-          <!-- a11y F5: assertive live region for the failed-state error
-               message. role="alert" ensures the failure is announced
-               IMMEDIATELY rather than queued behind the header's polite
-               announcements. -->
+          <!-- AA-HIGH-1 (round-2 review): SR-visible live region for
+               the synthetic dead-window messages (`setMessageForRun`
+               from runDistribute — "Reading encrypted supply…" and
+               "Computing per-share rate…"). The header's `role="status"`
+               only carries `distributeStepLabel` which doesn't change
+               during the dead window (phase stays 'escrows'), so without
+               this region the synthetic copy is visible-only. We mirror
+               only the synthetic-message slot (gated on
+               `distributeSyntheticHintForSr` — see script), NOT the
+               per-batch ticks (which would spam AT). The aria-live
+               default for role="status" is polite. -->
           <p
-            v-if="distributeProgress.state.value.phase === 'failed' && errorMsg"
+            data-testid="agent-confirm-distribute-synthetic-hint-sr"
+            role="status"
+            class="sr-only"
+          >
+            {{ distributeSyntheticHintForSr }}
+          </p>
+          <!-- a11y F5 (round 1) + AA-MED-1 (round 2): assertive live
+               region for the failed-state error message. role="alert"
+               ensures the failure is announced IMMEDIATELY rather than
+               queued behind the header's polite announcements.
+               Rendered UNCONDITIONALLY (with empty text when there's
+               nothing to announce) so the live region is a stable
+               target — some NVDA/browser combos fire role=alert with
+               empty content if the element mounts in the same tick the
+               text populates. With a stable element, the text
+               replacement triggers the announcement reliably. -->
+          <p
+            data-testid="agent-confirm-distribute-failed-alert"
             role="alert"
             class="sr-only"
           >
-            Distribution failed: {{ errorMsg }}
+            {{ distributeFailedAlertText }}
           </p>
           <p
             v-if="isDistributeRunning"

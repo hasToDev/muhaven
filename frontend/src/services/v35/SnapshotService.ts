@@ -187,8 +187,13 @@ export async function preflight(
  * we use the abi + a plain `readContract` call. Used by `preflight` to
  * surface the `OnlyIssuer()` mismatch path early, before the user
  * submits a guaranteed-failing UserOp.
+ *
+ * Exported so the HavenBot `runDistribute` runner can share the type
+ * for its own on-chain issuer-match pre-flight check (round-1 review
+ * CR-M-2 — closes the silent-failure class where a narrow inline cast
+ * would still type-check after an ABI shape drift).
  */
-interface TokenRegistryConfig {
+export interface TokenRegistryConfig {
   active: boolean
   treasury: string
   queue: string

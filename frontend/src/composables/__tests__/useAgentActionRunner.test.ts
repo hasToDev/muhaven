@@ -31,6 +31,13 @@ import type { ActionDescriptor } from '@/services/api'
 // `vi.hoisted` is the supported escape hatch: the callback is also
 // hoisted, so the holder it returns is in scope by the time each
 // vi.mock factory runs.
+//
+// Rewire 2026-05-22: switched from MuHavenClient.distributeYield mocks
+// to the YieldSnapshot pipeline (snapshotProxyFor + tokenRegistry
+// readContract issuer match + detectInFlight + loadAllHolders +
+// YieldSnapshotClient.{openEpoch,snapshotAll,finalizeSnapshot,fundEpoch}
+// + refreshSnapshotSupplyGrant + decryptSnapshotSupplyForView +
+// getEpochTotalSupplyHandle).
 const distributeStubs = vi.hoisted(() => ({
   kernelAddress: '0x1111111111111111111111111111111111111111' as string | null,
   issuerTokens: [{ address: '0xaaaa000000000000000000000000000000000001' }] as Array<{ address: string }>,
@@ -38,8 +45,24 @@ const distributeStubs = vi.hoisted(() => ({
   resetFn: vi.fn(),
   setOperator: vi.fn(),
   fheInit: vi.fn(),
-  muHavenClientCtor: vi.fn(),
-  distributeYieldFn: vi.fn(),
+  // YieldSnapshot pipeline mocks
+  snapshotProxyFor: vi.fn(),
+  detectInFlight: vi.fn(),
+  loadAllHolders: vi.fn(),
+  refreshSnapshotSupplyGrant: vi.fn(),
+  getEpochTotalSupplyHandle: vi.fn(),
+  decryptSnapshotSupplyForView: vi.fn(),
+  // YieldSnapshotClient instance methods
+  openEpochFn: vi.fn(),
+  snapshotAllFn: vi.fn(),
+  finalizeSnapshotFn: vi.fn(),
+  fundEpochFn: vi.fn(),
+  yieldSnapshotClientCtor: vi.fn(),
+  // viem readContract mock for the on-chain TokenRegistry.getConfig
+  // issuer-match check.
+  publicReadContract: vi.fn(),
+  // Runner reads getEphemeralEOA() to thread through refreshGrant.
+  ephemeralEOA: '0x2222222222222222222222222222222222222222' as `0x${string}`,
 }))
 
 // `useAgentActionRunner` lazy-imports `@/stores/issuer-tokens` +
@@ -78,24 +101,48 @@ vi.mock('@/services/contracts/MuHavenStableService', () => ({
   setOperator: distributeStubs.setOperator,
 }))
 
-// useFhe.initialize() is awaited before buildWriteContext. The wider
-// useFhe API isn't used by runDistribute — only initialize().
+// useFhe — runner reads:
+//   - initialize() (defensive in the unpause/kyc paths; not strictly
+//     required since buildWriteContext lazily inits)
+//   - getEphemeralEOA() for refreshSnapshotSupplyGrant
+//   - decryptSnapshotSupplyForView() for the ratePerShare compute
 vi.mock('@/composables/useFhe', () => ({
-  useFhe: () => ({ initialize: distributeStubs.fheInit }),
+  useFhe: () => ({
+    initialize: distributeStubs.fheInit,
+    getEphemeralEOA: () => distributeStubs.ephemeralEOA,
+    decryptSnapshotSupplyForView: distributeStubs.decryptSnapshotSupplyForView,
+  }),
 }))
 
-// MuHavenClient constructor is called to drive distributeYield. The
-// constructor stub records the config; the returned instance has a
-// distributeYield() method backed by the per-test stub.
+// SnapshotService — runner reads snapshotProxyFor + detectInFlight +
+// loadAllHolders + refreshSnapshotSupplyGrant + getEpochTotalSupplyHandle.
+vi.mock('@/services/v35/SnapshotService', () => ({
+  snapshotProxyFor: distributeStubs.snapshotProxyFor,
+  detectInFlight: distributeStubs.detectInFlight,
+  loadAllHolders: distributeStubs.loadAllHolders,
+  refreshSnapshotSupplyGrant: distributeStubs.refreshSnapshotSupplyGrant,
+  getEpochTotalSupplyHandle: distributeStubs.getEpochTotalSupplyHandle,
+}))
+
+// YieldSnapshotClient constructor is called to drive the on-chain
+// pipeline. The constructor stub records the (ctx, address) call; the
+// returned instance has openEpoch / snapshotAll / finalizeSnapshot /
+// fundEpoch backed by per-test stubs.
 // SubscriptionClient stays un-mocked here — runBuy isn't tested in this
 // file and the import is tree-shaken on the runDistribute path.
+// RATE_SCALE + tokenRegistryAbi pass through from actual exports.
 vi.mock('@muhaven/sdk', async () => {
   const actual = await vi.importActual<typeof import('@muhaven/sdk')>('@muhaven/sdk')
   return {
     ...actual,
-    MuHavenClient: vi.fn().mockImplementation((cfg: unknown) => {
-      distributeStubs.muHavenClientCtor(cfg)
-      return { distributeYield: distributeStubs.distributeYieldFn }
+    YieldSnapshotClient: vi.fn().mockImplementation((ctx: unknown, addr: unknown) => {
+      distributeStubs.yieldSnapshotClientCtor(ctx, addr)
+      return {
+        openEpoch: distributeStubs.openEpochFn,
+        snapshotAll: distributeStubs.snapshotAllFn,
+        finalizeSnapshot: distributeStubs.finalizeSnapshotFn,
+        fundEpoch: distributeStubs.fundEpochFn,
+      }
     }),
   }
 })
@@ -679,13 +726,26 @@ describe('runAgentAction — P7 issuer dispatcher (Phase 1)', () => {
 })
 
 // ────────────────────────────────────────────────────────────────────
-// Phase 2 (2026-05-20) — distribute_yield runner
+// Phase 2 (rewired 2026-05-22) — distribute_yield runner against the
+// Wave-3.5 YieldSnapshot pipeline. Replaces the prior Wave-3
+// MuHavenClient.distributeYield wiring; the runId-tagging,
+// pre-flight-no-bar, terminal-state-guard, and a11y hardening from the
+// 2026-05-21 second-pass review survive intact (stage-agnostic) — the
+// describe blocks below preserve every regression they covered.
 // ────────────────────────────────────────────────────────────────────
 
 const ISSUER = '0x1111111111111111111111111111111111111111' as const
 const DISTRIBUTE_TOKEN = '0xaaaa000000000000000000000000000000000001' as const
-const FUND_HASH_1 = ('0x' + 'd1'.repeat(32)) as `0x${string}`
-const FUND_HASH_2 = ('0x' + 'd2'.repeat(32)) as `0x${string}`
+const SNAPSHOT_PROXY = '0xbbbb000000000000000000000000000000000002' as const
+const HOLDER_1 = '0xcccc000000000000000000000000000000000003' as `0x${string}`
+const HOLDER_2 = '0xcccc000000000000000000000000000000000004' as `0x${string}`
+const SUPPLY_HANDLE = ('0x' + 'ee'.repeat(32)) as `0x${string}`
+const FUND_HASH = ('0x' + 'd2'.repeat(32)) as `0x${string}`
+const OPEN_HASH = ('0x' + 'd0'.repeat(32)) as `0x${string}`
+const SNAPSHOT_HASH = ('0x' + 'd1'.repeat(32)) as `0x${string}`
+const FINALIZE_HASH = ('0x' + 'df'.repeat(32)) as `0x${string}`
+const REFRESH_HASH = ('0x' + 'da'.repeat(32)) as `0x${string}`
+const EPOCH_ID = 7n
 
 function distributeDescriptor(overrides: Partial<{
   totalYieldUsd6: string
@@ -715,7 +775,7 @@ function distributeDescriptor(overrides: Partial<{
   }
 }
 
-describe('runAgentAction — distribute_yield (P7 Phase 2)', () => {
+describe('runAgentAction — distribute_yield (P7 Phase 2 — YieldSnapshot rewire)', () => {
   beforeEach(() => {
     vi.mocked(buildWriteContext).mockReset()
     distributeStubs.kernelAddress = ISSUER
@@ -724,73 +784,113 @@ describe('runAgentAction — distribute_yield (P7 Phase 2)', () => {
     distributeStubs.resetFn.mockReset()
     distributeStubs.setOperator.mockReset().mockResolvedValue('0xabc')
     distributeStubs.fheInit.mockReset().mockResolvedValue(undefined)
-    distributeStubs.muHavenClientCtor.mockReset()
-    distributeStubs.distributeYieldFn.mockReset().mockResolvedValue({
-      distributionId: 1n,
-      escrowIds: [10n, 11n],
-      createTxHashes: [FUND_HASH_1],
-      fundTxHashes: [FUND_HASH_1, FUND_HASH_2],
+
+    // YieldSnapshot pipeline defaults — happy path: proxy resolves,
+    // no in-flight epoch, 2 holders, supply 2_000_000n (so $1 yield
+    // gives ratePerShare = floor(1_000_000 × 1_000_000 / 2_000_000) =
+    // 500_000n which is > 0).
+    distributeStubs.snapshotProxyFor.mockReset().mockReturnValue(SNAPSHOT_PROXY)
+    distributeStubs.detectInFlight.mockReset().mockResolvedValue(null)
+    distributeStubs.loadAllHolders.mockReset().mockResolvedValue([HOLDER_1, HOLDER_2])
+    distributeStubs.refreshSnapshotSupplyGrant.mockReset().mockResolvedValue(REFRESH_HASH)
+    distributeStubs.getEpochTotalSupplyHandle.mockReset().mockResolvedValue(SUPPLY_HANDLE)
+    distributeStubs.decryptSnapshotSupplyForView.mockReset().mockResolvedValue(2_000_000n)
+    // YieldSnapshotClient instance methods.
+    distributeStubs.openEpochFn.mockReset().mockResolvedValue({ epochId: EPOCH_ID, txHash: OPEN_HASH })
+    distributeStubs.snapshotAllFn.mockReset().mockResolvedValue([SNAPSHOT_HASH])
+    distributeStubs.finalizeSnapshotFn.mockReset().mockResolvedValue(FINALIZE_HASH)
+    distributeStubs.fundEpochFn.mockReset().mockResolvedValue(FUND_HASH)
+    distributeStubs.yieldSnapshotClientCtor.mockReset()
+    // viem readContract for TokenRegistry.getConfig — defaults to the
+    // happy path where on-chain issuer === connected kernel.
+    distributeStubs.publicReadContract.mockReset().mockResolvedValue({
+      issuer: ISSUER,
     })
+
     // Reset the module-level progress bus between tests so phase-state
     // assertions don't leak across cases.
     useAgentDistributeProgress().reset()
 
-    const write = vi.fn()
     const ctx = {
-      publicClient: {} as never,
+      publicClient: {
+        readContract: distributeStubs.publicReadContract,
+      } as never,
       sender: {
         address: ISSUER,
         getChainId: async () => 421614,
-        write,
+        write: vi.fn(),
       },
       cofheClient: { encryptInputs: vi.fn() } as never,
     }
     vi.mocked(buildWriteContext).mockResolvedValue(ctx)
   })
 
-  it('runs the full pipeline + returns the last fund tx hash', async () => {
+  it('runs the full pipeline + returns the fundEpoch tx hash', async () => {
     const result = await runAgentAction(distributeDescriptor())
 
-    expect(result).toEqual({ ok: true, txHash: FUND_HASH_2 })
-    // Pre-flight grant fires exactly once.
+    expect(result).toEqual({ ok: true, txHash: FUND_HASH })
+    // Pre-flight grant fires exactly once, against the snapshot proxy.
     expect(distributeStubs.setOperator).toHaveBeenCalledTimes(1)
-    expect(distributeStubs.fheInit).toHaveBeenCalledTimes(1)
-    // SDK client is constructed with all four required addresses.
-    expect(distributeStubs.muHavenClientCtor).toHaveBeenCalledTimes(1)
-    const cfg = distributeStubs.muHavenClientCtor.mock.calls[0][0] as {
-      addresses: Record<string, string>
-    }
-    expect(cfg.addresses.yieldDistributor).toBeTruthy()
-    expect(cfg.addresses.muhavenEscrow).toBeTruthy()
-    expect(cfg.addresses.investorRegistry).toBeTruthy()
-    expect(cfg.addresses.yieldGate).toBeTruthy()
-    // distributeYield is called with the cleartext totalYield (cofhe
-    // encrypts client-side inside the SDK).
-    expect(distributeStubs.distributeYieldFn).toHaveBeenCalledTimes(1)
-    const args = distributeStubs.distributeYieldFn.mock.calls[0]
-    expect(args[0]).toBe(1_000_000n)
-    expect(typeof args[1].onProgress).toBe('function')
+    expect(distributeStubs.setOperator.mock.calls[0][0]).toBe(SNAPSHOT_PROXY)
+    // SDK client is constructed once with the snapshot proxy address.
+    expect(distributeStubs.yieldSnapshotClientCtor).toHaveBeenCalledTimes(1)
+    expect(distributeStubs.yieldSnapshotClientCtor.mock.calls[0][1]).toBe(SNAPSHOT_PROXY)
+    // openEpoch called with the lowercased token address (runner
+    // lowercases the preview field via readLowerAddress).
+    expect(distributeStubs.openEpochFn).toHaveBeenCalledTimes(1)
+    expect(distributeStubs.openEpochFn.mock.calls[0][0]).toBe(DISTRIBUTE_TOKEN)
+    // snapshotAll called with the epochId + holder list.
+    expect(distributeStubs.snapshotAllFn).toHaveBeenCalledTimes(1)
+    expect(distributeStubs.snapshotAllFn.mock.calls[0][0]).toBe(EPOCH_ID)
+    expect(distributeStubs.snapshotAllFn.mock.calls[0][1]).toEqual([HOLDER_1, HOLDER_2])
+    // finalizeSnapshot called with epochId.
+    expect(distributeStubs.finalizeSnapshotFn).toHaveBeenCalledTimes(1)
+    expect(distributeStubs.finalizeSnapshotFn.mock.calls[0][0]).toBe(EPOCH_ID)
+    // fundEpoch called with epochId, totalYield, computed ratePerShare.
+    expect(distributeStubs.fundEpochFn).toHaveBeenCalledTimes(1)
+    const fundArgs = distributeStubs.fundEpochFn.mock.calls[0]
+    expect(fundArgs[0]).toBe(EPOCH_ID)
+    expect(fundArgs[1]).toBe(1_000_000n)
+    // ratePerShare = floor(1_000_000n × 1_000_000n / 2_000_000n) = 500_000n
+    expect(fundArgs[2]).toBe(500_000n)
+    expect(typeof fundArgs[3].onProgress).toBe('function')
   })
 
-  it('progress bus advances to settled after distributeYield resolves', async () => {
+  it('reads TokenRegistry.getConfig.issuer + matches against the kernel', async () => {
+    await runAgentAction(distributeDescriptor())
+    expect(distributeStubs.publicReadContract).toHaveBeenCalledTimes(1)
+    const call = distributeStubs.publicReadContract.mock.calls[0][0] as {
+      functionName: string
+      args: unknown[]
+    }
+    expect(call.functionName).toBe('getConfig')
+    expect(call.args[0]).toBe(DISTRIBUTE_TOKEN)
+  })
+
+  it('progress bus advances to settled after fundEpoch resolves', async () => {
     const progress = useAgentDistributeProgress()
     await runAgentAction(distributeDescriptor())
     expect(progress.state.value.phase).toBe('settled')
   })
 
-  it('onProgress callback feeds the shared progress bus', async () => {
-    distributeStubs.distributeYieldFn.mockImplementation(async (_amount, opts) => {
-      // Simulate the SDK emitting through the full pipeline.
-      opts.onProgress?.({ stage: 'encrypt', current: 1, total: 1 })
-      opts.onProgress?.({ stage: 'startDistribution', current: 1, total: 1, txHash: '0xstart' })
-      opts.onProgress?.({ stage: 'batchCreate', current: 1, total: 2 })
-      opts.onProgress?.({ stage: 'processBatch', current: 1, total: 2 })
-      return {
-        distributionId: 1n,
-        escrowIds: [10n],
-        createTxHashes: [FUND_HASH_1],
-        fundTxHashes: [FUND_HASH_2],
-      }
+  it('onProgress callbacks feed the shared progress bus across the lifecycle', async () => {
+    distributeStubs.openEpochFn.mockImplementation(async (_token, opts) => {
+      opts?.onProgress?.({ stage: 'openEpoch', current: 1, total: 1, txHash: OPEN_HASH })
+      return { epochId: EPOCH_ID, txHash: OPEN_HASH }
+    })
+    distributeStubs.snapshotAllFn.mockImplementation(async (_id, _holders, opts) => {
+      opts?.onProgress?.({ stage: 'snapshotBatch', current: 1, total: 2, message: 'Batch 1/2' })
+      opts?.onProgress?.({ stage: 'snapshotBatch', current: 2, total: 2, message: 'Batch 2/2' })
+      return [SNAPSHOT_HASH, SNAPSHOT_HASH]
+    })
+    distributeStubs.finalizeSnapshotFn.mockImplementation(async (_id, opts) => {
+      opts?.onProgress?.({ stage: 'finalizeSnapshot', current: 1, total: 1, txHash: FINALIZE_HASH })
+      return FINALIZE_HASH
+    })
+    distributeStubs.fundEpochFn.mockImplementation(async (_id, _y, _r, opts) => {
+      opts?.onProgress?.({ stage: 'encrypt', current: 0, total: 1 })
+      opts?.onProgress?.({ stage: 'fundEpoch', current: 1, total: 1, txHash: FUND_HASH })
+      return FUND_HASH
     })
 
     const progress = useAgentDistributeProgress()
@@ -805,14 +905,12 @@ describe('runAgentAction — distribute_yield (P7 Phase 2)', () => {
     if (result.ok === false) {
       expect(result.error).toContain('does not match connected kernel')
     }
-    // setOperator + SDK construction MUST NOT happen on a binding failure.
     expect(distributeStubs.setOperator).not.toHaveBeenCalled()
-    expect(distributeStubs.muHavenClientCtor).not.toHaveBeenCalled()
+    expect(distributeStubs.yieldSnapshotClientCtor).not.toHaveBeenCalled()
   })
 
   it('rejects when preview.tokenAddress is not in the issuer-tokens store (after refresh)', async () => {
     distributeStubs.issuerTokens = []
-    // Make load() a no-op so the refresh leaves the registry empty.
     distributeStubs.loadFn.mockResolvedValue(undefined)
     const result = await runAgentAction(distributeDescriptor())
     expect(result.ok).toBe(false)
@@ -873,66 +971,315 @@ describe('runAgentAction — distribute_yield (P7 Phase 2)', () => {
     expect(distributeStubs.setOperator).not.toHaveBeenCalled()
   })
 
-  it('surfaces a setOperator revert as a runner error', async () => {
+  it('surfaces a setOperator revert as a runner error (no SDK ctor)', async () => {
     distributeStubs.setOperator.mockRejectedValue(new Error('user rejected request'))
     const result = await runAgentAction(distributeDescriptor())
     expect(result.ok).toBe(false)
     if (result.ok === false) {
       expect(result.error).toContain('user rejected request')
     }
-    // SDK never constructed if pre-flight grant failed.
-    expect(distributeStubs.muHavenClientCtor).not.toHaveBeenCalled()
-  })
-
-  it('throws on an SDK return missing fundTxHashes', async () => {
-    // SDK returns no events fired → bus stays idle → no markFailed call
-    // (the invariant check throws but the pre-flight gate keeps the bar
-    // hidden; user sees error banner only). Covered more fully in the
-    // "SDK invariant" describe-block below.
-    distributeStubs.distributeYieldFn.mockResolvedValue({
-      distributionId: 1n,
-      escrowIds: [],
-      createTxHashes: [],
-      fundTxHashes: [],
-    })
-    const result = await runAgentAction(distributeDescriptor())
-    expect(result.ok).toBe(false)
-    if (result.ok === false) {
-      expect(result.error).toContain('without a fund tx hash')
-    }
+    expect(distributeStubs.yieldSnapshotClientCtor).not.toHaveBeenCalled()
   })
 
   it('case-insensitive kernel binding: mixed-case kernel still matches lowercased preview', async () => {
     distributeStubs.kernelAddress = ISSUER.toUpperCase()
+    distributeStubs.publicReadContract.mockResolvedValue({ issuer: ISSUER })
     const result = await runAgentAction(
       distributeDescriptor({ issuerAddress: ISSUER }),
     )
     expect(result.ok).toBe(true)
   })
 
-  // ── Self-review fixes (parallel multi-agent pass 2026-05-20) ─────
+  // ── Rewire-specific pre-flight rejects ───────────────────────────
+
+  describe('Snapshot proxy resolution (rewire pin 0)', () => {
+    it('rejects when SnapshotService.snapshotProxyFor returns null', async () => {
+      distributeStubs.snapshotProxyFor.mockReturnValue(null)
+      const result = await runAgentAction(distributeDescriptor())
+      expect(result.ok).toBe(false)
+      if (result.ok === false) {
+        expect(result.error).toContain('YieldSnapshot proxy not configured')
+      }
+      expect(distributeStubs.setOperator).not.toHaveBeenCalled()
+    })
+
+    it('rejects when SnapshotService.snapshotProxyFor returns the zero address', async () => {
+      distributeStubs.snapshotProxyFor.mockReturnValue('0x0000000000000000000000000000000000000000')
+      const result = await runAgentAction(distributeDescriptor())
+      expect(result.ok).toBe(false)
+      if (result.ok === false) {
+        expect(result.error).toContain('YieldSnapshot proxy not configured')
+      }
+    })
+  })
+
+  describe('On-chain TokenRegistry issuer match (rewire pin 5)', () => {
+    it('rejects when on-chain issuer does not match the connected kernel', async () => {
+      distributeStubs.publicReadContract.mockResolvedValue({
+        issuer: '0x9999999999999999999999999999999999999999',
+      })
+      const progress = useAgentDistributeProgress()
+      const result = await runAgentAction(distributeDescriptor())
+      expect(result.ok).toBe(false)
+      if (result.ok === false) {
+        expect(result.error).toContain('On-chain issuer')
+        expect(result.error).toContain('does not match your connected kernel')
+      }
+      // Pre-flight failure → no UserOps fire AND bus stays idle (no
+      // misleading red step-1).
+      expect(distributeStubs.setOperator).not.toHaveBeenCalled()
+      expect(distributeStubs.openEpochFn).not.toHaveBeenCalled()
+      expect(progress.state.value.phase).toBe('idle')
+    })
+
+    it('case-insensitive: on-chain mixed-case issuer matches lowercased kernel', async () => {
+      distributeStubs.publicReadContract.mockResolvedValue({
+        issuer: ISSUER.toUpperCase(),
+      })
+      const result = await runAgentAction(distributeDescriptor())
+      expect(result.ok).toBe(true)
+    })
+  })
+
+  describe('In-flight epoch hand-off (rewire pin 6)', () => {
+    it('returns deferred with /distribute redirect when a non-done epoch is in flight', async () => {
+      distributeStubs.detectInFlight.mockResolvedValue({
+        tokenAddress: DISTRIBUTE_TOKEN,
+        snapshotAddress: SNAPSHOT_PROXY,
+        epochId: 12n,
+        epoch: {} as never,
+        phase: 'snapshotting',
+      })
+      const progress = useAgentDistributeProgress()
+      const result = await runAgentAction(distributeDescriptor())
+      expect(result.ok).toBe('deferred')
+      if (result.ok === 'deferred') {
+        expect(result.redirectTo).toBe('/distribute')
+        expect(result.reason).toContain('distribution in progress')
+      }
+      expect(distributeStubs.setOperator).not.toHaveBeenCalled()
+      expect(distributeStubs.openEpochFn).not.toHaveBeenCalled()
+      expect(progress.state.value.phase).toBe('idle')
+    })
+
+    it('RC-HIGH-1: deferred return clears bus.toolCallId (does not strand the run tag)', async () => {
+      // Round-2 RC-HIGH-1: prior to the fix, the deferred return left
+      // the bus tagged with this run's toolCallId at phase 'idle', so a
+      // subsequent observer would see a runId belonging to a run that
+      // never emitted any SDK events. The fix calls progress.reset(null)
+      // on the deferred path so the bus is semantically "this run never
+      // started" — same posture as a pre-flight throw.
+      distributeStubs.detectInFlight.mockResolvedValue({
+        tokenAddress: DISTRIBUTE_TOKEN,
+        snapshotAddress: SNAPSHOT_PROXY,
+        epochId: 12n,
+        epoch: {} as never,
+        phase: 'snapshotting',
+      })
+      const progress = useAgentDistributeProgress()
+      const result = await runAgentAction(distributeDescriptor())
+      expect(result.ok).toBe('deferred')
+      // The deferred-path reset(null) clears toolCallId.
+      expect(progress.state.value.toolCallId).toBeNull()
+      expect(progress.state.value.phase).toBe('idle')
+    })
+
+    it('proceeds normally when detectInFlight returns null (no in-flight epoch)', async () => {
+      distributeStubs.detectInFlight.mockResolvedValue(null)
+      const result = await runAgentAction(distributeDescriptor())
+      expect(result.ok).toBe(true)
+    })
+
+    it('proceeds normally when detectInFlight returns phase=done (prior funded epoch)', async () => {
+      // currentEpoch returns the most-recent funded epoch as well; a
+      // fully-completed prior distribution must NOT block a fresh one.
+      distributeStubs.detectInFlight.mockResolvedValue({
+        tokenAddress: DISTRIBUTE_TOKEN,
+        snapshotAddress: SNAPSHOT_PROXY,
+        epochId: 6n,
+        epoch: {} as never,
+        phase: 'done',
+      })
+      const result = await runAgentAction(distributeDescriptor())
+      expect(result.ok).toBe(true)
+    })
+  })
+
+  describe('Holder-count pre-flight (rewire pin 7)', () => {
+    it('rejects when loadAllHolders returns an empty list', async () => {
+      distributeStubs.loadAllHolders.mockResolvedValue([])
+      const result = await runAgentAction(distributeDescriptor())
+      expect(result.ok).toBe(false)
+      if (result.ok === false) {
+        expect(result.error).toContain('no holders')
+      }
+      expect(distributeStubs.setOperator).not.toHaveBeenCalled()
+      expect(distributeStubs.openEpochFn).not.toHaveBeenCalled()
+    })
+
+    it('reuses the holder list as the snapshotAll input (single registry walk)', async () => {
+      const holders = [HOLDER_1, HOLDER_2, '0xcccc000000000000000000000000000000000005' as `0x${string}`]
+      distributeStubs.loadAllHolders.mockResolvedValue(holders)
+      await runAgentAction(distributeDescriptor())
+      expect(distributeStubs.loadAllHolders).toHaveBeenCalledTimes(1)
+      expect(distributeStubs.snapshotAllFn.mock.calls[0][1]).toEqual(holders)
+    })
+
+    it('CR2-H2: tolerates multi-batch snapshotAll Hash[] shape', async () => {
+      // Round-2 CR2-H2: the runner discards snapshotAll's return value
+      // (only the onProgress events matter for the bus). Prior tests
+      // mocked single-element Hash[] which would silently pass even if
+      // a future SDK change altered the shape. Mock a 3-batch holder
+      // run (>50 holders triggers multi-batch in real SDK) with a
+      // 3-element Hash[] return + 3 onProgress events; assert the
+      // runner completes correctly + the bus saw all 3 batch events.
+      const manyHolders: `0x${string}`[] = Array.from({ length: 120 }, (_, i) =>
+        `0xc0c0000000000000000000000000000000${i.toString(16).padStart(6, '0')}` as `0x${string}`,
+      )
+      distributeStubs.loadAllHolders.mockResolvedValue(manyHolders)
+      const batchHashes: `0x${string}`[] = [
+        ('0x' + 'b1'.repeat(32)) as `0x${string}`,
+        ('0x' + 'b2'.repeat(32)) as `0x${string}`,
+        ('0x' + 'b3'.repeat(32)) as `0x${string}`,
+      ]
+      let batchEventsSeen = 0
+      distributeStubs.snapshotAllFn.mockImplementation(async (_id, _holders, opts) => {
+        opts?.onProgress?.({ stage: 'snapshotBatch', current: 50, total: 120, message: 'Batch 1/3', txHash: batchHashes[0] })
+        opts?.onProgress?.({ stage: 'snapshotBatch', current: 100, total: 120, message: 'Batch 2/3', txHash: batchHashes[1] })
+        opts?.onProgress?.({ stage: 'snapshotBatch', current: 120, total: 120, message: 'Batch 3/3', txHash: batchHashes[2] })
+        batchEventsSeen = 3
+        return batchHashes
+      })
+      const progress = useAgentDistributeProgress()
+      const result = await runAgentAction(distributeDescriptor())
+      expect(result.ok).toBe(true)
+      expect(batchEventsSeen).toBe(3)
+      // Bus reflects the last batch event's tx hash.
+      expect(progress.state.value.lastTxHash).toBe(batchHashes[2])
+    })
+  })
+
+  describe('ratePerShare compute (rewire pin 14)', () => {
+    it('computes floor(totalYield × RATE_SCALE / supply) and passes to fundEpoch', async () => {
+      // totalYield = 25_000_000n ($25), supply = 100_000_000_000n
+      // ratePerShare = floor(25_000_000n × 1_000_000n / 100_000_000_000n) = 250n
+      distributeStubs.decryptSnapshotSupplyForView.mockResolvedValue(100_000_000_000n)
+      const result = await runAgentAction(
+        distributeDescriptor({ totalYieldUsd6: '25000000' }),
+      )
+      expect(result.ok).toBe(true)
+      expect(distributeStubs.fundEpochFn.mock.calls[0][2]).toBe(250n)
+    })
+
+    it('rejects when ratePerShare floors to zero (totalYield too small for supply)', async () => {
+      // totalYield = 1n (negligible), supply = 10_000_000_000_000_000_000n
+      // floor(1n × 1_000_000n / 10_000_000_000_000_000_000n) = 0n
+      distributeStubs.decryptSnapshotSupplyForView.mockResolvedValue(10_000_000_000_000_000_000n)
+      const result = await runAgentAction(
+        distributeDescriptor({ totalYieldUsd6: '1' }),
+      )
+      expect(result.ok).toBe(false)
+      if (result.ok === false) {
+        expect(result.error).toContain('per-share rate would round down to zero')
+      }
+      expect(distributeStubs.fundEpochFn).not.toHaveBeenCalled()
+    })
+
+    it('rejects when decrypted supply is zero', async () => {
+      distributeStubs.decryptSnapshotSupplyForView.mockResolvedValue(0n)
+      const result = await runAgentAction(distributeDescriptor())
+      expect(result.ok).toBe(false)
+      if (result.ok === false) {
+        expect(result.error).toContain('zero supply')
+      }
+      expect(distributeStubs.fundEpochFn).not.toHaveBeenCalled()
+    })
+
+    it('rejects when getEpochTotalSupplyHandle returns null (finalize silent-fail)', async () => {
+      distributeStubs.getEpochTotalSupplyHandle.mockResolvedValue(null)
+      const result = await runAgentAction(distributeDescriptor())
+      expect(result.ok).toBe(false)
+      if (result.ok === false) {
+        expect(result.error).toContain('Snapshot supply handle is uninitialised')
+      }
+      expect(distributeStubs.fundEpochFn).not.toHaveBeenCalled()
+    })
+
+    it('proceeds to decrypt + fund even when refreshSnapshotSupplyGrant fails', async () => {
+      // Mirrors DistributePage.decryptSupplyFromChain pattern — a refresh
+      // failure logs a warning but the decrypt is attempted anyway.
+      distributeStubs.refreshSnapshotSupplyGrant.mockRejectedValue(new Error('refresh tx reverted'))
+      const result = await runAgentAction(distributeDescriptor())
+      expect(result.ok).toBe(true)
+      expect(distributeStubs.decryptSnapshotSupplyForView).toHaveBeenCalledTimes(1)
+      expect(distributeStubs.fundEpochFn).toHaveBeenCalledTimes(1)
+    })
+
+    it('RC-MED-1: setMessageForRun bridges dead window with synthetic hints', async () => {
+      // Round-2 RC-MED-1: zero test coverage for the dead-window
+      // bridge prior to this. Assert the message slot carries
+      // "Reading encrypted supply…" while refresh+decrypt is in
+      // flight, then "Computing per-share rate…" before fundEpoch.
+      const progress = useAgentDistributeProgress()
+      const messageObservations: Array<string | null> = []
+
+      // Make refreshSnapshotSupplyGrant record the message at the
+      // moment it's invoked — verifies setMessageForRun fired BEFORE.
+      distributeStubs.refreshSnapshotSupplyGrant.mockImplementation(async () => {
+        messageObservations.push(progress.state.value.message)
+        return REFRESH_HASH
+      })
+      // fundEpoch records the message before its first onProgress fires.
+      distributeStubs.fundEpochFn.mockImplementation(async (_id, _y, _r, _opts) => {
+        messageObservations.push(progress.state.value.message)
+        return FUND_HASH
+      })
+
+      // Drive finalizeSnapshot to emit an event so phase reaches
+      // 'escrows' — required by setMessageForRun's phase guard.
+      distributeStubs.finalizeSnapshotFn.mockImplementation(async (_id, opts) => {
+        opts?.onProgress?.({ stage: 'finalizeSnapshot', current: 1, total: 1 })
+        return FINALIZE_HASH
+      })
+      distributeStubs.snapshotAllFn.mockImplementation(async (_id, _holders, opts) => {
+        opts?.onProgress?.({ stage: 'snapshotBatch', current: 1, total: 1 })
+        return [SNAPSHOT_HASH]
+      })
+      distributeStubs.openEpochFn.mockImplementation(async (_token, opts) => {
+        opts?.onProgress?.({ stage: 'openEpoch', current: 1, total: 1 })
+        return { epochId: EPOCH_ID, txHash: OPEN_HASH }
+      })
+
+      const result = await runAgentAction(distributeDescriptor())
+      expect(result.ok).toBe(true)
+      // First synthetic fired before refresh; second before fundEpoch.
+      expect(messageObservations[0]).toBe('Reading encrypted supply…')
+      expect(messageObservations[1]).toBe('Computing per-share rate…')
+    })
+  })
+
+  // ── Pre-existing semantics preserved across the rewire ───────────
 
   describe('SDK throw mid-pipeline marks the bus failed at the active phase', () => {
-    it('flips the bus to failed when distributeYield rejects mid-flight', async () => {
-      // Simulate the SDK advancing past idle then throwing — gating
-      // condition for the runner's markFailedForRun call.
-      distributeStubs.distributeYieldFn.mockImplementation(async (_amount, opts) => {
-        opts.onProgress?.({ stage: 'startDistribution', current: 1, total: 1 })
-        throw new Error('CoFHE batchCreate reverted: bus stuck')
+    it('flips the bus to failed when openEpoch throws AFTER emitting an event', async () => {
+      distributeStubs.openEpochFn.mockImplementation(async (_token, opts) => {
+        opts?.onProgress?.({ stage: 'openEpoch', current: 1, total: 1 })
+        throw new Error('openEpoch reverted post-event')
       })
       const progress = useAgentDistributeProgress()
       const result = await runAgentAction(distributeDescriptor())
       expect(result.ok).toBe(false)
       expect(progress.state.value.phase).toBe('failed')
+      expect(progress.state.value.failedAt).toBe('start')
     })
 
-    it('failedAt anchors to the active phase at throw time (escrows)', async () => {
-      // Simulate the SDK advancing to 'escrows' then throwing — the
-      // bus must record failedAt='escrows' so the modal paints the
-      // right step red.
-      distributeStubs.distributeYieldFn.mockImplementation(async (_amount, opts) => {
-        opts.onProgress?.({ stage: 'startDistribution', current: 1, total: 1 })
-        opts.onProgress?.({ stage: 'batchCreate', current: 1, total: 2 })
+    it('failedAt anchors to escrows when snapshotAll throws after a batch event', async () => {
+      distributeStubs.openEpochFn.mockImplementation(async (_token, opts) => {
+        opts?.onProgress?.({ stage: 'openEpoch', current: 1, total: 1 })
+        return { epochId: EPOCH_ID, txHash: OPEN_HASH }
+      })
+      distributeStubs.snapshotAllFn.mockImplementation(async (_id, _holders, opts) => {
+        opts?.onProgress?.({ stage: 'snapshotBatch', current: 1, total: 2 })
         throw new Error('batch 2 reverted')
       })
       const progress = useAgentDistributeProgress()
@@ -941,12 +1288,18 @@ describe('runAgentAction — distribute_yield (P7 Phase 2)', () => {
       expect(progress.state.value.failedAt).toBe('escrows')
     })
 
-    it('failedAt anchors to fund when the SDK throws after processBatch starts', async () => {
-      distributeStubs.distributeYieldFn.mockImplementation(async (_amount, opts) => {
-        opts.onProgress?.({ stage: 'startDistribution', current: 1, total: 1 })
-        opts.onProgress?.({ stage: 'batchCreate', current: 1, total: 1 })
-        opts.onProgress?.({ stage: 'processBatch', current: 1, total: 2 })
-        throw new Error('fund-batch 2 reverted')
+    it('failedAt anchors to fund when fundEpoch throws after the fundEpoch event', async () => {
+      distributeStubs.openEpochFn.mockImplementation(async (_token, opts) => {
+        opts?.onProgress?.({ stage: 'openEpoch', current: 1, total: 1 })
+        return { epochId: EPOCH_ID, txHash: OPEN_HASH }
+      })
+      distributeStubs.snapshotAllFn.mockImplementation(async (_id, _holders, opts) => {
+        opts?.onProgress?.({ stage: 'snapshotBatch', current: 1, total: 1 })
+        return [SNAPSHOT_HASH]
+      })
+      distributeStubs.fundEpochFn.mockImplementation(async (_id, _y, _r, opts) => {
+        opts?.onProgress?.({ stage: 'fundEpoch', current: 1, total: 1 })
+        throw new Error('fundEpoch reverted')
       })
       const progress = useAgentDistributeProgress()
       await runAgentAction(distributeDescriptor())
@@ -956,13 +1309,12 @@ describe('runAgentAction — distribute_yield (P7 Phase 2)', () => {
   })
 
   describe('Pre-flight failures leave the bus IDLE (no fake step-1 red bar)', () => {
-    // Second-pass review (my H-A + Code Reviewer M-1 + Reality F2):
-    // pre-flight throws (kernel binding mismatch, totalYield cap,
-    // setOperator revert) happen BEFORE the SDK emits any onProgress.
-    // The runner's catch checks bus phase before calling markFailed —
-    // so the 3-phase bar's render-guard `phase !== 'idle'` keeps the
-    // bar HIDDEN for client-side errors. User sees the standard error
-    // banner only, not a misleading "Step 1 (Prepare batch) failed".
+    // Pre-flight throws (kernel binding mismatch, totalYield cap,
+    // setOperator revert, on-chain-issuer mismatch, in-flight hand-off,
+    // empty holders) happen BEFORE the SDK emits any onProgress. The
+    // runner's catch checks bus phase before calling markFailed — so the
+    // 3-phase bar's render-guard `phase !== 'idle'` keeps the bar HIDDEN
+    // for client-side errors. User sees the standard error banner only.
 
     it('setOperator revert leaves bus at idle', async () => {
       distributeStubs.setOperator.mockRejectedValue(new Error('user rejected'))
@@ -998,29 +1350,44 @@ describe('runAgentAction — distribute_yield (P7 Phase 2)', () => {
       expect(result.ok).toBe(false)
       expect(progress.state.value.phase).toBe('idle')
     })
+
+    it('empty-holders reject leaves bus at idle', async () => {
+      distributeStubs.loadAllHolders.mockResolvedValue([])
+      const progress = useAgentDistributeProgress()
+      const result = await runAgentAction(distributeDescriptor())
+      expect(result.ok).toBe(false)
+      expect(progress.state.value.phase).toBe('idle')
+    })
+
+    it('on-chain-issuer mismatch leaves bus at idle', async () => {
+      distributeStubs.publicReadContract.mockResolvedValue({
+        issuer: '0x9999999999999999999999999999999999999999',
+      })
+      const progress = useAgentDistributeProgress()
+      const result = await runAgentAction(distributeDescriptor())
+      expect(result.ok).toBe(false)
+      expect(progress.state.value.phase).toBe('idle')
+    })
   })
 
   describe('Concurrent-distribution guard', () => {
     it('rejects a new distribute when the bus is mid-flight (phase=start)', async () => {
-      // Simulate a previous distribution still in flight by hand-driving
-      // the bus past idle, then attempting a new run.
       const progress = useAgentDistributeProgress()
       const priorRunId = progress.reset('tc_prior')
-      progress.applyEventForRun(priorRunId, { stage: 'startDistribution', current: 1, total: 1 })
+      progress.applyEventForRun(priorRunId, { stage: 'openEpoch', current: 1, total: 1 })
       const result = await runAgentAction(distributeDescriptor())
       expect(result.ok).toBe(false)
       if (result.ok === false) {
         expect(result.error).toContain('previous yield distribution is still in progress')
       }
-      // No setOperator, no SDK construction.
       expect(distributeStubs.setOperator).not.toHaveBeenCalled()
-      expect(distributeStubs.muHavenClientCtor).not.toHaveBeenCalled()
+      expect(distributeStubs.yieldSnapshotClientCtor).not.toHaveBeenCalled()
     })
 
     it('allows a new distribute when the previous bus is settled', async () => {
       const progress = useAgentDistributeProgress()
       const priorRunId = progress.reset('tc_prior')
-      progress.applyEventForRun(priorRunId, { stage: 'processBatch', current: 1, total: 1 })
+      progress.applyEventForRun(priorRunId, { stage: 'fundEpoch', current: 1, total: 1 })
       progress.markSettledForRun(priorRunId)
       const result = await runAgentAction(distributeDescriptor())
       expect(result.ok).toBe(true)
@@ -1029,7 +1396,7 @@ describe('runAgentAction — distribute_yield (P7 Phase 2)', () => {
     it('allows a new distribute when the previous bus failed', async () => {
       const progress = useAgentDistributeProgress()
       const priorRunId = progress.reset('tc_prior')
-      progress.applyEventForRun(priorRunId, { stage: 'batchCreate', current: 1, total: 1 })
+      progress.applyEventForRun(priorRunId, { stage: 'snapshotBatch', current: 1, total: 1 })
       progress.markFailedForRun(priorRunId)
       const result = await runAgentAction(distributeDescriptor())
       expect(result.ok).toBe(true)
@@ -1045,65 +1412,28 @@ describe('runAgentAction — distribute_yield (P7 Phase 2)', () => {
     })
 
     it('stale onProgress for the prior run is silently dropped', async () => {
-      // Capture a runId from a settled run, then run a new distribution
-      // and inject a stale onProgress for the prior runId. The bus
-      // should ignore the stale event and reflect only the new run's state.
       const progress = useAgentDistributeProgress()
       const staleRunId = progress.reset('tc_stale')
-      progress.applyEventForRun(staleRunId, { stage: 'processBatch', current: 1, total: 1 })
+      progress.applyEventForRun(staleRunId, { stage: 'fundEpoch', current: 1, total: 1 })
       progress.markSettledForRun(staleRunId)
 
-      // New run starts (different toolCallId, new runId).
       let capturedRunId = -1
-      distributeStubs.distributeYieldFn.mockImplementation(async (_amount, opts) => {
+      distributeStubs.openEpochFn.mockImplementation(async (_token, opts) => {
         capturedRunId = progress.state.value.runId
-        opts.onProgress?.({ stage: 'startDistribution', current: 1, total: 1 })
-        return {
-          distributionId: 1n,
-          escrowIds: [10n],
-          createTxHashes: [FUND_HASH_1],
-          fundTxHashes: [FUND_HASH_2],
-        }
+        opts?.onProgress?.({ stage: 'openEpoch', current: 1, total: 1 })
+        return { epochId: EPOCH_ID, txHash: OPEN_HASH }
       })
       await runAgentAction(distributeDescriptor())
       expect(capturedRunId).not.toBe(staleRunId)
 
       // Inject a stale-runId event AFTER the new run settled.
-      progress.applyEventForRun(staleRunId, { stage: 'batchCreate', current: 99, total: 99 })
+      progress.applyEventForRun(staleRunId, { stage: 'snapshotBatch', current: 99, total: 99 })
       expect(progress.state.value.phase).toBe('settled')
-    })
-  })
-
-  describe('SDK invariant: fundTxHashes non-empty', () => {
-    it('marks the bus failed (not settled) when fundTxHashes is empty', async () => {
-      // Reality F12: previously markSettled ran BEFORE the invariant
-      // check, causing a settled-then-failed flicker. Now the check
-      // runs first; failure marks the bus correctly.
-      distributeStubs.distributeYieldFn.mockImplementation(async (_amount, opts) => {
-        opts.onProgress?.({ stage: 'processBatch', current: 1, total: 1 })
-        return {
-          distributionId: 1n,
-          escrowIds: [],
-          createTxHashes: [],
-          fundTxHashes: [],
-        }
-      })
-      const progress = useAgentDistributeProgress()
-      const result = await runAgentAction(distributeDescriptor())
-      expect(result.ok).toBe(false)
-      if (result.ok === false) {
-        expect(result.error).toContain('without a fund tx hash')
-      }
-      // Phase should be 'failed' at 'fund' (we got onProgress for processBatch),
-      // NOT 'settled' — the invariant check fires BEFORE markSettled.
-      expect(progress.state.value.phase).toBe('failed')
-      expect(progress.state.value.failedAt).toBe('fund')
     })
   })
 
   describe('Security M-2: totalYield uint64 cap', () => {
     it('rejects amounts above the $100M cap', async () => {
-      // 100_000_000_000_001 = cap + 1 (one base-6 unit over $100M).
       const result = await runAgentAction(
         distributeDescriptor({ totalYieldUsd6: '100000000000001' }),
       )
@@ -1126,6 +1456,9 @@ describe('runAgentAction — distribute_yield (P7 Phase 2)', () => {
     })
 
     it('accepts amounts at exactly the cap', async () => {
+      // At the $100M cap with supply=2_000_000n the ratePerShare is
+      // floor(100_000_000_000_000n × 1_000_000n / 2_000_000n) =
+      // 50_000_000_000_000n which is well within uint128. Happy path.
       const result = await runAgentAction(
         distributeDescriptor({ totalYieldUsd6: '100000000000000' }),
       )

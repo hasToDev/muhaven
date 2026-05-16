@@ -1,23 +1,37 @@
 /**
  * Wave 4 P7 Phase 2 — shared progress bus for `distribute_yield`.
  *
- * The SDK's `MuHavenClient.distributeYield(totalYield, { onProgress })`
- * runs three sequential stages (start → escrows → fund) that take
- * ~1-2 minutes for non-trivial investor counts. The runner produces
- * `ProgressEvent`s; the ConfirmModal renders them as a three-step bar.
- * They live in separate Vue components with no parent/child link, so the
- * cleanest cross-cut is a module-level reactive `ref` exposed via a
- * composable (same shape pattern as `useFhe`).
+ * The SDK's `YieldSnapshotClient` lifecycle (`openEpoch` →
+ * `snapshotAll` → `finalizeSnapshot` → `fundEpoch`) runs three logical
+ * phases that take ~1-2 minutes for non-trivial holder counts. The
+ * runner produces `ProgressEvent`s; the ConfirmModal renders them as a
+ * three-step bar. They live in separate Vue components with no
+ * parent/child link, so the cleanest cross-cut is a module-level
+ * reactive `ref` exposed via a composable (same shape pattern as
+ * `useFhe`).
  *
- * Stages → phases mapping (collapses the 7 SDK stages into 3 user-facing
- * steps + a final settled state):
+ * Stages → phases mapping (collapses the YieldSnapshot SDK stages into
+ * 3 user-facing steps + a final settled state). The mapping below
+ * targets the Wave 3.5 `YieldSnapshotClient` (the prior Wave 3
+ * `MuHavenClient.distributeYield` pipeline was rewired out 2026-05-22 —
+ * see `development/DEV_WAVE_4/PHASE_2_YIELD_SNAPSHOT_REWIRE.md`):
  *
- *   phase 'start'   ← stage 'encrypt' (during startDistributionFlow),
- *                     stage 'startDistribution'
- *   phase 'escrows' ← stage 'encrypt' (during createYieldEscrowsFlow),
- *                     stage 'batchCreate'
- *   phase 'fund'    ← stage 'setEscrowIds', stage 'processBatch'
- *   phase 'settled' ← runner posts this once distributeYield resolves
+ *   phase 'start'   ← stage 'openEpoch'
+ *   phase 'escrows' ← stage 'snapshotBatch', stage 'finalizeSnapshot'
+ *                     (NB: finalizeSnapshot maps to 'escrows' — NOT back
+ *                     to 'start'. It is the closing step of the
+ *                     allocation phase; routing it to 'start' would
+ *                     drop the bar back to phase 1 mid-flight under the
+ *                     monotonic rule. Pinned by the rewire plan.)
+ *   phase 'fund'    ← stage 'fundEpoch'
+ *   stage 'encrypt' → null (handled by the SDK during fundEpoch's
+ *                     totalYield encryption; routing it would cause a
+ *                     spurious phase regression for the ratePerShare
+ *                     dance. Surfaces as the "Encrypting…" sub-message
+ *                     under phase 'fund' once the encrypt event fires.)
+ *   stage 'claimYield' / 'sweepExpired' → null (investor / cleanup —
+ *                     not on the issuer's distribute path)
+ *   phase 'settled' ← runner posts this once fundEpoch resolves
  *   phase 'failed'  ← runner posts this if the SDK pipeline throws
  *                     mid-flight (pre-flight throws do NOT reach this —
  *                     see runner JSDoc)
@@ -130,26 +144,47 @@ const state: Ref<DistributeProgressState> = ref(initialState())
 
 /**
  * Map an SDK `ProgressEvent.stage` to the user-facing 3-phase bucket.
- * Stages outside the distribute pipeline (e.g. 'redeem', 'wrap') map to
- * null — the runner's onProgress filter ignores them, but the typing
- * makes the dispatch explicit.
+ * Stages outside the YieldSnapshot distribute pipeline (e.g. 'redeem',
+ * 'wrap', investor-side 'claimYield') map to null — the runner's
+ * onProgress filter ignores them, but the typing makes the dispatch
+ * explicit.
+ *
+ * Pinned mappings (rewire 2026-05-22):
+ *   - `finalizeSnapshot → 'escrows'` (NOT `'start'`). Finalize is the
+ *     CLOSING step of the allocation phase; routing it to `'start'`
+ *     would drop the bar back to phase 1 mid-flight (monotonic rule
+ *     would silently swallow the regression — bar would freeze on
+ *     "Allocate to holders" while finalize tx is in flight).
+ *   - `encrypt → null`. The SDK emits this during `fundEpoch`'s
+ *     totalYield encryption; the bar should already be on phase
+ *     `'fund'` by then (or arrive there via `fundEpoch` straight after).
+ *     Letting `encrypt` drive the phase would cause an `escrows → null`
+ *     no-op now and a spurious regression class if a future SDK change
+ *     re-emits `encrypt` earlier in the pipeline.
  */
 function stageToPhase(stage: ProgressEvent['stage']): DistributeProgressPhase | null {
   switch (stage) {
-    case 'encrypt':
-      // 'encrypt' fires in BOTH startDistributionFlow and
-      // createYieldEscrowsFlow. We can't disambiguate from the event
-      // alone, so we let the monotonic phase rule keep us on the
-      // already-advanced phase (e.g. once we're on 'escrows', a stray
-      // 'encrypt' won't drag us back to 'start').
-      return null
-    case 'startDistribution':
+    case 'openEpoch':
       return 'start'
-    case 'batchCreate':
+    case 'snapshotBatch':
+    case 'finalizeSnapshot':
       return 'escrows'
-    case 'setEscrowIds':
-    case 'processBatch':
+    case 'fundEpoch':
       return 'fund'
+    case 'encrypt':
+      // Fires inside `fundEpoch` for the totalYield encryption. The bar
+      // is on `'fund'` by the time the corresponding fundEpoch event
+      // fires, so routing this to a phase would either be a no-op
+      // (already on 'fund') or a spurious regression (if encrypt fires
+      // before any phase advance). Surfaces as the "Encrypting total
+      // yield" sub-message under whichever phase is active.
+      return null
+    case 'claimYield':
+    case 'sweepExpired':
+      // Investor-side / post-distribution stages — not on the issuer's
+      // distribute path. The runner doesn't drive these; the bus
+      // shouldn't react if a stray event leaks in.
+      return null
     default:
       return null
   }
@@ -160,20 +195,74 @@ function stageToPhase(stage: ProgressEvent['stage']): DistributeProgressPhase | 
  * current run. Stale events from a prior runner whose closure is still
  * being scheduled are silently dropped. Also no-ops on terminal phase
  * so a post-settle onProgress doesn't mutate visible state.
+ *
+ * Round-1 self-review HIGH (FD-H-1, 2026-05-22): events whose stage
+ * maps to `null` (e.g. `'encrypt'` fired by `fundEpoch` for the
+ * totalYield encryption) skip ALL state mutation — without this guard,
+ * the active phase's hint would briefly switch to the null-stage's
+ * message ("Encrypting total yield" appearing under the
+ * "Allocate to holders" hint while the bar is still on `'escrows'`).
+ * The runner uses the dedicated `setMessageForRun` helper for
+ * synthetic dead-window hints (e.g. "Reading encrypted supply…")
+ * which respects the runId guard but doesn't touch lastStage / current
+ * / total.
  */
 function applyEventForRun(runId: number, evt: ProgressEvent): void {
   if (state.value.runId !== runId) return
   if (state.value.phase === 'failed' || state.value.phase === 'settled') return
 
+  const target = stageToPhase(evt.stage)
+  if (!target) return
+
   state.value.lastStage = evt.stage
   state.value.current = evt.current
   state.value.total = evt.total
+  // Round-2 review RC-MED-2 (invariant pin): unconditionally writing
+  // `evt.message ?? null` is intentional. SDK events without a message
+  // field (txHash-only broadcast events) DO blank the message slot —
+  // this is the mechanism by which a synthetic `setMessageForRun` hint
+  // from the dead window between finalizeSnapshot and fundEpoch
+  // (e.g. "Computing per-share rate…") is cleared as soon as the
+  // `fundEpoch` event arrives. The new phase's hint copy then takes
+  // over (via `distributePhaseMeta`). Do NOT change this to
+  // `if (evt.message) state.value.message = evt.message` without
+  // adding a separate phase-transition reset for the message slot —
+  // otherwise the dead-window synthetic hint would leak into the
+  // 'fund' phase.
   state.value.message = evt.message ?? null
   if (evt.txHash) state.value.lastTxHash = evt.txHash
-  const target = stageToPhase(evt.stage)
-  if (target && activeRank(target) > activeRank(state.value.phase)) {
+  if (activeRank(target) > activeRank(state.value.phase)) {
     state.value.phase = target
   }
+}
+
+/**
+ * Set the bus's `message` slot for synthetic UX hints that aren't
+ * driven by an SDK event. Used by `runDistribute` to bridge the
+ * ~1-2s dead window between `finalizeSnapshot` and `fundEpoch` (the
+ * ratePerShare compute step: refresh L2 grant + decrypt supply +
+ * floor math) where the bar would otherwise sit on `'escrows'` with a
+ * stale "Epoch K finalised" message + no animation. UX round-1 review
+ * (UX-M-2 + FD-M-1, 2026-05-22) flagged this as the highest "is it
+ * stuck?" trust-dip in the surface.
+ *
+ * Round-2 review RC-HIGH-2 added the `phase === 'escrows'` guard.
+ * Without it, a future SDK change that emits an intermediate event
+ * during the refresh/decrypt window (currently impossible — only
+ * `fundEpoch` emits and it's the next phase advance) could collide
+ * with an in-flight synthetic write. Pinning the guard to `'escrows'`
+ * documents the calling contract (runner invokes this ONLY between
+ * the finalizeSnapshot event and the fundEpoch event) and fails
+ * silently on misuse rather than painting stray hint copy under the
+ * wrong phase's label.
+ *
+ * Also dropped silently on runId mismatch — same posture as
+ * `applyEventForRun`.
+ */
+function setMessageForRun(runId: number, message: string): void {
+  if (state.value.runId !== runId) return
+  if (state.value.phase !== 'escrows') return
+  state.value.message = message
 }
 
 /**
@@ -243,8 +332,9 @@ export function useAgentDistributeProgress(): {
   state: Ref<DistributeProgressState>
   reset: (toolCallId?: string | null) => number
   applyEventForRun: (runId: number, evt: ProgressEvent) => void
+  setMessageForRun: (runId: number, message: string) => void
   markSettledForRun: (runId: number) => void
   markFailedForRun: (runId: number) => void
 } {
-  return { state, reset, applyEventForRun, markSettledForRun, markFailedForRun }
+  return { state, reset, applyEventForRun, setMessageForRun, markSettledForRun, markFailedForRun }
 }

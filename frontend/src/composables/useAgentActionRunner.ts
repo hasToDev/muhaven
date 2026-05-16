@@ -1,14 +1,19 @@
 import {
   SubscriptionClient,
-  MuHavenClient,
+  YieldSnapshotClient,
+  RATE_SCALE,
+  tokenRegistryAbi,
   // RedemptionQueueClient — not yet wired into agent claim path; see Wave 5 follow-up note.
 } from '@muhaven/sdk'
+import type { ProgressCallback } from '@muhaven/sdk'
 import type { Address, Hash } from 'viem'
-import { addresses, v35Addresses, isZeroAddress } from '@/contracts/addresses'
+import { v35Addresses, isZeroAddress } from '@/contracts/addresses'
 import { buildWriteContext } from '@/services/v35/context'
 import { useFhe } from '@/composables/useFhe'
 import { useAgentDistributeProgress } from '@/composables/useAgentDistributeProgress'
 import * as MuHavenStableService from '@/services/contracts/MuHavenStableService'
+import * as SnapshotService from '@/services/v35/SnapshotService'
+import type { TokenRegistryConfig } from '@/services/v35/SnapshotService'
 import { resolveP7Tx, UnknownP7TxError } from '@/services/v35/p7-tx-abis'
 import type { ActionDescriptor } from '@/services/api'
 
@@ -154,18 +159,34 @@ export async function runAgentAction(action: ActionDescriptor): Promise<RunResul
         return { ok: true, txHash }
       }
       case 'distribute_yield': {
-        // Wave 4 P7 Phase 2 — drives the MuHavenClient.distributeYield
-        // 3-stage pipeline (startDistribution → createYieldEscrows →
-        // fundEscrows). Unlike the unpause/kyc tools this is NOT a
-        // dispatchActionTxs path — the SDK owns the encryption + batching
-        // + tx loop. The runner just wires the kernel + mhUSDC operator
-        // grant + progress bus, then returns the LAST fund tx hash.
+        // Wave 4 P7 Phase 2 (rewired 2026-05-22 to YieldSnapshot — the
+        // prior MuHavenClient.distributeYield wiring targeted the Wave-3
+        // YieldDistributor singleton, which is incompatible with the
+        // Wave-3.5 InvestorRegistry the SDK enumerates from; see
+        // `development/DEV_WAVE_4/PHASE_2_YIELD_SNAPSHOT_REWIRE.md`).
+        //
+        // Drives the YieldSnapshot lifecycle (openEpoch → snapshotAll →
+        // finalizeSnapshot → refreshSnapshotSupplyGrant + decrypt supply
+        // → fundEpoch). The SDK owns the encryption + batching + tx loop;
+        // the runner wires the kernel + mhUSDC operator grant + progress
+        // bus + ratePerShare compute, then returns the fundEpoch tx hash.
         // `runDistribute` owns its own try/catch so the markFailed call
         // can be gated on "SDK actually started" (pre-flight throws
         // don't paint a fake red step-1).
-        const txHash = await runDistribute(action)
+        //
+        // Deferred return: an in-flight epoch hand-off points the user
+        // at /distribute (HavenBot does NOT resume in-flight epochs;
+        // the wizard owns resume — see plan pin 3).
+        const result = await runDistribute(action)
+        if (result.kind === 'deferred') {
+          return {
+            ok: 'deferred',
+            redirectTo: result.redirectTo,
+            reason: result.reason,
+          }
+        }
         await invalidateIssuerCachesAfterP7Write()
-        return { ok: true, txHash }
+        return { ok: true, txHash: result.txHash }
       }
       default:
         return { ok: false, error: `Unknown action kind: ${(action as ActionDescriptor).kind}` }
@@ -268,86 +289,135 @@ async function runBuy(action: ActionDescriptor): Promise<string> {
 }
 
 /**
- * Wave 4 P7 Phase 2 — drive the SDK's distributeYield pipeline.
+ * Result shape for `runDistribute`. Settled returns the fundEpoch tx
+ * hash (audit-commit anchor); deferred is the in-flight-epoch hand-off
+ * to /distribute. The dispatcher above unpacks both shapes.
  *
- * Pipeline (per SDK JSDoc `MuHavenClient.distributeYield` at
- * `packages/sdk/src/client.ts:230-283`):
- *   1. Pre-flight: `mhUSDC.setOperator(yieldDistributor, expiry)` —
- *      same idempotent-long-expiry posture as `runBuy`'s
- *      `MuHavenStableService.setOperator(subscription, expiry)`. Without
- *      this, YieldDistributor's confidentialTransferFrom pull reverts.
- *   2. Build write context (ZeroDev kernel sender + cofhe-ephemeral-EOA).
- *   3. Construct `MuHavenClient` against the Wave-3 contract addresses
- *      (`yieldDistributor`, `muhavenEscrow`, `investorRegistry`,
- *      `yieldGate` — these live on `addresses`, not `v35Addresses`).
- *   4. Call `distributeYield(totalYield, { onProgress })`. SDK runs
- *      startDistribution → createYieldEscrows → fundEscrows internally,
- *      emitting ProgressEvents the modal renders via the shared bus.
- *   5. Verify the SDK's `fundTxHashes` non-empty invariant.
- *   6. Mark settled + return the LAST fund tx hash so the audit-commit
- *      POST anchors to the "completed-when" tx (mirrors
- *      dispatchActionTxs' return policy).
+ * Errors throw via `AgentActionRunnerError` → caught in `runAgentAction`
+ * → mapped to `{ ok: false, error }`. No third arm needed.
+ */
+type RunDistributeResult =
+  | { kind: 'settled'; txHash: string }
+  | { kind: 'deferred'; redirectTo: string; reason: string }
+
+/**
+ * Wave 4 P7 Phase 2 — drive the YieldSnapshot pipeline.
+ *
+ * History (rewire 2026-05-22): the original Phase 2 implementation
+ * targeted the Wave-3 `MuHavenClient.distributeYield` (start →
+ * createEscrows → fundEscrows on YieldDistributor + MuHavenEscrow). The
+ * 2026-05-21 prod walkthrough surfaced a 4-layer skew with Wave-3.5
+ * reality: the Wave-3 InvestorRegistry the YieldDistributor reads from
+ * has zero overlap with the Wave-3.5 InvestorRegistry the SDK
+ * enumerates from, so even with all 3 in-session ops scripts run
+ * (authorize, rotate-pusdc) the pipeline failed at
+ * `escrowIds length 4 != investorCount 10` (ConfigError from
+ * `packages/sdk/src/yield.ts`). Wave-3.5's pull-based YieldSnapshot
+ * (ADR-005) is the live distribution surface; this rewire targets it.
+ * See `development/DEV_WAVE_4/PHASE_2_YIELD_SNAPSHOT_REWIRE.md` for the
+ * full plan + the parallel multi-agent review trail.
+ *
+ * On-chain pipeline (per `YieldSnapshotClient` JSDoc + ADR-005):
+ *   1. Pre-flight: `mhUSDC.setOperator(yieldSnapshot, expiry)` —
+ *      idempotent-long-expiry; required because `fundEpoch` pulls
+ *      mhUSDC via `confidentialTransferFrom`.
+ *   2. `openEpoch(token)` — allocates a new epochId.
+ *   3. `snapshotAll(epochId, holders, { batchSize })` — multi-batch
+ *      enumeration of every holder's encrypted balance. SDK-internal
+ *      pagination; aggregate progress emitted via onProgress.
+ *   4. `finalizeSnapshot(epochId)` — locks the snapshot phase + grants
+ *      issuer L2 ACL on `encTotalSupply` (ADR-049 issuer-trust-model).
+ *   5. `refreshSnapshotSupplyGrant(epochId, eph)` — re-stamps the L2
+ *      ACL onto the current ephemeral EOA so the cofhe permit-based
+ *      decrypt resolves (kernels can't sign per ADR-009; permit signer
+ *      is the eph). UserOp from the kernel; idempotent.
+ *   6. `useFhe().decryptSnapshotSupplyForView(handle)` — read +
+ *      decrypt the encrypted total-supply aggregate (issuer-only
+ *      decrypt; per-investor handles stay encrypted).
+ *   7. Compute `ratePerShare = floor(totalYield × RATE_SCALE / supply)`
+ *      cleartext. Assert `> 0` and `≤ uint128` — mirrors the SDK's own
+ *      check inside `fundEpoch` so we surface a clean error pre-tx
+ *      rather than a `ConfigError` revert mid-flight.
+ *   8. `fundEpoch(epochId, totalYield, ratePerShare)` — SDK encrypts
+ *      totalYield, transfers mhUSDC, stores `ratePerShare` cleartext
+ *      on-chain (Phase 9.B / Option A). Investor `claimYield` uses
+ *      `share × ratePerShare / RATE_SCALE` for the payout.
+ *   9. Mark settled + return the fundEpoch tx hash so the audit-commit
+ *      POST anchors to the "completed-when" tx.
  *
  * Order of work (load-bearing for the failed-bar-only-for-SDK-failures
- * UX semantic — second-pass review 2026-05-21):
- *   1. Address-deployed check.
+ * UX semantic — survives the rewire untouched from Phase 2's
+ * second-pass hardening 2026-05-21):
+ *   1. Snapshot proxy address presence (pre-flight zero-address).
  *   2. Concurrent-distribution guard (no overlap with a prior run).
  *   3. `progress.reset(toolCallId)` — bumps runId, tags the bus.
  *      From here on, every progress write is keyed to this runId.
  *   4. Validation + binding checks (totalYield shape, label length,
  *      kernel address, token registry membership).
- *   5. FHE init + setOperator pre-flight tx.
- *   6. SDK.distributeYield with onProgress threaded through runId.
- *   7. fundTxHashes invariant check.
- *   8. markSettled + return.
+ *   5. Build write context (gives us publicClient + cofhe-bound sender).
+ *   6. NEW — On-chain TokenRegistry issuer match (catches issuer
+ *      rotation between propose + confirm; cleaner error than the
+ *      contract's `OnlyIssuer()` revert mid-pipeline).
+ *   7. NEW — In-flight epoch hand-off: SnapshotService.detectInFlight.
+ *      Non-null + non-done returns a deferred result pointing the user
+ *      at /distribute (HavenBot does NOT resume in-flight epochs; the
+ *      wizard owns resume — pinned per plan §"Architectural pins" 3).
+ *   8. NEW — Holder enumeration: loadAllHolders. Empty list rejects
+ *      (would otherwise drive ratePerShare → divide-by-zero on the
+ *      decrypted supply). Result re-used for snapshotAll below.
+ *   9. setOperator pre-flight tx (UserOp 1).
+ *  10..15. SDK pipeline (openEpoch → snapshotAll → finalizeSnapshot →
+ *          refreshSnapshotSupplyGrant + decrypt + computeRate → fundEpoch).
+ *  16. markSettled + return fundEpoch tx hash.
  *
  * Any throw between step 3 and the first SDK onProgress event leaves
  * the bus at `phase = 'idle'`. The catch checks the bus phase and
  * only `markFailed`s if the SDK pipeline has actually started (i.e.
  * phase is `start | escrows | fund`). Pre-flight failures surface as
  * the standard error banner without a misleading red step-1 in the
- * 3-phase bar.
+ * 3-phase bar. Plan §"Pre-flight-no-bar invariant — VERIFIED SAFE"
+ * has the SDK-internal verification of this property
+ * (`writeAndWait` resolves before `onProgress` fires).
  *
  * Defense-in-depth binding (operator pick 2026-05-19 Q4 — mirrors
  * Phase 1 H-1):
  *   - `preview.issuerAddress` MUST equal the connected kernel address.
  *   - `preview.tokenAddress` MUST exist in `useIssuerTokensStore`.
- *
- * CAVEAT — tokenAddress is decorative for the on-chain operation
- * (Security review HIGH-1, 2026-05-20): the SDK's
- * `distributeYield(totalYield)` does NOT take a tokenAddress arg. The
- * on-chain YieldDistributor singleton is wired to ONE MuHavenToken at
- * deploy time. Today on Arb Sepolia only one YieldDistributor exists,
- * so the registry-membership check is the strongest available binding
- * without resolving per-token distributors. The descriptor's
- * `tokenAddress` IS recorded in the audit-commit POST, so a Wave 5+
- * multi-token rollout that adds per-token distributors needs to
- * upgrade this check to "preview.tokenAddress resolves to a per-token
- * YieldDistributor and that distributor's bound MuHavenToken matches"
- * to keep the audit trail honest — tracked in STATUS.md Thread 4.
+ *   - `TokenRegistry.getConfig(preview.tokenAddress).issuer` MUST
+ *     equal the connected kernel address (NEW — closes the rotated-
+ *     issuer + DB-vs-chain-drift class).
  *
  * Cancellation semantics (operator pick 2026-05-19 Q2): no SDK abort
  * signal. The progress bus advances past 'idle' the moment the first
  * stage fires; ConfirmModal disables Cancel from that point on.
  */
-async function runDistribute(action: ActionDescriptor): Promise<string> {
+async function runDistribute(action: ActionDescriptor): Promise<RunDistributeResult> {
   if (action.kind !== 'distribute_yield') {
     throw new AgentActionRunnerError('not a distribute_yield')
   }
 
-  // Required addresses must be deployed. Zero-address signals a
-  // misconfigured env — fail closed BEFORE any FHE work or operator grant.
-  for (const slot of [
-    ['yieldDistributor', addresses.yieldDistributor],
-    ['muhavenEscrow', addresses.muhavenEscrow],
-    ['investorRegistry', addresses.investorRegistry],
-    ['yieldGate', addresses.yieldGate],
-  ] as const) {
-    if (isZeroAddress(slot[1])) {
-      throw new AgentActionRunnerError(
-        `MuHaven Wave-3 contract ${slot[0]} not deployed in this environment.`,
-      )
-    }
+  // Single read of preview.tokenAddress for both the snapshot-proxy
+  // resolve AND every downstream binding check inside the try block.
+  // Round-2 review CR2-H1: a prior version read this twice (once
+  // outside the try, once inside) which today returns identical values
+  // (the descriptor preview is never mutated between reads) but is
+  // fragile under a future preview-normalizer refactor — a mid-flight
+  // mutation would route the snapshot-proxy lookup to one token while
+  // the issuer-binding gate validates a different one. One read, one
+  // value, no drift.
+  const previewToken = readLowerAddress(action.preview, 'tokenAddress')
+
+  // Snapshot proxy address must resolve. `getYieldSnapshot` checks the
+  // per-token map first, then falls back to the singleton — covers
+  // wizard-deployed tokens absent from the static JSON map. Zero-address
+  // signals a misconfigured env.
+  const snapshotAddr = SnapshotService.snapshotProxyFor(previewToken as Address)
+  if (!snapshotAddr || isZeroAddress(snapshotAddr)) {
+    // Env-config bug — not actionable for issuers. Surface enough
+    // detail for support to triage AND a concrete next-step.
+    throw new AgentActionRunnerError(
+      `MuHaven YieldSnapshot proxy not configured for token ${previewToken} in this environment. Contact support — this token is not yet available for HavenBot distribution.`,
+    )
   }
 
   // Concurrent-distribution guard. Two runs writing to the same
@@ -382,8 +452,9 @@ async function runDistribute(action: ActionDescriptor): Promise<string> {
     // the confirm token's action hash (see propose-distribute-yield.use-case.ts),
     // so trusting them for binding checks is safe — any drift breaks the
     // commit POST's hash equality check anyway.
+    // (`previewToken` was hoisted above the bus.reset for the
+    // snapshot-proxy pre-check; reused here.)
     const previewIssuer = readLowerAddress(action.preview, 'issuerAddress')
-    const previewToken = readLowerAddress(action.preview, 'tokenAddress')
     const totalYieldRaw = action.preview.totalYieldUsd6
     if (typeof totalYieldRaw !== 'string' || !/^\d+$/.test(totalYieldRaw)) {
       throw new AgentActionRunnerError(
@@ -447,60 +518,198 @@ async function runDistribute(action: ActionDescriptor): Promise<string> {
       )
     }
 
-    const fhe = useFhe()
-    await fhe.initialize?.()
-
-    // Pre-flight operator grant on mhUSDC → yieldDistributor. Same
-    // idempotent-long-expiry posture as runBuy's setOperator on the
-    // Subscription contract. Required because YieldDistributor pulls
-    // mhUSDC from the issuer via `confidentialTransferFrom` during
-    // fundEscrows; without an operator approval the pull reverts and
-    // the FHE.select silent-fail short-circuits the payout. The
-    // wrapper rotation (see memory `reference_phase7_5_pusdc_rotation`)
-    // means YieldDistributor's on-chain `pusdc` field now points at
-    // MuHavenStable, so MuHavenStableService is the right target.
-    const expiry = BigInt(Math.floor(Date.now() / 1000) + OPERATOR_EXPIRY_SECONDS)
-    await MuHavenStableService.setOperator(addresses.yieldDistributor, expiry)
-
+    // Build write context EARLY — the on-chain TokenRegistry issuer
+    // check + every SDK call below needs it. `buildWriteContext` calls
+    // `useFhe().getRawClient()` internally which initializes the cofhe
+    // client (no separate fhe.initialize() needed).
     const ctx = await buildWriteContext()
-    const sdk = new MuHavenClient({
-      publicClient: ctx.publicClient,
-      sender: ctx.sender,
-      cofheClient: ctx.cofheClient,
-      addresses: {
-        muhavenEscrow: addresses.muhavenEscrow,
-        yieldDistributor: addresses.yieldDistributor,
-        investorRegistry: addresses.investorRegistry,
-        yieldGate: addresses.yieldGate,
-      },
-    })
 
-    const result = await sdk.distributeYield(totalYield, {
-      onProgress: (evt) => {
-        try {
-          progress.applyEventForRun(runId, evt)
-        } catch (err) {
-          // Bus updates are best-effort — a thrown handler must never
-          // abort the SDK pipeline mid-flight. Worst case the modal's
-          // progress bar freezes; the on-chain pipeline still finishes
-          // and the audit-commit fires on the runner's return value.
-          console.warn('[runDistribute] progress bus failed:', err)
-        }
-      },
-    })
-
-    // Verify the SDK's "fundTxHashes is non-empty" invariant BEFORE
-    // posting markSettled. If the invariant trips we throw, the catch
-    // below sees `phase` is still in the SDK-pipeline set and marks
-    // failed — instead of a settled-then-failed flicker (Reality F12).
-    const lastFundHash = result.fundTxHashes[result.fundTxHashes.length - 1]
-    if (!lastFundHash) {
+    // NEW (rewire 2026-05-22) — on-chain TokenRegistry issuer match.
+    // Catches issuer rotation between propose + confirm AND DB-vs-chain
+    // drift. YieldSnapshot's writes all gate on
+    // `msg.sender == _issuerOf(token)` and revert `OnlyIssuer()` on
+    // mismatch — surfacing this pre-tx gives a clean error banner
+    // instead of letting the kernel sign + the contract revert
+    // mid-pipeline. Cheap chain read; errors here keep the bus at
+    // 'idle' so no fake red step-1 paints (pre-flight-no-bar invariant).
+    // CR-M-2 (round-1 review): cast to the SHARED TokenRegistryConfig
+    // type from SnapshotService — narrow inline `{ issuer: string }`
+    // would still type-check after an ABI shape drift (viem decodes
+    // positionally) and silently read the wrong field.
+    const tokenConfig = (await ctx.publicClient.readContract({
+      address: v35Addresses.tokenRegistry,
+      abi: tokenRegistryAbi,
+      functionName: 'getConfig',
+      args: [previewToken as Address],
+    })) as unknown as TokenRegistryConfig
+    if (tokenConfig.issuer.toLowerCase() !== kernelAddress.toLowerCase()) {
       throw new AgentActionRunnerError(
-        'distribute_yield completed without a fund tx hash — unexpected SDK state',
+        `On-chain issuer (${tokenConfig.issuer.toLowerCase()}) for this token does not match your connected kernel (${kernelAddress.toLowerCase()}). The issuer may have rotated since the proposal — re-prompt HavenBot to refresh.`,
       )
     }
+
+    // NEW (rewire 2026-05-22) — in-flight epoch hand-off. If a prior
+    // open/snapshot/finalize is half-done for this token, HavenBot
+    // refuses to start a new openEpoch (would revert) AND refuses to
+    // resume mid-state (the /distribute wizard owns the per-step
+    // resume semantics). Surface a deferred result pointing the user
+    // there. Phase 'done' is OK — currentEpoch returns the most-recent
+    // funded epoch as well, so a fully-completed distribution doesn't
+    // block a fresh one.
+    const inFlight = await SnapshotService.detectInFlight(previewToken as Address)
+    if (inFlight && inFlight.phase !== 'done') {
+      // RC-HIGH-1 (round-2 review): clear the bus before bailing on the
+      // deferred path. Without this, the bus would stay tagged with
+      // this run's toolCallId+runId at `phase: 'idle'` until the next
+      // descriptor's modal `watch(props.action.toolCallId)` fires its
+      // own reset(null). That's correct under all current SPA flows,
+      // but it leaves the bus in an oddly-half-tagged state where a
+      // subsequent observer (e.g. a future hot-fix that reads bus
+      // state on /distribute) sees a runId associated with a run that
+      // never emitted any SDK events. Clearing inline makes the
+      // deferred path semantically equivalent to "this run never
+      // started" — same posture as a pre-flight throw.
+      progress.reset(null)
+      return {
+        kind: 'deferred',
+        redirectTo: '/distribute',
+        reason: `This token has a distribution in progress (round #${inFlight.epochId} · ${inFlight.phase}). Finish it on the Distribute page — HavenBot only opens fresh distribution rounds.`,
+      }
+    }
+
+    // NEW (rewire 2026-05-22) — holder enumeration. Empty-snapshot
+    // would drive ratePerShare into floor(totalYield × RATE_SCALE / 0)
+    // which is undefined; reject pre-tx so the user sees a clean error
+    // instead of an indecipherable cofhe revert. We re-use the result
+    // for snapshotAll below — single registry walk per distribution.
+    const holders = await SnapshotService.loadAllHolders(previewToken as Address)
+    if (holders.length === 0) {
+      throw new AgentActionRunnerError(
+        `This token has no holders — there is nobody to distribute yield to. Verify the token has at least one investor before proposing.`,
+      )
+    }
+
+    // Pre-flight operator grant on mhUSDC → YieldSnapshot. Same
+    // idempotent-long-expiry posture as runBuy's setOperator on the
+    // Subscription contract. Required because `fundEpoch` pulls mhUSDC
+    // from the issuer via `confidentialTransferFrom`; without an
+    // operator approval the pull silent-fails and the FHE.select
+    // short-circuits the payout. UserOp 1.
+    const expiry = BigInt(Math.floor(Date.now() / 1000) + OPERATOR_EXPIRY_SECONDS)
+    await MuHavenStableService.setOperator(snapshotAddr as Address, expiry)
+
+    // ── SDK pipeline begins ──────────────────────────────────────────
+    // Throws past this line CAN mark the bus failed (the catch's
+    // phase-guard validates that the SDK has actually started emitting
+    // onProgress events).
+    const client = new YieldSnapshotClient(ctx, snapshotAddr as Address)
+
+    const onProgress: ProgressCallback = (evt) => {
+      try {
+        progress.applyEventForRun(runId, evt)
+      } catch (err) {
+        // Bus updates are best-effort — a thrown handler must never
+        // abort the SDK pipeline mid-flight. Worst case the modal's
+        // progress bar freezes; the on-chain pipeline still finishes
+        // and the audit-commit fires on the runner's return value.
+        console.warn('[runDistribute] progress bus failed:', err)
+      }
+    }
+
+    // UserOp 2 — openEpoch. Bus phase 'idle' → 'start' on event emit.
+    const { epochId } = await client.openEpoch(previewToken as Address, { onProgress })
+
+    // UserOps 3..(3+ceil(N/50)) — snapshotAll. SDK paginates internally
+    // and emits aggregate progress (`current=offset+i, total=N`). Bus
+    // phase 'start' → 'escrows' on first batch event.
+    await client.snapshotAll(epochId, holders, { onProgress })
+
+    // UserOp K — finalizeSnapshot. Bus phase stays 'escrows' (pinned in
+    // useAgentDistributeProgress.stageToPhase: finalizeSnapshot maps to
+    // 'escrows', NOT back to 'start' — preserves monotonic bar).
+    await client.finalizeSnapshot(epochId, { onProgress })
+
+    // ── ratePerShare compute (multi-step L2-grant + decrypt dance) ──
+    // The L2 grant at finalize time only reaches the kernel; cofhe's
+    // permit-based decrypt checks ACL against the permit's signer
+    // (the eph, since kernels can't sign per ADR-009). Mirror
+    // DistributePage's pattern: try the refresh, log + proceed on
+    // failure (the eph might already have ACL via some other path),
+    // then decrypt. Empty / zero-handle rejects.
+    //
+    // UX-M-2 + FD-M-1 (round-1 review): bridge the otherwise-silent
+    // ~1-2s window between `finalizeSnapshot` and `fundEpoch`'s
+    // `'encrypt'` event with synthetic bus messages so the bar's
+    // active-step hint reflects what's actually happening. Without
+    // these, the bar sits on `'escrows'` showing the stale "Epoch K
+    // finalised" message + no animation — biggest "is it stuck?"
+    // trust dip in the surface.
+    progress.setMessageForRun(runId, 'Reading encrypted supply…')
+    const fhe = useFhe()
+    // CR2-M-1 (round-2 review): `getEphemeralEOA()` materializes a key
+    // on first call via `useFhe.ensureEphemeralKey()` — it can never
+    // return null or the zero address under current contracts. The
+    // prior zero-address branch was unreachable.
+    const eph = fhe.getEphemeralEOA() as Address
+    try {
+      // UserOp K+1 (or silent on a warm session — operator should
+      // confirm on the first walkthrough; documented as Open Q1 in
+      // the rewire plan).
+      await SnapshotService.refreshSnapshotSupplyGrant(snapshotAddr as Address, epochId, eph)
+    } catch (refreshErr) {
+      // Same posture as DistributePage.decryptSupplyFromChain —
+      // proceed to decrypt anyway; if the eph happens to already
+      // have ACL, it'll succeed; if not, the decrypt failure surfaces
+      // as the runner's catch path with a clear cofhe error.
+      console.warn('[runDistribute] refreshSnapshotSupplyGrant failed (proceeding to decrypt):', refreshErr)
+    }
+
+    const supplyHandle = await SnapshotService.getEpochTotalSupplyHandle(snapshotAddr as Address, epochId)
+    if (!supplyHandle) {
+      throw new AgentActionRunnerError(
+        `Snapshot supply handle is uninitialised for distribution round ${epochId} — finalize may have silent-failed.`,
+      )
+    }
+    const supply = await fhe.decryptSnapshotSupplyForView(supplyHandle)
+    if (supply <= 0n) {
+      throw new AgentActionRunnerError(
+        `Decrypted snapshot supply is ${supply} for distribution round ${epochId}. Cannot distribute against zero supply — the snapshot may have captured no held shares.`,
+      )
+    }
+    progress.setMessageForRun(runId, 'Computing per-share rate…')
+    const ratePerShare = (totalYield * RATE_SCALE) / supply // floor division
+    if (ratePerShare <= 0n) {
+      // The SDK's own fundEpoch invariant is `ratePerShare > 0`. Surface
+      // pre-tx with a more useful error than the SDK's `ConfigError`:
+      // tell the issuer WHY (their totalYield is too small relative to
+      // the snapshot supply for the per-share floor). RATE_SCALE is
+      // 1_000_000 so the minimum viable totalYield is
+      // `ceil(supply / RATE_SCALE)` base-6 mhUSDC units.
+      const minTotalYield = (supply + RATE_SCALE - 1n) / RATE_SCALE // ceil
+      throw new AgentActionRunnerError(
+        `totalYield (${totalYield}) is too small for snapshot supply (${supply}) — per-share rate would round down to zero. Increase totalYield to at least ${minTotalYield} mhUSDC base units (${(Number(minTotalYield) / 1_000_000).toFixed(6)} mhUSDC).`,
+      )
+    }
+    // CR-M-1 (round-1 review): unreachable under the current
+    // MAX_TOTAL_YIELD_USD6 = $100M cap (numerator ≤ 1e20 ≈ 2^67, well
+    // below 2^128 regardless of supply ≥ 1). Kept as defense-in-depth
+    // mirror of the SDK's own invariant — a future cap-raise reviewer
+    // shouldn't drop it without re-verifying the bound.
+    if (ratePerShare > (1n << 128n) - 1n) {
+      throw new AgentActionRunnerError(
+        `Computed ratePerShare (${ratePerShare}) overflows uint128.`,
+      )
+    }
+
+    // UserOp K+2 — fundEpoch. SDK encrypts totalYield, transfers
+    // mhUSDC, stores ratePerShare cleartext on-chain. Bus phase
+    // 'escrows' → 'fund' on the SDK's 'fundEpoch' event (the 'encrypt'
+    // event that fires first is mapped to null in stageToPhase to
+    // avoid spurious phase regressions).
+    const fundTxHash = await client.fundEpoch(epochId, totalYield, ratePerShare, { onProgress })
+
     progress.markSettledForRun(runId)
-    return lastFundHash
+    return { kind: 'settled', txHash: fundTxHash }
   } catch (err) {
     // Only mark the bus failed if the SDK pipeline actually started
     // emitting progress events — otherwise pre-flight failures (kernel
