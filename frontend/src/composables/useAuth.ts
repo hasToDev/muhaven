@@ -92,6 +92,12 @@ async function tearDownUserStores(): Promise<void> {
     // holding user-scoped state wires into tearDownUserStores so silent
     // JWT-expiry paths don't leave stale data behind.
     import('@/stores/checkout').then((m) => m.useCheckoutStore().reset()),
+    // 2026-05-22 — agent chat history was leaking across issuer↔investor
+    // passkey switches because the store wasn't on the teardown list.
+    // The store's reset() abort()s any inflight stream + clears
+    // messages + pendingActions + pendingTelegramLink + streamingText
+    // + lastError + pendingPrompt + nextId counter.
+    import('@/stores/agent').then((m) => m.useAgentStore().reset()),
   ])
 }
 

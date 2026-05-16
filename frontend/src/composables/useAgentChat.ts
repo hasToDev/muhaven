@@ -49,6 +49,14 @@ export interface UseAgentChat {
     suggestions: AgentSuggestionItem[]
   }>
   abort: () => void
+  /** Auth-boundary teardown: aborts any in-flight stream + clears
+   *  every internal ref (pendingActions, pendingTelegramLink,
+   *  streamingText, lastError) so a subsequent login as a different
+   *  user starts with a blank chat surface. Called from
+   *  `useAgentStore().reset()` which is wired into
+   *  `useAuth.tearDownUserStores()`. See memory
+   *  `feedback_auth_boundary_teardown`. */
+  reset: () => void
 }
 
 export function useAgentChat(): UseAgentChat {
@@ -221,6 +229,20 @@ export function useAgentChat(): UseAgentChat {
     }
   }
 
+  /**
+   * Auth-boundary teardown — wipes EVERY internal ref so a new user's
+   * login can't inherit prior pending actions, in-flight stream text,
+   * or stray error copy. Mirrors the `reset()` pattern used by other
+   * user-scoped Pinia stores wired into `tearDownUserStores`.
+   */
+  function reset(): void {
+    abort()
+    streamingText.value = ''
+    lastError.value = null
+    pendingActions.value = []
+    pendingTelegramLink.value = null
+  }
+
   return {
     isStreaming,
     streamingText,
@@ -231,5 +253,6 @@ export function useAgentChat(): UseAgentChat {
     consumePendingAction,
     send,
     abort,
+    reset,
   }
 }

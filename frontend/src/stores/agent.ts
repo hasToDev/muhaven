@@ -61,10 +61,22 @@ export const useAgentStore = defineStore('agent', () => {
     },
   )
 
+  /**
+   * Auth-boundary teardown — wipes the visible chat surface AND the
+   * underlying composable's internal refs (pending actions, in-flight
+   * stream text, last error, telegram-link prefetch) so a subsequent
+   * login as a different smart account starts with a blank slate.
+   * Surfaced 2026-05-22: operator observed chat history persisting
+   * across issuer↔investor passkey switches because this store
+   * wasn't wired into `useAuth.tearDownUserStores`. Now it is.
+   */
   function reset(): void {
-    chat.abort()
+    chat.reset()
     messages.value = []
+    pendingPrompt.value = ''
+    inflightAgentMessageId = null
     nextId = 1
+    useStreaming.value = true
   }
 
   async function sendMessage(text: string): Promise<void> {
