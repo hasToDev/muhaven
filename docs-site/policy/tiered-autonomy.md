@@ -52,7 +52,7 @@ Every action prompts your passkey. ConfirmModal opens, you confirm with WebAuthn
 
 ## Confirm-per-action — the daily-driver tier
 
-Your kernel installs a **session key** at sign-in. The session key has narrow scope:
+Your MuHaven wallet installs a **session key** at sign-in. The session key has narrow scope:
 
 - Target: only MuHaven contracts.
 - Selector allowlist: only MuHaven SDK functions.
@@ -70,7 +70,7 @@ After 1 hour, the session key expires. The next action prompts your passkey to i
 
 ## Policy-bound — the automation tier
 
-Your kernel installs the session key as in Confirm-per-action, **and** you set encrypted thresholds on what counts as "within bounds":
+Your MuHaven wallet installs the session key as in Confirm-per-action, **and** you set encrypted thresholds on what counts as "within bounds":
 
 - **Max drawdown per position** — e.g., 10% of cost basis.
 - **Max daily spend** — e.g., $500 per 24-hour window.
@@ -114,7 +114,7 @@ Anyone (in any surface) can call `pause` at any time:
 > Pause my agent.
 ```
 
-The on-chain effect: `uninstallPlugin(sessionKeyValidator)` — a single tx that removes the session key from your kernel's permission system. ≤1 Arb block (~250ms soft).
+The on-chain effect: `uninstallPlugin(sessionKeyValidator)` — a single tx that removes the session key from your MuHaven wallet's permission system. ≤1 Arb block (~250ms soft).
 
 Once paused:
 
@@ -154,4 +154,3 @@ The four-tier ladder is the simplest model that covers the four meaningful confi
 - [Session keys](/policy/session-keys) — what the session key actually authorizes.
 - [The /pause kill-switch](/policy/pause) — the kill-switch in depth.
 - [Audit log](/policy/audit-log) — what's recorded across tier transitions.
-- [Threat model in plain language](/policy/threats) — why the tiered structure exists.

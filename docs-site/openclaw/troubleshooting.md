@@ -73,7 +73,7 @@ Three likely causes:
 The intent expired (5-min TTL) or the URL fragment is malformed. Re-issue the buy:
 
 ```
-/buy 1000 TBILL1
+/buy 1000 RWA1
 ```
 
 ### "Mini App OTP says `invalid`"
@@ -89,7 +89,7 @@ OTPs are single-use, 6 digits, expire in 5 minutes:
 Two possibilities:
 
 1. **The dashboard is unreachable.** Check `https://api.muhaven.app/health`.
-2. **The intent doesn't belong to your kernel.** The dashboard validates that the intent's `userId` matches the JWT's `userId`; mismatch returns 404.
+2. **The intent doesn't belong to your MuHaven wallet.** The dashboard validates that the intent's `userId` matches the JWT's `userId`; mismatch returns 404.
 
 ### "Bot replies `423 PAUSED` on every command"
 
@@ -115,7 +115,7 @@ There's no per-user override for the classifier today. The closest equivalent: s
 
 ### "I want sub-$200 buys to require Mini-App OTP for extra friction"
 
-Not supported in Wave 4. The classifier is one-way (raising friction within a tier isn't a knob). Wave 5 may add a per-user "raise inline ceiling" knob if the demand is there.
+Not supported today. The classifier is one-way — raising friction within a tier isn't a per-user knob.
 
 ## Subset & manifest
 

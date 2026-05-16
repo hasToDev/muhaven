@@ -80,8 +80,4 @@ Three constraints, simultaneously:
 2. **No agent ever holds your key.** Your passkey signs; a scoped session key signs short-lived; an LLM never signs.
 3. **Encrypted means encrypted.** Balances are FHE-encrypted on-chain. The agent reads aggregates and `ebool` flags. *You* decrypt locally via a permit when you need to see numbers.
 
-<div style="margin-top: 40px; padding: 20px 24px; border-radius: 14px; background: var(--vp-c-bg-soft); border-left: 4px solid var(--vp-c-brand-1);">
-  <strong>Wave 4 status.</strong> All four surfaces are live on prod; staging coverage varies (e.g., the staging Telegram bot is provisioned separately and may be offline). The shared substrate — tiered autonomy engine, audit log, encrypted policy primitives, threat-model hardening — landed in 2026-05. See <a href="/reference/status">Status &amp; limits</a> for what's shipped vs. deferred.
-</div>
-
 </div>

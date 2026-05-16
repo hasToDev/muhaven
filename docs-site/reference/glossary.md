@@ -12,8 +12,8 @@ description: Terms used across MuHaven docs.
 | **fhERC-20** | Fhenix-encrypted ERC-20. Standard ERC-20 surface with `euint128` balances instead of `uint256`. |
 | **FHE** | Fully Homomorphic Encryption. Computation on ciphertext without decrypting. Fhenix CoFHE is the implementation MuHaven uses. |
 | **CoFHE** | Co-processor Fully Homomorphic Encryption. Fhenix's architecture where encrypted state lives on Arbitrum but heavy FHE compute runs on a sidecar coprocessor + threshold network. |
-| **ZeroDev kernel** | An EIP-4337 smart account from [ZeroDev](https://docs.zerodev.app/). Supports passkey signing, session keys, and pluggable validators. MuHaven kernels are passkey-rooted. |
-| **Passkey** | A WebAuthn credential — biometric (Touch ID, Windows Hello) or hardware key (YubiKey). The master signer for every MuHaven kernel. |
+| **MuHaven wallet** | The passkey-bound EIP-4337 smart account every MuHaven user holds. Powered by a [ZeroDev](https://docs.zerodev.app/) kernel under the hood; supports passkey signing, session keys, and pluggable validators. |
+| **Passkey** | A WebAuthn credential — biometric (Touch ID, Windows Hello) or hardware key (YubiKey). The master signer for every MuHaven wallet. |
 | **Session key** | A short-lived ECDSA key with narrow scope (target allowlist, selector allowlist, value cap, validUntil). Signs day-to-day actions without re-prompting the passkey. |
 | **Tiered autonomy** | MuHaven's four-state machine: Advisory / Confirm-per-action / Policy-bound / Paused. Controls how much the agent can do without asking. |
 | **Policy gate** | Deterministic non-LLM code between the LLM and the signing path. Validates every tool intent against your tier + on-chain policy primitives. The LLM proposes; the gate disposes. |
@@ -35,9 +35,9 @@ description: Terms used across MuHaven docs.
 | **`InvestorRegistry`** | Paginated registry of MuHavenToken holders. Drives the yield-distribution batching loop. |
 | **`YieldDistributor`** | State machine that orchestrates a per-epoch yield distribution: `startDistribution → batchCreate → fundFrom`. |
 | **`YieldSnapshot`** | The point-in-time snapshot of holder shares + yields used to compute proportional distribution amounts. |
-| **`DefaultProtection`** | P11 contract — opt-in protection pool covering loss-of-principal scenarios on participating RWA tokens. |
-| **`EncryptedGovernance`** | P11 contract — FHE-encrypted ballot voting; tally async-decrypted at proposal close. |
-| **`KYCAttestationRegistry`** | P11 contract — cross-chain KYC attestation stub. Cleartext jurisdictionHash + attestation signer; encrypted attestation period. |
+| **`DefaultProtection`** | Opt-in protection pool covering loss-of-principal scenarios on participating RWA tokens. |
+| **`EncryptedGovernance`** | FHE-encrypted ballot voting; tally async-decrypted at proposal close. |
+| **`KYCAttestationRegistry`** | Cross-chain KYC attestation stub. Cleartext jurisdictionHash + attestation signer; encrypted attestation period. |
 | **ERC-3643** | The securities token standard. MuHaven RWA tokens have an `ERC3643KYCAdapter` that gates transfers on whitelist membership. |
 | **OnchainID** | The identity standard ERC-3643 uses. Wallets bind to OnchainID records that carry claims (KYC tier 1 / tier 2 accredited / jurisdiction). |
 | **Permit** | A signed authorization (EIP-2612-style or cofhe-specific) that grants temporary read-access to a specific encrypted handle. MuHaven uses cofhe permits to decrypt your own balances client-side. |

@@ -60,7 +60,7 @@ Five reasons to pick MCP over HavenBot:
 2. **Multi-agent workflows.** Sit MuHaven alongside your other MCP servers. "Pull my MuHaven portfolio + cross-reference with my Notion investment thesis + email a summary to my CPA via Gmail" becomes one chat turn.
 3. **Privacy by construction.** The MCP server NEVER decrypts FHE handles. The LLM NEVER sees your private key (broker holds it). Your host's LLM context never sees your JWT (the broker holds that too).
 4. **Programmatic automation.** Once installed, the same surface is available to scheduled cron-style automations: "every Friday at 17:00, check yields and propose a claim if any are >$10."
-5. **Open standards.** Built on MCP (Anthropic / open spec), OAuth 2.0 Device Authorization Grant (RFC 8628), ZeroDev passkey kernel (EIP-4337), Sigstore signing. Nothing proprietary.
+5. **Open standards.** Built on MCP (Anthropic / open spec), OAuth 2.0 Device Authorization Grant (RFC 8628), ZeroDev passkey-bound smart account (EIP-4337), Sigstore signing. Nothing proprietary.
 
 ## What MCP looks like in Claude Code
 
@@ -80,23 +80,7 @@ Want me to draft a buy proposal? I can call muhaven.position.buy with
 an amount and token of your choice.
 ```
 
-The LLM sees only the **aggregate** the backend chose to return. No encrypted handle, no cleartext balance. If you ask "buy 100 mhUSDC of TBILL1", the LLM produces a tool_call → the broker signs → the result is an unsigned UserOp envelope. The LLM never auto-submits.
-
-## What ships today (Wave 4 close)
-
-✅ MCPB-format package at `packages/mcp/`
-✅ Two CLI binaries (`muhaven-mcp`, `muhaven-broker`)
-✅ OAuth 2.0 Device Authorization Grant (RFC 8628) — same UX shape as `gh auth login --web`, `wrangler login`, `gcloud auth login`
-✅ Tool-description SHA-256 pinning (`tool-hashes.json`) re-verified on every server startup; drift exits with code 70 (`EX_CONFIG`)
-✅ Broker daemon over Unix socket / named pipe, OS keychain (`@napi-rs/keyring`) with file fallback
-✅ Published on npm with OIDC + Sigstore provenance (`@muhaven/mcp@0.1.2`)
-✅ 94 vitest cases (incl. bin-lifecycle regressions caught during the 2026-05-10 first end-to-end install)
-
-## What's deferred to Wave 5
-
-- ⏸ **Dashboard session-key mint UI** at `/settings/policy`. Today users self-mint with `node -e "console.log('0x' + require('crypto').randomBytes(32).toString('hex'))"`.
-- ⏸ **MCPB host-store distribution.** Once Anthropic's MCPB extension store opens to third-party publishers, MuHaven MCP becomes a one-click install in Claude Desktop.
-- ⏸ **Frontend runner for `governance.cast_vote`** — pending the cofhe encrypt-vote SDK helper.
+The LLM sees only the **aggregate** the backend chose to return. No encrypted handle, no cleartext balance. If you ask "buy 100 mhUSDC of `<TOKEN>`", the LLM produces a tool_call → the broker signs → the result is an unsigned UserOp envelope. The LLM never auto-submits.
 
 ## Where next
 
@@ -108,6 +92,10 @@ The LLM sees only the **aggregate** the backend chose to return. No encrypted ha
   <a class="mh-card" href="/mcp/first-chat">
     <h3>First chat</h3>
     <p>Walk through your first portfolio query end-to-end.</p>
+  </a>
+  <a class="mh-card" href="/mcp/playbook">
+    <h3>Playbook — scenarios</h3>
+    <p>Multi-MCP workflows, scheduled checks, cross-tool prompts that just work.</p>
   </a>
   <a class="mh-card" href="/mcp/tools">
     <h3>Tool catalog</h3>

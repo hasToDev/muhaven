@@ -114,4 +114,4 @@ The signature pattern is intentionally analogous to the WebAuthn challenge-bindi
 
 - [Install](/mcp/install) — get the broker running.
 - [Troubleshooting](/mcp/troubleshooting) — broker-specific issues.
-- [Threat model in plain language](/policy/threats) — why the broker exists.
+- [Session keys](/policy/session-keys) — how the broker fits the session-key model.

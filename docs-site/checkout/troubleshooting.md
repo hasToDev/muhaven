@@ -45,9 +45,7 @@ Sessions become immutable once they hit a terminal state (`paid` / `expired` / `
 
 ### "The webhook payload is missing fields I expected"
 
-Wave 4 payloads are intentionally minimal. If you need additional fields (e.g., buyer's encrypted balance handle), the design choice was: webhook = bare facts; full enrichment via the dashboard / HavenBot.
-
-Future enrichments are tracked as Wave 5 enhancements. File an issue if you need a specific field.
+Webhook payloads are intentionally minimal. If you need additional fields (e.g., buyer's encrypted balance handle), the design choice was: webhook = bare facts; full enrichment via the dashboard / HavenBot. File an issue if you need a specific field.
 
 ## Buyer side
 
@@ -71,20 +69,20 @@ Three possibilities:
 You need mhUSDC to complete the purchase.
 
 - **On testnet:** click the **Faucet** button; receive 100 mhUSDC; come back.
-- **On production:** Wave 5 pluggable on-ramp picker (Sardine / Coinbase / MoonPay). Wave 4 testnet uses the faucet.
+- **On production:** use the on-ramp picker shown at checkout (pay with card / Apple Pay / Google Pay).
 
 ### "Funding succeeded but checkout still says 'Waiting for funds'"
 
 The polling interval is 5 seconds; takes 5-30 seconds to register. If it persists past a minute:
 
-1. Verify the funds landed in your **kernel address** (not your EOA). The checkout shows your kernel address; the faucet may have funded a different address by accident.
+1. Verify the funds landed in your **MuHaven wallet address** (not your EOA). The checkout shows your MuHaven wallet address; the faucet may have funded a different address by accident.
 2. Refresh the page; on reload, the buy ceremony re-checks balance.
 
 ### "Confirm button signed but the page is stuck on 'Settling…'"
 
 The settlement waits for an on-chain event. Three checks:
 
-1. **Tx submitted?** Open Arbiscan with your kernel address; if the buy UserOp is there, settlement is on-chain.
+1. **Tx submitted?** Open Arbiscan with your MuHaven wallet address; if the buy UserOp is there, settlement is on-chain.
 2. **SSE channel disconnected?** Refresh. The page re-subscribes.
 3. **Indexer lag?** The indexer has occasional 30-60 second lag spikes. Wait. If still stuck after 2 minutes, the buy still settled — open the dashboard at `muhaven.app/portfolio` to see the encrypted balance.
 
@@ -94,7 +92,7 @@ The webhook may have failed (the issuer's endpoint was down). The buy settled on
 
 - Their HavenBot's SSE notification.
 - The dashboard `checkout_sessions` row showing `status: paid`.
-- The on-chain `Subscription.Purchase` event with your kernel + the session ID in metadata.
+- The on-chain `Subscription.Purchase` event with your MuHaven wallet + the session ID in metadata.
 
 This is a "webhook delivery is best-effort" property — on-chain settlement is the source of truth.
 
@@ -104,14 +102,14 @@ This is a "webhook delivery is best-effort" property — on-chain settlement is 
 
 No — sessions are single-use. The first successful settlement marks `status: paid` and subsequent attempts return `409 ALREADY_PAID`.
 
-If you need a multi-buyer link, mint a separate session per buyer (or wait for Wave 5+ which may add "shared cart" support).
+If you need a multi-buyer link, mint a separate session per buyer.
 
-### "I'm a returning buyer using my existing kernel — why does the page ask me to create a passkey?"
+### "I'm a returning buyer using my existing MuHaven wallet — why does the page ask me to create a passkey?"
 
 Two possibilities:
 
 1. **You're on a different device** without your synced passkey. Your iCloud Keychain / Google Password Manager hasn't synced this device yet; let it catch up and refresh.
-2. **You created your kernel on a different domain.** If you originally signed up on `*.hasto.dev` (pre-2026-05-11 migration), your passkey doesn't migrate to `muhaven.app`. Create a new one; the new kernel will have its own audit log starting from this purchase.
+2. **You created your MuHaven wallet on a different domain.** If you originally signed up on `*.hasto.dev` (pre-2026-05-11 migration), your passkey doesn't migrate to `muhaven.app`. Create a new one; the new MuHaven wallet will have its own audit log starting from this purchase.
 
 ## Where next
 

@@ -5,13 +5,13 @@ description: What MuHaven is, why agentic, and how the four surfaces fit togethe
 
 # Welcome to MuHaven
 
-MuHaven is a **confidential real-world-asset (RWA) portfolio**. Your token balances are encrypted on-chain with Fully Homomorphic Encryption ([Fhenix CoFHE](https://docs.fhenix.io)). You hold them in a passkey-bound smart account ([ZeroDev kernel](https://docs.zerodev.app/), EIP-4337). And — the part this documentation focuses on — you operate the whole thing through one of four **agentic surfaces** that all talk to the same underlying SDK and the same on-chain policy gate.
+MuHaven is a **confidential real-world-asset (RWA) portfolio**. Your token balances are encrypted on-chain with Fully Homomorphic Encryption ([Fhenix CoFHE](https://docs.fhenix.io)). You hold them in a passkey-bound **MuHaven wallet** (a ZeroDev-powered smart account, EIP-4337). And — the part this documentation focuses on — you operate the whole thing through one of four **agentic surfaces** that all talk to the same underlying SDK and the same on-chain policy gate.
 
 ## What "agentic" means in MuHaven
 
 A regular LLM answers questions. An agent **does things**.
 
-When you ask ChatGPT "what's the best RWA yield?", it answers. When you tell HavenBot *"buy $500 of TBILL1 from a stablecoin position"*, it:
+When you ask ChatGPT "what's the best RWA yield?", it answers. When you tell HavenBot *"buy $500 of `<TOKEN>` from a stablecoin position"*, it:
 
 1. Reads current rates and the deviation-gated NAV.
 2. Drafts an allocation and shows you the cleartext preview.
@@ -49,17 +49,15 @@ See [Choosing a surface](/get-started/choosing-a-surface) for a decision tree.
 - A custodial wallet. You sign with your passkey; MuHaven never holds your key.
 - A pure read-only dashboard. The four surfaces all support proposing and (with confirmation) executing real on-chain actions.
 
-## What ships today
+## What's available
 
-Wave 4 (the agentic wave) closed in May 2026. The four surfaces are live on Arbitrum Sepolia (testnet) and rolling out on Arbitrum One (production):
+The four surfaces are live on Arbitrum Sepolia (testnet) and rolling out on Arbitrum One (production):
 
-- ✅ HavenBot at `muhaven.app/agent` — streaming chat, per-action ConfirmModal, 17 tools.
-- ✅ `@muhaven/mcp` published on npm — install in any MCP host, 22 tools (7 read-only with the read-only flag).
-- ✅ OpenClaw skill `muhaven-rwa-skill` on ClawHub + Telegram bot live.
-- ✅ Hosted checkout at `muhaven.app/pay` — fragment-key URL scheme, AES-256-GCM payload, Stripe-pattern webhooks.
-- ✅ Tiered autonomy engine + audit log + `/pause` kill-switch.
-
-For a full breakdown of what's shipped vs. deferred, see [Status & limits](/reference/status).
+- HavenBot at `muhaven.app/agent` — streaming chat, per-action ConfirmModal, 17 tools.
+- `@muhaven/mcp` published on npm — install in any MCP host, 22 tools (7 read-only with the read-only flag).
+- OpenClaw skill `muhaven-rwa-skill` on ClawHub + Telegram bot live.
+- Hosted checkout at `muhaven.app/pay` — fragment-key URL scheme, AES-256-GCM payload, Stripe-pattern webhooks.
+- Tiered autonomy engine + audit log + `/pause` kill-switch.
 
 ## Where next
 

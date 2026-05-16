@@ -31,7 +31,7 @@ The boundaries trace to **Reg BI Care Obligation** + **FINRA IM-2017-02** framin
 
 Investors cannot raise the ceilings via `set_policy`. There is no "Telegram inline up to $1000" tier — the upper bound is a system invariant, not a per-user knob.
 
-The lower bounds *could* be lowered (e.g., a user wants the Mini-App OTP for sub-$200) but Wave 4 doesn't expose that knob; everyone gets the same friction floor.
+The lower bounds *could* be lowered (e.g., a user wants the Mini-App OTP for sub-$200) but the surface doesn't expose that knob today; everyone gets the same friction floor.
 
 This is a deliberate choice that *prevents* investor self-coercion (e.g., "I'll just raise my inline tier to $5K so I can act faster") at the cost of some flexibility. The flexibility lives in the [HavenBot Confirm-per-action tier](/policy/tiered-autonomy) which can sign within a 1-hour session-key TTL without re-prompting.
 
@@ -40,10 +40,10 @@ This is a deliberate choice that *prevents* investor self-coercion (e.g., "I'll 
 **Flow:**
 
 ```
-You → /buy 50 TBILL1
+You → /buy 50 RWA1
 Bot → renders inline-keyboard message:
         ┌─────────────────────────────────┐
-        │ Buy 50 mhUSDC of TBILL1?        │
+        │ Buy 50 mhUSDC of RWA1?        │
         │                                  │
         │ [✅ Confirm]   [❌ Cancel]      │
         └─────────────────────────────────┘
@@ -71,7 +71,7 @@ Backend → emits SSE → bot receives → bot replies "✅ Settled. Tx: 0x..."
 **Flow:**
 
 ```
-You → /buy 1000 TBILL1
+You → /buy 1000 RWA1
 Bot → classifies as 'mini_app_otp'
 Bot → POSTs intent to backend → backend mints intentId + OTP
 Backend → delivers OTP via passkey-auth'd webhook (today: registered email)
@@ -99,7 +99,7 @@ Bot → "✅ Settled. Tx: 0x..."
 - The OTP is short-lived (5 minutes), single-use, and bound server-side to `(intentId, telegramUserId)`.
 - Telegram `initData` is HMAC-verified against the bot token — even a phishing Mini App can't fake initData.
 - The audit row records `source: 'mini_app'`.
-- The exact OTP-delivery channel is intentionally flexible (today: returned in the bot message itself for simplicity; Wave 5 may move it to a separate out-of-band channel if user research shows that improves the friction-vs-security trade).
+- The exact OTP-delivery channel is intentionally flexible: today the OTP is returned in the bot message itself for simplicity.
 
 **Latency:** typically 15-30 seconds from initial command to "settled", depending on how fast you find the OTP.
 
@@ -108,7 +108,7 @@ Bot → "✅ Settled. Tx: 0x..."
 **Flow:**
 
 ```
-You → /buy 10000 TBILL1
+You → /buy 10000 RWA1
 Bot → classifies as 'passkey_deeplink'
 Bot → POSTs intent to backend → mints intentId
 Bot → renders message with deeplink:
@@ -119,12 +119,12 @@ Dashboard → loads the ConfirmIntentPage
 Dashboard → fetches intent details (cleartext quote, NAV, share estimate)
 Dashboard → renders cleartext preview + "Confirm with passkey" button
 You → tap Confirm
-Dashboard → invokes WebAuthn ceremony (today: passkey assertion stub; Wave 5 = real assertion)
+Dashboard → invokes WebAuthn ceremony (passkey assertion)
 Dashboard → POSTs /api/v1/agent/openclaw/intent/confirm
         body: { intentId, passkeyAssertion }
 Backend → asserts intent.tier === 'passkey_deeplink'
 Backend → asserts source === 'dashboard_passkey'
-Backend → verifies passkeyAssertion (Wave 4: present-check; Wave 5: full WebAuthn verify)
+Backend → verifies passkeyAssertion (presence check; full WebAuthn verify is the upgrade target)
 Backend → submits the on-chain UserOp
 Dashboard → SSE notification → "Settled" + Arbiscan link
 Bot → also notified via SSE → Telegram message "✅ Settled."
@@ -136,10 +136,8 @@ Bot → also notified via SSE → Telegram message "✅ Settled."
 - The passkey ceremony is rooted in WebAuthn — the strongest auth primitive in the stack.
 - The audit row records `source: 'dashboard_passkey'`.
 
-::: warning Tier 3 passkey assertion: Wave 5 swap
-Wave 4 ships a `passkeyAssertion: 'wave4-stub'` placeholder. The backend rejects empty/missing assertions (401) but accepts any non-empty value. **The dashboard JWT itself is passkey-rooted via ZeroDev kernel registration**, so the demo-path security is acceptable for the Wave 4 window — but a stolen JWT (CSRF, leaked refresh, XSS sibling tab) can complete a >$5K confirm without re-touching a passkey.
-
-Wave 5 swaps in a real `navigator.credentials.get()` assertion + server-side `@simplewebauthn/server.verifyAuthenticationResponse`. The wire shape is already in place — the upgrade is purely additive.
+::: warning Tier 3 passkey assertion
+The current build ships a presence-check `passkeyAssertion`. The backend rejects empty/missing assertions (401) but accepts any non-empty value. **The dashboard JWT itself is passkey-rooted via the ZeroDev-powered MuHaven wallet registration**, so the demo-path security is acceptable — but a stolen JWT (CSRF, leaked refresh, XSS sibling tab) could complete a >$5K confirm without re-touching a passkey. A full `navigator.credentials.get()` assertion + server-side `@simplewebauthn/server.verifyAuthenticationResponse` is the planned hardening; the wire shape is already in place so the upgrade is purely additive.
 :::
 
 ## Cross-tier audit honesty
@@ -152,7 +150,7 @@ Each tier emits a different `source` in the audit log:
 | Mini-App OTP | `mini_app` |
 | Passkey deeplink | `dashboard_passkey` |
 
-The `source` is **server-derived** from the auth path — investors and bot workers cannot spoof it. A `telegram_inline` row guarantees the action settled via the inline tier; a `dashboard_passkey` row guarantees the WebAuthn ceremony fired (or the Wave-5 successor).
+The `source` is **server-derived** from the auth path — investors and bot workers cannot spoof it. A `telegram_inline` row guarantees the action settled via the inline tier; a `dashboard_passkey` row guarantees the WebAuthn ceremony fired.
 
 This is the **server-derived-source pattern** — the audit log is honest about *how* an action was confirmed, not just *that* it was confirmed.
 

@@ -239,6 +239,66 @@
   color: var(--vp-c-text-2);
 }
 
+/* ── Hero card grid: bigger, more emphatic — for playbook spotlights.
+ * Used near the top of pages where a couple of links are THE entry
+ * points (e.g., investor/issuer playbook on havenbot/overview). Each
+ * card stretches to fill its column, runs at ~2x the body padding,
+ * and gets an amber-tinted top border to make it visually pop. */
+.mh-card-grid--hero {
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 20px;
+  margin: 28px 0 36px;
+}
+
+.mh-card--hero {
+  padding: 26px 28px;
+  border-radius: 18px;
+  border-top: 3px solid var(--vp-c-brand-1);
+  background: linear-gradient(
+    180deg,
+    var(--vp-c-brand-soft) 0%,
+    var(--vp-c-bg-elv) 38%
+  );
+  box-shadow: 0 4px 18px -10px rgba(255, 186, 32, 0.25);
+}
+
+.mh-card--hero:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 18px 40px -18px rgba(255, 186, 32, 0.45);
+}
+
+.mh-card--hero h3 {
+  font-size: 20px;
+  margin-bottom: 10px;
+}
+
+.mh-card--hero p {
+  font-size: 15px;
+  line-height: 1.6;
+  margin-bottom: 10px;
+}
+
+.mh-card--hero p:last-child {
+  margin-bottom: 0;
+}
+
+.mh-card--hero p code {
+  font-family: var(--mh-font-mono);
+  font-size: 0.88em;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--vp-c-brand-soft);
+  color: var(--vp-c-brand-1);
+}
+
+.mh-card--hero em {
+  display: block;
+  margin-top: 4px;
+  font-style: italic;
+  font-size: 13px;
+  color: var(--vp-c-text-3);
+}
+
 /* ── Pretty inline kbd ─────────────────────────────────────────────── */
 kbd {
   display: inline-block;
@@ -270,4 +330,116 @@ kbd {
   border-radius: 4px;
   background: var(--vp-c-brand-soft);
   color: var(--vp-c-brand-1);
+}
+
+/* ── Wider doc layout on large screens ─────────────────────────────
+ * VitePress's default theme caps the doc content at very conservative
+ * widths (688px prose + 256px aside inside a ~1104px container, all
+ * inside a 1440px chrome shell). On a 1440px+ display that leaves a
+ * lot of empty canvas. We progressively widen the container, prose,
+ * and outer chrome from ≥1280px → ≥1440px → ≥1920px while keeping
+ * prose line-length readable (≤960px max).
+ *
+ * Mobile / tablet (<1280px) is untouched — VitePress's responsive
+ * defaults below that breakpoint already work well.
+ *
+ * The home page (VPHome layout) governs its own widths via its own
+ * components, so these overrides don't affect it.
+ *
+ * Selectors targeted (per VPDoc.vue / VPContent.vue / VPNavBar.vue):
+ *   --vp-layout-max-width           (NavBar + Footer + VPContent padding)
+ *   .VPDoc.has-aside .content-container  (prose width with TOC visible — the common case)
+ *   .VPDoc:not(.has-sidebar) .container  (default-only page container)
+ *   .VPDoc:not(.has-sidebar) .content    (default-only page prose width)
+ * Aside / TOC width is left at 224/256px on purpose — wider TOCs read poorly.
+ */
+
+/* ≥1280px: nudge prose from 688 → 760 (still very readable, fits ~95 chars).
+ * The chrome (--vp-layout-max-width) stays at 1440 here. */
+@media (min-width: 1280px) {
+  .VPDoc.has-aside .content-container {
+    max-width: 760px;
+  }
+}
+
+/* ≥1440px: bump chrome to 1600, prose to 880. Sidebar-less pages get
+ * a 1280px container with 920px prose so they don't look orphaned. */
+@media (min-width: 1440px) {
+  :root {
+    --vp-layout-max-width: 1600px;
+  }
+  .VPDoc.has-aside .content-container {
+    max-width: 880px;
+  }
+  .VPDoc:not(.has-sidebar) .container {
+    max-width: 1280px;
+  }
+  .VPDoc:not(.has-sidebar) .content {
+    max-width: 920px;
+  }
+}
+
+/* ≥1920px: full QHD/4K treatment — 1760 chrome, 960 prose. Capped at
+ * 960 to keep line-length under ~110 chars on Inter at body size. */
+@media (min-width: 1920px) {
+  :root {
+    --vp-layout-max-width: 1760px;
+  }
+  .VPDoc.has-aside .content-container {
+    max-width: 960px;
+  }
+  .VPDoc:not(.has-sidebar) .container {
+    max-width: 1408px;
+  }
+  .VPDoc:not(.has-sidebar) .content {
+    max-width: 960px;
+  }
+}
+
+/* ── Wide-content escape hatches: let tables, code blocks, and the
+ * mh-card grid extend slightly beyond the prose cap on large screens.
+ * This is the "widen tables without widening paragraphs" pattern —
+ * paragraphs remain bounded by content-container, but visual blocks
+ * stretch into the breathing room around them.
+ *
+ * Using negative margin + width:auto trick: at ≥1440px we let these
+ * elements expand up to 1040px (160px past the 880 prose cap, 80 each
+ * side); at ≥1920px up to 1120px (160px past 960). The container's
+ * own max-width keeps them from running into the TOC. */
+@media (min-width: 1440px) {
+  .vp-doc div[class*='language-'],
+  .vp-doc .vp-code-group,
+  .vp-doc table,
+  .vp-doc .mh-card-grid {
+    /* Pull each side out by up to 80px, capped so we never push past
+     * the content-container. The browser clamps negative margin to 0
+     * if the wrapper has no room, so this is safe. */
+    margin-left: -40px;
+    margin-right: -40px;
+    max-width: calc(100% + 80px);
+  }
+  /* Tables need overflow-x:auto so a wide table scrolls inside its
+   * widened wrapper instead of pushing the page. */
+  .vp-doc table {
+    display: block;
+    overflow-x: auto;
+  }
+}
+
+@media (min-width: 1920px) {
+  .vp-doc div[class*='language-'],
+  .vp-doc .vp-code-group,
+  .vp-doc table,
+  .vp-doc .mh-card-grid {
+    margin-left: -80px;
+    margin-right: -80px;
+    max-width: calc(100% + 160px);
+  }
+}
+
+/* The card grid breathes with extra column room when widened. */
+@media (min-width: 1440px) {
+  .mh-card-grid {
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  }
 }

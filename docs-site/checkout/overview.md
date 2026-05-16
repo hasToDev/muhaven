@@ -7,7 +7,7 @@ description: One-click pay links for issuers to sell to non-customer buyers.
 
 `muhaven.app/pay` is MuHaven's **hosted checkout** surface. It lets an issuer mint a one-off pay link, share it (Telegram, email, Twitter DM), and have a non-customer buyer pay with a passkey — no MuHaven account required ahead of time.
 
-It's the only surface designed for **users who don't yet have a MuHaven kernel**. The first-time buyer's kernel is provisioned via `@zerodev/passkey-validator` at checkout; returning buyers reuse it.
+It's the only surface designed for **users who don't yet have a MuHaven wallet**. The first-time buyer's MuHaven wallet is provisioned via `@zerodev/passkey-validator` at checkout; returning buyers reuse it.
 
 ## The link
 
@@ -43,7 +43,7 @@ The buyer-facing page renders this in cleartext after the fragment-key decrypts 
 | Are you an issuer minting a one-off pay link? | ✅ |
 | Does your buyer not have a MuHaven account yet? | ✅ |
 | Do you need a real-time settlement notification? | ✅ (webhooks + SSE) |
-| Do you need recurring billing? | ❌ Not in Wave 4 (Wave 5 may add subscriptions) |
+| Do you need recurring billing? | ❌ Not supported — each checkout is one-shot. |
 | Do you want the buyer's strategy + identity to stay private from MuHaven's operators? | ✅ (fragment-key keeps payload opaque to operator) |
 | Do you want to drive checkout from an LLM workflow? | ✅ — HavenBot's `create_checkout` tool mints the URL |
 
@@ -52,7 +52,7 @@ The buyer-facing page renders this in cleartext after the fragment-key decrypts 
 ```
 ┌─ Issuer ──────────────────────────────────────────────────┐
 │ 1. Calls HavenBot "Create a checkout for 500 mhUSDC of    │
-│    TBILL1 expiring in 24 hours"                            │
+│    <TOKEN> expiring in 24 hours"                           │
 │ 2. HavenBot returns: https://muhaven.app/pay/c/.../#k=... │
 │ 3. Issuer shares the link (Telegram / email / DM)         │
 └────────────────────────────────────────────────────────────┘
@@ -63,9 +63,9 @@ The buyer-facing page renders this in cleartext after the fragment-key decrypts 
 │ 4. Opens the link in any modern browser                   │
 │ 5. /pay page decrypts the payload with the fragment key   │
 │    client-side; renders "You are paying [Issuer Verified] │
-│    500 mhUSDC of TBILL1"                                  │
+│    500 mhUSDC of <TOKEN>"                                  │
 │ 6a. (First-time) Buyer creates a passkey at checkout      │
-│     → ZeroDev kernel deploys                              │
+│     → MuHaven wallet deploys                              │
 │ 6b. (Returning) Buyer signs in with existing passkey      │
 │ 7. Buyer confirms; passkey signs the buy UserOp           │
 │ 8. SSE channel streams settlement progress                │
@@ -80,17 +80,15 @@ The buyer-facing page renders this in cleartext after the fragment-key decrypts 
 └────────────────────────────────────────────────────────────┘
 ```
 
-## What ships today (Wave 4 close)
+## What's available
 
-- ✅ Backend `checkout_sessions` table + REST routes under `/api/v1/checkout/*`.
-- ✅ AES-256-GCM enc_payload with key in URL fragment.
-- ✅ Stripe-style `MuHaven-Signature: t=,v1=` HMAC-SHA256 webhook signing with 5-min replay window.
-- ✅ In-process SSE channel with terminal-state auto-close + 25s heartbeat.
-- ✅ SSRF guard on outbound webhook URLs (blocks RFC1918 + 169.254 + IPv6 ULA + link-local).
-- ✅ Pluggable `FundingProvider` abstraction in `apps/checkout-pay/` Vite project — `FaucetRedirectProvider` for Wave 4 testnet; Wave 5 swap point for on-ramp providers (Sardine / Coinbase Onramp / MoonPay).
-- ✅ ZeroDev passkey ceremony for first-time buyers (RP-ID pinned to `muhaven.app`).
-- ✅ Wave 5 buyer-side P1 (passkey ceremony) live on prod since 2026-05-13.
-- ⏸ Wave 5 buyer-side P2-P4 (USDC funding poll, real wrap+approve+buy, `Settled` indexer) — code-only commits on `agenticwave`; subsequent cutovers fast-forward + redeploy.
+- Backend `checkout_sessions` table + REST routes under `/api/v1/checkout/*`.
+- AES-256-GCM enc_payload with key in URL fragment.
+- Stripe-style `MuHaven-Signature: t=,v1=` HMAC-SHA256 webhook signing with 5-min replay window.
+- In-process SSE channel with terminal-state auto-close + 25s heartbeat.
+- SSRF guard on outbound webhook URLs (blocks RFC1918 + 169.254 + IPv6 ULA + link-local).
+- Pluggable `FundingProvider` abstraction in `apps/checkout-pay/` Vite project — `FaucetRedirectProvider` for testnet; provider slots for on-ramp services on production.
+- Passkey ceremony for first-time buyers (RP-ID pinned to `muhaven.app`) via the ZeroDev-powered MuHaven wallet.
 
 ## Where next
 

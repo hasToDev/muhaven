@@ -9,7 +9,7 @@ MuHaven has **two distinct roles**: investor (you hold encrypted RWA balances an
 
 ## The rule: one passkey, one role
 
-A given passkey-bound kernel can be **either** an investor **or** an issuer — never both, by design. Crossing roles after the fact is rejected at the backend (`403 ROLE_MISMATCH` for cross-role login; `403 HAS_INVESTOR_ACTIVITY` if you try to issuer-onboard a wallet that already invested).
+A given passkey-bound MuHaven wallet can be **either** an investor **or** an issuer — never both, by design. Crossing roles after the fact is rejected at the backend (`403 ROLE_MISMATCH` for cross-role login; `403 HAS_INVESTOR_ACTIVITY` if you try to issuer-onboard a wallet that already invested).
 
 If you plan to operate both sides:
 
@@ -18,16 +18,16 @@ If you plan to operate both sides:
 3. Sign in with the appropriate passkey for whichever role you need that session.
 
 ::: warning Why so strict?
-Issuers see aggregate KYC whitelist state and can write to it; investors see encrypted personal balances and the yield-claim path. Keeping the kernels separate prevents accidental privilege escalation and keeps the audit log unambiguous about which on-chain identity took which action.
+Issuers see aggregate KYC whitelist state and can write to it; investors see encrypted personal balances and the yield-claim path. Keeping the MuHaven wallets separate prevents accidental privilege escalation and keeps the audit log unambiguous about which on-chain identity took which action.
 :::
 
 ## What an investor can do
 
-- Hold encrypted RWA tokens (TBILL1, GOLD1, NOVUS, OCEAN, …).
+- Hold encrypted RWA tokens (one or more, picked from the active catalog).
 - Buy / redeem via the Subscription surface.
 - Claim yield from finalized epochs.
 - Set tier / pause / inspect the audit log.
-- Vote (encrypted ballot) in governance proposals (Wave 5 frontend runner).
+- Vote (encrypted ballot) in governance proposals.
 - See public protection-pool state for any RWA token.
 
 ## What an issuer can do
@@ -70,16 +70,13 @@ Trying to do both with one passkey will fail the role check. Don't.
 Most password managers (1Password, Bitwarden, iCloud Keychain) let you give each passkey a recognizable name at creation:
 
 - **MuHaven — Investor (Personal)**
-- **MuHaven — Issuer (TBILL1 Treasury)**
+- **MuHaven — Issuer (Treasury)**
 
 At sign-in, the OS dialog will list them by name so you can pick the right one quickly.
 
 ## I want to *become* an issuer, but I have investor activity
 
-You can't promote a kernel that already invested. Options:
-
-1. **Register a new passkey** and apply-issuer with that one — the cleanest path. Your investor kernel keeps its balances.
-2. **Wait for Wave 5**, when in-product role migration may land for kernels with limited history. Not on the Wave 4 roadmap.
+You can't promote a MuHaven wallet that already invested. The cleanest path: **register a new passkey** and apply-issuer with that one. Your investor MuHaven wallet keeps its balances; the new wallet operates as a separate issuer identity.
 
 The reverse (issuer wants to become an investor) has the same shape — cleanest path is a fresh passkey.
 

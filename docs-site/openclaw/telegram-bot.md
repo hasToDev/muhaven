@@ -5,7 +5,7 @@ description: Link your Telegram, send your first command.
 
 # The MuHaven Telegram bot
 
-`@muhaven_bot` is MuHaven's phone-first surface. You link it to your MuHaven kernel once, and from then on you can drive read tools and tier-1 (≤$200) buys with a single tap.
+`@muhaven_bot` is MuHaven's phone-first surface. You link it to your MuHaven wallet once, and from then on you can drive read tools and tier-1 (≤$200) buys with a single tap.
 
 ## Step 1 — Start a chat with the bot
 
@@ -14,7 +14,7 @@ Open Telegram and search for `@muhaven_bot` (or the staging variant `@muhaven_st
 ```
 Welcome to MuHaven 🪙
 
-To link this Telegram account to your MuHaven kernel, run /link
+To link this Telegram account to your MuHaven wallet, run /link
 in this chat. I'll give you a one-time code; paste it into your
 dashboard at https://muhaven.app/agent → Settings → Telegram.
 
@@ -22,7 +22,7 @@ This is the only time you'll need a passkey for Telegram — once
 linked, sub-$200 buys are one-tap.
 ```
 
-## Step 2 — Link your kernel
+## Step 2 — Link your MuHaven wallet
 
 In the Telegram chat:
 
@@ -55,9 +55,9 @@ A small notification arrives in your Telegram chat: `✅ Linked. Try /portfolio.
 | Command | What it does |
 |---|---|
 | `/portfolio` | `muhaven.read.portfolio` — shows your aggregate token list. |
-| `/yields TBILL1` | `muhaven.read.yields` for TBILL1 — last 5 epochs. |
-| `/buy 50 TBILL1` | Tier-classified buy. ≤$200 → inline button. |
-| `/claim TBILL1 5` | Claim TBILL1 yield for epoch 5. |
+| `/yields RWA1` | `muhaven.read.yields` for RWA1 — last 5 epochs. |
+| `/buy 50 RWA1` | Tier-classified buy. ≤$200 → inline button. |
+| `/claim RWA1 5` | Claim RWA1 yield for epoch 5. |
 | `/pause` | Pause your agent. |
 | `/audit` | Show last 10 audit rows. |
 | `/help` | List all commands. |
@@ -65,13 +65,13 @@ A small notification arrives in your Telegram chat: `✅ Linked. Try /portfolio.
 ### Example: a tier-1 buy
 
 ```
-/buy 50 TBILL1
+/buy 50 RWA1
 ```
 
 The bot replies with an inline keyboard:
 
 ```
-You're about to buy 50 mhUSDC of TBILL1.
+You're about to buy 50 mhUSDC of RWA1.
 
    Quote: ~49.85 shares @ NAV $1.003
    Tier:  Inline (≤$200)
@@ -81,7 +81,7 @@ You're about to buy 50 mhUSDC of TBILL1.
 
 Tap **Confirm**. The bot:
 
-1. Validates the tap is from the same Telegram user_id that's linked to the kernel.
+1. Validates the tap is from the same Telegram user_id that's linked to the MuHaven wallet.
 2. Calls the inline-confirmation endpoint with the service-secret + user-id assertion.
 3. Settles on-chain.
 4. Replies: `✅ Settled. Tx: 0xabc...`
@@ -91,13 +91,13 @@ The whole flow is one tap. Total time: ~3-5 seconds.
 ### Example: a tier-2 buy ($200-$5K)
 
 ```
-/buy 1000 TBILL1
+/buy 1000 RWA1
 ```
 
 The bot replies:
 
 ```
-You're about to buy 1000 mhUSDC of TBILL1.
+You're about to buy 1000 mhUSDC of RWA1.
 
    Quote: ~996.5 shares @ NAV $1.003
    Tier:  Mini-App OTP ($200–$5K)
@@ -119,13 +119,13 @@ Settlement and a Telegram reply mirror the tier-1 flow.
 ### Example: a tier-3 buy (>$5K)
 
 ```
-/buy 10000 TBILL1
+/buy 10000 RWA1
 ```
 
 The bot replies:
 
 ```
-You're about to buy 10,000 mhUSDC of TBILL1.
+You're about to buy 10,000 mhUSDC of RWA1.
 
    Tier: Passkey deep-link (>$5K)
 
@@ -139,7 +139,7 @@ Tap the button. Your default browser opens to `https://muhaven.app/agent/confirm
 
 ## Privacy properties
 
-- The bot **never sees your kernel signing key** — it operates through the backend over HTTPS with bot service-secret + Telegram `initData` HMAC verification.
+- The bot **never sees your MuHaven wallet signing key** — it operates through the backend over HTTPS with bot service-secret + Telegram `initData` HMAC verification.
 - The bot **never sees encrypted balances** — same backend-aggregate property as MCP.
 - The bot edge sees your Telegram chat_id, user_id, and the command text. Telegram's servers see your message (transport-level encryption, not E2EE in standard chat).
 - The Mini App is served from `tg.muhaven.app` with a strict CSP — no third-party trackers.
@@ -153,13 +153,13 @@ Tap the button. Your default browser opens to `https://muhaven.app/agent/confirm
 
 ## Unlinking
 
-To unlink Telegram from your kernel:
+To unlink Telegram from your MuHaven wallet:
 
 1. On the dashboard: `/agent → Settings → Telegram → Unlink`.
 2. Confirm with your passkey.
 3. The bot replies: `❌ Unlinked. Run /link again to re-bind.`
 
-Your kernel and audit log are unaffected — only the bot ↔ kernel binding is severed.
+Your MuHaven wallet and audit log are unaffected — only the bot ↔ wallet binding is severed.
 
 ## Where next
 

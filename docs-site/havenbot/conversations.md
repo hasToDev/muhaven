@@ -19,7 +19,7 @@ HavenBot's conversation surface is **streaming chat** plus a per-action **Confir
    b. Read tools return data; the LLM streams a textual answer.
    c. Propose tools return an ActionDescriptor; the frontend opens ConfirmModal.
 6. You confirm in ConfirmModal:
-   a. Your kernel + session key signs the UserOp.
+   a. Your MuHaven wallet + session key signs the UserOp.
    b. ZeroDev bundler relays.
    c. Settlement settles on Arb Sepolia.
 7. Frontend POSTs /api/v1/agent/tools/commit with the action hash.
@@ -49,11 +49,11 @@ Every state-mutating action opens a ConfirmModal. The modal renders:
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│  ✦ Buy 50.00 mhUSDC of TBILL1                        │
+│  ✦ Buy 50.00 mhUSDC of <TOKEN>                       │
 ├──────────────────────────────────────────────────────┤
 │                                                      │
 │  You're spending      50.00 mhUSDC                   │
-│  You'll receive       ~49.85 TBILL1 (encrypted)      │
+│  You'll receive       ~49.85 <TOKEN> (encrypted)     │
 │  Current NAV          $1.003                         │
 │  Slippage             0.30% max                      │
 │                                                      │
@@ -66,21 +66,16 @@ Every state-mutating action opens a ConfirmModal. The modal renders:
 └──────────────────────────────────────────────────────┘
 ```
 
-Three terminal states:
+Two terminal states:
 
 1. **Success** — toast "Settled" + Arbiscan link. Modal closes.
-2. **Deferred** — for tools whose runner is Wave 5 (rebalance, governance vote, claim with ceremony). Modal shows "Saved to your queue. Open the relevant page to finish." with a CTA that links to the right destination (e.g., the Yields page for a deferred claim).
-3. **Error** — toast with the revert reason. Audit log records a `PermitAttempted` row (failed-attempt forensic).
-
-::: tip Why "deferred" instead of failing?
-Wave 4 ships the propose half of the loop for `rebalance` / `governance.cast_vote` / some `claim` paths but the in-modal ceremony lands in Wave 5 (multicall wrapper for rebalance; cofhe encrypt-vote SDK helper for governance). To preserve audit-log honesty, the runner returns `'deferred'` instead of silently failing or auto-redirecting.
-:::
+2. **Error** — toast with the revert reason. Audit log records a `PermitAttempted` row (failed-attempt forensic).
 
 ## Signing — passkey vs session key
 
-Your kernel has two signers:
+Your MuHaven wallet has two signers:
 
-1. **Master passkey** — your WebAuthn credential. Used at sign-in, for kernel rebind, and for high-stakes confirmations.
+1. **Master passkey** — your WebAuthn credential. Used at sign-in, for MuHaven wallet rebind, and for high-stakes confirmations.
 2. **Session key** — a short-lived (default 1h) ECDSA key with **narrow scope** (only MuHaven functions, only your wallet, only for the session). Installed by your passkey at sign-in; uninstalled by `/pause`.
 
 In Advisory tier, every action prompts your passkey. In Confirm-per-action tier, the session key signs without re-prompting the passkey for the session duration. In Policy-bound tier, the cron policy engine signs within your encrypted thresholds without per-action confirmation.
@@ -102,30 +97,26 @@ Widget rendering is opt-in per tool — the LLM can also produce a textual answe
 
 ## Chat history
 
-Today, your chat history is **server-managed**:
+Your chat history is **server-managed**:
 
 - Stored against your user ID on the MuHaven backend.
 - Pulled into the LLM context for follow-up turns within the same session.
 - Cleared by `/agent → ⋯ menu → Clear chat`.
 
-Wave 5 may add a "keep local only" mode where chat history is browser-localStorage and never leaves your device. Until then, treat the chat history as something MuHaven sees.
-
 ::: warning Don't paste secrets in chat
 The chat history is plaintext on the backend. Never paste a private key, an API token, or any cleartext encrypted-balance value into the chat. (HavenBot has no use for them and the policy gate doesn't accept them anyway.)
 :::
 
-## Multi-turn limitations (Wave 4)
+## Multi-turn behavior
 
-The current `ChatLlmService` loop is **single-turn**: text → tool_call → tool_result → done. True multi-turn (where tool_result is fed back into a follow-up LLM turn) is a Wave 5 follow-up. Today, if you want a follow-up reasoning step ("now that you've shown me the portfolio, recommend a buy"), you need to send a second message.
+The current chat loop is **single-turn**: text → tool_call → tool_result → done. If you want a follow-up reasoning step ("now that you've shown me the portfolio, recommend a buy"), send a second message.
 
 ## What HavenBot won't do
 
 - **Sign without showing you the preview.** Even in Policy-bound tier, the modal renders a brief "policy-bound auto-confirm" notice — there's no truly silent execution.
 - **Submit a tool call that the policy gate rejected.** A jailbreak that fabricates "approved" in the LLM response cannot bypass the deterministic gate.
 - **Decrypt your balance server-side.** All `decryptForView` calls run in your browser with your local permit.
-- **Hold your private key.** The kernel + session key are signers; the LLM is not.
-
-See [Threat model in plain language](/policy/threats) for the full constraint list.
+- **Hold your private key.** The MuHaven wallet + session key are signers; the LLM is not.
 
 ## Where next
 

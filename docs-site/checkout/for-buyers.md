@@ -22,10 +22,10 @@ The `/pay` page loads in your browser. Your browser sends the path (`/pay/c/01HM
 │                  🪙 MuHaven                          │
 │                                                      │
 │  You're paying                                       │
-│  ✓ TBILL1 Treasury Issuer (Verified)                 │
+│  ✓ RWA1 Treasury Issuer (Verified)                 │
 │                                                      │
 │  Amount        500.00 mhUSDC                         │
-│  For           500.00 TBILL1 (~$501.50 USD)          │
+│  For           500.00 RWA1 (~$501.50 USD)          │
 │  Expires       in 23 hours 58 minutes                │
 │                                                      │
 │  ──────────────────────────────────────────────      │
@@ -65,7 +65,7 @@ If you've never used MuHaven before, the next click takes you through the passke
 
 Tap **Create passkey**. Your OS shows the WebAuthn dialog (Touch ID / Windows Hello / hardware key). Approve.
 
-Your **ZeroDev kernel smart account** deploys in the background (~3 seconds, paymaster-sponsored). You now have a MuHaven account — the same one you can use on the dashboard, on Telegram, or via MCP.
+Your **MuHaven wallet** (a ZeroDev-powered smart account) deploys in the background (~3 seconds, paymaster-sponsored). You now have a MuHaven account — the same one you can use on the dashboard, on Telegram, or via MCP.
 
 ## Step 1 (returning buyers) — Sign in
 
@@ -79,7 +79,7 @@ Tap it, pick your passkey from the OS dialog, and you're in.
 
 ## Step 2 — Fund (if needed)
 
-If your kernel's mhUSDC balance is below the checkout amount, the page shows a funding sub-flow:
+If your MuHaven wallet's mhUSDC balance is below the checkout amount, the page shows a funding sub-flow:
 
 ```
 You need 500.00 mhUSDC to complete this purchase.
@@ -90,7 +90,7 @@ Current balance: 0.00 mhUSDC
 
 On testnet (Arb Sepolia), the **faucet redirect** opens a new tab to the public testnet faucet. Pick the amount, request, come back to the checkout tab — it polls your balance every 5 seconds and auto-advances when funds land.
 
-On production (Arb One), Wave 5 swaps in a pluggable on-ramp provider (Sardine / Coinbase Onramp / MoonPay). Pay with card / Apple Pay / Google Pay; the checkout polls until funds arrive.
+On production (Arb One), the checkout uses an on-ramp picker — pay with card / Apple Pay / Google Pay and the page polls until funds arrive.
 
 ## Step 3 — Confirm the purchase
 
@@ -101,7 +101,7 @@ The page renders the final preview:
 │  Confirm purchase                                    │
 │                                                      │
 │  You're paying        500.00 mhUSDC                  │
-│  You'll receive       ~498.50 TBILL1 (encrypted)     │
+│  You'll receive       ~498.50 RWA1 (encrypted)     │
 │  NAV                  $1.003                         │
 │  Slippage             0.30% max                      │
 │                                                      │
@@ -122,10 +122,10 @@ And the success page renders:
 ┌──────────────────────────────────────────────────────┐
 │  ✅ Paid                                             │
 │                                                      │
-│  500.00 mhUSDC → 498.50 TBILL1 (encrypted)           │
+│  500.00 mhUSDC → 498.50 RWA1 (encrypted)           │
 │  Tx: 0xdef... [View on Arbiscan]                     │
 │                                                      │
-│  Your new TBILL1 balance is encrypted on-chain.      │
+│  Your new RWA1 balance is encrypted on-chain.      │
 │  To see the cleartext value or claim future yield,   │
 │  sign in to https://muhaven.app                      │
 │                                                      │
@@ -138,7 +138,7 @@ And the success page renders:
 You hold an encrypted balance of an RWA token. Specifically:
 
 - The on-chain `MuHavenToken._balances[your_address]` is an `euint128` ciphertext.
-- Only you (with your kernel + decrypt permit) can unseal it.
+- Only you (with your MuHaven wallet + decrypt permit) can unseal it.
 - The token issuer can distribute yield to all holders; you'll claim your share with `position.claim` when an epoch finalizes.
 
 To inspect your balance: open `muhaven.app`, sign in with the passkey you just created, navigate to **Portfolio**.
@@ -157,14 +157,14 @@ To inspect your balance: open `muhaven.app`, sign in with the passkey you just c
 
 ## Returning buyer benefits
 
-Because your kernel is the same across MuHaven surfaces, **after one checkout**:
+Because your MuHaven wallet is the same across MuHaven surfaces, **after one checkout**:
 
 - You can sign in to `muhaven.app` and see your full portfolio.
 - You can use HavenBot to claim yield as epochs finalize.
 - You can install `@muhaven/mcp` to drive the same account from Claude Code / Desktop / Cursor.
 - You can link your Telegram with `@muhaven_bot`.
 
-One passkey, one kernel, every surface.
+One passkey, one MuHaven wallet, every surface.
 
 ## Where next
 

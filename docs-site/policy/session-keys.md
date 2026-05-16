@@ -5,7 +5,7 @@ description: The short-lived signers that handle your day-to-day actions.
 
 # Session keys
 
-A **session key** is a short-lived ECDSA key with **narrow scope** installed in your ZeroDev kernel by your passkey. For its lifetime (default 1 hour), it can sign MuHaven UserOps without prompting you for a passkey on every action.
+A **session key** is a short-lived ECDSA key with **narrow scope** installed in your MuHaven wallet (a ZeroDev-powered smart account) by your passkey. For its lifetime (default 1 hour), it can sign MuHaven UserOps without prompting you for a passkey on every action.
 
 Session keys are how Confirm-per-action tier feels frictionless without sacrificing scope safety. They're also how the cron policy engine signs in Policy-bound tier.
 
@@ -26,7 +26,7 @@ You can inspect the current session-key state via `muhaven.policy.session_key_st
 Three reasons:
 
 1. **UX.** Touch ID / Windows Hello on every click is exhausting. The session key signs in ~50ms; the passkey ceremony is ~1-2 seconds + a biometric prompt.
-2. **Scope reduction.** Your passkey signs *anything* the kernel asks. The session key signs only what the validators allow. A leaked session key isn't a drain-the-account key.
+2. **Scope reduction.** Your passkey signs *anything* the MuHaven wallet asks. The session key signs only what the validators allow. A leaked session key isn't a drain-the-account key.
 3. **Cron-friendly.** A passkey requires a user-present WebAuthn ceremony. A session key can be invoked by a backend cron (Policy-bound tier) without user interaction.
 
 ## Lifecycle
@@ -64,9 +64,9 @@ Depends on the surface:
 
 | Surface | Private half held by |
 |---|---|
-| **HavenBot dashboard** | Browser-local (`window.localStorage` + Web Crypto subtle key, encrypted with a kernel-derived key) |
+| **HavenBot dashboard** | Browser-local (`window.localStorage` + Web Crypto subtle key, encrypted with a wallet-derived key) |
 | **`@muhaven/mcp`** | `muhaven-broker` daemon — in OS keychain or 0600-mode file |
-| **OpenClaw + Telegram inline** | Backend service-secret bound to the inline tier; signed server-side via the kernel's session-key validator |
+| **OpenClaw + Telegram inline** | Backend service-secret bound to the inline tier; signed server-side via the MuHaven wallet's session-key validator |
 | **OpenClaw + Telegram Mini-App OTP** | Same as inline — backend-side, gated by Mini App OTP |
 | **OpenClaw + Telegram passkey deeplink** | Browser-local (deeplink to dashboard `/agent/confirm`) |
 | **Hosted Checkout** | Browser-local during checkout; transient session, no persistence |
@@ -93,14 +93,14 @@ The session key carries a `RateLimitPolicy` validator that throttles call rate e
 - 10 propose calls per minute.
 - 3 commits per minute (settled UserOps).
 
-A jailbroken LLM that tried to drain your kernel via thousands of small buys would hit the rate-limit before the value-cap kicks in.
+A jailbroken LLM that tried to drain your MuHaven wallet via thousands of small buys would hit the rate-limit before the value-cap kicks in.
 
 ## When session keys are uninstalled
 
 Three triggers:
 
 1. **`/pause`** — `uninstallPlugin(sessionKeyValidator)` removes the validator immediately. ≤1 Arb block.
-2. **`validUntil` expiry** — the validator silently stops accepting signatures past the timestamp. No on-chain action; the kernel's `validateUserOp` returns invalid.
+2. **`validUntil` expiry** — the validator silently stops accepting signatures past the timestamp. No on-chain action; the MuHaven wallet's `validateUserOp` returns invalid.
 3. **Manual uninstall** — `muhaven.policy.session_key_status` shows the current install; ask HavenBot *"Uninstall my session key"* to force a reinstall on next action.
 
 ## Why not longer TTLs?
@@ -111,17 +111,17 @@ We considered 24h / 7d / "until you sign out". The 1h default balances:
 - **Phishing window** — if your laptop is briefly unattended, 1h is the maximum exposure window.
 - **Reg BI proxy** — short TTLs satisfy "investor must be present for high-stakes decisions" framing.
 
-You can configure a different TTL via `VITE_SESSION_KEY_DURATION_SEC` (frontend) / `MUHAVEN_SESSION_KEY_TTL_SEC` (MCP broker). Wave 5 may add a per-action TTL override.
+You can configure a different TTL via `VITE_SESSION_KEY_DURATION_SEC` (frontend) / `MUHAVEN_SESSION_KEY_TTL_SEC` (MCP broker).
 
 ## What you can't do with a session key
 
 - **Send funds to a non-MuHaven address.** Not in the target allowlist.
-- **Upgrade your kernel's validator config.** Reserved for passkey signature.
+- **Upgrade your MuHaven wallet's validator config.** Reserved for passkey signature.
 - **Sign cross-chain UserOps.** Session key is chain-bound; cross-chain ops require passkey re-authorization.
-- **Drain your kernel.** Value-cap + rate-limit + selector-allowlist make this structurally impossible.
+- **Drain your MuHaven wallet.** Value-cap + rate-limit + selector-allowlist make this structurally impossible.
 
 ## Where next
 
 - [Tiered autonomy](/policy/tiered-autonomy) — how session keys map to tiers.
 - [The /pause kill-switch](/policy/pause) — kill-switch in depth.
-- [Threat model in plain language](/policy/threats) — what session keys protect against.
+- [Audit log](/policy/audit-log) — what session-key activity gets recorded.

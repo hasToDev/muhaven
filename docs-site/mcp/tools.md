@@ -21,8 +21,8 @@ Always available. No signing required.
 | `muhaven.read.distribution` | Distribution status for a (tokenAddress, epochId) tuple — funded / settled / claim-window. | `mcp.read.*` | none |
 | `muhaven.read.tokens` | RWA tokens you currently hold (address, symbol, decimals, asset class, status). | `mcp.read.*` | none |
 | `muhaven.read.audit` | Your tiered-autonomy audit log (cursor-paginated). User-self only. | `mcp.read.*` | none |
-| `muhaven.read.protection_coverage` | DefaultProtection coverage state for a token (P11; on-chain proxy state). | `mcp.read.*` | none |
-| `muhaven.read.kyc_attestation` | KYC attestation registry status (P11; informational). | `mcp.read.*` | none |
+| `muhaven.read.protection_coverage` | DefaultProtection coverage state for a token (on-chain proxy state). | `mcp.read.*` | none |
+| `muhaven.read.kyc_attestation` | KYC attestation registry status (informational). | `mcp.read.*` | none |
 
 ::: tip Read tools are intentionally non-auditing by design
 We do **not** log every "user looked at portfolio" call. Only `position.*` / `policy.*` / `issuer.*` / `governance.*` propose+commit events emit audit rows. This is a privacy choice; the trade-off is forensic — see [Audit log](/policy/audit-log).
@@ -37,7 +37,7 @@ All position tools return an **unsigned UserOp envelope plus a broker signature*
 | `muhaven.position.buy` | Propose a Subscription buy of N shares of token T using mhUSDC. | `mcp.propose.*` | yes |
 | `muhaven.position.sell` | Propose a redemption-queue sell. | `mcp.propose.*` | yes |
 | `muhaven.position.claim` | Propose a yield claim for one or more (token, epoch) tuples. | `mcp.propose.*` | yes |
-| `muhaven.position.rebalance` | Propose a multi-leg atomic rebalance. **Wave 5: real multicall ceremony.** Today returns the descriptor only. | `mcp.propose.*` | yes |
+| `muhaven.position.rebalance` | Propose a multi-leg atomic rebalance. Returns the descriptor; ceremony completes from a browser surface. | `mcp.propose.*` | yes |
 
 ## `muhaven.policy.*` — tiered-autonomy state (4 tools)
 
@@ -60,12 +60,12 @@ Backend routes guard these with `withRole('issuer') && issuerStatus === 'approve
 | `muhaven.issuer.unpause_token` | Propose `setNAVAndUnpause` for a freshly-deployed token. | `mcp.propose.*` | yes |
 | `muhaven.issuer.audit_query` | Read your own issuer-side tiered-autonomy audit log. | `mcp.read.*` | none |
 
-## `muhaven.governance.*` — encrypted governance (P11, 2 tools)
+## `muhaven.governance.*` — encrypted governance (2 tools)
 
 | Tool | What it does | Scope | Tier-gate |
 |---|---|---|---|
-| `muhaven.governance.propose` | Propose an EncryptedGovernance vote. Wave 4 supports `proposalType=0` (TRIGGER_PROTECTION). | `mcp.propose.*` | yes |
-| `muhaven.governance.cast_vote` | Cast an encrypted vote on an open proposal. Backend enforces voter eligibility. **Frontend runner ships Wave 5.** | `mcp.propose.*` | yes |
+| `muhaven.governance.propose` | Propose an EncryptedGovernance vote. Supports `proposalType=0` (TRIGGER_PROTECTION). | `mcp.propose.*` | yes |
+| `muhaven.governance.cast_vote` | Cast an encrypted vote on an open proposal. Backend enforces voter eligibility. | `mcp.propose.*` | yes |
 
 ## Read-only mode
 
@@ -81,21 +81,11 @@ If an `npm update` ever changes a tool's description, your install will refuse t
 
 ## Why no `muhaven.checkout.*` MCP tools?
 
-The hosted-checkout surface (P5) creates URLs that buyers redeem in a browser. It's not LLM-callable end-to-end: an LLM can mint a checkout link (via HavenBot's `create_checkout` tool), but the buyer-side flow needs a real browser for the passkey ceremony.
-
-Three `muhaven.checkout.*` slots are reserved in `TOOL_NAMESPACE.md` (`create_session`, `session_status`, `cancel_session`) but not wired to handlers in Wave 4. See [`development/DEV_WAVE_4/TOOL_NAMESPACE.md`](https://github.com/hasToDev/muhaven/blob/master/development/DEV_WAVE_4/TOOL_NAMESPACE.md).
-
-## What's deferred
-
-| Tool | Status | Lands in |
-|---|---|---|
-| `position.rebalance` runner | Backend wired; in-modal multicall ceremony deferred | Wave 5 |
-| `governance.cast_vote` frontend runner | Backend wired; in-modal encrypt-vote ceremony deferred | Wave 5 |
-| `issuer.audit_query` cross-user | Backend wire shape pinned in ADR-8 §D3; frontend ceremony deferred | Wave 5 |
-| `checkout.*` MCP tools | Reserved in namespace; not yet wired | TBD |
+The hosted-checkout surface creates URLs that buyers redeem in a browser. It's not LLM-callable end-to-end: an LLM can mint a checkout link (via HavenBot's `create_checkout` tool), but the buyer-side flow needs a real browser for the passkey ceremony.
 
 ## Where next
 
 - [First chat](/mcp/first-chat) — walk through your first portfolio query.
+- [Playbook](/mcp/playbook) — scenarios that span MuHaven plus other MCP servers.
 - [Read-only mode](/mcp/read-only-mode) — restrict your install.
 - [Tool catalog (all surfaces)](/reference/tool-catalog) — cross-surface comparison.

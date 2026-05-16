@@ -5,7 +5,7 @@ description: One tap. ≤1 Arbitrum block. Global across all four surfaces.
 
 # The /pause kill-switch
 
-`/pause` is MuHaven's **single-tx kill-switch**. It uninstalls your kernel's session-key validator in **≤1 Arbitrum block** (~250ms soft). After it fires, every `propose` tool on every surface returns `423 PAUSED` until you explicitly resume.
+`/pause` is MuHaven's **single-tx kill-switch**. It uninstalls your MuHaven wallet's session-key validator in **≤1 Arbitrum block** (~250ms soft). After it fires, every `propose` tool on every surface returns `423 PAUSED` until you explicitly resume.
 
 It's the same surface across HavenBot, MCP, OpenClaw, and the audit copilot — one command, one tx, global effect.
 
@@ -43,7 +43,7 @@ You call pause
        │
        │ tx settled
        ▼
-   Session-key validator no longer in kernel's plugin set
+   Session-key validator no longer in your MuHaven wallet's plugin set
    Every propose UserOp through the session key now fails:
      "0x14eac17b" (PluginUninstalled)
 ```
@@ -79,7 +79,7 @@ What still works:
 - ✅ All read tools (portfolio, yields, audit, etc.).
 - ✅ Sign in / sign out (the master passkey is unaffected).
 - ✅ Read your audit log including the `pause_triggered` row.
-- ✅ The buyer-side flow for already-issued checkout sessions (the buyer's kernel signs with their own session key; their pause state is independent).
+- ✅ The buyer-side flow for already-issued checkout sessions (the buyer's MuHaven wallet signs with their own session key; their pause state is independent).
 
 ## How to resume
 
@@ -114,7 +114,7 @@ The auto-pause is the **fail-safe** for Policy-bound — bounded autonomy that e
 
 ## Pause is not "stop everything"
 
-Important nuance: pause stops **your kernel's session key from signing**. It does **not**:
+Important nuance: pause stops **your MuHaven wallet's session key from signing**. It does **not**:
 
 - Stop pending bundler submissions that were already in-flight when you paused.
 - Stop on-chain events that fire as a result of past UserOps (e.g., a `Settled` event from a buy that was in the bundler 100ms before you paused).
@@ -134,4 +134,3 @@ The "pause + 250ms soft" window means there's a small race where an action submi
 - [Tiered autonomy](/policy/tiered-autonomy) — how pause fits the four-tier ladder.
 - [Session keys](/policy/session-keys) — what the validator the pause uninstalls actually authorized.
 - [Audit log](/policy/audit-log) — what pause/resume write to the log.
-- [Threat model in plain language](/policy/threats) — why pause exists.

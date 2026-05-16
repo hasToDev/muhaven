@@ -33,9 +33,9 @@ Open [https://muhaven.app](https://muhaven.app) and click **Sign in**.
 
 1. A passkey dialog appears. Pick **Create a new passkey** (or **Use an existing one** if you've signed in before).
 2. Approve with Touch ID / Windows Hello / your hardware key.
-3. The first sign-in deploys your ZeroDev kernel smart account in the background — about 3 seconds. You don't need to do anything; just wait for the dashboard to load.
+3. The first sign-in deploys your **MuHaven wallet** (a ZeroDev-powered smart account) in the background — about 3 seconds. You don't need to do anything; just wait for the dashboard to load.
 
-You now have a **passkey-bound smart account** on Arbitrum Sepolia. No seed phrase. No private key on your device.
+You now have a **passkey-bound MuHaven wallet** on Arbitrum Sepolia. No seed phrase. No private key on your device.
 
 ::: warning One passkey, one role
 A given passkey can be either an investor *or* an issuer, not both. If you plan to be an issuer, register a second passkey for that purpose — see [Investor vs issuer](/get-started/investor-vs-issuer).
@@ -47,7 +47,7 @@ In the sidebar, click **Agent**. You'll land on the **Onboarding** wizard at `/a
 
 1. **Welcome** — a 60-second explainer with the "sealed-glass-envelope" copy (your balances are encrypted; you hold the key).
 2. **Funding** — a button that takes you to the testnet mhUSDC faucet. Grab ~$100 of test stablecoin and come back.
-3. **First buy** — pick a token (TBILL1, GOLD1, NOVUS, or OCEAN), enter an amount, and click **Continue**.
+3. **First buy** — pick a token from the list of active RWAs, enter an amount, and click **Continue**.
 
 The wizard skips steps you've already done — close it and come back later if you need to.
 
@@ -56,15 +56,15 @@ The wizard skips steps you've already done — close it and come back later if y
 After onboarding, you're in HavenBot proper at `/agent`. Try one of:
 
 - "Show me my portfolio."
-- "What's the current NAV of TBILL1?"
-- "Buy 50 mhUSDC of TBILL1."
+- "What's the current NAV of `<TOKEN>`?"
+- "Buy 50 mhUSDC of `<TOKEN>`."
 
 For read-only questions ("show me", "what's"), HavenBot answers in-line — no confirmation needed.
 
 For state-changing actions ("buy", "claim", "set policy"), HavenBot opens a **ConfirmModal**:
 
 1. Cleartext preview of what's about to happen (amount, token, estimated shares).
-2. Your wallet — the kernel — signs the UserOp with your scoped session key (default 1-hour TTL).
+2. Your MuHaven wallet signs the UserOp with your scoped session key (default 1-hour TTL).
 3. A small toast says "Signed → Bundler → Settling…" and then "Settled, see Arbiscan."
 
 Welcome to MuHaven. You just made a confidential RWA purchase: the cleartext amount **never** left your browser. On-chain, only ciphertext.
@@ -85,7 +85,7 @@ You're done. From here you can:
 - **(Issuers only)** create a hosted checkout link to sell to non-customer buyers. See [Hosted checkout for issuers](/checkout/for-issuers).
 
 ::: tip One account, every surface
-Your passkey-bound kernel is the same account across all four surfaces. Linking your Telegram, authorizing the MCP broker, and minting a checkout link all bind back to the same on-chain identity — and the same audit log.
+Your passkey-bound MuHaven wallet is the same account across all four surfaces. Linking your Telegram, authorizing the MCP broker, and minting a checkout link all bind back to the same on-chain identity — and the same audit log.
 :::
 
 ## If something went wrong

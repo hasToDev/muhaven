@@ -73,7 +73,7 @@ If it persists right after login, check `muhaven-broker doctor` — the `keystor
 
 Either:
 
-- You're signed in with your investor passkey. Issuer tools require your **issuer kernel** — see [Investor vs issuer](/get-started/investor-vs-issuer).
+- You're signed in with your investor passkey. Issuer tools require your **issuer's MuHaven wallet** — see [Investor vs issuer](/get-started/investor-vs-issuer).
 - Your issuer status isn't `approved`. Visit `/apply-issuer` on the dashboard.
 
 ### "`423 PAUSED` on every propose call"
@@ -128,7 +128,7 @@ Then restart. If it hangs again on startup, check `~/.muhaven/` for a stale lock
 
 Pre-2026-05-10 versions of `@muhaven/mcp` had a known bin-lifecycle bug where `bin/*.cjs` would `process.exit(0)` before the STDIO transport could keep the event loop alive. Symptom: the host says the MCP server exited code 0 within seconds of spawn.
 
-Fix: update to `@muhaven/mcp@0.1.2` or later. The bug is fixed in the upgrade. The `daemon-lifecycle.test.ts` regression suite makes it stay fixed.
+Fix: update to `@muhaven/mcp@0.1.2` or later. The bug is fixed in the upgrade.
 
 ### "Tool descriptions changed → server exits with code 70"
 
@@ -156,10 +156,10 @@ Two possibilities:
 
 This shouldn't happen. Position tools return descriptors only; they never auto-submit. If you see an apparent auto-submit:
 
-1. Check your dashboard audit log at `/agent → Audit`. If there's a `permit_granted` row, the action did settle.
+1. Check your dashboard audit log at `/agent → Audit`. If there's a `permit_granted` row, the action did settle on a dashboard surface (not from MCP directly).
 2. If the tool call output included an `audit_id`, that's a *propose-time* audit row (not a commit). Commit requires a dashboard ConfirmModal step.
 
-File an issue if you can reproduce auto-submission — it would be a security bug.
+File an issue if you can reproduce auto-submission from MCP itself — it would be a security bug.
 
 ### "Distribute yield says my token has zero holders"
 

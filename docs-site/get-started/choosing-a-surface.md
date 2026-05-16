@@ -44,18 +44,16 @@ All four surfaces eventually route through the same tools and the same policy ga
 | Read yields | ✅ | ✅ | ✅ | ❌ |
 | Propose buy | ✅ | ✅ (envelope only) | ✅ (with tier-aware confirm) | ✅ (sole purpose) |
 | Propose claim | ✅ | ✅ (envelope only) | ✅ | ❌ |
-| Propose rebalance | 🚧 Wave 5 multicall | 🚧 Wave 5 multicall | 🚧 | ❌ |
 | Set tier / pause | ✅ | ✅ | ✅ | ❌ |
 | Issuer: distribute yield | ✅ | ✅ | ⛔ (excluded from skill subset) | ❌ |
 | Issuer: KYC add/remove | ✅ | ✅ | ⛔ | ❌ |
 | Issuer: unpause new token | ✅ | ✅ | ⛔ | ❌ |
 | Issuer: create checkout link | ✅ (via HavenBot tool) | ❌ | ❌ | ✅ (sole purpose; via HavenBot) |
-| Governance: encrypted vote | 🚧 Wave 5 modal | 🚧 Wave 5 frontend runner | ⛔ (excluded) | ❌ |
 | Audit log query | ✅ | ✅ | ✅ (read) | ❌ |
 | Read-only mode | ❌ | ✅ `MUHAVEN_READ_ONLY=true` | n/a (skill subset) | n/a |
-| Bring your own LLM | ❌ (Gemini today, Claude in Wave 5) | ✅ | n/a (no LLM at the bot edge) | n/a |
+| Bring your own LLM | ❌ (Gemini today) | ✅ | n/a (no LLM at the bot edge) | n/a |
 
-Legend: ✅ shipped · 🚧 wired but the frontend runner ships in Wave 5 · ⛔ deliberately excluded · ❌ not applicable.
+Legend: ✅ shipped · ⛔ deliberately excluded · ❌ not applicable.
 
 ## Confirmation surface differences
 
@@ -73,7 +71,7 @@ See [Three confirmation tiers](/openclaw/confirmation-tiers) for the Telegram cl
 
 ## Can I use multiple surfaces?
 
-Yes — and most users do. The four surfaces share **one** kernel account, **one** audit log, **one** tier setting, and **one** `/pause` kill-switch. Linking a new surface doesn't fork your identity or your state.
+Yes — and most users do. The four surfaces share **one** MuHaven wallet, **one** audit log, **one** tier setting, and **one** `/pause` kill-switch. Linking a new surface doesn't fork your identity or your state.
 
 A common stack:
 

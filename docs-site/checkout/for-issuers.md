@@ -18,19 +18,19 @@ The end-to-end loop:
 
 In HavenBot, ask:
 
-> Create a checkout for 500 mhUSDC of TBILL1 expiring in 24 hours.
+> Create a checkout for 500 mhUSDC of RWA1 expiring in 24 hours.
 
 HavenBot calls the `create_checkout` tool (an issuer-only tool that lives in HavenBot's `muhaven_*` namespace). The ConfirmModal renders a preview:
 
 ```
 Create checkout link
 ─────────────────────
-  Token:          TBILL1
+  Token:          RWA1
   Amount:         500 mhUSDC
   Expires:        in 24 hours (2026-05-17 11:42 UTC)
   Webhook:        (none)
   Buyer:          (any holder of a valid passkey)
-  Label:          (auto: "TBILL1 — 500 mhUSDC")
+  Label:          (auto: "RWA1 — 500 mhUSDC")
 
   [Cancel]                              [Confirm]
 ```
@@ -55,7 +55,7 @@ Telegram, Twitter, and Slack reliably preserve URL fragments when pasted as link
 
 If you want real-time programmatic notifications (instead of polling), set up a webhook:
 
-> Create a checkout for 1000 mhUSDC of GOLD1 with webhook https://my.api/cb expiring in 12 hours.
+> Create a checkout for 1000 mhUSDC of RWA2 with webhook https://my.api/cb expiring in 12 hours.
 
 HavenBot's preview adds:
 
@@ -81,9 +81,9 @@ HavenBot subscribes to your issuer-side SSE channel when you mint a checkout. As
 
 ```
 ✅ chk_01HMTV9X... paid
-   Buyer: 0xabc...123 (first-time MuHaven kernel)
+   Buyer: 0xabc...123 (first-time MuHaven wallet)
    Amount: 500 mhUSDC
-   Token: TBILL1
+   Token: RWA1
    Settled in tx: 0xdef...
    View on Arbiscan
 ```
@@ -99,7 +99,7 @@ If you registered a webhook, your endpoint receives a POST:
   "data": {
     "session_id": "chk_01HMTV9X...",
     "issuer_user_id": "usr_...",
-    "token": "TBILL1",
+    "token": "RWA1",
     "amount_usd6": 500000000,
     "buyer_wallet": "0xabc...123",
     "settled_at": "2026-05-16T11:43:21Z",
@@ -136,10 +136,10 @@ HavenBot calls the `list_checkouts` tool and renders a table:
 
 ```
 ID                    Token   Amount   Status      Created             Expires
-chk_01HMTV9X...       TBILL1  500.00   paid        2026-05-15 11:42    -
-chk_01HMTV8Y...       GOLD1   1000.00  pending     2026-05-16 09:14    2026-05-16 21:14
-chk_01HMTV7Z...       OCEAN   250.00   expired     2026-05-14 16:00    2026-05-15 04:00
-chk_01HMTV6W...       TBILL1  750.00   cancelled   2026-05-13 12:00    -
+chk_01HMTV9X...       RWA1  500.00   paid        2026-05-15 11:42    -
+chk_01HMTV8Y...       RWA2   1000.00  pending     2026-05-16 09:14    2026-05-16 21:14
+chk_01HMTV7Z...       RWA3   250.00   expired     2026-05-14 16:00    2026-05-15 04:00
+chk_01HMTV6W...       RWA1  750.00   cancelled   2026-05-13 12:00    -
 ```
 
 You can filter:
@@ -163,10 +163,10 @@ The `checkout_sessions` table has a composite index on `(issuer_user_id, status,
 
 ## What hosted checkout doesn't do
 
-- **Recurring billing.** Each checkout is one-shot. Subscriptions are Wave 5+.
+- **Recurring billing.** Each checkout is one-shot. No subscription primitive today.
 - **Buy-and-claim in one flow.** Buyer-side flows always settle in the buy step; claim is a separate user action on their dashboard.
 - **Refunds.** The on-chain Subscription contract doesn't support refunds. If you over-charged, mint a yield distribution back to the buyer.
-- **Per-buyer KYC enforcement.** The KYC whitelist is at the token level. If your token is on KYC mode and the buyer isn't whitelisted, the buy reverts. Wave 5 may add a "whitelist-on-payment" preset to the checkout flow.
+- **Per-buyer KYC enforcement.** The KYC whitelist is at the token level. If your token is on KYC mode and the buyer isn't whitelisted, the buy reverts. There's no "whitelist-on-payment" preset.
 
 ## Where next
 

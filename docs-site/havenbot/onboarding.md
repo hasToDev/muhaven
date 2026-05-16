@@ -5,7 +5,7 @@ description: Under six minutes from passkey to first encrypted buy.
 
 # Onboarding
 
-HavenBot's onboarding wizard takes a first-time investor from "I just heard of MuHaven" to "I hold an encrypted RWA balance and have an audit row to prove it" in **under six minutes**. The flow follows a Wealthfront-style limits paragraph + the "sealed-glass-envelope" framing surfaced during Wave 4 user research.
+HavenBot's onboarding wizard takes a first-time investor from "I just heard of MuHaven" to "I hold an encrypted RWA balance and have an audit row to prove it" in **under six minutes**. The flow follows a Wealthfront-style limits paragraph plus the "sealed-glass-envelope" framing surfaced during user research.
 
 ## The four steps
 
@@ -32,29 +32,24 @@ You need a small amount of confidential USDC (called **mhUSDC**) to buy your fir
 - Come back to the wizard tab and click **I've funded my wallet**.
 
 **Production (Arbitrum One):**
-- Click **Buy mhUSDC** — opens the on-ramp picker (Wave 5: pluggable to Sardine / Coinbase / MoonPay).
+- Click **Buy mhUSDC** — opens the on-ramp picker.
 - Pay with card / Apple Pay / Google Pay.
 - Wait for on-ramp settlement (~2-3 minutes).
 
 The wizard polls your mhUSDC balance and advances automatically once funds land.
 
 ::: warning Wrap-to-mhUSDC leaks
-The wrap from USDC → mhUSDC is the one MuHaven flow that leaks deposit size to a chain observer. Mitigations (batching, delays, CCTP) are tracked for Wave 5. If your deposit size needs to stay private, wait for the Wave 5 mitigation or use the issuer-minted hosted checkout flow (which routes through a non-customer kernel).
+The wrap from USDC → mhUSDC is the one MuHaven flow that leaks deposit size to a chain observer. If your deposit size needs to stay private, use the issuer-minted hosted checkout flow (which routes through a non-customer MuHaven wallet).
 :::
 
 ### Step 3 — First buy (~2 minutes)
 
-The wizard shows a tile per active RWA token (TBILL1, GOLD1, NOVUS, OCEAN today):
-
-- **TBILL1** — Tokenized short-duration US Treasuries. Low-risk yield.
-- **GOLD1** — Tokenized gold. Inflation hedge.
-- **NOVUS** — Tokenized growth basket.
-- **OCEAN** — Tokenized ocean-cargo-shipping receivables. Higher yield, higher risk.
+The wizard shows a tile per active RWA token in the current catalog. Each tile names the asset class (short-duration treasuries, gold, growth basket, shipping receivables, etc.) and links to issuer detail.
 
 Pick one, enter an amount (default 50 mhUSDC), and click **Continue**. The wizard hands off to ConfirmModal:
 
 1. Cleartext preview: amount, estimated shares, current NAV, slippage.
-2. **Confirm** — your kernel signs the UserOp with the session key.
+2. **Confirm** — your MuHaven wallet signs the UserOp with the session key.
 3. Toast: "Signed → Bundler → Settling…"
 4. Toast: "Settled. View on Arbiscan."
 
@@ -65,7 +60,7 @@ You now hold an encrypted balance of your first RWA token. The ConfirmModal clos
 A success screen with three calls to action:
 
 - **Set your tier.** Default is Advisory (every action prompts your passkey). Most users graduate to Confirm-per-action within their first session.
-- **Link Telegram.** Open `/settings → Telegram` to bind your kernel to a Telegram chat for phone-first access.
+- **Link Telegram.** Open `/settings → Telegram` to bind your MuHaven wallet to a Telegram chat for phone-first access.
 - **Install MCP.** Open `/settings → MCP` for the device-code authorization flow that lets Claude Code / Desktop / Cursor talk to MuHaven.
 
 Click **Done**. The wizard sets `muhaven:onboarding:complete=true` in localStorage. Future visits go straight to `/agent`.
@@ -85,18 +80,18 @@ You can always re-open the wizard from `/agent → ⋯ menu → Run onboarding a
 
 ## Issuer onboarding
 
-The investor onboarding wizard runs only for `role === 'investor'` kernels. Issuers see a different `/agent/onboarding` flow:
+The investor onboarding wizard runs only for `role === 'investor'` MuHaven wallets. Issuers see a different `/agent/onboarding` flow:
 
 1. Welcome (issuer-specific copy).
 2. Verify your KYB metadata (legal name, jurisdiction).
 3. Pick a token symbol to issue.
-4. F2 wizard step 6 (set initial NAV + unpause) — uses `muhaven_propose_unpause_token` so the **issuer kernel** signs (production-trajectory shape, not the deployer-side script).
+4. F2 wizard step 6 (set initial NAV + unpause) — uses `muhaven_propose_unpause_token` so the **issuer's MuHaven wallet** signs (production-trajectory shape, not the deployer-side script).
 
 The issuer wizard skips the funding step (issuers don't need mhUSDC to operate) and adds a "set up your first investor whitelist" call to action at the end.
 
 ## How long does it really take?
 
-P95 timings from internal testing (5-investor sample, Wave 4 closeout):
+P95 timings from internal testing (5-investor sample):
 
 | Step | Median | P95 |
 |---|---|---|

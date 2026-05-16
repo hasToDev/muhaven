@@ -23,7 +23,7 @@ Idempotency-Key: 01HMTV9X...
   "data": {
     "session_id": "chk_01HMTV9X...",
     "issuer_user_id": "usr_...",
-    "token": "TBILL1",
+    "token": "RWA1",
     "amount_usd6": 500000000,
     "buyer_wallet": "0xabc...",
     "settled_at": "2026-05-16T11:43:21Z",
@@ -136,7 +136,7 @@ eventSource.addEventListener('checkout.session.paid', (e) => {
 })
 ```
 
-The SSE channel auto-closes when the session reaches a terminal state (`paid` / `expired` / `cancelled`) and sends a 25-second heartbeat to keep the connection alive. It's **per-process** today — multi-replica deploys need Redis pub/sub for fan-out (Wave 5 scale-up).
+The SSE channel auto-closes when the session reaches a terminal state (`paid` / `expired` / `cancelled`) and sends a 25-second heartbeat to keep the connection alive. It's **per-process** today — multi-replica deploys would need Redis pub/sub for fan-out.
 
 ## Webhook secret rotation
 
@@ -152,7 +152,7 @@ There's no "rotate the secret on an existing live session" path today; per-sessi
 - **It doesn't send webhooks for read-only events.** Only state transitions trigger a webhook.
 - **It doesn't include the URL fragment key in webhook payloads.** The webhook is a server-to-server event; it doesn't need the key.
 - **It doesn't follow redirects.** A webhook URL that returns a 301/302 fails delivery. Use the final URL.
-- **It doesn't pin TLS to a specific CA.** Wave 5 may add issuer-configurable cert pinning for high-assurance webhooks.
+- **It doesn't pin TLS to a specific CA.** Issuer-configurable cert pinning is not available today.
 
 ## Where next
 

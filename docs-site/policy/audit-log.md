@@ -98,27 +98,12 @@ LIMIT $limit
 
 A naive `gt(createdAt)` would lose rows on burst writes (e.g., the four-surface pause cascade). The tuple comparison is the safety net.
 
-## Cross-user audit access (Wave 5)
+## Cross-user audit access
 
-Today, audit reads are **self-only**. A compliance officer can read their own audit; they cannot read another user's audit even with their consent.
-
-Wave 5 adds **permit-gated cross-user audit access**:
-
-- The audited user signs a permit granting read access (specific user, specific time window).
-- The reading user passes the permit on the audit query.
-- Backend verifies the permit against the on-chain ACL.
-- Returns the rows.
-
-The wire shape is pinned in **ADR-8 §D3**: the upgrade is **purely additive** (new optional `permit` request field; `scopedTo: 'self'` response field flips to a user-id when permit is present).
-
-## Audit-log redaction (Wave 5)
-
-A bounded leak in `agent_confirm_tokens.action_payload` exists today: for encrypted governance votes, the cleartext yes/no is stored for the 5-min confirm-token TTL so ConfirmModal can render the preview. After the TTL, the confirm token is purged.
-
-This is acknowledged in [ADR-9 §D3](https://github.com/hasToDev/muhaven/blob/master/development/DEV_WAVE_4/ADR_LOG.md) as a Wave 5 redaction follow-up — the `action_payload` will be auto-redacted on permit_granted commit, leaving only the audit row (which records `tool: 'governance.cast_vote'` without the cleartext).
+Audit reads are **self-only**. A compliance officer can read their own audit; they cannot read another user's audit even with their consent. There's no cross-user permit-gated read path today.
 
 ## Where next
 
 - [Tiered autonomy](/policy/tiered-autonomy) — how tier transitions log.
 - [The /pause kill-switch](/policy/pause) — pause cascade and audit rows.
-- [Threat model in plain language](/policy/threats) — why audit completeness matters.
+- [Session keys](/policy/session-keys) — what session-key activity records.

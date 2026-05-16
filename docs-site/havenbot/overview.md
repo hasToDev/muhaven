@@ -5,9 +5,30 @@ description: Your in-dashboard AI copilot for confidential RWA portfolio actions
 
 # HavenBot
 
-HavenBot is MuHaven's **in-dashboard agent**. It lives at `muhaven.app/agent` and operates the same SDK + policy gate as every other surface, with a guided UX layered on top: streaming chat, per-action ConfirmModal, FHE-decrypted previews assembled in-browser.
+HavenBot is MuHaven's **in-dashboard agent**. It lives at `muhaven.app/agent` and operates the same SDK and policy gate as every other surface, with a guided UX layered on top: streaming chat, per-action ConfirmModal, FHE-decrypted previews assembled in-browser.
 
 It's the lowest-friction way to start using MuHaven agentically — no terminal, no install, no host config. Open the dashboard, sign in with your passkey, click **Agent**, and you're in.
+
+## Start with a playbook
+
+The fastest way to get value out of HavenBot is to copy a phrase that already works. Pick the side that matches your role:
+
+<div class="mh-card-grid mh-card-grid--hero">
+  <a class="mh-card mh-card--hero" href="/havenbot/investor-playbook">
+    <h3>🪙 Investor playbook</h3>
+    <p><strong>Copy-paste phrases for buying, claiming, rebalancing, and setting your policy.</strong></p>
+    <p>"Show my portfolio." · "Buy 50 mhUSDC of <code>&lt;TOKEN&gt;</code>." · "Claim all my pending yield." · "Switch me to Confirm-per-action." · "Pause my agent."</p>
+    <p><em>Read this if you hold encrypted RWA tokens and want to drive them by asking.</em></p>
+  </a>
+  <a class="mh-card mh-card--hero" href="/havenbot/issuer-playbook">
+    <h3>🏛 Issuer playbook</h3>
+    <p><strong>Copy-paste phrases for distributing yield, managing KYC, activating new tokens, minting checkout links.</strong></p>
+    <p>"Distribute $50,000 of yield to <code>RWA1</code> holders for May." · "Add 0xabc…123 to <code>RWA1</code>'s whitelist." · "Set NAV and unpause <code>RWA1</code>." · "Create a checkout for 500 mhUSDC of <code>RWA1</code>."</p>
+    <p><em>Read this if you create RWA tokens, schedule yield epochs, or run KYC.</em></p>
+  </a>
+</div>
+
+Both pages are conversation-first: each row is **say this → agent calls that → here's the cleartext preview you'll confirm**. They're the quickest path from "I have a passkey" to "I'm running this portfolio by asking."
 
 ## What HavenBot can do
 
@@ -23,7 +44,7 @@ It's the lowest-friction way to start using MuHaven agentically — no terminal,
 - Buy / claim / rebalance.
 - Set tier (Advisory ↔ Confirm-per-action ↔ Policy-bound).
 - Pause the agent (kill-switch).
-- Encrypted governance vote (Wave 5 frontend runner).
+- Encrypted governance vote.
 
 **Issuer-only:**
 
@@ -54,11 +75,11 @@ The HavenBot UI sits in your dashboard:
 │  ─── Issuer ─── │  (encrypted-balance handle hidden)         │
 │  ▸ Tokens       │                                            │
 │  ▸ Distribute   │  You — 11:43                               │
-│  ▸ Investors    │  Buy 50 mhUSDC of TBILL1.                  │
+│  ▸ Investors    │  Buy 50 mhUSDC of <TOKEN>.                 │
 │  ▸ Compliance   │                                            │
 │                 │  HavenBot — 11:43                          │
 │                 │  ┌────────── ConfirmModal ──────────┐      │
-│                 │  │ Buy 50.00 mhUSDC of TBILL1       │      │
+│                 │  │ Buy 50.00 mhUSDC of <TOKEN>      │      │
 │                 │  │ Estimated shares: ~49.85         │      │
 │                 │  │ NAV: $1.003 · slippage 0.30%     │      │
 │                 │  │ [Cancel]            [Confirm]    │      │
@@ -94,7 +115,7 @@ Your message
        │ approved
        ▼
 ┌──────────────────┐
-│  MuHaven SDK     │  kernel + session-key sender writes the UserOp
+│  MuHaven SDK     │  MuHaven wallet + session-key sender writes the UserOp
 │  call            │  ZeroDev bundler relays
 └──────┬───────────┘
        │
@@ -124,8 +145,8 @@ Read the full walkthrough at [Onboarding](/havenbot/onboarding).
 ## Privacy properties
 
 - Your encrypted balances stay on-chain as ciphertext. HavenBot reads aggregates and `ebool` flags. Cleartext previews are assembled in your browser via `decryptForView(handle).withPermit().execute()` — the backend doesn't see them.
-- The LLM provider (Gemini today, swappable to Claude in Wave 5) sees your chat transcript and the tool-call envelopes. It does NOT see raw FHE handles.
-- The chat history is server-managed for now. You can clear it from `/agent → ⋯ menu → Clear chat`. Wave 5 may add a "keep local only" mode.
+- The LLM provider (Gemini today) sees your chat transcript and the tool-call envelopes. It does NOT see raw FHE handles.
+- The chat history is server-managed. You can clear it from `/agent → ⋯ menu → Clear chat`.
 - Every state-mutating tool emits an audit log row. Read tools intentionally do not log (privacy floor) — see [Audit log](/policy/audit-log).
 
 ## When to use HavenBot
@@ -148,15 +169,15 @@ Read the full walkthrough at [Onboarding](/havenbot/onboarding).
     <p>Under 6 minutes from passkey to first encrypted buy.</p>
   </a>
   <a class="mh-card" href="/havenbot/conversations">
-    <h3>Conversations & confirmations</h3>
+    <h3>Conversations &amp; confirmations</h3>
     <p>How the chat, ConfirmModal, and signing flow actually work.</p>
   </a>
-  <a class="mh-card" href="/havenbot/investor-playbook">
-    <h3>Investor playbook</h3>
-    <p>Phrasing that works for buy, claim, rebalance, set policy.</p>
+  <a class="mh-card" href="/havenbot/troubleshooting">
+    <h3>Troubleshooting</h3>
+    <p>Symptom-first guide for the most common HavenBot hiccups.</p>
   </a>
-  <a class="mh-card" href="/havenbot/issuer-playbook">
-    <h3>Issuer playbook</h3>
-    <p>Distribute yield, manage KYC, unpause a token, create checkout links.</p>
+  <a class="mh-card" href="/reference/tool-catalog">
+    <h3>Tool catalog</h3>
+    <p>Every tool side-by-side across all four surfaces.</p>
   </a>
 </div>

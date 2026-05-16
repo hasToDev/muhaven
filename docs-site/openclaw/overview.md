@@ -11,28 +11,28 @@ The OpenClaw surface is MuHaven's **phone-first** interface. It bundles three th
 2. **`@muhaven_bot`** — the official MuHaven Telegram bot. Conversational interface for the same 11 tools.
 3. **Telegram Mini App** — the in-Telegram web view that handles mid-tier confirmations (the $200-$5K window).
 
-All three share the same kernel and the same audit log as HavenBot, MCP, and the hosted checkout.
+All three share the same MuHaven wallet and the same audit log as HavenBot, MCP, and the hosted checkout.
 
-## What ships
+## What's available
 
 | Component | Status |
 |---|---|
-| `muhaven-rwa-skill@0.1.2` | ✅ Published to ClawHub (rehearsal release: `muhaven-rwa-skill-rehearsal@0.1.0-rc.1`) |
-| `@muhaven_bot` Telegram bot | ✅ Live on Arb Sepolia + Arb One |
-| Telegram Mini App | ✅ Live at `tg.muhaven.app` (prod) / `tg-stage.muhaven.app` (stage) |
-| Three-tier confirmation classifier | ✅ Inline ≤$200 / Mini-App OTP $200–$5K / passkey deeplink >$5K |
-| Sigstore + GitHub OIDC publish | ✅ Trusted publisher configured; tag-push triggers a signed release |
+| `muhaven-rwa-skill@0.1.2` | Published to ClawHub |
+| `@muhaven_bot` Telegram bot | Live on Arb Sepolia + Arb One |
+| Telegram Mini App | Live at `tg.muhaven.app` (prod) / `tg-stage.muhaven.app` (stage) |
+| Three-tier confirmation classifier | Inline ≤$200 / Mini-App OTP $200–$5K / passkey deeplink >$5K |
+| Sigstore + GitHub OIDC publish | Trusted publisher configured; tag-push triggers a signed release |
 
 ## The 11-tool subset (and what's deliberately excluded)
 
 The OpenClaw skill includes:
 
 - **All 5 read tools** — `portfolio`, `yields`, `distribution`, `tokens`, `audit`.
-- **The 2 P11 read tools** — `protection_coverage`, `kyc_attestation`.
+- **The 2 protection / KYC read tools** — `protection_coverage`, `kyc_attestation`.
 - **2 of 4 position tools** — `buy`, `claim`.
 - **2 of 4 policy tools** — `pause`, `session_key_status`.
 
-Deliberately excluded (per ADR-C):
+Deliberately excluded:
 
 - `position.sell` and `position.rebalance` — multi-leg ceremonies don't fit a three-tier Telegram confirmation.
 - `policy.set_tier` and `policy.audit_export` — tier transitions need the dashboard ceremony; audit export needs a download surface.
@@ -114,5 +114,9 @@ The bot **does not run an LLM** — it's a deterministic command interpreter. Th
   <a class="mh-card" href="/openclaw/tools">
     <h3>Available tools</h3>
     <p>The 11-tool subset, what each does, and how to invoke it.</p>
+  </a>
+  <a class="mh-card" href="/openclaw/playbook">
+    <h3>Playbook — phone-first scenarios</h3>
+    <p>Commuting check-in, claim from bed, train-station tier switch.</p>
   </a>
 </div>

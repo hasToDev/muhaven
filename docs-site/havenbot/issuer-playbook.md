@@ -5,7 +5,11 @@ description: Phrasing for distribute yield, manage KYC, unpause, create checkout
 
 # Issuer playbook
 
-The issuer-facing surface of HavenBot lands in the same `/agent` route as the investor one, but five additional tools become visible to **issuer-roled and `issuerStatus === 'approved'`** kernels: distribute yield, KYC add/remove, unpause a freshly-deployed token, and an audit copilot.
+The issuer-facing surface of HavenBot lands in the same `/agent` route as the investor one, but five additional tools become visible to **issuer-roled and `issuerStatus === 'approved'`** MuHaven wallets: distribute yield, KYC add/remove, unpause a freshly-deployed token, and an audit copilot.
+
+Every row below follows the same shape: **what you say** → **what the agent calls** → **what you confirm**.
+
+> `<TOKEN>` and `RWA1` are placeholders for whichever token you're working with — replace them with the actual symbol on your dashboard.
 
 If you don't see the issuer tools, check:
 
@@ -18,9 +22,11 @@ The single most common issuer flow. Schedules a yield epoch for a token's holder
 
 | You want | Say |
 |---|---|
-| Schedule a yield epoch | "Distribute $50,000 of yield to TBILL1 holders for May." |
-| Quick schedule | "Distribute $25K to GOLD1." *(label defaults to "Q2 2026")* |
-| Test the wiring | "Distribute $1 to TBILL1 holders." *(useful on testnet)* |
+| Schedule a yield epoch | "Distribute $50,000 of yield to `<TOKEN>` holders for May." |
+| Quick schedule | "Distribute $25K to `<TOKEN>`." *(label defaults to current quarter)* |
+| Test the wiring | "Distribute $1 to `<TOKEN>` holders." *(useful on testnet)* |
+| Per-share rate target | "Distribute yield to `<TOKEN>` at $0.0012 per share." |
+| Recap last epoch | "How much did I distribute on `<TOKEN>` last epoch?" |
 
 Under the hood HavenBot calls `muhaven_propose_distribute_yield` which triggers the SDK pipeline:
 
@@ -28,7 +34,7 @@ Under the hood HavenBot calls `muhaven_propose_distribute_yield` which triggers 
 2. `batchCreate` — creates a per-investor `MuHavenEscrow` (default batch size 50, max 200).
 3. `fundEscrows` — funds each escrow with the proportional cleartext amount.
 
-The ConfirmModal shows a multi-leg breakdown. **You sign once** with your issuer kernel passkey; the SDK fans out the batched UserOps.
+The ConfirmModal shows a multi-leg breakdown. **You sign once** with your issuer passkey; the SDK fans out the batched UserOps.
 
 ::: tip Yield distribution is per-investor at the contract level
 The contract creates a separate `MuHavenEscrow` per holder, not a single shared pool. This is what makes the per-investor claim privacy-preserving: when an investor later claims, they pull only their escrow — and the operator never knows the amount.
@@ -38,17 +44,18 @@ The contract creates a separate `MuHavenEscrow` per holder, not a single shared 
 
 | You want | Say |
 |---|---|
-| Add an investor to whitelist | "Add 0xabc…123 to TBILL1's whitelist." |
-| Add an accredited investor | "Add 0xabc…123 to TBILL1's whitelist as tier 2 accredited." |
-| Remove an investor | "Remove 0xdef…456 from TBILL1." |
-| Bulk operations | "Add the following addresses to GOLD1: 0xabc…, 0xdef…, 0x123…" *(HavenBot prompts you per address; bulk single-UserOp is Wave 5)* |
+| Add an investor to whitelist | "Add 0xabc…123 to `<TOKEN>`'s whitelist." |
+| Add an accredited investor | "Add 0xabc…123 to `<TOKEN>`'s whitelist as tier 2 accredited." |
+| Remove an investor | "Remove 0xdef…456 from `<TOKEN>`." |
+| Verify membership | "Is 0xabc…123 on `<TOKEN>`'s whitelist?" |
+| Bulk adds | "Add the following addresses to `<TOKEN>`: 0xabc…, 0xdef…, 0x123…" *(HavenBot prompts you per address)* |
 
 Tier 1 = retail KYC (one `addToWhitelist` UserOp). Tier 2 = accredited (two sequential UserOps: `addToWhitelist` + `addToAccreditedList`).
 
 Removal **auto-clears** the tier-2 accredited flag — see `ERC3643KYCAdapter.sol:103-110`.
 
 ::: warning KYC bypass in dev mode
-For the hackathon, MuHavenIdentityRegistry runs in dev mode (`devMode=true` → `isVerified` always returns true, no whitelist enforcement). KYC tools work but the on-chain compliance check is bypassed. Wave 5 ships `disableDevModeForever()` once production KYC partners are wired.
+For the hackathon, MuHavenIdentityRegistry runs in dev mode (`devMode=true` → `isVerified` always returns true, no whitelist enforcement). KYC tools work but the on-chain compliance check is bypassed until production KYC partners are wired.
 :::
 
 ## Unpause a freshly-deployed token
@@ -57,15 +64,16 @@ When you complete the F2 token-creation wizard, the new token is **paused** by d
 
 | You want | Say |
 |---|---|
-| Activate a new token | "OCEAN's first NAV came in at $0.998 — set NAV and unpause." |
-| Re-quote and activate | "What's the suggested initial NAV for OCEAN? Then activate." *(HavenBot reads the off-chain price feed and proposes the value)* |
+| Activate a new token | "`<TOKEN>`'s first NAV came in at $0.998 — set NAV and unpause." |
+| Re-quote and activate | "What's the suggested initial NAV for `<TOKEN>`? Then activate." *(HavenBot reads the off-chain price feed and proposes the value)* |
+| Inspect status | "Is `<TOKEN>` active or still paused?" |
 
-This calls `muhaven_propose_unpause_token`, which signs **two UserOps** with your issuer kernel:
+This calls `muhaven_propose_unpause_token`, which signs **two UserOps** with your issuer passkey:
 
 1. `IssuerControlledOracle.setNAV(token, initialNav)` — writes the first NAV.
 2. `TokenRegistry.setPaused(token, false)` — flips the paused flag.
 
-Both signed by your **issuer kernel** (production-trajectory shape — NOT the deployer-side `scripts/unpause-token.ts` automation that exists for dev convenience).
+Both signed by your **issuer passkey** (production-trajectory shape — NOT the deployer-side `scripts/unpause-token.ts` automation that exists for dev convenience).
 
 The tool is **idempotent**: if the token is already unpaused, HavenBot refuses with `409 ALREADY_ACTIVE` instead of re-issuing the UserOps.
 
@@ -76,9 +84,10 @@ The tool is **idempotent**: if the token is already unpaused, HavenBot refuses w
 | Recent issuer audit | "Show my issuer audit log." |
 | Filter by surface | "Show audit rows that came from MCP." |
 | Filter by tool | "Show every distribute_yield I've run this month." |
+| Filter by token | "Show audit for `<TOKEN>` this quarter." |
 | Export | "Export my issuer audit log for the last 90 days." |
 
-**Wave 4 = issuer-self only with a 90-day window cap.** Cross-user permit-gated access (the "compliance officer reads my issuer audit log with a signed permit") is wired in ADR-8 §D3 but the frontend ceremony lands in Wave 5.
+Issuer audit is **self-only with a 90-day window cap**.
 
 ## Create a hosted-checkout link
 
@@ -86,10 +95,11 @@ The hosted-checkout surface at `muhaven.app/pay/...` is operated entirely from t
 
 | You want | Say |
 |---|---|
-| Create a one-off pay link | "Create a checkout link for 500 mhUSDC of TBILL1 expiring in 24 hours." |
-| With a custom label | "Create a checkout link for 1000 mhUSDC of GOLD1 for buyer 'Acme Treasury'." |
-| With a webhook | "Create a checkout link for 200 mhUSDC of OCEAN with webhook https://my.api/cb." |
+| Create a one-off pay link | "Create a checkout link for 500 mhUSDC of `<TOKEN>` expiring in 24 hours." |
+| With a custom label | "Create a checkout link for 1000 mhUSDC of `<TOKEN>` for buyer 'Acme Treasury'." |
+| With a webhook | "Create a checkout link for 200 mhUSDC of `<TOKEN>` with webhook https://my.api/cb." |
 | Inspect status | "What's the status of checkout `chk_01HMTV…`?" |
+| List recent | "Show my recent checkouts." or "Show my pending checkouts." |
 | Cancel an unredeemed link | "Cancel checkout `chk_01HMTV…`." |
 
 The link HavenBot returns has the **fragment-key** structure — the key is in the URL fragment so it never reaches our server. See [URL fragment key (privacy)](/checkout/fragment-key).
@@ -104,17 +114,16 @@ HavenBot picks up where the F2 wizard ends: at step 6 (set initial NAV + unpause
 
 ## What HavenBot won't do for issuers
 
-- **It won't move yield from your treasury to a non-investor wallet.** Yield distribution targets MuHavenEscrow contracts only; the issuer kernel can't divert.
+- **It won't move yield from your treasury to a non-investor wallet.** Yield distribution targets MuHavenEscrow contracts only; the issuer's MuHaven wallet can't divert.
 - **It won't decrypt investor balances.** The issuer sees aggregates (total supply *handle*, holder count) — never per-investor amounts.
-- **It won't auto-approve KYC.** Every add/remove is a deliberate signed action. Bulk-approve from a CSV is Wave 5+.
+- **It won't auto-approve KYC.** Every add/remove is a deliberate signed action.
 - **It won't act as another issuer.** Cross-issuer audit access requires a permit signed by the other issuer.
 
 ## Common mistakes
 
 - **"Distribute yield to my token"** without specifying which token → HavenBot asks which one.
 - **"Add this whitelist"** with a list pasted as plaintext → HavenBot parses one address at a time and prompts you per row.
-- **"Unpause OCEAN"** without specifying initial NAV → HavenBot will quote from the oracle but ask you to confirm; setting NAV is a signed action you don't want auto-defaulted.
-- **"Audit log for [other issuer]"** → rejected. Cross-user audit is permit-gated (Wave 5).
+- **"Unpause `<TOKEN>`"** without specifying initial NAV → HavenBot will quote from the oracle but ask you to confirm; setting NAV is a signed action you don't want auto-defaulted.
 
 ## Where next
 

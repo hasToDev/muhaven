@@ -17,14 +17,14 @@ I'll check your MuHaven portfolio.
 [muhaven] muhaven.read.portfolio()
 {
   "positions": [
-    { "token": "TBILL1", "asset_class": "treasury", "encrypted": true },
-    { "token": "GOLD1",  "asset_class": "gold",     "encrypted": true }
+    { "token": "RWA1", "asset_class": "treasury", "encrypted": true },
+    { "token": "RWA2",  "asset_class": "gold",     "encrypted": true }
   ],
   "total_tokens": 2,
   "last_synced": "2026-05-16T10:32:14Z"
 }
 
-You hold 2 RWA tokens — TBILL1 (treasury) and GOLD1 (gold).
+You hold 2 RWA tokens — RWA1 (treasury) and RWA2 (gold).
 The actual balances are FHE-encrypted on-chain; if you want the
 cleartext amounts, run `muhaven.read.portfolio` from your
 dashboard at muhaven.app where you can decrypt locally with your
@@ -41,11 +41,11 @@ permit.
 ## 2. A yield query
 
 ```
-> How much yield did my GOLD1 earn last quarter?
+> How much yield did my RWA2 earn last quarter?
 
-[muhaven] muhaven.read.yields({"token":"GOLD1","since":"2026-02-01T00:00:00Z"})
+[muhaven] muhaven.read.yields({"token":"RWA2","since":"2026-02-01T00:00:00Z"})
 {
-  "token": "GOLD1",
+  "token": "RWA2",
   "epochs": [
     { "id": 4, "distributed_at": "2026-02-15T14:00:00Z", "per_share_usd6": 1200 },
     { "id": 5, "distributed_at": "2026-03-15T14:00:00Z", "per_share_usd6": 1180 },
@@ -54,7 +54,7 @@ permit.
   ]
 }
 
-GOLD1 paid yield over the last quarter:
+RWA2 paid yield over the last quarter:
 - Feb epoch: $0.0012 / share
 - Mar epoch: $0.00118 / share
 - Apr epoch: $0.00134 / share
@@ -68,9 +68,9 @@ epoch IDs.
 ## 3. A propose-only buy
 
 ```
-> Buy 100 mhUSDC of TBILL1.
+> Buy 100 mhUSDC of RWA1.
 
-[muhaven] muhaven.position.buy({"token":"TBILL1","amountUsd6":100000000})
+[muhaven] muhaven.position.buy({"token":"RWA1","amountUsd6":100000000})
 {
   "envelope": {
     "to": "0x4f...",
@@ -82,7 +82,7 @@ epoch IDs.
   "audit_id": "agt_01HMTV..."
 }
 
-I've prepared a buy of 100 mhUSDC of TBILL1. I have NOT submitted
+I've prepared a buy of 100 mhUSDC of RWA1. I have NOT submitted
 it — MCP propose tools never auto-submit. Here's what you do:
 
 1. Open https://muhaven.app/agent
@@ -139,11 +139,11 @@ The resume path involves a WebAuthn passkey ceremony that the MCP server can't d
 
 - **Decrypt encrypted handles.** MCP returns aggregates; cleartext decrypt requires the dashboard `decryptForView` path because the permit needs your browser-side cofhe client.
 - **Resume after pause.** The WebAuthn ceremony is dashboard-only.
-- **First-time onboarding.** The `/agent/onboarding` wizard is dashboard-only. MCP assumes you already have a kernel; if you don't, sign up on the dashboard first.
-- **Encrypted governance vote (frontend runner).** Wave 4 wires the propose half via MCP; the in-modal commit ceremony is Wave 5.
+- **First-time onboarding.** The `/agent/onboarding` wizard is dashboard-only. MCP assumes you already have a MuHaven wallet; if you don't, sign up on the dashboard first.
 
 ## Where next
 
+- [Playbook — scenarios](/mcp/playbook) — multi-MCP workflows, scheduled checks, cross-tool prompts.
 - [Tool catalog](/mcp/tools) — the full schema for every tool.
 - [Read-only mode](/mcp/read-only-mode) — restrict your MCP install to the 7 read tools.
 - [Troubleshooting](/mcp/troubleshooting) — auth, transport, lifecycle issues.

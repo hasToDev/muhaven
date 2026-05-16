@@ -96,6 +96,7 @@ export default defineConfig({
             { text: 'Overview', link: '/mcp/overview' },
             { text: 'Install', link: '/mcp/install' },
             { text: 'First chat (Claude Code / Desktop / Cursor)', link: '/mcp/first-chat' },
+            { text: 'Playbook — scenarios that work', link: '/mcp/playbook' },
             { text: 'Tool catalog', link: '/mcp/tools' },
             { text: 'Broker daemon', link: '/mcp/broker' },
             { text: 'Read-only mode', link: '/mcp/read-only-mode' },
@@ -112,6 +113,7 @@ export default defineConfig({
             { text: 'Telegram bot', link: '/openclaw/telegram-bot' },
             { text: 'Three confirmation tiers', link: '/openclaw/confirmation-tiers' },
             { text: 'Available tools', link: '/openclaw/tools' },
+            { text: 'Playbook — phone-first scenarios', link: '/openclaw/playbook' },
             { text: 'Troubleshooting', link: '/openclaw/troubleshooting' },
           ],
         },
@@ -137,7 +139,6 @@ export default defineConfig({
             { text: 'Session keys', link: '/policy/session-keys' },
             { text: 'The /pause kill-switch', link: '/policy/pause' },
             { text: 'Audit log', link: '/policy/audit-log' },
-            { text: 'Threat model in plain language', link: '/policy/threats' },
           ],
         },
       ],
@@ -148,7 +149,6 @@ export default defineConfig({
             { text: 'Tool catalog (all 4 surfaces)', link: '/reference/tool-catalog' },
             { text: 'Tier matrix', link: '/reference/tier-matrix' },
             { text: 'Glossary', link: '/reference/glossary' },
-            { text: 'Status & limits', link: '/reference/status' },
           ],
         },
       ],
@@ -158,8 +158,8 @@ export default defineConfig({
     ],
     footer: {
       message:
-        'MuHaven docs — Wave 4 (agentic-first). Run locally with <code>pnpm dev</code>; production at <code>docs.muhaven.app</code>.',
-      copyright: 'Built on Fhenix CoFHE · Arbitrum · ZeroDev passkey kernel.',
+        'MuHaven docs — agentic-first. Run locally with <code>pnpm dev</code>; production at <code>docs.muhaven.app</code>.',
+      copyright: 'Built on Fhenix CoFHE · Arbitrum · ZeroDev passkey-bound MuHaven wallet.',
     },
     search: {
       provider: 'local',

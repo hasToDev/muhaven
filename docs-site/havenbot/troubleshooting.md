@@ -11,7 +11,7 @@ A symptom-first reference. If your issue isn't here, check the [`api.muhaven.app
 
 ### "Sign in succeeded, but the dashboard is empty."
 
-Check the network selector top-right. You may be on a network where your kernel doesn't exist (e.g., signed in on Arb Sepolia but viewing Arb One). Switch to the network where your kernel was deployed.
+Check the network selector top-right. You may be on a network where your MuHaven wallet doesn't exist (e.g., signed in on Arb Sepolia but viewing Arb One). Switch to the network where your MuHaven wallet was deployed.
 
 ### "Passkey dialog doesn't appear."
 
@@ -28,7 +28,7 @@ If you're seeing the prompt within an hour of installation, the session-key vali
 
 ### "I'm signed out unexpectedly."
 
-JWT expiry (silent — happens if your tab sits idle past the refresh window). Sign in again. Wave 5 ships a silent-refresh path for the chat SSE stream so this never interrupts mid-conversation.
+JWT expiry (silent — happens if your tab sits idle past the refresh window). Sign in again.
 
 ## Funding & buying
 
@@ -64,9 +64,9 @@ Your decrypt permit expired. Refresh the page; HavenBot re-mints the permit on n
 
 ### "HavenBot keeps asking me for clarification."
 
-The LLM is set to strict-enum schemas on every tool. If you ask "buy some TBILL1", HavenBot will ask "how much?" because the `amount` field is required.
+The LLM is set to strict-enum schemas on every tool. If you ask "buy some `<TOKEN>`", HavenBot will ask "how much?" because the `amount` field is required.
 
-Phrase your asks concretely: "Buy 50 mhUSDC of TBILL1."
+Phrase your asks concretely: "Buy 50 mhUSDC of `<TOKEN>`."
 
 ### "HavenBot returned an answer in raw JSON."
 
@@ -98,10 +98,6 @@ The encrypted preview decrypt failed (permit expired, ACL not granted, RPC lag).
 ### "I clicked Confirm but nothing happened."
 
 Browser pop-up blocker may have suppressed the passkey ceremony (Advisory tier prompts the passkey on every action). Allow popups for `muhaven.app` and retry.
-
-### "Got 'Deferred' instead of 'Settled'."
-
-You used a Wave 5 feature. Rebalance and governance vote runners are wired but their in-modal ceremony lands in Wave 5. The modal will tell you which page to visit to complete the action manually.
 
 ## Issuer flows
 

@@ -13,7 +13,7 @@ A quick lookup table for whether a given tool runs in each of the four tiered-au
 | `position.buy` | ✅ passkey | ✅ session key | ✅ if within bounds | ❌ 423 |
 | `position.sell` | ✅ passkey | ✅ session key | ✅ if within bounds | ❌ 423 |
 | `position.claim` | ✅ passkey | ✅ session key | ✅ always (claim is fee-bearing pull) | ❌ 423 |
-| `position.rebalance` | ✅ passkey (Wave 5 runner) | ✅ session key (Wave 5 runner) | ✅ if within drift bounds (Wave 5) | ❌ 423 |
+| `position.rebalance` | ✅ passkey | ✅ session key | ✅ if within drift bounds | ❌ 423 |
 | `policy.set_tier` | ✅ passkey | ✅ passkey (requires re-auth) | ✅ passkey | ❌ — except `→ resume`, which needs passkey |
 | `policy.pause` | ✅ idempotent | ✅ idempotent | ✅ idempotent | ✅ idempotent (no-op) |
 | `policy.audit_export` | ✅ | ✅ | ✅ | ✅ |
@@ -23,8 +23,8 @@ A quick lookup table for whether a given tool runs in each of the four tiered-au
 | `issuer.kyc_remove` | ✅ passkey | ✅ session key | ✅ if within bounds | ❌ 423 |
 | `issuer.unpause_token` | ✅ passkey | ✅ session key | ✅ | ❌ 423 |
 | `issuer.audit_query` | ✅ | ✅ | ✅ | ✅ |
-| `governance.propose` (Wave 5 runner) | ✅ passkey | ✅ session key | ✅ | ❌ 423 |
-| `governance.cast_vote` (Wave 5 runner) | ✅ passkey | ✅ session key | ✅ | ❌ 423 |
+| `governance.propose` | ✅ passkey | ✅ session key | ✅ | ❌ 423 |
+| `governance.cast_vote` | ✅ passkey | ✅ session key | ✅ | ❌ 423 |
 
 **Legend:**
 

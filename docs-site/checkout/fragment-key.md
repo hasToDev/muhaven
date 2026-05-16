@@ -38,7 +38,7 @@ Cleartext fields, encrypted at session-create time:
 
 - Token symbol + contract address
 - Amount in mhUSDC (6-decimal)
-- Issuer label ("TBILL1 Treasury Issuer (Verified)")
+- Issuer label ("Treasury Issuer (Verified)")
 - Optional buyer-bound label
 
 What's **not** in the payload (these are public/server-visible):
@@ -93,7 +93,7 @@ They don't learn:
 
 The screenshot includes the fragment, so the insider gets the key. They could decrypt the payload and open the checkout page. But:
 
-- They'd then need to pay with their own wallet (the kernel that signs is *their* kernel, not the original buyer's).
+- They'd then need to pay with their own wallet (the MuHaven wallet that signs is *theirs*, not the original buyer's).
 - The audit log would clearly record their wallet as the payer.
 - The original issuer notification + webhook would say "buyer 0x[insider] paid", not the intended buyer.
 

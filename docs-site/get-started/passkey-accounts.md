@@ -15,8 +15,8 @@ Three layers work together:
    You ────►  Passkey (WebAuthn credential on device / iCloud / Google PM / hardware key)
                     │
                     ▼
-                 ZeroDev kernel smart account  (EIP-4337)
-                    │   ├── First sign-in: passkey dialog → kernel deploy
+                 MuHaven wallet  (EIP-4337 smart account, ZeroDev-powered)
+                    │   ├── First sign-in: passkey dialog → wallet deploy
                     │   ├── Subsequent writes: signed locally by a scoped session key
                     │   └── Session key TTL: default 1 hour (configurable)
                     ▼
@@ -27,7 +27,7 @@ Three layers work together:
 
 ## Why a passkey instead of a wallet extension
 
-| Concern | Browser extension wallet | MuHaven passkey kernel |
+| Concern | Browser extension wallet | MuHaven wallet (passkey) |
 |---|---|---|
 | Seed phrase to lose | Yes | No |
 | Browser-extension supply-chain risk | High (qix incident, 2.6B weekly downloads) | None — no extension |
@@ -35,7 +35,7 @@ Three layers work together:
 | Cross-device | Manual seed export | Passkey syncs via iCloud / Google PM / 1Password |
 | Hardware key support | Some | Yes (any FIDO2 authenticator) |
 | Gas paid in ETH | Yes | No — paymaster sponsors gas on Arb Sepolia |
-| Recoverability | Seed phrase only | Multiple passkeys per kernel (Wave 5 in-product rebind wizard) |
+| Recoverability | Seed phrase only | Multiple passkeys per wallet |
 
 ## Where your passkey works
 
@@ -49,7 +49,7 @@ Your one MuHaven passkey signs across:
 ::: warning RP-ID pinning
 Passkeys are *bound to a domain* at the moment they're created. A passkey created on `muhaven.app` cannot be used at `muhaven-link.com` or any other domain — that's the load-bearing phishing-resistance control.
 
-If MuHaven ever migrates domains (we did once: `*.hasto.dev → muhaven.app`, 2026-05-11), existing passkeys do NOT migrate. You'll need to register a new one. The kernel can hold multiple passkeys.
+If MuHaven ever migrates domains (we did once: `*.hasto.dev → muhaven.app`, 2026-05-11), existing passkeys do NOT migrate. You'll need to register a new one. Your MuHaven wallet can hold multiple passkeys.
 :::
 
 ## Sign-in flow
@@ -58,12 +58,12 @@ First time:
 1. Click **Sign in** on `muhaven.app`.
 2. Pick **Create a new passkey**.
 3. Approve with Touch ID / Windows Hello / hardware key.
-4. Your kernel deploys (~3 seconds, paymaster-sponsored).
+4. Your MuHaven wallet deploys (~3 seconds, paymaster-sponsored).
 
 Every time after:
 1. Click **Sign in**.
 2. Pick your passkey from the OS dialog.
-3. You're in — no kernel redeploy.
+3. You're in — no wallet redeploy.
 
 ## Choosing a passkey provider
 
@@ -75,15 +75,15 @@ Every time after:
 | **Hardware key (YubiKey, Solo, Titan)** | Highest assurance; works offline | Single device unless you buy a backup |
 | **Platform-only (no sync)** | Fastest setup | Lose the device → lose the key |
 
-> **Recommendation:** for personal use, iCloud Keychain or Google Password Manager are easiest. For higher assurance, a hardware key with a registered backup. Wave 5 ships an in-product **multi-passkey rebind wizard** for the kernel.
+> **Recommendation:** for personal use, iCloud Keychain or Google Password Manager are easiest. For higher assurance, a hardware key with a registered backup.
 
 ## What happens if you lose a passkey
 
 - If your passkey is synced (iCloud / Google PM / 1Password), it survives the lost device — just sign in on a new device.
-- If it's not synced (platform-only or hardware key with no backup), you need a recovery path. Wave 5 will ship a **social-recovery** option (named guardians sign a kernel-rebind UserOp). Today, on testnet, you can re-register from scratch — your encrypted balances stay on-chain but you'll need to re-claim ownership through the recovery UI.
+- If it's not synced (platform-only or hardware key with no backup), the recovery path depends on whether you registered a backup passkey. Always register at least one backup credential.
 
 ::: tip Always register a backup
-Register **at least two** passkeys per kernel where supported. A second device, a second 1Password vault, a YubiKey kept at home — any of these are good. The kernel supports multiple credentials.
+Register **at least two** passkeys per MuHaven wallet where supported. A second device, a second 1Password vault, a YubiKey kept at home — any of these are good. Your MuHaven wallet supports multiple credentials.
 :::
 
 ## What MuHaven does NOT know about you

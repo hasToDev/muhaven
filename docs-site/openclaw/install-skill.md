@@ -11,7 +11,7 @@ description: Install muhaven-rwa-skill from ClawHub into your OpenClaw runtime.
 
 - **OpenClaw runtime** installed (`npm install -g openclaw@latest`). Node 20+ required.
 - **`@muhaven/mcp@0.1.2`** installed globally (the skill bundles it; the `muhaven-broker` bin needs to be on `$PATH`).
-- A **MuHaven kernel** with a passkey-bound investor account.
+- A **MuHaven wallet** with a passkey-bound investor account.
 
 ```bash
 # 1. Prereq: OpenClaw runtime + MCP
@@ -19,7 +19,7 @@ npm install -g openclaw@latest
 npm install -g @muhaven/mcp@0.1.2
 ```
 
-::: tip Wave 4 quirk — install @muhaven/mcp first
+::: tip Install @muhaven/mcp first
 The skill bundles `@muhaven/mcp` via a `workspace:*` rewrite at pack time. ClawHub install resolves the package from npm, but the **broker bin** (`muhaven-broker`) must be on `$PATH` for the skill to start. Globally-installing `@muhaven/mcp` before `clawhub install` puts the bin on PATH. This is documented in the skill's `config.json#post_install_review.items`.
 :::
 
@@ -44,8 +44,6 @@ As of clawhub `v0.12.3`, the install step extracts the tarball but doesn't run `
 cd ~/.openclaw/skills/muhaven-rwa-skill
 npm install --omit=dev
 ```
-
-This is tracked in `AGENTIC_TEST_PLAN.md` §3e⁶ (F-clawhub-install-no-npm-install).
 :::
 
 ## Step 2 — Start the broker + authorize

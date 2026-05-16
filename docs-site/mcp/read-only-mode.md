@@ -16,7 +16,7 @@ This is defense in depth for deployments where you want to allow LLM visibility 
 | Shared workstation (e.g., investor portal in a brokerage office) | LLM can answer client questions; can't accidentally move funds. |
 | Investor's own laptop with auto-LLM-batch jobs | "Every Friday, summarize my MuHaven portfolio in a weekly email." No risk of jailbroken summary auto-trading. |
 | Demo / training environments | Show the agentic surface without giving the demo audience signing capability. |
-| Compliance officer who needs read access to their own issuer audit | Cross-user permit-gated reads (Wave 5) will still work; the local broker only registers read tools. |
+| Compliance officer who needs read access to their own issuer audit | The local broker only registers read tools — no risk of accidental signing. |
 
 ## How to enable
 
@@ -79,7 +79,7 @@ The privacy invariants of each tool are unchanged — they were already read-onl
 ## What it doesn't do
 
 - **It doesn't disable the broker's `sign_hash` capability.** The capability exists at the broker; it's only never invoked because no propose tool is registered.
-- **It doesn't block dashboard sign-in.** Your kernel + passkey still work fine for HavenBot, Telegram, and the dashboard — read-only is an MCP-instance-level flag.
+- **It doesn't block dashboard sign-in.** Your MuHaven wallet + passkey still work fine for HavenBot, Telegram, and the dashboard — read-only is an MCP-instance-level flag.
 - **It doesn't prevent a separate non-read-only install.** You can run two brokers in parallel (one on `MUHAVEN_BROKER_SOCKET=/tmp/muhaven-broker-ro.sock` with read-only, one default) and wire them to different host config entries.
 
 ## Running parallel read-only + full installs
@@ -114,4 +114,4 @@ Now in your host you have two MuHaven tool catalogs — one full, one read-only.
 
 - [Tool catalog](/mcp/tools) — full schema for the 7 read tools.
 - [Broker daemon](/mcp/broker) — how the broker stores state.
-- [Threat model in plain language](/policy/threats) — why read-only is a useful defense in depth.
+- [Playbook](/mcp/playbook) — read-mostly scenarios that work great in read-only mode.

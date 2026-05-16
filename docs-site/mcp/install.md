@@ -14,7 +14,7 @@ Three steps from a fresh machine to a working MCP install:
 ## Prerequisites
 
 - **Node 20 or later** (for the broker daemon).
-- **A MuHaven account** with a passkey-bound kernel (sign up on `muhaven.app` — takes 60 seconds).
+- **A MuHaven account** with a passkey-bound MuHaven wallet (sign up on `muhaven.app` — takes 60 seconds).
 - **An MCP-aware host:** Claude Code, Claude Desktop, or Cursor.
 
 ## Step 1 — Install globally
@@ -41,7 +41,7 @@ The default keyring uses your OS keychain (Keychain on macOS, Secret Service on 
 
 ## Step 2 — Mint a session key, start the broker, log in
 
-Today (until the dashboard mint UI ships), you self-mint a 32-byte session key:
+Self-mint a 32-byte session key:
 
 ```bash
 # 1. Generate a session key (one-time)
@@ -197,7 +197,7 @@ npm uninstall -g @muhaven/mcp        # removes the binaries
 # (optional) rm -rf ~/.muhaven       # removes any file-keyring data
 ```
 
-The kernel itself is on-chain and unaffected by uninstalling MCP — sign in to the dashboard with your passkey and your account is fully intact.
+Your MuHaven wallet itself is on-chain and unaffected by uninstalling MCP — sign in to the dashboard with your passkey and your account is fully intact.
 
 ## Where next
 

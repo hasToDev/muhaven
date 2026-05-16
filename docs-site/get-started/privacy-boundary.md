@@ -57,7 +57,7 @@ The MuHaven backend handles:
 
 It does **not** decrypt FHE handles. The FHE decrypt pipeline is:
 
-1. You hold a permit signed by your kernel (`cofheClient.getOrCreateSelfPermit()`).
+1. You hold a permit signed by your MuHaven wallet (`cofheClient.getOrCreateSelfPermit()`).
 2. Your browser calls `cofheClient.decryptForView(handle).withPermit().execute()`.
 3. The CoFHE threshold network checks the permit's ACL on-chain, returns cleartext **to you**.
 4. The backend is not involved in this path.
@@ -70,7 +70,7 @@ This depends on which surface:
 
 | Surface | LLM model | LLM sees |
 |---|---|---|
-| **HavenBot** | Google Gemini (Wave 4); swap to Claude in Wave 5 | The chat transcript + structured tool inputs/outputs returned by the backend. **Never** raw FHE handles. |
+| **HavenBot** | Google Gemini | The chat transcript + structured tool inputs/outputs returned by the backend. **Never** raw FHE handles. |
 | **`@muhaven/mcp`** | Whatever you installed (Claude / etc.) | Same as HavenBot: the JSON the MCP tools return. |
 | **OpenClaw + Telegram** | No LLM at the bot edge — Telegram messages are deterministic templates | The bot sees your Telegram chat ID + the inline button you tapped. No LLM exposure. |
 | **Hosted Checkout** | No LLM | The buyer sees a deterministic checkout page. |
@@ -95,13 +95,10 @@ This is the **CaMeL planner/action split** — the LLM plans, the gate disposes.
 
 ## What's leaked at the edges
 
-No system is leakage-free. Wave 4 documents three known side-channels:
+No system is leakage-free. Two known side-channels worth being aware of:
 
-1. **Wrap-to-mhUSDC deposit size** leaks at the moment of wrap. Mitigations (batching, delays, CCTP) are on the Wave 5 roadmap.
-2. **`agent_confirm_tokens.action_payload`** for an encrypted vote bounded-leaks the *cleartext yes/no* for the 5-min confirm-token TTL. Redaction follow-up tracked in ADR-9 §D3.
-3. **Decrypt-event timing** for breach-path `decryptForTx` calls would correlate decrypt frequency to swap frequency if not for the **branchless `FHE.select` hot path** — Wave 4 keeps decrypts off the policy hot path precisely to avoid this.
-
-See [Threat model in plain language](/policy/threats) for the full risk register.
+1. **Wrap-to-mhUSDC deposit size** leaks at the moment of wrap to a chain observer.
+2. **Decrypt-event timing** for breach-path `decryptForTx` calls would correlate decrypt frequency to swap frequency if not for the **branchless `FHE.select` hot path** — decrypts are kept off the policy hot path precisely to avoid this.
 
 ## Comparison: ZK vs TEE vs MPC vs FHE
 
@@ -118,4 +115,4 @@ MuHaven leans on FHE because the **stateful encrypted-balance** primitive is exa
 
 - [`docs/THREAT_MODEL.md`](https://github.com/hasToDev/muhaven/blob/master/docs/THREAT_MODEL.md) — full project-level threat model.
 - [`docs/AGENT_DESIGN.md`](https://github.com/hasToDev/muhaven/blob/master/docs/AGENT_DESIGN.md) — agent-layer architecture.
-- [Threat model in plain language](/policy/threats) — this docs site's plain-English version.
+- [Tiered autonomy](/policy/tiered-autonomy) — how the policy gate enforces what the agent can do.
