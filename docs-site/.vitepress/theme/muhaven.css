@@ -1,0 +1,273 @@
+/*
+ * MuHaven docs theme — Golden Hour Midnight
+ *
+ * Mirrors the dashboard's `frontend/src/assets/styles/tailwind.css @theme` block:
+ *   - Light = warm cream (#FFFDF7 / #FAF5E8) with deep-amber accents (#B8860B)
+ *   - Dark  = warm charcoal (#121315 / #1f2022) with cream-gold + amber accents
+ *   - Borders are warm brown at ~15% alpha; bloom is amber, not teal
+ *
+ * Override-strategy: VitePress's default theme exposes `--vp-*` CSS variables
+ * for every surface (brand, bg, text, code-block, sidebar, ...). We remap
+ * the ones that drive visible chrome to the MuHaven palette and leave the
+ * rest at their accessible defaults.
+ */
+
+/* ── Base palette tokens (mirrors the dashboard) ───────────────────── */
+:root {
+  /* Warm cream surfaces (light mode) */
+  --mh-frost: #FFFDF7;
+  --mh-mist: #FAF5E8;
+  --mh-haze: #EFE4C9;
+
+  /* Charcoal surfaces (dark mode) */
+  --mh-midnight: #121315;
+  --mh-midnight-mid: #1f2022;
+  --mh-midnight-deep: #0d0e10;
+
+  /* Amber accent ladder */
+  --mh-compute: #B8860B;        /* deep amber — light-mode primary */
+  --mh-compute-hover: #9a6f08;
+  --mh-signal: #FFDCA1;         /* cream-gold — dark-mode primary */
+  --mh-signal-hover: #FFE9C4;
+  --mh-gold: #FFBA20;           /* highlight */
+
+  /* Text tints */
+  --mh-slate: #5a4f44;          /* light-mode body */
+  --mh-cool: #9E8F78;           /* muted */
+  --mh-body-dark: #D5C4AB;      /* dark-mode body */
+
+  /* Semantic */
+  --mh-positive: #1B9E8A;
+  --mh-negative: #D44A3A;
+
+  /* Fonts — mirror the dashboard */
+  --mh-font-sans:
+    'Inter Variable', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --mh-font-mono:
+    'DM Mono', 'JetBrains Mono', 'Fira Code', Consolas, 'Liberation Mono',
+    Menlo, monospace;
+}
+
+/* ── Light-mode VitePress overrides ────────────────────────────────── */
+:root {
+  --vp-c-brand-1: var(--mh-compute);
+  --vp-c-brand-2: var(--mh-compute-hover);
+  --vp-c-brand-3: var(--mh-gold);
+  --vp-c-brand-soft: rgba(184, 134, 11, 0.12);
+  --vp-c-brand-light: var(--mh-gold);
+  --vp-c-brand-lighter: #E8A011;
+  --vp-c-brand-dark: var(--mh-compute-hover);
+  --vp-c-brand-darker: #7a5807;
+
+  --vp-c-bg: var(--mh-frost);
+  --vp-c-bg-alt: var(--mh-mist);
+  --vp-c-bg-elv: var(--mh-frost);
+  --vp-c-bg-soft: var(--mh-mist);
+
+  --vp-c-divider: rgba(63, 46, 12, 0.15);
+  --vp-c-border: rgba(63, 46, 12, 0.18);
+  --vp-c-gutter: var(--mh-haze);
+
+  --vp-c-text-1: #2a221a;
+  --vp-c-text-2: var(--mh-slate);
+  --vp-c-text-3: var(--mh-cool);
+
+  --vp-font-family-base: var(--mh-font-sans);
+  --vp-font-family-mono: var(--mh-font-mono);
+
+  /* Code blocks — warm cream paper feel */
+  --vp-code-block-bg: #faf3df;
+  --vp-code-color: #6b4f12;
+  --vp-code-bg: rgba(184, 134, 11, 0.10);
+
+  /* Custom blocks (tips, warnings) recoloured for the warm palette */
+  --vp-custom-block-tip-border: rgba(27, 158, 138, 0.40);
+  --vp-custom-block-tip-text: #14705f;
+  --vp-custom-block-tip-bg: rgba(27, 158, 138, 0.08);
+
+  --vp-custom-block-warning-border: rgba(255, 186, 32, 0.55);
+  --vp-custom-block-warning-text: #8a5a00;
+  --vp-custom-block-warning-bg: rgba(255, 186, 32, 0.12);
+
+  --vp-custom-block-danger-border: rgba(212, 74, 58, 0.45);
+  --vp-custom-block-danger-text: #9a2e22;
+  --vp-custom-block-danger-bg: rgba(212, 74, 58, 0.08);
+
+  --vp-button-brand-bg: var(--mh-compute);
+  --vp-button-brand-hover-bg: var(--mh-compute-hover);
+  --vp-button-brand-active-bg: var(--mh-compute-hover);
+  --vp-button-brand-border: var(--mh-compute);
+}
+
+/* ── Dark-mode VitePress overrides ─────────────────────────────────── */
+.dark {
+  --vp-c-brand-1: var(--mh-signal);
+  --vp-c-brand-2: var(--mh-gold);
+  --vp-c-brand-3: var(--mh-gold);
+  --vp-c-brand-soft: rgba(255, 220, 161, 0.12);
+  --vp-c-brand-light: var(--mh-signal-hover);
+  --vp-c-brand-lighter: #FFE9C4;
+  --vp-c-brand-dark: #E8A011;
+  --vp-c-brand-darker: var(--mh-compute);
+
+  --vp-c-bg: var(--mh-midnight);
+  --vp-c-bg-alt: var(--mh-midnight-deep);
+  --vp-c-bg-elv: var(--mh-midnight-mid);
+  --vp-c-bg-soft: var(--mh-midnight-mid);
+
+  --vp-c-divider: rgba(255, 220, 161, 0.10);
+  --vp-c-border: rgba(255, 220, 161, 0.13);
+  --vp-c-gutter: var(--mh-midnight-deep);
+
+  --vp-c-text-1: #f7eedb;
+  --vp-c-text-2: var(--mh-body-dark);
+  --vp-c-text-3: #998a72;
+
+  --vp-code-block-bg: #1a1b1d;
+  --vp-code-color: var(--mh-signal-hover);
+  --vp-code-bg: rgba(255, 220, 161, 0.10);
+
+  --vp-custom-block-tip-border: rgba(27, 158, 138, 0.45);
+  --vp-custom-block-tip-text: #4fd6b8;
+  --vp-custom-block-tip-bg: rgba(27, 158, 138, 0.10);
+
+  --vp-custom-block-warning-border: rgba(255, 186, 32, 0.50);
+  --vp-custom-block-warning-text: var(--mh-signal-hover);
+  --vp-custom-block-warning-bg: rgba(255, 186, 32, 0.10);
+
+  --vp-custom-block-danger-border: rgba(212, 74, 58, 0.45);
+  --vp-custom-block-danger-text: #ffb0a4;
+  --vp-custom-block-danger-bg: rgba(212, 74, 58, 0.10);
+
+  --vp-button-brand-bg: var(--mh-gold);
+  --vp-button-brand-hover-bg: var(--mh-signal-hover);
+  --vp-button-brand-active-bg: var(--mh-signal);
+  --vp-button-brand-border: var(--mh-gold);
+  --vp-button-brand-text: var(--mh-midnight);
+  --vp-button-brand-hover-text: var(--mh-midnight);
+}
+
+/* ── Hero gradient ─────────────────────────────────────────────────── */
+:root {
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(
+    120deg,
+    var(--mh-compute) 0%,
+    var(--mh-gold) 55%,
+    var(--mh-compute) 100%
+  );
+  --vp-home-hero-image-background-image: linear-gradient(
+    -45deg,
+    rgba(255, 186, 32, 0.18) 50%,
+    rgba(184, 134, 11, 0.15) 50%
+  );
+  --vp-home-hero-image-filter: blur(48px);
+}
+
+.dark {
+  --vp-home-hero-name-background: linear-gradient(
+    120deg,
+    var(--mh-signal) 0%,
+    var(--mh-gold) 55%,
+    var(--mh-signal-hover) 100%
+  );
+  --vp-home-hero-image-background-image: linear-gradient(
+    -45deg,
+    rgba(255, 186, 32, 0.32) 50%,
+    rgba(255, 220, 161, 0.22) 50%
+  );
+}
+
+/* ── Ambient amber bloom on elevated surfaces (dark only) ─────────── */
+.dark .VPNavBar.has-sidebar .content-body,
+.dark .VPSidebar,
+.dark .VPDoc {
+  background-image:
+    radial-gradient(
+      ellipse 60% 40% at 50% -10%,
+      rgba(255, 220, 161, 0.05),
+      transparent 60%
+    );
+}
+
+/* ── Logo sizing — keep the wordmark out of the way ───────────────── */
+.VPNavBarTitle .title img {
+  height: 26px;
+  width: auto;
+}
+
+/* ── Featured cards (used on the home page custom layout if needed) ─ */
+.mh-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  margin: 24px 0;
+}
+
+.mh-card {
+  display: block;
+  padding: 18px 20px;
+  border-radius: 14px;
+  border: 1px solid var(--vp-c-border);
+  background: var(--vp-c-bg-elv);
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease;
+  color: inherit;
+  text-decoration: none;
+}
+
+.mh-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--vp-c-brand-1);
+  box-shadow: 0 12px 32px -16px rgba(255, 186, 32, 0.35);
+}
+
+.mh-card h3 {
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--vp-c-text-1);
+}
+
+.mh-card p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--vp-c-text-2);
+}
+
+/* ── Pretty inline kbd ─────────────────────────────────────────────── */
+kbd {
+  display: inline-block;
+  padding: 2px 6px;
+  font-family: var(--mh-font-mono);
+  font-size: 12px;
+  line-height: 1;
+  color: var(--vp-c-text-1);
+  background: var(--vp-c-bg-alt);
+  border: 1px solid var(--vp-c-border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+}
+
+/* ── Tables: warm border, hover-row tint ──────────────────────────── */
+.vp-doc table {
+  border: 1px solid var(--vp-c-border);
+}
+
+.vp-doc tbody tr:hover {
+  background: var(--vp-c-brand-soft);
+}
+
+/* ── Footer code formatting ──────────────────────────────────────── */
+.VPFooter .message code {
+  font-family: var(--mh-font-mono);
+  font-size: 0.9em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--vp-c-brand-soft);
+  color: var(--vp-c-brand-1);
+}
