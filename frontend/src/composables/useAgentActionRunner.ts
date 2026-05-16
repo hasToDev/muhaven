@@ -589,6 +589,56 @@ async function runDistribute(action: ActionDescriptor): Promise<RunDistributeRes
       )
     }
 
+    // CONSERVATION GATE — issuer must have totalYield mhUSDC wrapped.
+    // Surfaced 2026-05-22 walkthrough: an issuer with $15 mhUSDC
+    // successfully "distributed" $99M because (a) the SDK's fundEpoch
+    // pulls via MuHavenStable.confidentialTransferFrom which
+    // silent-fails on insufficient balance (transfers 0 encrypted),
+    // BUT (b) YieldSnapshot.fundEpoch still records the input
+    // `encTotalYield` regardless of whether the pull actually
+    // succeeded, AND (c) claimYield → MuHavenStable.trustedPayout
+    // (ADR-046) bypasses _silentFailBound because per-epoch
+    // conservation is "off-chain-guaranteed". When the off-chain
+    // guarantee silently fails, claimYield happily pays out from the
+    // snapshot's float — which encrypted-underflows or pulls from
+    // prior epochs' reserves. The /distribute wizard (DistributePage)
+    // gates the Fund button on `mhUsdcBalance >= amountUnits` for
+    // exactly this reason; the HavenBot runner needs the same gate.
+    //
+    // Pattern mirrors runBuy's mhUSDC balance check (lines 218-271):
+    // decrypt-if-cached-null, throw with actionable copy on
+    // insufficient balance, log + proceed on decrypt failure so a
+    // cofhe outage doesn't block a genuine distribute attempt (the
+    // on-chain silent-fail is still the backstop, just no longer the
+    // only one).
+    {
+      const { useWalletStore } = await import('@/stores/wallet')
+      const { usePortfolioStore } = await import('@/stores/portfolio')
+      const wallet = useWalletStore()
+      const portfolio = usePortfolioStore()
+      const walletAddress = wallet.address as `0x${string}` | null
+      if (walletAddress) {
+        if (portfolio.pusdcConfidentialBalance === null) {
+          try {
+            await portfolio.decryptPusdc(walletAddress)
+          } catch (err) {
+            console.warn(
+              '[runDistribute] mhUSDC decrypt failed; proceeding without balance gate (on-chain silent-fail remains the backstop):',
+              err,
+            )
+          }
+        }
+        const have = portfolio.pusdcConfidentialBalance
+        if (have !== null && have < totalYield) {
+          const haveUsd = (Number(have) / 1_000_000).toFixed(2)
+          const needUsd = (Number(totalYield) / 1_000_000).toFixed(2)
+          throw new AgentActionRunnerError(
+            `Insufficient mhUSDC balance: you have $${haveUsd} but this distribution needs $${needUsd}. Wrap more USDC into mhUSDC on the Cash page first.`,
+          )
+        }
+      }
+    }
+
     // Pre-flight operator grant on mhUSDC → YieldSnapshot. Same
     // idempotent-long-expiry posture as runBuy's setOperator on the
     // Subscription contract. Required because `fundEpoch` pulls mhUSDC

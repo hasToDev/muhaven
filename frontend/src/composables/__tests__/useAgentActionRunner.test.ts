@@ -63,6 +63,11 @@ const distributeStubs = vi.hoisted(() => ({
   publicReadContract: vi.fn(),
   // Runner reads getEphemeralEOA() to thread through refreshGrant.
   ephemeralEOA: '0x2222222222222222222222222222222222222222' as `0x${string}`,
+  // Portfolio store mock for the conservation gate (issuer mhUSDC
+  // balance >= totalYield). Null means "not yet decrypted" → triggers
+  // a decryptPusdc() call.
+  pusdcConfidentialBalance: null as bigint | null,
+  decryptPusdcFn: vi.fn(),
 }))
 
 // `useAgentActionRunner` lazy-imports `@/stores/issuer-tokens` +
@@ -81,6 +86,19 @@ vi.mock('@/stores/issuer-tokens', () => ({
 }))
 vi.mock('@/stores/issuer-investors', () => ({
   useIssuerInvestorsStore: () => ({ reset: vi.fn() }),
+}))
+
+// Portfolio store — runDistribute reads pusdcConfidentialBalance + may
+// call decryptPusdc() if the balance isn't cached. The decryptPusdc
+// mock is configured per-test to either (a) populate the balance, or
+// (b) reject to simulate a cofhe decrypt outage.
+vi.mock('@/stores/portfolio', () => ({
+  usePortfolioStore: () => ({
+    get pusdcConfidentialBalance() {
+      return distributeStubs.pusdcConfidentialBalance
+    },
+    decryptPusdc: distributeStubs.decryptPusdcFn,
+  }),
 }))
 
 // wallet store — runDistribute reads `wallet.address` to bind against
@@ -806,6 +824,11 @@ describe('runAgentAction — distribute_yield (P7 Phase 2 — YieldSnapshot rewi
     distributeStubs.publicReadContract.mockReset().mockResolvedValue({
       issuer: ISSUER,
     })
+    // Conservation gate defaults: issuer has $1M wrapped mhUSDC (well
+    // above any happy-path distribute amount). Tests that exercise the
+    // insufficient-balance path override this in-line.
+    distributeStubs.pusdcConfidentialBalance = 1_000_000_000_000n
+    distributeStubs.decryptPusdcFn.mockReset().mockResolvedValue(undefined)
 
     // Reset the module-level progress bus between tests so phase-state
     // assertions don't leak across cases.
@@ -1432,6 +1455,90 @@ describe('runAgentAction — distribute_yield (P7 Phase 2 — YieldSnapshot rewi
     })
   })
 
+  describe('Conservation gate: issuer mhUSDC balance >= totalYield', () => {
+    // Surfaced 2026-05-22 walkthrough: an issuer with $15 mhUSDC
+    // successfully distributed $99M because the runner had no
+    // balance check. fundEpoch silent-fails the pull on insufficient
+    // balance but encTotalYield is recorded anyway; trustedPayout
+    // then pays out from the snapshot's float (encrypted-underflow
+    // or prior-epoch reserves). Conservation gate closes this class
+    // before any UserOp fires.
+
+    it('rejects when issuer mhUSDC balance is less than totalYield', async () => {
+      // Issuer has $15, propose to distribute $100. Should reject
+      // pre-tx with actionable copy.
+      distributeStubs.pusdcConfidentialBalance = 15_000_000n // $15
+      const result = await runAgentAction(
+        distributeDescriptor({ totalYieldUsd6: '100000000' }), // $100
+      )
+      expect(result.ok).toBe(false)
+      if (result.ok === false) {
+        expect(result.error).toContain('Insufficient mhUSDC balance')
+        expect(result.error).toContain('$15.00')
+        expect(result.error).toContain('$100.00')
+        expect(result.error).toContain('Wrap more USDC')
+      }
+      // Pre-flight failure → no UserOps fire.
+      expect(distributeStubs.setOperator).not.toHaveBeenCalled()
+      expect(distributeStubs.openEpochFn).not.toHaveBeenCalled()
+    })
+
+    it('rejects the walkthrough-surfaced scenario: $15 issuer vs $99M distribute', async () => {
+      // Exact repro of the 2026-05-22 walkthrough bug. Without the
+      // gate, this would have succeeded on-chain via silent-fail +
+      // trustedPayout.
+      distributeStubs.pusdcConfidentialBalance = 15_000_000n // $15
+      const result = await runAgentAction(
+        distributeDescriptor({ totalYieldUsd6: '99000000000000' }), // $99M
+      )
+      expect(result.ok).toBe(false)
+      if (result.ok === false) {
+        expect(result.error).toContain('Insufficient mhUSDC balance')
+      }
+      expect(distributeStubs.setOperator).not.toHaveBeenCalled()
+    })
+
+    it('allows the distribute when balance equals totalYield exactly', async () => {
+      // Boundary: balance == totalYield should pass (have >= need).
+      distributeStubs.pusdcConfidentialBalance = 1_000_000n // exactly $1
+      const result = await runAgentAction(
+        distributeDescriptor({ totalYieldUsd6: '1000000' }), // $1
+      )
+      expect(result.ok).toBe(true)
+    })
+
+    it('triggers decryptPusdc when balance is not yet cached (null)', async () => {
+      distributeStubs.pusdcConfidentialBalance = null
+      distributeStubs.decryptPusdcFn.mockImplementation(async (_addr) => {
+        distributeStubs.pusdcConfidentialBalance = 1_000_000_000n // $1k
+      })
+      const result = await runAgentAction(distributeDescriptor())
+      expect(result.ok).toBe(true)
+      expect(distributeStubs.decryptPusdcFn).toHaveBeenCalledTimes(1)
+    })
+
+    it('proceeds (no gate) when decryptPusdc fails — on-chain silent-fail remains the backstop', async () => {
+      distributeStubs.pusdcConfidentialBalance = null
+      distributeStubs.decryptPusdcFn.mockRejectedValue(new Error('cofhe TN 503'))
+      // Decrypt fails; balance stays null; gate doesn't fire; on-chain
+      // pipeline proceeds. Acceptable degradation — cofhe outage
+      // shouldn't block a genuine distribute attempt where the issuer
+      // does have the balance.
+      const result = await runAgentAction(distributeDescriptor())
+      expect(result.ok).toBe(true)
+      expect(distributeStubs.decryptPusdcFn).toHaveBeenCalledTimes(1)
+    })
+
+    it('insufficient-balance reject leaves the bus IDLE (pre-flight-no-bar)', async () => {
+      distributeStubs.pusdcConfidentialBalance = 1n
+      const progress = useAgentDistributeProgress()
+      const result = await runAgentAction(distributeDescriptor())
+      expect(result.ok).toBe(false)
+      expect(progress.state.value.phase).toBe('idle')
+      expect(progress.state.value.failedAt).toBeNull()
+    })
+  })
+
   describe('Security M-2: totalYield uint64 cap', () => {
     it('rejects amounts above the $100M cap', async () => {
       const result = await runAgentAction(
@@ -1459,6 +1566,9 @@ describe('runAgentAction — distribute_yield (P7 Phase 2 — YieldSnapshot rewi
       // At the $100M cap with supply=2_000_000n the ratePerShare is
       // floor(100_000_000_000_000n × 1_000_000n / 2_000_000n) =
       // 50_000_000_000_000n which is well within uint128. Happy path.
+      // Override the default $1M balance — the conservation gate would
+      // otherwise reject a $100M distribute as insufficient.
+      distributeStubs.pusdcConfidentialBalance = 100_000_000_000_000n // exactly cap
       const result = await runAgentAction(
         distributeDescriptor({ totalYieldUsd6: '100000000000000' }),
       )
