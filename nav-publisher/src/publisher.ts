@@ -162,18 +162,38 @@ async function publishOne(token: Address): Promise<PublishOutcome> {
     return 'skipped:strategy';
   }
 
-  // Liveness gate — confirm an upstream feed wrote a row recently.
-  // (Disabled when NAV_DB_LIVENESS_MS = 0.)
+  // Liveness gate — confirm an upstream feed wrote a row recently
+  // for tokens that HAVE an upstream feed (TBILL1=FRED yields,
+  // GOLD1=commodity price). Synthetic / wizard-deployed RWA tokens
+  // (NOVUS / OCEAN / ASTRAT / SUMMIT etc.) have no nav-worker source
+  // by design — for those, the "refresh-only" mode still applies
+  // (re-stamp the on-chain bootstrap NAV with a fresh `updatedAt`)
+  // but the DB-liveness gate is the WRONG check.
+  //
+  // 2026-05-23 fix: distinguish "no row EVER" (synthetic — bypass
+  // liveness gate, fall through to refresh) from "stale row"
+  // (nav-worker is broken — keep the skip). The on-chain
+  // `view.nav === 0n` check below is the structural backstop for
+  // tokens that genuinely have no bootstrap NAV yet (caught by
+  // `skipped:zero-nav`).
   const dbLatest = await fetchDbLatest(token);
   s.dbLatestFetchedAt = dbLatest?.fetchedAt.toISOString() ?? null;
   if (dbLatest === null) {
-    s.lastOutcome = 'skipped:no-db-row';
-    s.lastError = null;
-    return 'skipped:no-db-row';
-  }
-  if (config.dbLivenessMs > 0) {
+    // Synthetic token — no upstream feed expected. Log once-per-cycle
+    // but DO NOT short-circuit; fall through to the on-chain refresh
+    // path so the contract's `updatedAt` keeps bumping past the
+    // 36h staleness window. `s.lastError` stays null so the health
+    // endpoint doesn't mis-render this as an alarm.
+    console.log(
+      `[publisher] ${s.label}: no DB row — synthetic refresh mode (using on-chain NAV)`,
+    );
+  } else if (config.dbLivenessMs > 0) {
     const ageMs = Date.now() - dbLatest.fetchedAt.getTime();
     if (ageMs > config.dbLivenessMs) {
+      // Real upstream feed exists but is lagging — that's a nav-worker
+      // health alarm, not a synthetic-token case. Keep the skip so
+      // operators see the staleness in the health endpoint + the
+      // Telegram cron-monitor catches it.
       s.lastOutcome = 'skipped:db-stale';
       s.lastError = `latest DB row is ${Math.round(ageMs / 60_000)}min old (gate=${Math.round(config.dbLivenessMs / 60_000)}min)`;
       return 'skipped:db-stale';
