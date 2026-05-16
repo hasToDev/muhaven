@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@9.15.4",
   "description": "MuHaven FHE encryption worker — wraps @cofhe/sdk/node for server-side encryption",
   "main": "dist/index.js",
   "scripts": {

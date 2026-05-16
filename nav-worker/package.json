@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@9.15.4",
   "description": "MuHaven NAV worker — fetches real RWA market data (treasury yields, fund NAVs) and stores in Postgres",
   "main": "dist/index.js",
   "scripts": {
