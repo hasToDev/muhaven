@@ -145,9 +145,34 @@ export const useAgentStore = defineStore('agent', () => {
         }
         return
       } catch (err) {
-        // Stream failed — fall back to the legacy keyword endpoint so
-        // the user sees something. The composable already set
-        // `chat.lastError` for surfacing.
+        // Round-2 review CR-H2: detect AbortError and short-circuit
+        // BEFORE the legacy-keyword fallback. The fallback path
+        // (agentApi.chat at line 168) carries the user's prompt + the
+        // CURRENT JWT — if `chat.abort()` fired because of an auth
+        // boundary teardown (logout/silent-expiry/relogin-as-other-user),
+        // the fallback would send the OLD user's prompt under the
+        // NEW user's JWT, server-side recording it as the new user's
+        // chat history. Closes that cross-user leak class.
+        //
+        // AbortError is the standard DOMException name for
+        // controller.abort(); fetch + readable streams both throw it.
+        // The check covers Error.name === 'AbortError' (modern fetch)
+        // AND the legacy `err.code === 20` shape (older spec).
+        const isAbort =
+          err instanceof Error
+          && (err.name === 'AbortError' || (err as { code?: number }).code === 20)
+        if (isAbort) {
+          inflightAgentMessageId = null
+          // The orphan agentMessage already-empty text is harmless —
+          // the bus reset/teardown that triggered the abort also
+          // typically clears `messages`, so the stub never renders.
+          // If somehow it survives (race with non-teardown abort),
+          // the empty text is a no-op visually.
+          return
+        }
+        // Non-abort stream failure — surface + fall back to legacy
+        // keyword endpoint so the user still sees something. The
+        // composable already set `chat.lastError` for surfacing.
         agentMessage.text = `Streaming error — using fallback. ${
           err instanceof Error ? err.message : ''
         }`.trim()

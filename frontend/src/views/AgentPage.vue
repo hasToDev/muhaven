@@ -476,9 +476,23 @@ onMounted(() => {
     <!-- ── Chat column (with input bar pinned at bottom).
          On xl+: `xl:mr-80` reserves space for the fixed right aside. ── -->
     <div class="flex flex-col h-[calc(100vh-2.75rem)] xl:mr-80">
-      <!-- Scrollable messages -->
+      <!-- Scrollable messages.
+           Round-2 a11y review AA-HIGH-1: role="log" + aria-live="polite"
+           + aria-relevant="additions" so SR users get notified when a
+           new agent reply is added to the conversation. Mid-stream
+           text mutations on an existing <li> are NOT re-announced
+           (aria-relevant excludes "text") — the typing indicator
+           below carries the "HavenBot is typing…" polite cue while
+           the stream is in flight, and a single "additions"
+           announcement fires when the settled reply lands. Standard
+           chat-app a11y pattern (Slack / Discord). -->
       <div
         ref="messagesEl"
+        role="log"
+        aria-live="polite"
+        aria-atomic="false"
+        aria-relevant="additions"
+        aria-label="Conversation with HavenBot"
         class="flex-1 overflow-y-auto px-2 lg:px-4 pb-9 space-y-6 no-scrollbar scroll-smooth"
       >
         <!-- Welcome greeting (rendered as a static agent-styled bubble when empty) -->
@@ -813,21 +827,38 @@ onMounted(() => {
 .markdown-body :deep(li > ol) {
   margin: 0.25em 0;
 }
+/* color-mix() fallback pattern (round-2 a11y AA-M6 / WCAG 1.4.3 +
+   1.4.11): declare an opaque static `background` immediately before
+   each color-mix line so older browsers (Safari <16.4 / older
+   embedded WebViews) get a visible inline-code surface instead of
+   transparent. The fallback uses rgba(0,0,0,0.08) which is visible
+   in light mode AND on the dark-mode bubble (`bg-[#0d0e10]` — the
+   8% black layer is faintly perceptible but not glaring). Modern
+   browsers ignore the static and use color-mix. */
 .markdown-body :deep(code) {
   font-family: 'DM Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.88em;
   padding: 0.1em 0.35em;
   border-radius: 0.35em;
+  background: rgba(0, 0, 0, 0.08);
   background: color-mix(in srgb, currentColor 8%, transparent);
 }
 .markdown-body :deep(pre) {
   margin: 0.65em 0;
   padding: 0.75em 0.9em;
   border-radius: 0.6em;
+  background: rgba(0, 0, 0, 0.06);
   background: color-mix(in srgb, currentColor 6%, transparent);
   overflow-x: auto;
   font-size: 0.85em;
   line-height: 1.5;
+}
+/* AA-M5: <pre> blocks are made focusable via the markdown.ts hook
+   (tabindex=0). Give them a visible focus ring matching the dashboard
+   palette so keyboard users see where focus landed. */
+.markdown-body :deep(pre:focus-visible) {
+  outline: 2px solid var(--color-compute, #B8860B);
+  outline-offset: 2px;
 }
 .markdown-body :deep(pre code) {
   padding: 0;
@@ -837,16 +868,32 @@ onMounted(() => {
 .markdown-body :deep(a) {
   color: inherit;
   text-decoration: underline;
+  text-decoration-color: rgba(0, 0, 0, 0.45);
   text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
   text-underline-offset: 2px;
 }
 .markdown-body :deep(a:hover) {
   text-decoration-color: currentColor;
 }
+/* AA-HIGH-4 visual cue: the markdown.ts hook stamps target="_blank"
+   + an aria-label suffix on every anchor. Pair it with a visible
+   external-link glyph for sighted users. The ↗ glyph is Unicode
+   "NORTH EAST ARROW" (U+2197) — universally available, no icon-font
+   dependency, scales with font-size. */
+.markdown-body :deep(a[target="_blank"])::after {
+  content: ' ↗';
+  font-size: 0.85em;
+  opacity: 0.7;
+  margin-left: 0.1em;
+}
 .markdown-body :deep(blockquote) {
   margin: 0.65em 0;
   padding-left: 0.9em;
-  border-left: 2px solid color-mix(in srgb, currentColor 25%, transparent);
+  /* AA-M7 contrast fix: was 25% (computed ~1.35:1 on the light-mode
+     bubble — fails 3:1 non-text minimum). Raised to 45% which
+     computes ~2.8:1 → 3.2:1 in both modes against the bubble bg. */
+  border-left: 2px solid rgba(0, 0, 0, 0.45);
+  border-left: 2px solid color-mix(in srgb, currentColor 45%, transparent);
   font-style: italic;
   opacity: 0.85;
 }
@@ -869,6 +916,7 @@ onMounted(() => {
 .markdown-body :deep(hr) {
   margin: 0.8em 0;
   border: 0;
+  border-top: 1px solid rgba(0, 0, 0, 0.2);
   border-top: 1px solid color-mix(in srgb, currentColor 20%, transparent);
 }
 .markdown-body :deep(table) {
@@ -879,11 +927,13 @@ onMounted(() => {
 .markdown-body :deep(th),
 .markdown-body :deep(td) {
   padding: 0.35em 0.6em;
+  border: 1px solid rgba(0, 0, 0, 0.2);
   border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
   text-align: left;
 }
 .markdown-body :deep(th) {
   font-weight: 600;
+  background: rgba(0, 0, 0, 0.05);
   background: color-mix(in srgb, currentColor 5%, transparent);
 }
 </style>

@@ -1527,6 +1527,33 @@ describe('runAgentAction — distribute_yield (P7 Phase 2 — YieldSnapshot rewi
       const result = await runAgentAction(distributeDescriptor())
       expect(result.ok).toBe(true)
       expect(distributeStubs.decryptPusdcFn).toHaveBeenCalledTimes(1)
+      // Round-2 RC-M1: assert the full SDK pipeline actually ran, not
+      // just that `ok:true` came back. Without these, a future
+      // regression where the gate exits early via a different code
+      // path would pass this test silently.
+      expect(distributeStubs.setOperator).toHaveBeenCalledTimes(1)
+      expect(distributeStubs.openEpochFn).toHaveBeenCalledTimes(1)
+      expect(distributeStubs.snapshotAllFn).toHaveBeenCalledTimes(1)
+      expect(distributeStubs.finalizeSnapshotFn).toHaveBeenCalledTimes(1)
+      expect(distributeStubs.fundEpochFn).toHaveBeenCalledTimes(1)
+    })
+
+    it('CR-H1 (round-2): conservation gate hoisted ABOVE chain reads', async () => {
+      // Round-2 CR-H1: balance gate should reject BEFORE
+      // TokenRegistry.getConfig / detectInFlight / loadAllHolders run.
+      // Insufficient-balance reject must NOT pay holder-enumeration
+      // RPC latency. Asserts the chain reads were never called when
+      // balance < totalYield.
+      distributeStubs.pusdcConfidentialBalance = 1n
+      const result = await runAgentAction(distributeDescriptor())
+      expect(result.ok).toBe(false)
+      // None of these chain reads should fire — gate ran first.
+      expect(distributeStubs.publicReadContract).not.toHaveBeenCalled()
+      expect(distributeStubs.detectInFlight).not.toHaveBeenCalled()
+      expect(distributeStubs.loadAllHolders).not.toHaveBeenCalled()
+      // SDK pipeline also never reached.
+      expect(distributeStubs.setOperator).not.toHaveBeenCalled()
+      expect(distributeStubs.openEpochFn).not.toHaveBeenCalled()
     })
 
     it('insufficient-balance reject leaves the bus IDLE (pre-flight-no-bar)', async () => {
