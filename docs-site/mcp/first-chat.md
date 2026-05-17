@@ -116,7 +116,7 @@ This is the **no-auto-submit invariant**. A jailbroken LLM cannot drain your acc
 }
 
 Your agent is paused. The on-chain session-key validator was
-uninstalled in block 8214321 (~240ms). Subsequent propose calls
+uninstalled in block 8214321. Subsequent propose calls
 will return 423 PAUSED until you resume from the dashboard.
 ```
 

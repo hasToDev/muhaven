@@ -58,7 +58,7 @@ First time:
 1. Click **Sign in** on `muhaven.app`.
 2. Pick **Create a new passkey**.
 3. Approve with Touch ID / Windows Hello / hardware key.
-4. Your MuHaven wallet deploys (~3 seconds, paymaster-sponsored).
+4. Your MuHaven wallet deploys in the background, paymaster-sponsored.
 
 Every time after:
 1. Click **Sign in**.

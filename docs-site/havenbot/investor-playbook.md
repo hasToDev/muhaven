@@ -73,7 +73,7 @@ Tier changes are signed by your passkey (not the session key) — see [Tiered au
 | Verify pause status | "Is my agent paused?" |
 | Resume | "Resume my agent." |
 
-Pause is **idempotent**: calling it twice doesn't error. It uninstalls the on-chain session-key validator in ≤1 Arb block (~250ms soft). Subsequent propose calls return `423 PAUSED`.
+Pause is **idempotent**: calling it twice doesn't error. It uninstalls the on-chain session-key validator in ≤1 Arb block. Subsequent propose calls return `423 PAUSED`.
 
 Resume mints a fresh session key — your passkey signs the validator-install. See [The /pause kill-switch](/policy/pause).
 

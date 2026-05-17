@@ -64,7 +64,7 @@ The four surfaces are live on Arbitrum Sepolia (testnet) and rolling out on Arbi
 <div class="mh-card-grid">
   <a class="mh-card" href="/get-started/quickstart">
     <h3>Quickstart</h3>
-    <p>Five minutes from passkey to first encrypted buy.</p>
+    <p>From passkey to first encrypted buy.</p>
   </a>
   <a class="mh-card" href="/get-started/choosing-a-surface">
     <h3>Choosing a surface</h3>

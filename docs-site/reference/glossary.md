@@ -45,7 +45,7 @@ description: Terms used across MuHaven docs.
 | **`decryptForTx`** | The CoFHE primitive that decrypts a handle for on-chain consumption (e.g., breach-path settlement). Settles back to the chain via `publishDecryptResult`. |
 | **`agent_audit_events`** | The append-only WORM-style audit table backing every state-mutating action across all four surfaces. |
 | **`agent_user_state`** | The Drizzle table tracking each user's current tier + pause state. |
-| **`/pause`** | The kill-switch. Uninstalls the session-key validator in ≤1 Arbitrum block (~250ms soft). Global across all surfaces. |
+| **`/pause`** | The kill-switch. Uninstalls the session-key validator in ≤1 Arbitrum block. Global across all surfaces. |
 | **Advisory tier** | Every action prompts your passkey via WebAuthn. The default tier for fresh investors. |
 | **Confirm-per-action tier** | Session key signs without re-prompting passkey within the 1-hour TTL. ConfirmModal still opens for cleartext preview. |
 | **Policy-bound tier** | Cron policy engine signs within your encrypted thresholds without per-action confirmation. Breaches auto-pause. Opt-in. |

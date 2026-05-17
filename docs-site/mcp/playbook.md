@@ -142,10 +142,10 @@ Before you commit to a >$5K buy, run a pre-flight that pulls oracle freshness, r
 
 Pre-flight for $20K of <TOKEN>:
 
-  NAV:                $1.003 (fresh, ~12 min old)
+  NAV:                $1.003 (fresh)
   Last 3 epoch APR:   3.8% · 4.1% · 3.9%
   Protection:         active (50bps reserve covers $250K notional)
-  Session key cap:    $5K per call · $50K per epoch · 42 minutes left
+  Session key cap:    $5K per call · $50K per epoch
 
 ⚠️ Your session key value cap is $5K/call. A $20K buy would need
 4 chunked UserOps OR a tier-3 passkey deeplink. Recommend

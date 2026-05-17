@@ -26,7 +26,6 @@ Column abbreviations below: **HB** = HavenBot · **MCP** = MuHaven MCP server ·
 | Protection coverage (DefaultProtection) | `muhaven_check_protection_coverage` | `muhaven.read.protection_coverage` | ✅ | ❌ |
 | KYC attestation registry status | `muhaven_explain_kyc_attestation` | `muhaven.read.kyc_attestation` | ✅ | ❌ |
 | Unseal a specific encrypted handle (client-side) | `muhaven_unseal_position` | (n/a — dashboard-only ceremony) | n/a | n/a |
-| Public metrics page | n/a (`api.muhaven.app/api/v1/public/metrics` is unauthenticated) | n/a | n/a | n/a |
 
 ## Position tools (state-mutating, propose-only)
 

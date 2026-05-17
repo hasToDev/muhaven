@@ -25,7 +25,7 @@ You can inspect the current session-key state via `muhaven.policy.session_key_st
 
 Three reasons:
 
-1. **UX.** Touch ID / Windows Hello on every click is exhausting. The session key signs in ~50ms; the passkey ceremony is ~1-2 seconds + a biometric prompt.
+1. **UX.** Touch ID / Windows Hello on every click is exhausting. The session key signs without prompting; the passkey ceremony requires a biometric prompt every time.
 2. **Scope reduction.** Your passkey signs *anything* the MuHaven wallet asks. The session key signs only what the validators allow. A leaked session key isn't a drain-the-account key.
 3. **Cron-friendly.** A passkey requires a user-present WebAuthn ceremony. A session key can be invoked by a backend cron (Policy-bound tier) without user interaction.
 

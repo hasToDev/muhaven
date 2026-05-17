@@ -1,21 +1,21 @@
 ---
 title: Quickstart
-description: Six minutes from passkey to first encrypted buy.
+description: From passkey to first encrypted buy.
 ---
 
 # Quickstart
 
-Under six minutes. One passkey. One encrypted buy. We'll do it in HavenBot (the in-dashboard copilot) because it's the surface with the lowest setup cost — no terminal, no host config, no Telegram link.
+One passkey. One encrypted buy. We'll do it in HavenBot (the in-dashboard copilot) because it's the surface with the lowest setup cost — no terminal, no host config, no Telegram link.
 
 Once you're done, the [Choosing a surface](/get-started/choosing-a-surface) page shows how to layer in the other surfaces (MCP, Telegram, hosted checkout) without re-onboarding.
 
-| Step | Time budget |
-|---|---|
-| 1. Sign in with a passkey | ~30s |
-| 2. Open HavenBot | ~15s |
-| 3. Onboarding wizard (welcome → funding → first buy) | ~4 min (testnet faucet ~90s; on-ramp adds 1-2 min on prod) |
-| 4. Pick your tier (optional) | ~30s |
-| 5. Pick more surfaces (optional) | open-ended |
+The five steps below:
+
+1. Sign in with a passkey.
+2. Open HavenBot.
+3. Run the onboarding wizard (welcome → funding → first buy).
+4. Pick your tier (optional).
+5. Pick more surfaces (optional).
 
 ## Prerequisites
 
@@ -33,7 +33,7 @@ Open [https://muhaven.app](https://muhaven.app) and click **Sign in**.
 
 1. A passkey dialog appears. Pick **Create a new passkey** (or **Use an existing one** if you've signed in before).
 2. Approve with Touch ID / Windows Hello / your hardware key.
-3. The first sign-in deploys your **MuHaven wallet** (a ZeroDev-powered smart account) in the background — about 3 seconds. You don't need to do anything; just wait for the dashboard to load.
+3. The first sign-in deploys your **MuHaven wallet** (a ZeroDev-powered smart account) in the background, paymaster-sponsored. You don't need to do anything; just wait for the dashboard to load.
 
 You now have a **passkey-bound MuHaven wallet** on Arbitrum Sepolia. No seed phrase. No private key on your device.
 
@@ -45,7 +45,7 @@ A given passkey can be either an investor *or* an issuer, not both. If you plan 
 
 In the sidebar, click **Agent**. You'll land on the **Onboarding** wizard at `/agent/onboarding`. It walks you through:
 
-1. **Welcome** — a 60-second explainer with the "sealed-glass-envelope" copy (your balances are encrypted; you hold the key).
+1. **Welcome** — a short explainer with the "sealed-glass-envelope" copy (your balances are encrypted; you hold the key).
 2. **Funding** — a button that takes you to the testnet mhUSDC faucet. Grab ~$100 of test stablecoin and come back.
 3. **First buy** — pick a token from the list of active RWAs, enter an amount, and click **Continue**.
 
@@ -92,6 +92,6 @@ Your passkey-bound MuHaven wallet is the same account across all four surfaces. 
 
 - **Passkey dialog didn't appear** — check that your browser is up-to-date and that hardware-backed credentials are enabled. iCloud Keychain users on macOS need to enable it in System Settings → Passwords.
 - **Sign-in succeeded but the dashboard is empty** — verify you're on Arbitrum Sepolia. Switch the network selector top-right.
-- **Faucet wouldn't dispense** — testnet faucets are rate-limited. Wait a minute and retry, or use the on-ramp on production.
+- **Faucet wouldn't dispense** — testnet faucets are rate-limited. Wait and retry, or use the on-ramp on production.
 - **ConfirmModal shows an encrypted handle instead of a number** — that's the policy gate's safety net. Re-run the action; if it persists, see [HavenBot troubleshooting](/havenbot/troubleshooting).
-- **Everything is unreachable** — check the [public metrics endpoint](https://api.muhaven.app/api/v1/public/metrics) for an outage signal, then ping the team.
+- **Everything is unreachable** — check status with the MuHaven team.

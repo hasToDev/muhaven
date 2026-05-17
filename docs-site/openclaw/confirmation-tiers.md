@@ -64,7 +64,7 @@ Backend → emits SSE → bot receives → bot replies "✅ Settled. Tx: 0x..."
 - The endpoint refuses any intent whose tier ≠ `inline`. A bot-worker compromise cannot escalate a $500 intent into an inline confirm.
 - The on-chain audit row records `source: 'telegram_inline'`.
 
-**Latency:** typically 3-5 seconds from tap to "settled" notification.
+**Latency:** the inline tap returns the on-chain settlement notification directly back to the chat.
 
 ## Tier 2 — Mini-App OTP ($200–$5K)
 
@@ -101,7 +101,7 @@ Bot → "✅ Settled. Tx: 0x..."
 - The audit row records `source: 'mini_app'`.
 - The exact OTP-delivery channel is intentionally flexible: today the OTP is returned in the bot message itself for simplicity.
 
-**Latency:** typically 15-30 seconds from initial command to "settled", depending on how fast you find the OTP.
+**Latency:** depends on how fast you retrieve and enter the OTP; once submitted, settlement mirrors the inline tier.
 
 ## Tier 3 — Passkey deeplink (>$5K)
 

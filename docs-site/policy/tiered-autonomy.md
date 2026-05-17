@@ -77,12 +77,12 @@ Your MuHaven wallet installs the session key as in Confirm-per-action, **and** y
 - **Min yield to accept** — e.g., 1% APR floor.
 - **Drift tolerance** — e.g., trigger a rebalance when allocation drifts >5% from target.
 
-A backend **cron policy engine** ticks every 60 seconds. For each pending action, it checks the proposed amount against your encrypted thresholds. If the check passes, the session key signs without prompting you. If it fails (a breach), the engine auto-pauses you to Advisory in ~2-3 seconds and notifies you.
+A backend **cron policy engine** ticks every 60 seconds. For each pending action, it checks the proposed amount against your encrypted thresholds. If the check passes, the session key signs without prompting you. If it fails (a breach), the engine auto-pauses you to Advisory and notifies you.
 
 ::: details Under the hood — for the curious
 - Thresholds live encrypted on-chain (`RiskParams.sol`, `euint64` slots).
 - The check uses a **branchless `FHE.select`** so the gas cost is identical whether the threshold passes or fails — no decrypt-event timing leakage.
-- On breach: async-decrypt (~1.2s on Fhenix Threshold Network) + on-chain `settleBreachDecrypt` (~1.5s on Arbitrum) = end-to-end ~2.5-3s.
+- On breach: async-decrypt on Fhenix Threshold Network + on-chain `settleBreachDecrypt` on Arbitrum.
 - A `RiskBreach` event fires on-chain; the engine then calls `PauseAgentUseCase` to uninstall the session-key validator.
 :::
 
@@ -94,7 +94,7 @@ A backend **cron policy engine** ticks every 60 seconds. For each pending action
 
 If any of your thresholds is exceeded (max drawdown / daily spend / min yield / drift tolerance), the cron engine:
 
-1. Async-decrypts the breach event (~2-3 seconds end-to-end).
+1. Async-decrypts the breach event.
 2. Emits an on-chain `RiskBreach` event.
 3. Calls the same pause cascade as `/pause` — uninstalls your session-key validator across every surface.
 4. Notifies you (Telegram if linked, dashboard banner on next visit).
@@ -114,7 +114,7 @@ Anyone (in any surface) can call `pause` at any time:
 > Pause my agent.
 ```
 
-The on-chain effect: `uninstallPlugin(sessionKeyValidator)` — a single tx that removes the session key from your MuHaven wallet's permission system. ≤1 Arb block (~250ms soft).
+The on-chain effect: `uninstallPlugin(sessionKeyValidator)` — a single tx that removes the session key from your MuHaven wallet's permission system. ≤1 Arb block.
 
 Once paused:
 

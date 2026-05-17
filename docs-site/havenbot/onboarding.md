@@ -1,17 +1,17 @@
 ---
 title: HavenBot — onboarding
-description: Under six minutes from passkey to first encrypted buy.
+description: From passkey to first encrypted buy.
 ---
 
 # Onboarding
 
-HavenBot's onboarding wizard takes a first-time investor from "I just heard of MuHaven" to "I hold an encrypted RWA balance and have an audit row to prove it" in **under six minutes**. The flow follows a Wealthfront-style limits paragraph plus the "sealed-glass-envelope" framing surfaced during user research.
+HavenBot's onboarding wizard takes a first-time investor from "I just heard of MuHaven" to "I hold an encrypted RWA balance and have an audit row to prove it". The flow follows a Wealthfront-style limits paragraph plus the "sealed-glass-envelope" framing surfaced during user research.
 
 ## The four steps
 
 The wizard at `/agent/onboarding` is gated by a `muhaven:onboarding:complete` localStorage flag plus a backend portfolio probe. If you've completed it before, you skip straight to the celebrate screen.
 
-### Step 1 — Welcome (~60 seconds)
+### Step 1 — Welcome
 
 A short explainer that names the three properties that make MuHaven different:
 
@@ -21,20 +21,20 @@ A short explainer that names the three properties that make MuHaven different:
 
 Click **Get started** to advance.
 
-### Step 2 — Funding (~90 seconds on testnet, ~3 minutes on production)
+### Step 2 — Funding
 
 You need a small amount of confidential USDC (called **mhUSDC**) to buy your first RWA token.
 
 **Testnet (Arbitrum Sepolia):**
 - Click **Open faucet** — a new tab opens to the public mhUSDC testnet faucet.
 - Paste your wallet address (the wizard shows it; click to copy).
-- Request the daily drip; it usually lands in 5-10 seconds. (Some faucets dispense less than the full ~100 mhUSDC on first try; rerun if you need more.)
+- Request the daily drip. (Some faucets dispense less than the full ~100 mhUSDC on first try; rerun if you need more.)
 - Come back to the wizard tab and click **I've funded my wallet**.
 
 **Production (Arbitrum One):**
 - Click **Buy mhUSDC** — opens the on-ramp picker.
 - Pay with card / Apple Pay / Google Pay.
-- Wait for on-ramp settlement (~2-3 minutes).
+- Wait for on-ramp settlement.
 
 The wizard polls your mhUSDC balance and advances automatically once funds land.
 
@@ -42,7 +42,7 @@ The wizard polls your mhUSDC balance and advances automatically once funds land.
 The wrap from USDC → mhUSDC is the one MuHaven flow that leaks deposit size to a chain observer. If your deposit size needs to stay private, use the issuer-minted hosted checkout flow (which routes through a non-customer MuHaven wallet).
 :::
 
-### Step 3 — First buy (~2 minutes)
+### Step 3 — First buy
 
 The wizard shows a tile per active RWA token in the current catalog. Each tile names the asset class (short-duration treasuries, gold, growth basket, shipping receivables, etc.) and links to issuer detail.
 
@@ -88,21 +88,6 @@ The investor onboarding wizard runs only for `role === 'investor'` MuHaven walle
 4. F2 wizard step 6 (set initial NAV + unpause) — uses `muhaven_propose_unpause_token` so the **issuer's MuHaven wallet** signs (production-trajectory shape, not the deployer-side script).
 
 The issuer wizard skips the funding step (issuers don't need mhUSDC to operate) and adds a "set up your first investor whitelist" call to action at the end.
-
-## How long does it really take?
-
-P95 timings from internal testing (5-investor sample):
-
-| Step | Median | P95 |
-|---|---|---|
-| Step 1 (welcome) | 45s | 60s |
-| Step 2 (testnet faucet) | 90s | 180s |
-| Step 2 (on-ramp) | 2m | 4m |
-| Step 3 (first buy) | 1m 30s | 2m 30s |
-| Step 4 (celebrate) | 15s | 45s |
-| **Total (testnet)** | **~4 minutes** | **~6 minutes** |
-
-The "under 6 minutes" target is the P95 on testnet. Production is ~2 minutes longer because of on-ramp latency.
 
 ## Troubleshooting
 

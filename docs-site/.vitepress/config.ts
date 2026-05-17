@@ -53,7 +53,6 @@ export default defineConfig({
         items: [
           { text: 'Dashboard (muhaven.app)', link: 'https://muhaven.app' },
           { text: 'Buyer checkout (muhaven.app/pay)', link: 'https://muhaven.app/pay' },
-          { text: 'Public metrics', link: 'https://api.muhaven.app/api/v1/public/metrics' },
         ],
       },
     ],
@@ -81,7 +80,7 @@ export default defineConfig({
           text: 'HavenBot — in-dashboard copilot',
           items: [
             { text: 'Overview', link: '/havenbot/overview' },
-            { text: 'Onboarding (under 6 minutes)', link: '/havenbot/onboarding' },
+            { text: 'Onboarding', link: '/havenbot/onboarding' },
             { text: 'Conversations & confirmations', link: '/havenbot/conversations' },
             { text: 'Investor playbook', link: '/havenbot/investor-playbook' },
             { text: 'Issuer playbook', link: '/havenbot/issuer-playbook' },

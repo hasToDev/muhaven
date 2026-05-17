@@ -86,7 +86,7 @@ Tap **Confirm**. The bot:
 3. Settles on-chain.
 4. Replies: `✅ Settled. Tx: 0xabc...`
 
-The whole flow is one tap. Total time: ~3-5 seconds.
+The whole flow is one tap.
 
 ### Example: a tier-2 buy ($200-$5K)
 

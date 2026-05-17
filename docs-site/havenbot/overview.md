@@ -166,7 +166,7 @@ Read the full walkthrough at [Onboarding](/havenbot/onboarding).
 <div class="mh-card-grid">
   <a class="mh-card" href="/havenbot/onboarding">
     <h3>Onboarding</h3>
-    <p>Under 6 minutes from passkey to first encrypted buy.</p>
+    <p>From passkey to first encrypted buy.</p>
   </a>
   <a class="mh-card" href="/havenbot/conversations">
     <h3>Conversations &amp; confirmations</h3>

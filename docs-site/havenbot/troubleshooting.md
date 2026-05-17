@@ -5,7 +5,7 @@ description: Symptom → fix for the most common HavenBot issues.
 
 # HavenBot troubleshooting
 
-A symptom-first reference. If your issue isn't here, check the [`api.muhaven.app/api/v1/public/metrics`](https://api.muhaven.app/api/v1/public/metrics) endpoint for an outage signal first.
+A symptom-first reference. If your issue isn't here, ping the MuHaven team or file an issue on GitHub.
 
 ## Sign-in & session
 
@@ -47,7 +47,7 @@ To verify your balance, ask HavenBot: "What's my mhUSDC balance?" — the unseal
 
 ### "Buy succeeded but my balance didn't change."
 
-The Arbitrum view-RPC sometimes returns stale data for ~3-5 seconds after a write. Wait, refresh. If it persists past 30 seconds:
+The Arbitrum view-RPC sometimes returns stale data briefly after a write. Wait, refresh. If it persists:
 
 - Check Arbiscan for the tx (the toast links to it).
 - Verify the tx didn't revert (revert reason in Arbiscan logs).
@@ -81,7 +81,7 @@ Two possibilities:
 
 ### "Streaming response stops mid-sentence."
 
-Network glitch or LLM timeout. The SSE channel reconnects automatically; if your message isn't completing after 10 seconds, click **Stop** and re-ask.
+Network glitch or LLM timeout. The SSE channel reconnects automatically; if your message isn't completing, click **Stop** and re-ask.
 
 ## ConfirmModal
 
@@ -111,7 +111,7 @@ Your issuer status isn't `approved` yet. Visit `/apply-issuer` to check; in dev 
 
 ### "Distribute yield modal shows the wrong investor count."
 
-The investor count is read from `InvestorRegistry` at propose time. If you added KYC entries within the last 30 seconds, the indexer may not have caught up — wait and re-propose.
+The investor count is read from `InvestorRegistry` at propose time. If you added KYC entries recently, the indexer may not have caught up — wait and re-propose.
 
 ### "Unpause says my token is already active."
 
@@ -121,7 +121,7 @@ The tool is idempotent. If your token is already unpaused, refuses with `409 ALR
 
 ### "Pause didn't take effect."
 
-The on-chain `uninstallPlugin` UserOp is fast (≤1 Arb block, ~250ms soft) but the backend's reflection of "paused" updates on the next block. Wait 2-3 seconds and check again.
+The on-chain `uninstallPlugin` UserOp is fast (≤1 Arb block) but the backend's reflection of "paused" updates on the next block. Wait and check again.
 
 ### "Resume failed."
 

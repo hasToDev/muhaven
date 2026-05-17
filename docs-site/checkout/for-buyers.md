@@ -11,7 +11,7 @@ You received a pay link from someone you trust (an issuer, a partner, a friend),
 https://muhaven.app/pay/c/01HMTV9X.../#k=AbCdEfGhIjKlMnOpQrStUvWxYz123456
 ```
 
-This is the **MuHaven hosted checkout** surface. Click the link in your browser. The whole flow takes 30 seconds for a returning buyer, or 60-90 seconds for a first-time buyer (you'll create a passkey along the way).
+This is the **MuHaven hosted checkout** surface. Click the link in your browser. Returning buyers complete the flow quickly; first-time buyers create a passkey along the way.
 
 ## What you'll see
 
@@ -65,7 +65,7 @@ If you've never used MuHaven before, the next click takes you through the passke
 
 Tap **Create passkey**. Your OS shows the WebAuthn dialog (Touch ID / Windows Hello / hardware key). Approve.
 
-Your **MuHaven wallet** (a ZeroDev-powered smart account) deploys in the background (~3 seconds, paymaster-sponsored). You now have a MuHaven account — the same one you can use on the dashboard, on Telegram, or via MCP.
+Your **MuHaven wallet** (a ZeroDev-powered smart account) deploys in the background, paymaster-sponsored. You now have a MuHaven account — the same one you can use on the dashboard, on Telegram, or via MCP.
 
 ## Step 1 (returning buyers) — Sign in
 

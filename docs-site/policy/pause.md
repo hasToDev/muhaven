@@ -5,7 +5,7 @@ description: One tap. ≤1 Arbitrum block. Global across all four surfaces.
 
 # The /pause kill-switch
 
-`/pause` is MuHaven's **single-tx kill-switch**. It uninstalls your MuHaven wallet's session-key validator in **≤1 Arbitrum block** (~250ms soft). After it fires, every `propose` tool on every surface returns `423 PAUSED` until you explicitly resume.
+`/pause` is MuHaven's **single-tx kill-switch**. It uninstalls your MuHaven wallet's session-key validator in **≤1 Arbitrum block**. After it fires, every `propose` tool on every surface returns `423 PAUSED` until you explicitly resume.
 
 It's the same surface across HavenBot, MCP, OpenClaw, and the audit copilot — one command, one tx, global effect.
 
@@ -36,7 +36,7 @@ You call pause
 │      OR the session key itself (Confirm-per-action — yes,    │
 │      the session key can uninstall itself, last action)      │
 │   4. Submit via ZeroDev bundler                              │
-│   5. Wait for inclusion (~1 block, ~250ms soft)              │
+│   5. Wait for inclusion (~1 block)                            │
 │   6. Write audit row: pause_triggered                        │
 │   7. Cascade pause to all surface-specific state             │
 └──────────────────────────────────────────────────────────────┘
@@ -105,7 +105,7 @@ After resume, you're back in your previous tier (resume doesn't downgrade you). 
 If you're in Policy-bound tier and the cron engine detects a **breach** (e.g., your $500 daily-spend cap is exceeded), the engine **auto-pauses** to Advisory:
 
 1. Encrypted threshold check via `RiskParams.checkAndExecute` returns `breach=true`.
-2. Engine async-decrypts the breach (~1.2s TN + ~1.5s `settleBreachDecrypt` Arb tx).
+2. Engine async-decrypts the breach (TN decrypt + on-chain `settleBreachDecrypt`).
 3. Engine emits a `RiskBreach` event on-chain.
 4. Engine calls `PauseAgentUseCase` for the user (same cascade as a manual pause).
 5. User notified via Telegram (if linked) + dashboard banner on next sign-in.
@@ -117,10 +117,10 @@ The auto-pause is the **fail-safe** for Policy-bound — bounded autonomy that e
 Important nuance: pause stops **your MuHaven wallet's session key from signing**. It does **not**:
 
 - Stop pending bundler submissions that were already in-flight when you paused.
-- Stop on-chain events that fire as a result of past UserOps (e.g., a `Settled` event from a buy that was in the bundler 100ms before you paused).
+- Stop on-chain events that fire as a result of past UserOps (e.g., a `Settled` event from a buy that was already in the bundler when you paused).
 - Roll back any already-settled transactions.
 
-The "pause + 250ms soft" window means there's a small race where an action submitted just before your pause may still settle. Treat pause as "no new actions" rather than "everything reverts."
+The brief soft-real-time window between pause and validator uninstall means there's a small race where an action submitted just before your pause may still settle. Treat pause as "no new actions" rather than "everything reverts."
 
 ## When pause matters most
 

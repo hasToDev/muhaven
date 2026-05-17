@@ -73,7 +73,7 @@ You need mhUSDC to complete the purchase.
 
 ### "Funding succeeded but checkout still says 'Waiting for funds'"
 
-The polling interval is 5 seconds; takes 5-30 seconds to register. If it persists past a minute:
+The polling interval is 5 seconds; balance updates register shortly after funds land. If it persists:
 
 1. Verify the funds landed in your **MuHaven wallet address** (not your EOA). The checkout shows your MuHaven wallet address; the faucet may have funded a different address by accident.
 2. Refresh the page; on reload, the buy ceremony re-checks balance.
@@ -84,7 +84,7 @@ The settlement waits for an on-chain event. Three checks:
 
 1. **Tx submitted?** Open Arbiscan with your MuHaven wallet address; if the buy UserOp is there, settlement is on-chain.
 2. **SSE channel disconnected?** Refresh. The page re-subscribes.
-3. **Indexer lag?** The indexer has occasional 30-60 second lag spikes. Wait. If still stuck after 2 minutes, the buy still settled — open the dashboard at `muhaven.app/portfolio` to see the encrypted balance.
+3. **Indexer lag?** The indexer can have occasional lag spikes. Wait. If still stuck, the buy still settled — open the dashboard at `muhaven.app/portfolio` to see the encrypted balance.
 
 ### "Got 'Settled' but the issuer says they didn't receive a webhook"
 

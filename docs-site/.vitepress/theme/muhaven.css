@@ -219,10 +219,28 @@
   text-decoration: none;
 }
 
+/* Suppress the default VitePress link underline on every descendant
+ * inside a card. Each card wraps its content in an `<a>`, and the
+ * stock `.vp-doc a` rule paints an underline on every text node it
+ * contains (h3 title, p body, em caption, inline code). We want the
+ * card itself to be the click target without looking like a wall of
+ * links. Hover state lifts the title subtly via color only — no
+ * underline anywhere. */
+.mh-card,
+.mh-card *,
+.mh-card:hover,
+.mh-card:hover * {
+  text-decoration: none !important;
+}
+
 .mh-card:hover {
   transform: translateY(-2px);
   border-color: var(--vp-c-brand-1);
   box-shadow: 0 12px 32px -16px rgba(255, 186, 32, 0.35);
+}
+
+.mh-card:hover h3 {
+  color: var(--vp-c-brand-1);
 }
 
 .mh-card h3 {
@@ -396,40 +414,37 @@ kbd {
   }
 }
 
-/* ── Wide-content escape hatches: let tables, code blocks, and the
- * mh-card grid extend slightly beyond the prose cap on large screens.
- * This is the "widen tables without widening paragraphs" pattern —
- * paragraphs remain bounded by content-container, but visual blocks
- * stretch into the breathing room around them.
+/* ── Wide-content escape hatches: let code blocks and the mh-card grid
+ * extend slightly beyond the prose cap on large screens. Tables are
+ * intentionally LEFT INSIDE the prose column so that the descriptive
+ * paragraph above each table visually aligns with the table itself —
+ * a wider table than its intro prose looks ragged. Long table rows
+ * scroll inside the prose width via the table-overflow rule below.
  *
- * Using negative margin + width:auto trick: at ≥1440px we let these
- * elements expand up to 1040px (160px past the 880 prose cap, 80 each
- * side); at ≥1920px up to 1120px (160px past 960). The container's
- * own max-width keeps them from running into the TOC. */
+ * Code blocks still escape because real code samples (long URLs, RPC
+ * traces, contract addresses) benefit from horizontal room without
+ * triggering horizontal scroll on every snippet.
+ *
+ * Negative margin + max-width trick: at ≥1440px we let these elements
+ * expand up to 80px past the prose cap (40 each side); at ≥1920px up
+ * to 160px (80 each side). The container's own max-width keeps them
+ * from running into the TOC. */
 @media (min-width: 1440px) {
   .vp-doc div[class*='language-'],
   .vp-doc .vp-code-group,
-  .vp-doc table,
   .vp-doc .mh-card-grid {
-    /* Pull each side out by up to 80px, capped so we never push past
+    /* Pull each side out by up to 40px, capped so we never push past
      * the content-container. The browser clamps negative margin to 0
      * if the wrapper has no room, so this is safe. */
     margin-left: -40px;
     margin-right: -40px;
     max-width: calc(100% + 80px);
   }
-  /* Tables need overflow-x:auto so a wide table scrolls inside its
-   * widened wrapper instead of pushing the page. */
-  .vp-doc table {
-    display: block;
-    overflow-x: auto;
-  }
 }
 
 @media (min-width: 1920px) {
   .vp-doc div[class*='language-'],
   .vp-doc .vp-code-group,
-  .vp-doc table,
   .vp-doc .mh-card-grid {
     margin-left: -80px;
     margin-right: -80px;
@@ -437,9 +452,80 @@ kbd {
   }
 }
 
+/* Tables stay inside the prose column at every breakpoint. If a row
+ * is too wide, scroll inside the prose width instead of spilling out
+ * past it. Wrap tables in a block container so overflow-x triggers
+ * only when needed (default <table> is inline-table, which doesn't
+ * scroll). */
+.vp-doc table {
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
 /* The card grid breathes with extra column room when widened. */
 @media (min-width: 1440px) {
   .mh-card-grid {
     grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  }
+}
+
+/* ── Sidebar bleed fix ───────────────────────────────────────────────
+ * VitePress's stock VPSidebar is `position: fixed; left: 0` with a
+ * background painted across its FULL width. At ≥1440px the default
+ * theme uses `padding-left: max(32px, (100% - (max-width - 64px))/2)`
+ * and `width: (100% - (max-width - 64px))/2 + sidebar-width - 32px`,
+ * which means the sidebar's painted background extends from the
+ * window's left edge across an empty strip and into the actual nav
+ * column. On wide displays the empty strip is the visible "bleed."
+ *
+ * Fix: keep VitePress's left-edge anchor + padding so the nav text
+ * stays in its expected position relative to the content, but PAINT
+ * the background only behind the nav column itself (everything inside
+ * the padding becomes transparent / inherits page bg).
+ *
+ * Strategy: clear the sidebar's own background; use a child-targeting
+ * background on the .nav region (which sits inside the padding) plus
+ * an inset linear-gradient via background-image with hard stop so the
+ * paint starts exactly at the padding-left offset. Mobile (<960px)
+ * is left alone — the slide-in drawer fills its own width correctly.
+ */
+@media (min-width: 960px) {
+  .VPSidebar {
+    background-color: transparent !important;
+    /* Hard-stop gradient: transparent up to padding-left, then sidebar
+     * bg from there to the right edge. Uses the same custom prop the
+     * VitePress padding calc consumes so the two stay in lockstep. */
+    background-image: linear-gradient(
+      to right,
+      transparent 0,
+      transparent var(--mh-sidebar-pad-left, 32px),
+      var(--vp-sidebar-bg-color) var(--mh-sidebar-pad-left, 32px),
+      var(--vp-sidebar-bg-color) 100%
+    );
+  }
+  /* The sticky `.curtain` element (covers the nav-bar overlap area at
+   * the top) inherits the same paint band so the top of the sidebar
+   * doesn't look hollow when the nav-bar is translucent. */
+  .VPSidebar .curtain {
+    background-color: transparent !important;
+    background-image: linear-gradient(
+      to right,
+      transparent 0,
+      transparent var(--mh-sidebar-pad-left, 32px),
+      var(--vp-sidebar-bg-color) var(--mh-sidebar-pad-left, 32px),
+      var(--vp-sidebar-bg-color) 100%
+    );
+  }
+}
+
+@media (min-width: 1440px) {
+  .VPSidebar {
+    /* Match VitePress's own padding-left expression so the paint band
+     * starts exactly where the visible nav column starts. */
+    --mh-sidebar-pad-left: max(
+      32px,
+      calc((100% - (var(--vp-layout-max-width) - 64px)) / 2)
+    );
   }
 }

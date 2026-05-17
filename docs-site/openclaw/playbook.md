@@ -11,7 +11,7 @@ A library of **phone-first scenarios** — each one shows the actual Telegram ch
 
 ## 1. Morning commute — portfolio check + claim if anything ripe
 
-You're on the train. You want a 10-second pulse on the portfolio and, if there's any pending yield, claim it before you get to the office.
+You're on the train. You want a quick pulse on the portfolio and, if there's any pending yield, claim it before you get to the office.
 
 ```
 You → /portfolio
@@ -38,7 +38,7 @@ You → (tap ✅ Confirm)
 @muhaven_bot → ✅ Claimed. Tx: 0xabc... (View on Arbiscan)
 ```
 
-**Total time: ~15 seconds.** No browser, no laptop, no passkey ceremony.
+No browser, no laptop, no passkey ceremony.
 
 ## 2. Claim from bed — overnight yield notification
 
@@ -129,7 +129,7 @@ You → /pause
                   trusted device and complete the WebAuthn ceremony.
 ```
 
-The pause cascades **globally** — HavenBot, MCP, the laptop's browser tab, the OpenClaw skill on your homelab, every surface now rejects propose calls until you resume. ≤1 Arb block (~250ms soft).
+The pause cascades **globally** — HavenBot, MCP, the laptop's browser tab, the OpenClaw skill on your homelab, every surface now rejects propose calls until you resume. ≤1 Arb block.
 
 ## 6. Tier transition — switching from Confirm-per-action to Advisory before a busy day
 
@@ -169,7 +169,7 @@ You → How much did I spend on Telegram inline yesterday?
 
 @muhaven_bot → Tuesday Telegram inline:
                   2 buys, $130 total ($80 <TOKEN> + $50 RWA1).
-                  Both settled within 5 seconds of tap.
+                  Both settled successfully.
 ```
 
 The audit `source` field is server-derived — the bot can't lie about which surface confirmed a trade.

@@ -14,7 +14,7 @@ Three steps from a fresh machine to a working MCP install:
 ## Prerequisites
 
 - **Node 20 or later** (for the broker daemon).
-- **A MuHaven account** with a passkey-bound MuHaven wallet (sign up on `muhaven.app` — takes 60 seconds).
+- **A MuHaven account** with a passkey-bound MuHaven wallet (sign up on `muhaven.app`).
 - **An MCP-aware host:** Claude Code, Claude Desktop, or Cursor.
 
 ## Step 1 — Install globally

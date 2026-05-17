@@ -6,16 +6,13 @@ titleTemplate: Confidential RWA, agentic-first
 hero:
   name: MuHaven
   text: Confidential RWA, agentic-first.
-  tagline: |
-    A privacy-preserving real-world-asset portfolio you operate by
-    asking — in the dashboard, in your own LLM, in Telegram, or with
-    a pay link. Encrypted balances. Tiered autonomy. One passkey.
+  tagline: A real-world-asset portfolio you operate by asking. Encrypted on-chain. One passkey, one agent, four surfaces.
   image:
     src: /logo.png
     alt: MuHaven
   actions:
     - theme: brand
-      text: Get started in 6 minutes
+      text: Get started
       link: /get-started/quickstart
     - theme: alt
       text: Pick your agentic surface
@@ -56,7 +53,7 @@ MuHaven hides the chain. You sign in with a passkey, your balances are encrypted
 <div class="mh-card-grid">
   <a class="mh-card" href="/get-started/quickstart">
     <h3>Quickstart</h3>
-    <p>5 minutes from passkey to first encrypted buy — across all four surfaces.</p>
+    <p>From passkey to first encrypted buy — across all four surfaces.</p>
   </a>
   <a class="mh-card" href="/policy/tiered-autonomy">
     <h3>Tiered autonomy</h3>
@@ -64,7 +61,7 @@ MuHaven hides the chain. You sign in with a passkey, your balances are encrypted
   </a>
   <a class="mh-card" href="/policy/pause">
     <h3>The /pause kill-switch</h3>
-    <p>One tap uninstalls the agent's on-chain validator in ≤1 Arbitrum block (~250ms).</p>
+    <p>One tap uninstalls the agent's on-chain validator in ≤1 Arbitrum block.</p>
   </a>
   <a class="mh-card" href="/reference/tool-catalog">
     <h3>Tool catalog</h3>

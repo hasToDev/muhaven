@@ -58,7 +58,7 @@ Two possibilities:
 
 ### "Authorized in the browser, but broker still says `awaiting authorization`"
 
-The broker polls every 5 seconds. Give it 10-15 seconds. If it still says awaiting:
+The broker polls the backend for completion. Give it a moment. If it still says awaiting:
 
 - Check the broker terminal for an error message.
 - The device code may have expired (5-minute TTL). Re-run `muhaven-broker login`.
@@ -163,7 +163,7 @@ File an issue if you can reproduce auto-submission from MCP itself — it would 
 
 ### "Distribute yield says my token has zero holders"
 
-The `InvestorRegistry` is read at propose time. If you added KYC entries within the last 30 seconds, the indexer may not have caught up. Wait and re-propose.
+The `InvestorRegistry` is read at propose time. If you added KYC entries recently, the indexer may not have caught up. Wait and re-propose.
 
 ## Where next
 
