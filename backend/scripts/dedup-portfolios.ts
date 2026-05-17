@@ -41,8 +41,9 @@
  *
  * Add --dry-run to print what WOULD be deleted/updated without writing.
  */
-import { sql } from 'drizzle-orm';
+import { inArray, sql } from 'drizzle-orm';
 import { getDb } from '../src/infrastructure/repository/postgres/db.js';
+import { portfolios } from '../src/infrastructure/repository/postgres/schema.js';
 
 interface DupGroup {
   user_id: string;
@@ -113,9 +114,12 @@ async function main() {
   await db.transaction(async (tx) => {
     const deleteIds = dupGroups.flatMap((g) => g.delete_ids);
     if (deleteIds.length > 0) {
-      const result = await tx.execute(sql`
-        DELETE FROM portfolios WHERE id = ANY(${deleteIds})
-      `);
+      // Use Drizzle's inArray() rather than `sql\`... ANY(${ids})\``
+      // because pg's text-protocol parameter binding can't round-trip
+      // a JS array as a Postgres `text[]` literal — it surfaces as
+      // `array_in: Array value must start with "{" or dimension info`.
+      // inArray() expands to `IN ($1, $2, ...)` with one bind per id.
+      const result = await tx.delete(portfolios).where(inArray(portfolios.id, deleteIds));
       console.log(`[dedup-portfolios] deleted ${result.rowCount ?? deleteIds.length} dup row(s)`);
     }
     const upd = await tx.execute(sql`
