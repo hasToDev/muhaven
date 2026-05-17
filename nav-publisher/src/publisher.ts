@@ -9,6 +9,7 @@
  * seed-stage TVL. Real per-asset price publishing is a future Chainlink
  * NAVLink integration that REPLACES this service, not extends it.
  */
+import { randomUUID } from 'node:crypto';
 import { desc, sql } from 'drizzle-orm';
 import { type Address } from 'viem';
 import { getConfig, labelToken, type PublishStrategy } from './config.js';
@@ -99,7 +100,17 @@ async function resolveTokens(): Promise<Address[]> {
 
 interface DbLatest {
   fetchedAt: Date;
+  source: string;
 }
+
+/**
+ * Source-string prefix used when this service inserts a `token_nav_history`
+ * row for a synthetic token (no upstream feed). The prefix lets a future
+ * `fetchDbLatest` distinguish "publisher-written row" from "real upstream
+ * row" so the synthetic-refresh path keeps re-stamping the same token
+ * across cycles without tripping the dbLivenessMs alarm.
+ */
+const PUBLISHER_SOURCE_PREFIX = 'publisher:synthetic-bootstrap';
 
 async function fetchDbLatest(token: Address): Promise<DbLatest | null> {
   // Case-insensitive match: nav-worker writes addresses in EIP-55
@@ -108,13 +119,65 @@ async function fetchDbLatest(token: Address): Promise<DbLatest | null> {
   const db = getDb();
   const lower = token.toLowerCase();
   const rows = await db
-    .select({ fetchedAt: tokenNavHistory.fetchedAt })
+    .select({ fetchedAt: tokenNavHistory.fetchedAt, source: tokenNavHistory.source })
     .from(tokenNavHistory)
     .where(sql`LOWER(${tokenNavHistory.tokenAddress}) = ${lower}`)
     .orderBy(desc(tokenNavHistory.fetchedAt))
     .limit(1);
   if (rows.length === 0) return null;
-  return { fetchedAt: rows[0].fetchedAt };
+  return { fetchedAt: rows[0].fetchedAt, source: rows[0].source };
+}
+
+/**
+ * Format a uint256 NAV (6-decimal base units, e.g. `4545780000n` for
+ * $4545.78) as the decimal-price string convention nav-worker uses for
+ * the `nav` column ("1", "4545.78", "2400.5"). Backend's
+ * `parseDecimalToUsd6` round-trips this back to base units when the
+ * quote tool reads.
+ */
+function navUsd6ToDecimal(navUsd6: bigint): string {
+  if (navUsd6 < 0n) {
+    throw new Error(`negative NAV cannot be serialised: ${navUsd6}`);
+  }
+  const padded = navUsd6.toString().padStart(7, '0');
+  const intPart = padded.slice(0, -6);
+  const fracPart = padded.slice(-6).replace(/0+$/, '');
+  return fracPart === '' ? intPart : `${intPart}.${fracPart}`;
+}
+
+/**
+ * Insert a fresh `token_nav_history` row for a synthetic token (one that
+ * has no nav-worker upstream feed — NOVUS / OCEAN / ASTRAT etc.).
+ *
+ * Why this exists: nav-worker only writes rows for TBILL1 + GOLD1
+ * (`nav-worker/src/engine.ts:TOKEN_SOURCES`). Wizard-onboarded synthetic
+ * tokens never get a row, so backend's `muhaven_quote` + `muhaven_propose_buy`
+ * 404 with "No NAV snapshot indexed". The publisher already knows the
+ * authoritative on-chain NAV (it just published it); mirroring that
+ * value into `token_nav_history` unblocks the agent surface without
+ * adding a parallel writer.
+ *
+ * Source string carries the {@link PUBLISHER_SOURCE_PREFIX} so the next
+ * cycle's `fetchDbLatest` can recognise the row as publisher-owned and
+ * keep writing fresh rows past the `dbLivenessMs` window (which would
+ * otherwise mis-classify a synthetic token as a stale upstream feed).
+ */
+async function writeSyntheticNavHistory(token: Address, navUsd6: bigint): Promise<void> {
+  const db = getDb();
+  const now = new Date();
+  await db.insert(tokenNavHistory).values({
+    id: randomUUID(),
+    tokenAddress: token.toLowerCase(),
+    nav: navUsd6ToDecimal(navUsd6),
+    apy: null,
+    totalAum: null,
+    yieldRate: null,
+    source: PUBLISHER_SOURCE_PREFIX,
+    sourceType: 'manual',
+    sourceTimestamp: now,
+    fetchedAt: now,
+    createdAt: now,
+  });
 }
 
 function ensureStatus(token: Address): TokenStatus {
@@ -176,8 +239,19 @@ async function publishOne(token: Address): Promise<PublishOutcome> {
   // `view.nav === 0n` check below is the structural backstop for
   // tokens that genuinely have no bootstrap NAV yet (caught by
   // `skipped:zero-nav`).
+  //
+  // 2026-05-24 follow-up: now that this branch also writes a
+  // `token_nav_history` row for synthetic tokens (see
+  // `writeSyntheticNavHistory` below — unblocks backend's
+  // muhaven_quote / muhaven_propose_buy on wizard-onboarded tokens),
+  // subsequent cycles see a non-null `dbLatest` whose source is the
+  // publisher itself. Treat that as still-synthetic so we don't
+  // mis-fire the dbLivenessMs alarm against our own bookkeeping row
+  // and so the next cycle keeps writing fresh rows.
   const dbLatest = await fetchDbLatest(token);
   s.dbLatestFetchedAt = dbLatest?.fetchedAt.toISOString() ?? null;
+  const syntheticMode =
+    dbLatest === null || dbLatest.source.startsWith(PUBLISHER_SOURCE_PREFIX);
   if (dbLatest === null) {
     // Synthetic token — no upstream feed expected. Log once-per-cycle
     // but DO NOT short-circuit; fall through to the on-chain refresh
@@ -187,6 +261,11 @@ async function publishOne(token: Address): Promise<PublishOutcome> {
     console.log(
       `[publisher] ${s.label}: no DB row — synthetic refresh mode (using on-chain NAV)`,
     );
+  } else if (syntheticMode) {
+    // We've been refreshing this synthetic token ourselves. The
+    // dbLivenessMs check below is irrelevant here — our cycle interval
+    // (~9h) intentionally exceeds liveness gates tuned for nav-worker's
+    // hourly cadence. Fall through to the on-chain refresh path.
   } else if (config.dbLivenessMs > 0) {
     const ageMs = Date.now() - dbLatest.fetchedAt.getTime();
     if (ageMs > config.dbLivenessMs) {
@@ -230,6 +309,28 @@ async function publishOne(token: Address): Promise<PublishOutcome> {
     s.lastOutcome = 'skipped:wrong-writer';
     s.lastError = `signer ${account.address} but navWriter is ${view.navWriter}`;
     return 'skipped:wrong-writer';
+  }
+
+  // Synthetic-token bookkeeping. We've confirmed a non-zero on-chain NAV
+  // owned by our signer; mirror it into `token_nav_history` so backend's
+  // `muhaven_quote` + `muhaven_propose_buy` can find a price for
+  // wizard-onboarded tokens that have no nav-worker upstream feed.
+  // Runs unconditionally on every synthetic-mode cycle (cheap insert,
+  // ~3 rows/day/token; keeps the row fresh regardless of whether we
+  // need to publish below). Skipped for tokens with a real upstream feed
+  // (`!syntheticMode`) — nav-worker owns those writes. Best-effort: a
+  // DB error must NOT mask the on-chain refresh path; log + continue.
+  if (syntheticMode) {
+    try {
+      await writeSyntheticNavHistory(token, view.nav);
+      console.log(
+        `[publisher] ${s.label}: wrote synthetic nav_history row (nav=${navUsd6ToDecimal(view.nav)})`,
+      );
+    } catch (err) {
+      console.warn(
+        `[publisher] ${s.label}: synthetic nav_history insert failed (non-fatal): ${(err as Error).message}`,
+      );
+    }
   }
 
   // Compute the staleness deadline up-front so the health endpoint can

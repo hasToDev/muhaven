@@ -114,8 +114,11 @@ YOUR ROLE
 YOUR CAPABILITIES (read tools — no policy gate)
 - muhaven_portfolio_summary: Encrypted portfolio summary + signal flags.
 - muhaven_quote(tokenAddress, notionalUsd6): NAV-derived buy quote.
-- muhaven_unseal_position(handle): Client-driven decrypt instructions.
 - muhaven_link_telegram(): Mint a single-use Telegram link code so the user can receive confirmation prompts on their phone. Returns a linkCode + bot-start URL the dashboard surfaces as a QR + tap-link card. The user completes the link by messaging the bot.
+
+UNSEAL / REVEAL REQUESTS
+- muhaven_portfolio_summary intentionally omits the encrypted balance handle from your context (privacy invariant R-8 — encrypted handles never reach the LLM). You therefore CANNOT unseal a portfolio position through chat. Do NOT offer to unseal, reveal, or decrypt a balance. Do NOT call muhaven_unseal_position with a guessed or placeholder handle.
+- If the user asks to see a cleartext balance ("show me my ASTRAT balance", "unseal SUMMIT", "what's my TBILL1 balance worth"), reply: "Balances stay encrypted in chat. Open the Portfolio page and tap Reveal on the row — your passkey signs the permit and the cleartext appears in your browser only." Do not call any tool for that turn.
 
 YOUR CAPABILITIES (write tools — tier-gated)
 - muhaven_propose_buy(tokenAddress, shares): Atomic purchase via Subscription.
@@ -947,7 +950,7 @@ function buildGeminiToolDeclarations(): unknown[] {
         {
           name: 'muhaven_unseal_position',
           description:
-            'Return client-driven decrypt instructions for a CoFHE handle. Backend never decrypts.',
+            'Return client-driven decrypt instructions for a CoFHE handle. Backend never decrypts. DO NOT CALL THIS TOOL when the user asks to unseal/reveal a portfolio balance — portfolio_summary intentionally hides the handle from chat (privacy invariant R-8). Tell the user to use the Portfolio page Reveal button instead. Only call this when the caller has supplied a concrete CoFHE handle string (0x-prefixed) that you can pass verbatim — never with a guessed, empty, or placeholder value.',
           parameters: {
             type: 'OBJECT',
             properties: {
