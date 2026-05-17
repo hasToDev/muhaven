@@ -295,13 +295,33 @@ export const usePortfolioStore = defineStore('portfolio', () => {
       const readCtx = oracleConfigured ? buildReadContext() : null
       const oracleClient = readCtx ? new OracleClient(readCtx, v35Addresses.oracle) : null
 
-      const allPositions: { token_address: string; token_symbol: string }[] = [
-        ...portfolioRes.positions,
-        ...discovered.map((t) => ({
-          token_address: t.address,
-          token_symbol: t.symbol,
-        })),
-      ]
+      // Dedup by lowercased token_address. Defense-in-depth against a
+      // backend that returns two rows for the same token (e.g. case
+      // skew between a TradePage buy that wrote checksum and an
+      // AgentPage buy that wrote lowercase — the backend's unique
+      // index is byte-exact on text). Without this, /portfolio renders
+      // the same token twice (TBILL1 dup surfaced 2026-05-17). The
+      // backend repo lowercases at the boundary post-fix, but until
+      // the operator runs the dedup backfill on prod, this guard
+      // prevents the symptom from leaking to the UI.
+      // First-seen wins so the row whose tokenAddress survives matches
+      // the BACKEND view (most likely the row downstream code expects
+      // for addPosition / claim flows).
+      const positionsByAddr = new Map<string, { token_address: string; token_symbol: string }>()
+      for (const p of portfolioRes.positions) {
+        const key = p.token_address.toLowerCase()
+        if (!positionsByAddr.has(key)) positionsByAddr.set(key, p)
+      }
+      for (const t of discovered) {
+        const key = t.address.toLowerCase()
+        if (!positionsByAddr.has(key)) {
+          positionsByAddr.set(key, {
+            token_address: t.address,
+            token_symbol: t.symbol,
+          })
+        }
+      }
+      const allPositions = Array.from(positionsByAddr.values())
 
       // Preserve previously-decrypted balances across the rebuild. Without
       // this, every safety-poll-triggered `load()` (every 30s on /portfolio)
