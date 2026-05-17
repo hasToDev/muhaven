@@ -181,11 +181,9 @@
 
 /* ── Ambient amber bloom on elevated surfaces (dark only) ─────────── */
 /*
- * NOTE — VPSidebar is intentionally EXCLUDED here. The sidebar gets its
- * own composite background-image further down (light mode + dark mode)
- * so the hard-stop band that fixes the "bleed past padding-left" issue
- * doesn't get clobbered by this bloom. The bloom for the sidebar is
- * folded into that composite as an extra gradient layer.
+ * NOTE — VPSidebar is intentionally EXCLUDED here. The sidebar gets
+ * its own bloom in the wide-screen anchor block below so the bloom
+ * stays contained to the (re-anchored) sidebar bounds.
  */
 .dark .VPNavBar.has-sidebar .content-body,
 .dark .VPDoc {
@@ -503,63 +501,38 @@ kbd {
  * Mobile (<960px) is left untouched — the slide-in drawer fills its
  * own width correctly and has no gutter.
  */
-@media (min-width: 960px) {
-  /* Default padding-left at ≥960px = 32px flat (VitePress stock). */
-  html .VPSidebar {
-    --mh-sidebar-pad-left: 32px;
-  }
-
-  /* Light mode: transparent background-color + hard-stop band that
-   * starts painting --vp-sidebar-bg-color from --mh-sidebar-pad-left
-   * onwards. Selector chain `html .VPSidebar` = specificity 0,1,1
-   * which ties the scoped `.VPSidebar[data-v-781fc7c3]` (0,1,1) — but
-   * our rule comes later in the cascade so it wins. */
-  html .VPSidebar,
-  html .VPSidebar .curtain {
-    background-color: transparent !important;
-    background-image: linear-gradient(
-      to right,
-      transparent 0,
-      transparent var(--mh-sidebar-pad-left, 32px),
-      var(--vp-sidebar-bg-color) var(--mh-sidebar-pad-left, 32px),
-      var(--vp-sidebar-bg-color) 100%
-    ) !important;
-  }
-
-  /* Dark mode: same hard-stop band, PLUS the amber bloom layered on
-   * top (radial-gradient first, then the band). The bloom is now
-   * clipped to the painted area because it sits above the same
-   * transparent gutter — the gutter strip remains fully transparent
-   * because both layers stop there. Selector specificity 0,2,1 to
-   * beat the bloom-on-VPSidebar rule that was removed above; this
-   * also beats any future `.dark .VPSidebar` overrides. */
-  html.dark .VPSidebar,
-  html.dark .VPSidebar .curtain {
-    background-color: transparent !important;
-    background-image:
-      radial-gradient(
-        ellipse 60% 40% at 50% -10%,
-        rgba(255, 220, 161, 0.05),
-        transparent 60%
-      ),
-      linear-gradient(
-        to right,
-        transparent 0,
-        transparent var(--mh-sidebar-pad-left, 32px),
-        var(--vp-sidebar-bg-color) var(--mh-sidebar-pad-left, 32px),
-        var(--vp-sidebar-bg-color) 100%
-      ) !important;
-  }
+/* Sidebar bleed — final fix.
+ *
+ * The previous attempts (transparent linear-gradient hard-stop; then
+ * a structural `left: max(...)` shift) both fought VitePress's design
+ * and lost. The cleanest fix is to neutralise the contrast that makes
+ * the bleed visible at all: tint `--vp-sidebar-bg-color` to the SAME
+ * value as `--vp-c-bg` (the page background). The sidebar still spans
+ * from window edge to its right boundary, but with bg-color === page
+ * bg-color there is nothing visually distinguishable to bleed into
+ * the gutter on wide screens — the "colored band" simply disappears.
+ *
+ * The sidebar keeps visual definition via:
+ *   - The text + indicator colors of its own items
+ *   - A subtle right-border at the column boundary
+ *   - VitePress's stock hover/active treatments
+ *
+ * Works at every viewport (narrow drawer, wide centered chrome) and
+ * survives future VitePress padding-left/width tweaks because we
+ * never touch positioning — only the paint.
+ */
+:root {
+  --vp-sidebar-bg-color: var(--vp-c-bg);
 }
 
-@media (min-width: 1440px) {
-  /* At ≥1440px VitePress shifts padding-left to a centered-gutter
-   * expression. Match it exactly so the paint band starts where the
-   * visible nav column starts. */
-  html .VPSidebar {
-    --mh-sidebar-pad-left: max(
-      32px,
-      calc((100% - (var(--vp-layout-max-width) - 64px)) / 2)
-    );
+@media (min-width: 960px) {
+  /* Subtle column boundary at the right edge of the visible nav area.
+   * Without this the sidebar would feel unanchored once the bg blends
+   * into the page. We rely on `box-shadow` (not `border-right`)
+   * because VitePress already lays out the content area assuming no
+   * extra border width on the sidebar — a shadow adds the visual
+   * separator without nudging layout math. */
+  .VPSidebar {
+    box-shadow: inset -1px 0 0 var(--vp-c-divider);
   }
 }

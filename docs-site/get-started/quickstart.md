@@ -41,15 +41,21 @@ You now have a **passkey-bound MuHaven wallet** on Arbitrum Sepolia. No seed phr
 A given passkey can be either an investor *or* an issuer, not both. If you plan to be an issuer, register a second passkey for that purpose — see [Investor vs issuer](/get-started/investor-vs-issuer).
 :::
 
-## Step 2 — Open HavenBot
+## Step 2 — Run the onboarding wizard
 
-In the sidebar, click **Agent**. You'll land on the **Onboarding** wizard at `/agent/onboarding`. It walks you through:
+In the sidebar, click **Agent** — that lands you on `/agent`. To go through the first-time wizard, navigate to **`/agent/onboarding`** (the dashboard doesn't auto-redirect; type the URL or follow a "Run onboarding" link from the page menu).
 
-1. **Welcome** — a short explainer with the "sealed-glass-envelope" copy (your balances are encrypted; you hold the key).
-2. **Funding** — a button that takes you to the testnet mhUSDC faucet. Grab ~$100 of test stablecoin and come back.
-3. **First buy** — pick a token from the list of active RWAs, enter an amount, and click **Continue**.
+The wizard has three steps:
 
-The wizard skips steps you've already done — close it and come back later if you need to.
+1. **Passkey ready** — auto-detected from your authentication state.
+2. **KYC whitelist** — one click to add yourself to the ERC-3643 identity registry.
+3. **First position** — the wizard drafts a 50-share buy of the first active token; you confirm with your passkey.
+
+The wizard skips steps you've already done — if your MuHaven wallet already holds positions, you'll land on the celebrate screen instead.
+
+::: tip Funding first
+You need a small amount of **mhUSDC** in your MuHaven wallet for the first buy to succeed. On testnet, grab some from the mhUSDC faucet before launching the wizard. On production, use the dashboard's funding flow / on-ramp picker.
+:::
 
 ## Step 3 — Have your first conversation
 
