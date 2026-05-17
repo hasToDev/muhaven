@@ -21,7 +21,7 @@ npm install --omit=dev
 The skill's `mcp.bundled` binary is `@muhaven/mcp`, which the ClawHub install pulls from npm. But the **broker bin** (`muhaven-broker`) needs to be globally installed and on `$PATH`:
 
 ```bash
-npm install -g @muhaven/mcp@0.1.2
+npm install -g @muhaven/mcp@0.1.3
 ```
 
 This is documented in the skill's `config.json#post_install_review.items` (`broker-bin-on-path`).

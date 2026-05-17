@@ -10,13 +10,13 @@ description: Install muhaven-rwa-skill from ClawHub into your OpenClaw runtime.
 ## Prerequisites
 
 - **OpenClaw runtime** installed (`npm install -g openclaw@latest`). Node 20+ required.
-- **`@muhaven/mcp@0.1.2`** installed globally (the skill bundles it; the `muhaven-broker` bin needs to be on `$PATH`).
+- **`@muhaven/mcp@0.1.3`** installed globally (the skill bundles it; the `muhaven-broker` bin needs to be on `$PATH`).
 - A **MuHaven wallet** with a passkey-bound investor account.
 
 ```bash
 # 1. Prereq: OpenClaw runtime + MCP
 npm install -g openclaw@latest
-npm install -g @muhaven/mcp@0.1.2
+npm install -g @muhaven/mcp@0.1.3
 ```
 
 ::: tip Install @muhaven/mcp first
