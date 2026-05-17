@@ -313,6 +313,38 @@ export async function waitForBroker(
   );
 }
 
+/**
+ * Host the operator wants `muhaven-broker setup` to wire the MCP server
+ * into automatically. Pre-2026-05-17 setup stopped after `login`; the
+ * operator then had to write a `.mcp.json` (or equivalent host-config
+ * file) by hand. With `--register claude-code` we shell out to the
+ * host's own CLI (`claude mcp add-json`) and the JSON ritual goes away.
+ *
+ * Initial round: `claude-code` only. `claude-desktop` + `cursor` are
+ * reserved names — they parse without error but the register step
+ * declines to act + prints a clear "not yet implemented" line so the
+ * operator can fall back to the per-host snippet in `mcp/install.md`.
+ * Adding a host here is a focused diff: implement the registrar +
+ * extend `KNOWN_REGISTER_HOSTS`.
+ */
+export const KNOWN_REGISTER_HOSTS = [
+  'claude-code',
+  'claude-desktop',
+  'cursor',
+] as const;
+export type RegisterHost = (typeof KNOWN_REGISTER_HOSTS)[number];
+
+/**
+ * Scope passed through to `claude mcp add-json --scope <scope>`. Default
+ * is `user` because a per-user MuHaven broker is the model — one
+ * authenticated daemon per machine, accessible from every project. The
+ * operator can downgrade to `project` (writes `.mcp.json` at CWD,
+ * git-shared) or to `local` (writes `~/.claude.json` per-project
+ * user-only entry — Claude Code's `claude mcp add` default).
+ */
+export const KNOWN_REGISTER_SCOPES = ['user', 'project', 'local'] as const;
+export type RegisterScope = (typeof KNOWN_REGISTER_SCOPES)[number];
+
 export interface SetupFlags {
   /** Skip the background-spawn step; run the daemon attached to this shell
    *  (useful for systemd-style supervisors). When set, setup blocks. */
@@ -327,6 +359,12 @@ export interface SetupFlags {
   dashboardBaseUrl?: string;
   /** Skip the login step (operator will run it later). */
   skipLogin: boolean;
+  /** Host(s) to register the MCP server with after login. Repeatable;
+   *  comma-separated values also accepted (e.g. `--register claude-code,cursor`).
+   *  Empty array = no host registration (legacy behavior). */
+  register: RegisterHost[];
+  /** Scope for the `claude mcp add-json` call. Defaults to `user`. */
+  registerScope: RegisterScope;
 }
 
 export function parseSetupFlags(argv: readonly string[]): SetupFlags {
@@ -336,6 +374,8 @@ export function parseSetupFlags(argv: readonly string[]): SetupFlags {
   let backendBaseUrl: string | undefined;
   let dashboardBaseUrl: string | undefined;
   let skipLogin = false;
+  const register: RegisterHost[] = [];
+  let registerScope: RegisterScope = 'user';
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--foreground' || a === '-f') foreground = true;
@@ -344,7 +384,38 @@ export function parseSetupFlags(argv: readonly string[]): SetupFlags {
     else if (a === '--broker-endpoint' && i + 1 < argv.length) brokerEndpoint = argv[++i];
     else if (a === '--backend-base-url' && i + 1 < argv.length) backendBaseUrl = argv[++i];
     else if (a === '--dashboard-base-url' && i + 1 < argv.length) dashboardBaseUrl = argv[++i];
-    else throw new Error(`unknown flag: ${a}`);
+    else if (a === '--register' && i + 1 < argv.length) {
+      // Accept repeated `--register X --register Y` AND a single comma-
+      // separated `--register X,Y`. Parsed values go through the
+      // KNOWN_REGISTER_HOSTS allowlist so an unknown name fails fast
+      // (typo / future-host) instead of silently no-op'ing inside the
+      // register step.
+      // Non-null assertion: `i + 1 < argv.length` above guarantees the
+      // index exists at runtime, but TS narrowing through `++i` doesn't
+      // propagate.
+      const value = argv[++i]!;
+      for (const raw of value.split(',')) {
+        const host = raw.trim().toLowerCase();
+        if (host === '') continue;
+        if (!(KNOWN_REGISTER_HOSTS as readonly string[]).includes(host)) {
+          throw new Error(
+            `unknown --register host: ${JSON.stringify(host)} (expected one of ${KNOWN_REGISTER_HOSTS.join(', ')})`,
+          );
+        }
+        if (!register.includes(host as RegisterHost)) {
+          register.push(host as RegisterHost);
+        }
+      }
+    } else if (a === '--register-scope' && i + 1 < argv.length) {
+      // Same non-null assertion rationale as the --register branch.
+      const value = argv[++i]!;
+      if (!(KNOWN_REGISTER_SCOPES as readonly string[]).includes(value)) {
+        throw new Error(
+          `unknown --register-scope: ${JSON.stringify(value)} (expected one of ${KNOWN_REGISTER_SCOPES.join(', ')})`,
+        );
+      }
+      registerScope = value as RegisterScope;
+    } else throw new Error(`unknown flag: ${a}`);
   }
   return {
     foreground,
@@ -353,7 +424,18 @@ export function parseSetupFlags(argv: readonly string[]): SetupFlags {
     backendBaseUrl,
     dashboardBaseUrl,
     skipLogin,
+    register,
+    registerScope,
   };
+}
+
+export interface ShellResult {
+  /** Process exit code. 0 = success. */
+  readonly exitCode: number;
+  /** Captured stdout (utf-8). */
+  readonly stdout: string;
+  /** Captured stderr (utf-8). */
+  readonly stderr: string;
 }
 
 export interface SetupDeps {
@@ -381,6 +463,185 @@ export interface SetupDeps {
   platformId: NodeJS.Platform;
   /** OS release (injectable). */
   osRelease: string;
+  /** Run a child process to completion and capture stdout/stderr. Used by
+   *  the host-register step to shell out to `claude mcp add-json`.
+   *  Implementations should NOT inherit stdio — capture only — so the
+   *  setup transcript stays clean. Returns the exit code + captured
+   *  streams; never throws on non-zero exit (caller decides). */
+  shellOut(cmd: string, argv: readonly string[]): Promise<ShellResult>;
+}
+
+/**
+ * Pure: project the effective env down to the subset that should land in
+ * the host's `mcpServers.muhaven.env` block. We deliberately exclude
+ * `MUHAVEN_BROKER_SESSION_KEY` (lives in the daemon process, NOT the
+ * client subprocess the host spawns) and `MUHAVEN_BROKER_ENDPOINT`
+ * (default is fine for the client — overriding from the host JSON would
+ * desync from the daemon if the operator ever re-ran setup with a
+ * different endpoint). Backend / dashboard URLs + keyring choice are
+ * the load-bearing trio.
+ */
+export function buildRegisterEnv(
+  effectiveEnv: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  if (effectiveEnv.MUHAVEN_BACKEND_URL) env.MUHAVEN_BACKEND_URL = effectiveEnv.MUHAVEN_BACKEND_URL;
+  if (effectiveEnv.MUHAVEN_DASHBOARD_URL) env.MUHAVEN_DASHBOARD_URL = effectiveEnv.MUHAVEN_DASHBOARD_URL;
+  if (effectiveEnv.MUHAVEN_KEYRING) env.MUHAVEN_KEYRING = effectiveEnv.MUHAVEN_KEYRING;
+  return env;
+}
+
+/**
+ * Pure: build the JSON config payload that gets passed to
+ * `claude mcp add-json <name> <json>`. Stable key order (type → command
+ * → env) so the serialised form is deterministic across runs — easier
+ * to diff if the operator inspects `.mcp.json` / `~/.claude.json`
+ * afterwards.
+ */
+export function buildClaudeMcpRegisterJson(
+  registerEnv: Readonly<Record<string, string>>,
+): string {
+  const payload: Record<string, unknown> = {
+    type: 'stdio',
+    command: 'muhaven-mcp',
+  };
+  if (Object.keys(registerEnv).length > 0) {
+    payload.env = registerEnv;
+  }
+  return JSON.stringify(payload);
+}
+
+/**
+ * Pure: build the argv for `claude mcp add-json muhaven '<json>' --scope <scope>`.
+ * Exposed so tests can assert the argv shape without spawning a child.
+ */
+export function buildClaudeMcpAddJsonArgv(
+  serverName: string,
+  json: string,
+  scope: RegisterScope,
+): string[] {
+  return ['mcp', 'add-json', serverName, json, '--scope', scope];
+}
+
+/** Pure: argv for the idempotent `claude mcp remove <name>` pre-step. */
+export function buildClaudeMcpRemoveArgv(
+  serverName: string,
+  scope: RegisterScope,
+): string[] {
+  return ['mcp', 'remove', serverName, '--scope', scope];
+}
+
+export interface RegisterHostOptions {
+  readonly host: RegisterHost;
+  readonly scope: RegisterScope;
+  readonly serverName: string;
+  readonly registerEnv: Readonly<Record<string, string>>;
+}
+
+export type RegisterHostOutcome =
+  /** Successfully wired into the host. */
+  | { readonly status: 'registered'; readonly host: RegisterHost; readonly scope: RegisterScope }
+  /** Host's CLI wasn't found on PATH — register skipped. */
+  | { readonly status: 'cli_missing'; readonly host: RegisterHost; readonly cmd: string }
+  /** Host is recognized but no registrar is implemented yet. */
+  | { readonly status: 'not_implemented'; readonly host: RegisterHost }
+  /** Register step errored — surfaced as a warning, doesn't unwind setup. */
+  | { readonly status: 'failed'; readonly host: RegisterHost; readonly reason: string };
+
+/**
+ * Best-effort: wire the MCP server into one host. The contract:
+ *
+ *   - If the host's CLI isn't on PATH → 'cli_missing'. Operator falls
+ *     back to the per-host JSON snippet in `mcp/install.md`.
+ *   - If the host's registrar isn't implemented yet → 'not_implemented'.
+ *   - Otherwise, run the host's registration command(s) and surface the
+ *     outcome.
+ *
+ * Idempotency: for `claude-code`, the orchestrator runs `claude mcp remove
+ * <name> --scope <scope>` first (ignoring failure — the entry may not
+ * exist) so a re-run of setup doesn't trip Claude Code's "server already
+ * exists" error. The remove + add pair is the recommended pattern per
+ * claude-code docs (no native --force on `mcp add`).
+ *
+ * Never throws — every failure mode resolves to a structured outcome.
+ * Setup's exit code stays 0 even when register fails: the broker + JWT
+ * are already in place, and an operator who explicitly opted into
+ * `--register` can re-run that step in isolation later.
+ */
+export async function registerWithHost(
+  deps: Pick<SetupDeps, 'shellOut'>,
+  options: RegisterHostOptions,
+): Promise<RegisterHostOutcome> {
+  if (options.host === 'claude-code') {
+    return registerWithClaudeCode(deps, options);
+  }
+  // Reserved hosts that parse cleanly today but don't have a registrar yet.
+  // `claude-desktop` would need to write the JSON to
+  // `~/Library/Application Support/Claude/claude_desktop_config.json` (mac)
+  // or `%APPDATA%\Claude\claude_desktop_config.json` (Windows). `cursor`
+  // would write `~/.cursor/mcp.json`. Both are tracked as Wave 5 hosts —
+  // file-edit registrars need merge-then-write semantics + dedicated tests
+  // beyond the scope of the claude-code-first round.
+  return { status: 'not_implemented', host: options.host };
+}
+
+async function registerWithClaudeCode(
+  deps: Pick<SetupDeps, 'shellOut'>,
+  options: RegisterHostOptions,
+): Promise<RegisterHostOutcome> {
+  // Probe for `claude` on PATH. We use `--version` instead of `--help`
+  // because (a) it short-circuits, (b) it returns exit 0 on every
+  // claude-code release since the bin existed. Falls into 'cli_missing'
+  // if the binary isn't on PATH OR errors out for some other reason
+  // (PATH-locked environment, permissions). Either way the operator can
+  // still copy the JSON snippet from the docs.
+  let probe: ShellResult;
+  try {
+    probe = await deps.shellOut('claude', ['--version']);
+  } catch (err) {
+    return {
+      status: 'cli_missing',
+      host: options.host,
+      cmd: `claude --version (${(err as Error).message})`,
+    };
+  }
+  if (probe.exitCode !== 0) {
+    return {
+      status: 'cli_missing',
+      host: options.host,
+      cmd: 'claude --version',
+    };
+  }
+
+  // Idempotent remove. Ignore the exit code — `claude mcp remove` errors
+  // when the server isn't registered, which is the common case on the
+  // first ever setup. We only care that the add below succeeds; if the
+  // server WAS registered, the remove cleans it up and the add follows.
+  await deps.shellOut('claude', buildClaudeMcpRemoveArgv(options.serverName, options.scope));
+
+  const json = buildClaudeMcpRegisterJson(options.registerEnv);
+  const addArgv = buildClaudeMcpAddJsonArgv(options.serverName, json, options.scope);
+  let add: ShellResult;
+  try {
+    add = await deps.shellOut('claude', addArgv);
+  } catch (err) {
+    return {
+      status: 'failed',
+      host: options.host,
+      reason: `spawn claude failed: ${(err as Error).message}`,
+    };
+  }
+  if (add.exitCode !== 0) {
+    // Combine stderr + stdout for the operator-facing reason — `claude
+    // mcp add-json` writes some failure detail to each stream depending
+    // on version.
+    const reason = [add.stderr, add.stdout]
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+      .join(' | ') || `exit ${add.exitCode}`;
+    return { status: 'failed', host: options.host, reason };
+  }
+  return { status: 'registered', host: options.host, scope: options.scope };
 }
 
 /**
@@ -408,7 +669,8 @@ export async function runSetup(argv: readonly string[], deps: SetupDeps): Promis
     deps.printErr(
       'usage: muhaven-broker setup [--foreground|-f] [--no-launch-browser] [--skip-login]\n' +
         '                            [--broker-endpoint PATH] [--backend-base-url URL]\n' +
-        '                            [--dashboard-base-url URL]',
+        '                            [--dashboard-base-url URL]\n' +
+        '                            [--register HOST[,HOST...]] [--register-scope user|project|local]',
     );
     return 2;
   }
@@ -620,6 +882,52 @@ export async function runSetup(argv: readonly string[], deps: SetupDeps): Promis
         deps.printErr(`  (daemon PID ${daemonPid}; stop with: ${killCmd})`);
       }
       return code;
+    }
+  }
+
+  // 5b. Host register. Opt-in (`--register HOST[,HOST...]`). Best-effort:
+  // a registrar failure prints a warning + the per-host fallback hint
+  // but does NOT change the setup exit code, because the broker + JWT
+  // (the load-bearing artifacts) are already in place. An operator who
+  // hit a transient `claude` outage can re-run the step in isolation.
+  const registerOutcomes: RegisterHostOutcome[] = [];
+  if (flags.register.length > 0) {
+    const registerEnv = buildRegisterEnv(effectiveEnv);
+    for (const host of flags.register) {
+      const outcome = await registerWithHost(deps, {
+        host,
+        scope: flags.registerScope,
+        serverName: 'muhaven',
+        registerEnv,
+      });
+      registerOutcomes.push(outcome);
+      switch (outcome.status) {
+        case 'registered':
+          deps.print(
+            `Host register: ${outcome.host} wired (scope: ${outcome.scope}). ` +
+              `Restart the host to pick up the new MCP server.`,
+          );
+          break;
+        case 'cli_missing':
+          deps.printErr(
+            `Host register: ${outcome.host} CLI not found on PATH (${outcome.cmd}). ` +
+              `Install Claude Code and re-run \`muhaven-broker setup --register ${outcome.host}\`, ` +
+              `or copy the JSON snippet from https://docs.muhaven.app/mcp/install#step-3-wire-your-host`,
+          );
+          break;
+        case 'not_implemented':
+          deps.printErr(
+            `Host register: ${outcome.host} registrar not implemented yet (Wave 5). ` +
+              `Use the JSON snippet from https://docs.muhaven.app/mcp/install#step-3-wire-your-host for now.`,
+          );
+          break;
+        case 'failed':
+          deps.printErr(
+            `Host register: ${outcome.host} failed — ${outcome.reason}. ` +
+              `Setup continues; re-run \`muhaven-broker setup --register ${outcome.host}\` after fixing.`,
+          );
+          break;
+      }
     }
   }
 

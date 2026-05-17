@@ -1,14 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   applyEnvDefaults,
+  buildClaudeMcpAddJsonArgv,
+  buildClaudeMcpRegisterJson,
+  buildClaudeMcpRemoveArgv,
+  buildRegisterEnv,
   decideSetupAction,
+  KNOWN_REGISTER_HOSTS,
+  KNOWN_REGISTER_SCOPES,
   mintSessionKey,
   parseSetupFlags,
+  registerWithHost,
   runSetup,
   validateBrokerEndpointFlag,
   validateHttpUrlFlag,
   waitForBroker,
+  type RegisterHost,
   type SetupDeps,
+  type ShellResult,
 } from '../src/broker/setup.js';
 
 describe('applyEnvDefaults', () => {
@@ -206,6 +215,8 @@ describe('parseSetupFlags', () => {
       backendBaseUrl: undefined,
       dashboardBaseUrl: undefined,
       skipLogin: false,
+      register: [],
+      registerScope: 'user',
     });
   });
 
@@ -305,6 +316,11 @@ interface RunSetupHarness {
   runForegroundDaemon: ReturnType<typeof vi.fn>;
   waitForBroker: ReturnType<typeof vi.fn>;
   brokerHello: ReturnType<typeof vi.fn>;
+  shellOut: ReturnType<typeof vi.fn>;
+  /** Per-test scripted shellOut responses, keyed by the cmd+argv joined string.
+   *  Tests push entries via h.scriptShell(...). Falls back to a successful empty
+   *  ShellResult so legacy tests that don't use --register stay green. */
+  shellScript: Map<string, ShellResult | Error>;
   deps: SetupDeps;
 }
 
@@ -335,6 +351,18 @@ function makeHarness(overrides: {
     return overrides.waitForBrokerResult ?? { hasJwt: false };
   });
 
+  const shellScript = new Map<string, ShellResult | Error>();
+  const shellOut = vi.fn(async (cmd: string, argv: readonly string[]): Promise<ShellResult> => {
+    const key = `${cmd} ${argv.join(' ')}`;
+    const scripted = shellScript.get(key);
+    if (scripted instanceof Error) throw scripted;
+    if (scripted) return scripted;
+    // Default: success with no output. Lets legacy tests that don't
+    // touch --register pass without scripting. Register-flow tests
+    // explicitly script every call.
+    return { exitCode: 0, stdout: '', stderr: '' };
+  });
+
   const deps: SetupDeps = {
     print: (line) => output.push(line),
     printErr: (line) => errOutput.push(line),
@@ -348,6 +376,7 @@ function makeHarness(overrides: {
     env: overrides.env ?? {},
     platformId: overrides.platformId ?? 'linux',
     osRelease: overrides.osRelease ?? '6.1.0',
+    shellOut,
   };
 
   return {
@@ -358,8 +387,20 @@ function makeHarness(overrides: {
     runForegroundDaemon,
     waitForBroker: waitForBrokerMock,
     brokerHello,
+    shellOut,
+    shellScript,
     deps,
   };
+}
+
+/** Helper: script a shellOut response. Key is `cmd argv...joined with spaces`. */
+function scriptShell(
+  h: RunSetupHarness,
+  cmd: string,
+  argv: readonly string[],
+  result: ShellResult | Error,
+): void {
+  h.shellScript.set(`${cmd} ${argv.join(' ')}`, result);
 }
 
 describe('runSetup orchestrator', () => {
@@ -673,5 +714,459 @@ describe('runSetup orchestrator', () => {
     expect(code).toBe(2);
     expect(h.errOutput.join('\n')).toMatch(/absolute path/);
     expect(h.spawnDaemon).not.toHaveBeenCalled();
+  });
+});
+
+// ---------- --register flag parsing ----------
+
+describe('parseSetupFlags --register', () => {
+  it('defaults register to [] and registerScope to user', () => {
+    const flags = parseSetupFlags([]);
+    expect(flags.register).toEqual([]);
+    expect(flags.registerScope).toBe('user');
+  });
+
+  it('parses a single host name', () => {
+    const flags = parseSetupFlags(['--register', 'claude-code']);
+    expect(flags.register).toEqual(['claude-code']);
+  });
+
+  it('parses comma-separated host names', () => {
+    const flags = parseSetupFlags(['--register', 'claude-code,cursor']);
+    expect(flags.register).toEqual(['claude-code', 'cursor']);
+  });
+
+  it('parses repeated --register flags', () => {
+    const flags = parseSetupFlags(['--register', 'claude-code', '--register', 'cursor']);
+    expect(flags.register).toEqual(['claude-code', 'cursor']);
+  });
+
+  it('dedupes hosts across both comma-separated AND repeated forms', () => {
+    const flags = parseSetupFlags([
+      '--register', 'claude-code,cursor',
+      '--register', 'claude-code',
+    ]);
+    expect(flags.register).toEqual(['claude-code', 'cursor']);
+  });
+
+  it('rejects unknown host names', () => {
+    expect(() => parseSetupFlags(['--register', 'wishfulhost'])).toThrow(
+      /unknown --register host: "wishfulhost"/,
+    );
+  });
+
+  it('rejects unknown host names even inside a comma-separated value', () => {
+    expect(() => parseSetupFlags(['--register', 'claude-code,wishfulhost'])).toThrow(
+      /unknown --register host/,
+    );
+  });
+
+  it('lowercases host names (case-insensitive matching)', () => {
+    const flags = parseSetupFlags(['--register', 'Claude-Code']);
+    expect(flags.register).toEqual(['claude-code']);
+  });
+
+  it('accepts --register-scope project|user|local', () => {
+    expect(parseSetupFlags(['--register-scope', 'project']).registerScope).toBe('project');
+    expect(parseSetupFlags(['--register-scope', 'user']).registerScope).toBe('user');
+    expect(parseSetupFlags(['--register-scope', 'local']).registerScope).toBe('local');
+  });
+
+  it('rejects unknown --register-scope', () => {
+    expect(() => parseSetupFlags(['--register-scope', 'global'])).toThrow(
+      /unknown --register-scope: "global"/,
+    );
+  });
+
+  it('KNOWN_REGISTER_HOSTS + SCOPES constants are non-empty', () => {
+    expect(KNOWN_REGISTER_HOSTS.length).toBeGreaterThan(0);
+    expect(KNOWN_REGISTER_SCOPES.length).toBeGreaterThan(0);
+    expect(KNOWN_REGISTER_HOSTS).toContain('claude-code');
+    expect(KNOWN_REGISTER_SCOPES).toContain('user');
+  });
+});
+
+// ---------- pure register helpers ----------
+
+describe('buildRegisterEnv', () => {
+  it('passes through the load-bearing trio when set', () => {
+    const env = buildRegisterEnv({
+      MUHAVEN_BACKEND_URL: 'https://api.muhaven.app',
+      MUHAVEN_DASHBOARD_URL: 'https://muhaven.app',
+      MUHAVEN_KEYRING: 'file',
+    });
+    expect(env).toEqual({
+      MUHAVEN_BACKEND_URL: 'https://api.muhaven.app',
+      MUHAVEN_DASHBOARD_URL: 'https://muhaven.app',
+      MUHAVEN_KEYRING: 'file',
+    });
+  });
+
+  it('omits MUHAVEN_KEYRING when it was not auto-defaulted (native macOS / Linux desktop)', () => {
+    const env = buildRegisterEnv({
+      MUHAVEN_BACKEND_URL: 'https://api.muhaven.app',
+      MUHAVEN_DASHBOARD_URL: 'https://muhaven.app',
+    });
+    expect(env).toEqual({
+      MUHAVEN_BACKEND_URL: 'https://api.muhaven.app',
+      MUHAVEN_DASHBOARD_URL: 'https://muhaven.app',
+    });
+    expect(env.MUHAVEN_KEYRING).toBeUndefined();
+  });
+
+  it('excludes the broker session key + endpoint even when present', () => {
+    // These live with the daemon; baking them into the host config would
+    // either leak a long-lived secret or desync the client when the
+    // operator re-runs setup with a different endpoint.
+    const env = buildRegisterEnv({
+      MUHAVEN_BACKEND_URL: 'https://api.muhaven.app',
+      MUHAVEN_DASHBOARD_URL: 'https://muhaven.app',
+      MUHAVEN_BROKER_SESSION_KEY: '0x' + 'aa'.repeat(32),
+      MUHAVEN_BROKER_ENDPOINT: '/tmp/muhaven-broker.sock',
+    });
+    expect(env.MUHAVEN_BROKER_SESSION_KEY).toBeUndefined();
+    expect(env.MUHAVEN_BROKER_ENDPOINT).toBeUndefined();
+  });
+});
+
+describe('buildClaudeMcpRegisterJson', () => {
+  it('emits {type, command, env} when env is non-empty', () => {
+    const json = buildClaudeMcpRegisterJson({
+      MUHAVEN_BACKEND_URL: 'https://api.muhaven.app',
+    });
+    const parsed = JSON.parse(json);
+    expect(parsed).toEqual({
+      type: 'stdio',
+      command: 'muhaven-mcp',
+      env: { MUHAVEN_BACKEND_URL: 'https://api.muhaven.app' },
+    });
+  });
+
+  it('omits the env field when no env vars resolved', () => {
+    const json = buildClaudeMcpRegisterJson({});
+    const parsed = JSON.parse(json);
+    expect(parsed).toEqual({ type: 'stdio', command: 'muhaven-mcp' });
+    expect('env' in parsed).toBe(false);
+  });
+
+  it('keeps key order stable (type → command → env)', () => {
+    const json = buildClaudeMcpRegisterJson({ FOO: 'bar' });
+    // JSON.stringify preserves insertion order for non-numeric keys; lock
+    // the order so future diffs of `.mcp.json` stay readable.
+    expect(json).toBe('{"type":"stdio","command":"muhaven-mcp","env":{"FOO":"bar"}}');
+  });
+});
+
+describe('buildClaudeMcpAddJsonArgv + buildClaudeMcpRemoveArgv', () => {
+  it('add-json argv: [mcp, add-json, name, json, --scope, scope]', () => {
+    const argv = buildClaudeMcpAddJsonArgv('muhaven', '{"type":"stdio"}', 'user');
+    expect(argv).toEqual(['mcp', 'add-json', 'muhaven', '{"type":"stdio"}', '--scope', 'user']);
+  });
+
+  it('add-json argv passes JSON as a single positional (shell metacharacters survive)', () => {
+    const json = '{"type":"stdio","env":{"K":"v with $shell `meta`"}}';
+    const argv = buildClaudeMcpAddJsonArgv('muhaven', json, 'project');
+    // The JSON blob must appear as ONE argv entry — node's spawn (argv path)
+    // doesn't run /bin/sh -c on it, so the shell metacharacters are literal.
+    expect(argv).toContain(json);
+    // Scope wiring stays in place too.
+    expect(argv.indexOf('--scope')).toBeGreaterThan(argv.indexOf(json));
+    expect(argv[argv.indexOf('--scope') + 1]).toBe('project');
+  });
+
+  it('remove argv: [mcp, remove, name, --scope, scope]', () => {
+    const argv = buildClaudeMcpRemoveArgv('muhaven', 'local');
+    expect(argv).toEqual(['mcp', 'remove', 'muhaven', '--scope', 'local']);
+  });
+});
+
+// ---------- registerWithHost ----------
+
+describe('registerWithHost (claude-code)', () => {
+  function makeShellHarness(): {
+    shellOut: ReturnType<typeof vi.fn>;
+    script: Map<string, ShellResult | Error>;
+  } {
+    const script = new Map<string, ShellResult | Error>();
+    const shellOut = vi.fn(async (cmd: string, argv: readonly string[]): Promise<ShellResult> => {
+      const key = `${cmd} ${argv.join(' ')}`;
+      const scripted = script.get(key);
+      if (scripted instanceof Error) throw scripted;
+      if (scripted) return scripted;
+      return { exitCode: 0, stdout: '', stderr: '' };
+    });
+    return { shellOut, script };
+  }
+
+  it('happy path: probe + remove + add → registered', async () => {
+    const { shellOut } = makeShellHarness();
+    const outcome = await registerWithHost(
+      { shellOut },
+      {
+        host: 'claude-code',
+        scope: 'user',
+        serverName: 'muhaven',
+        registerEnv: { MUHAVEN_BACKEND_URL: 'https://api.muhaven.app' },
+      },
+    );
+    expect(outcome).toEqual({ status: 'registered', host: 'claude-code', scope: 'user' });
+    // 3 calls: probe, remove, add (in order)
+    expect(shellOut).toHaveBeenCalledTimes(3);
+    expect(shellOut.mock.calls[0]).toEqual(['claude', ['--version']]);
+    expect(shellOut.mock.calls[1][1]).toContain('remove');
+    expect(shellOut.mock.calls[2][1]).toContain('add-json');
+  });
+
+  it('cli_missing when claude binary not on PATH (spawn throws ENOENT)', async () => {
+    const { shellOut, script } = makeShellHarness();
+    script.set('claude --version', new Error('spawn claude ENOENT'));
+    const outcome = await registerWithHost(
+      { shellOut },
+      {
+        host: 'claude-code',
+        scope: 'user',
+        serverName: 'muhaven',
+        registerEnv: {},
+      },
+    );
+    expect(outcome.status).toBe('cli_missing');
+    if (outcome.status === 'cli_missing') {
+      expect(outcome.host).toBe('claude-code');
+      expect(outcome.cmd).toMatch(/ENOENT/);
+    }
+    // Probe failed → no remove + no add issued.
+    expect(shellOut).toHaveBeenCalledTimes(1);
+  });
+
+  it('cli_missing when claude --version returns a non-zero exit', async () => {
+    const { shellOut, script } = makeShellHarness();
+    script.set('claude --version', { exitCode: 127, stdout: '', stderr: 'command not found' });
+    const outcome = await registerWithHost(
+      { shellOut },
+      {
+        host: 'claude-code',
+        scope: 'user',
+        serverName: 'muhaven',
+        registerEnv: {},
+      },
+    );
+    expect(outcome.status).toBe('cli_missing');
+    expect(shellOut).toHaveBeenCalledTimes(1);
+  });
+
+  it('idempotent: remove failure (server not registered) does NOT block add', async () => {
+    // First-run reality — `claude mcp remove muhaven` errors when nothing's
+    // bound to the name. registerWithHost must swallow that AND still
+    // attempt the add.
+    const { shellOut, script } = makeShellHarness();
+    script.set('claude mcp remove muhaven --scope user', {
+      exitCode: 1,
+      stdout: '',
+      stderr: 'No MCP server named muhaven',
+    });
+    const outcome = await registerWithHost(
+      { shellOut },
+      {
+        host: 'claude-code',
+        scope: 'user',
+        serverName: 'muhaven',
+        registerEnv: {},
+      },
+    );
+    expect(outcome).toEqual({ status: 'registered', host: 'claude-code', scope: 'user' });
+    expect(shellOut).toHaveBeenCalledTimes(3);
+  });
+
+  it('failed when add-json returns non-zero', async () => {
+    const { shellOut, script } = makeShellHarness();
+    const json = JSON.stringify({ type: 'stdio', command: 'muhaven-mcp' });
+    script.set(`claude mcp add-json muhaven ${json} --scope user`, {
+      exitCode: 1,
+      stdout: '',
+      stderr: 'invalid JSON config',
+    });
+    const outcome = await registerWithHost(
+      { shellOut },
+      {
+        host: 'claude-code',
+        scope: 'user',
+        serverName: 'muhaven',
+        registerEnv: {},
+      },
+    );
+    expect(outcome.status).toBe('failed');
+    if (outcome.status === 'failed') {
+      expect(outcome.reason).toMatch(/invalid JSON config/);
+    }
+  });
+
+  it.each(['claude-desktop' as const, 'cursor' as const])(
+    'not_implemented for reserved host %s',
+    async (host: RegisterHost) => {
+      const { shellOut } = makeShellHarness();
+      const outcome = await registerWithHost(
+        { shellOut },
+        {
+          host,
+          scope: 'user',
+          serverName: 'muhaven',
+          registerEnv: {},
+        },
+      );
+      expect(outcome).toEqual({ status: 'not_implemented', host });
+      // No shell calls — the registrar short-circuits BEFORE touching the
+      // host's CLI. Protects operators who pass --register cursor on a
+      // machine without cursor installed from getting a misleading
+      // cli_missing message.
+      expect(shellOut).not.toHaveBeenCalled();
+    },
+  );
+});
+
+// ---------- runSetup orchestration with --register ----------
+
+describe('runSetup --register integration', () => {
+  beforeEach(() => {
+    vi.stubEnv('MUHAVEN_BACKEND_URL', '');
+    vi.stubEnv('MUHAVEN_DASHBOARD_URL', '');
+    vi.stubEnv('MUHAVEN_KEYRING', '');
+    vi.stubEnv('MUHAVEN_BROKER_SESSION_KEY', '');
+    vi.stubEnv('MUHAVEN_BROKER_ENDPOINT', '');
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('does NOT call shellOut when --register is absent', async () => {
+    const h = makeHarness({
+      helloResults: [new Error('ECONNREFUSED')],
+      waitForBrokerResult: { hasJwt: false },
+      loginExitCode: 0,
+    });
+    const code = await runSetup([], h.deps);
+    expect(code).toBe(0);
+    expect(h.shellOut).not.toHaveBeenCalled();
+  });
+
+  it('happy path: --register claude-code wires the host after login + returns 0', async () => {
+    const h = makeHarness({
+      helloResults: [new Error('ECONNREFUSED')],
+      waitForBrokerResult: { hasJwt: false },
+      loginExitCode: 0,
+    });
+    const code = await runSetup(['--register', 'claude-code'], h.deps);
+    expect(code).toBe(0);
+    // probe + remove + add
+    expect(h.shellOut).toHaveBeenCalledTimes(3);
+    expect(h.shellOut.mock.calls[0]).toEqual(['claude', ['--version']]);
+    const addArgv = h.shellOut.mock.calls[2][1] as string[];
+    expect(addArgv).toContain('add-json');
+    expect(addArgv).toContain('muhaven');
+    expect(addArgv).toContain('--scope');
+    expect(addArgv[addArgv.indexOf('--scope') + 1]).toBe('user');
+    // JSON blob has the load-bearing env
+    const json = addArgv[addArgv.indexOf('muhaven') + 1];
+    expect(JSON.parse(json)).toEqual({
+      type: 'stdio',
+      command: 'muhaven-mcp',
+      env: {
+        MUHAVEN_BACKEND_URL: 'https://api.muhaven.app',
+        MUHAVEN_DASHBOARD_URL: 'https://muhaven.app',
+      },
+    });
+    expect(h.output.join('\n')).toMatch(/claude-code wired \(scope: user\)/);
+  });
+
+  it('forwards --register-scope through to the add-json call', async () => {
+    const h = makeHarness({
+      helloResults: [new Error('ECONNREFUSED')],
+      waitForBrokerResult: { hasJwt: false },
+      loginExitCode: 0,
+    });
+    await runSetup(['--register', 'claude-code', '--register-scope', 'project'], h.deps);
+    const addArgv = h.shellOut.mock.calls[2][1] as string[];
+    expect(addArgv[addArgv.indexOf('--scope') + 1]).toBe('project');
+  });
+
+  it('Windows: includes MUHAVEN_KEYRING=file in the registered env', async () => {
+    const h = makeHarness({
+      helloResults: [new Error('ECONNREFUSED')],
+      waitForBrokerResult: { hasJwt: false },
+      loginExitCode: 0,
+      platformId: 'win32',
+      osRelease: '10.0.26200',
+    });
+    await runSetup(['--register', 'claude-code'], h.deps);
+    const addArgv = h.shellOut.mock.calls[2][1] as string[];
+    const json = addArgv[addArgv.indexOf('muhaven') + 1];
+    expect(JSON.parse(json).env.MUHAVEN_KEYRING).toBe('file');
+  });
+
+  it('cli_missing: setup still returns 0 + prints fallback hint to stderr', async () => {
+    const h = makeHarness({
+      helloResults: [new Error('ECONNREFUSED')],
+      waitForBrokerResult: { hasJwt: false },
+      loginExitCode: 0,
+    });
+    scriptShell(h, 'claude', ['--version'], new Error('spawn claude ENOENT'));
+    const code = await runSetup(['--register', 'claude-code'], h.deps);
+    expect(code).toBe(0); // broker + JWT shipped — register failure is best-effort
+    expect(h.errOutput.join('\n')).toMatch(/claude-code CLI not found on PATH/);
+    expect(h.errOutput.join('\n')).toMatch(/docs.muhaven.app\/mcp\/install/);
+  });
+
+  it('register failure: setup still returns 0 + prints reason + re-run hint', async () => {
+    const h = makeHarness({
+      helloResults: [new Error('ECONNREFUSED')],
+      waitForBrokerResult: { hasJwt: false },
+      loginExitCode: 0,
+    });
+    // probe OK, remove OK, add fails
+    scriptShell(h, 'claude', ['--version'], { exitCode: 0, stdout: '1.0.0', stderr: '' });
+    scriptShell(h, 'claude', ['mcp', 'remove', 'muhaven', '--scope', 'user'], {
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+    });
+    // add-json's argv contains a JSON blob we'd have to predict to script
+    // exactly — instead, override the default vi.fn to return failure on
+    // any add-json call. Simpler.
+    h.shellOut.mockImplementation(async (_cmd: string, argv: readonly string[]) => {
+      if (argv[0] === '--version') return { exitCode: 0, stdout: '1.0.0', stderr: '' };
+      if (argv.includes('remove')) return { exitCode: 0, stdout: '', stderr: '' };
+      if (argv.includes('add-json')) {
+        return { exitCode: 1, stdout: '', stderr: 'permission denied on ~/.claude.json' };
+      }
+      return { exitCode: 0, stdout: '', stderr: '' };
+    });
+    const code = await runSetup(['--register', 'claude-code'], h.deps);
+    expect(code).toBe(0);
+    expect(h.errOutput.join('\n')).toMatch(/claude-code failed.*permission denied/);
+    expect(h.errOutput.join('\n')).toMatch(/re-run.*--register claude-code/);
+  });
+
+  it('unknown --register host returns 2 + usage', async () => {
+    const h = makeHarness();
+    const code = await runSetup(['--register', 'wishfulhost'], h.deps);
+    expect(code).toBe(2);
+    expect(h.errOutput.join('\n')).toMatch(/unknown --register host/);
+    // Setup never started — no spawn, no shellOut
+    expect(h.spawnDaemon).not.toHaveBeenCalled();
+    expect(h.shellOut).not.toHaveBeenCalled();
+  });
+
+  it('reserved host (cursor): setup still returns 0, prints not-implemented hint', async () => {
+    const h = makeHarness({
+      helloResults: [new Error('ECONNREFUSED')],
+      waitForBrokerResult: { hasJwt: false },
+      loginExitCode: 0,
+    });
+    const code = await runSetup(['--register', 'cursor'], h.deps);
+    expect(code).toBe(0);
+    expect(h.errOutput.join('\n')).toMatch(/cursor registrar not implemented yet/);
+    // not_implemented short-circuits BEFORE shelling out — proves operators
+    // who run --register cursor on a cursor-less machine don't get a
+    // misleading "cli not found" error.
+    expect(h.shellOut).not.toHaveBeenCalled();
   });
 });

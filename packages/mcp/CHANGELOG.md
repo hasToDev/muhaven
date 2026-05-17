@@ -7,6 +7,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] — 2026-05-17
+
+Adds `muhaven-broker setup --register HOST` so a fresh install no longer
+requires hand-writing a `.mcp.json` (or equivalent host-config file).
+This closes the last manual step of the install ritual — operators run
+one command end-to-end from `npm install -g @muhaven/mcp` to a working
+MCP server registered with their host.
+
+Initial host coverage: **Claude Code** (via `claude mcp add-json`).
+`claude-desktop` and `cursor` are reserved as known host names — they
+parse cleanly today but the registrar declines to act and points the
+operator at the per-host JSON snippet in `docs.muhaven.app/mcp/install`.
+Both ship in a Wave 5 follow-up (file-edit registrars need merge-then-
+write semantics + dedicated tests).
+
+### Added
+
+- **`muhaven-broker setup --register HOST[,HOST...]` flag** — auto-wire
+  the MCP server into one or more host configs after the login step:
+  - **claude-code** (live): probes `claude --version`, removes any
+    existing `muhaven` entry (idempotent), then runs
+    `claude mcp add-json muhaven '{"type":"stdio","command":"muhaven-mcp","env":{...}}' --scope <scope>`.
+    `env` carries `MUHAVEN_BACKEND_URL`, `MUHAVEN_DASHBOARD_URL`, and
+    `MUHAVEN_KEYRING` when set (the broker session key + endpoint stay
+    daemon-only — never baked into the host config).
+  - **claude-desktop / cursor**: reserved names. Parse cleanly; registrar
+    short-circuits with a "not implemented yet" hint pointing at the
+    docs snippet. Adding a host is a focused diff: implement the
+    registrar + extend `KNOWN_REGISTER_HOSTS`.
+  - Accepts comma-separated values (`--register claude-code,cursor`) and
+    repeated flags (`--register claude-code --register cursor`). Dedupes
+    across both forms.
+  - Unknown host names fail fast with exit code 2 + the allowlist in the
+    error message.
+
+- **`--register-scope user|project|local` flag** — scope for the
+  `claude mcp add-json` call. Default `user` (every project on this
+  machine sees the server — matches the per-user broker model);
+  `project` writes `.mcp.json` at CWD (git-shared if you commit it);
+  `local` writes `~/.claude.json` as a per-project user-only entry
+  (Claude Code's `claude mcp add` default).
+
+- **Pure helpers exported from `src/broker/setup.ts`** for testing +
+  third-party reuse: `buildRegisterEnv`, `buildClaudeMcpRegisterJson`,
+  `buildClaudeMcpAddJsonArgv`, `buildClaudeMcpRemoveArgv`,
+  `registerWithHost`. Plus type exports for `RegisterHost`,
+  `RegisterScope`, `RegisterHostOutcome`, `ShellResult`, and the
+  `KNOWN_REGISTER_HOSTS` + `KNOWN_REGISTER_SCOPES` constants.
+
+- **`SetupDeps.shellOut`** seam — abstracts child-process execution so
+  tests can script the host-CLI responses without spawning real
+  binaries. Default implementation in `cli.ts` uses `node:child_process`
+  `spawn` (argv-safe — no shell interpolation of the JSON payload).
+
+### Operator UX
+
+- Setup's exit code is **0 on register failure**. The broker daemon and
+  JWT (the load-bearing artifacts) are already in place; an opt-in
+  registration failure surfaces as a warning on stderr with the exact
+  re-run hint and a fallback link to the per-host JSON snippet. This
+  matches the existing pattern for `--skip-login` (operator can complete
+  the missing step in isolation later).
+
+- A `cli_missing` outcome (claude binary not on PATH) is distinct from
+  a `failed` outcome (claude ran but errored). The error copy reflects
+  which: operators on a machine without Claude Code get an "install
+  Claude Code" prompt; operators with Claude Code installed get the
+  CLI's actual error message.
+
+### Tests
+
+- **35 new vitest cases** covering `parseSetupFlags --register / 
+  --register-scope` (11), pure helpers (12), and the `registerWithHost`
+  + `runSetup` integration (12). Total `__tests__/setup.test.ts` now
+  93 cases. Full `@muhaven/mcp` suite: 241 cases passing.
+
 ## [0.1.5] — 2026-05-17
 
 Adds the `muhaven-broker stop` subcommand so operators can cleanly tear

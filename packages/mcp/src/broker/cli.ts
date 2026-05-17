@@ -10,7 +10,7 @@
  */
 
 import { hostname, platform, release } from 'node:os';
-import { exec } from 'node:child_process';
+import { exec, spawn } from 'node:child_process';
 import { resolve as resolvePath } from 'node:path';
 import {
   defaultBrokerEndpoint,
@@ -26,6 +26,7 @@ import {
   spawnDaemon,
   waitForBroker,
   type SetupDeps,
+  type ShellResult,
 } from './setup.js';
 import {
   defaultKillProcess,
@@ -401,6 +402,10 @@ function printUsage(): void {
   print('                       [--foreground|-f] keeps the daemon attached (skip background spawn)');
   print('                       [--skip-login] starts the daemon but lets you run login later');
   print('                       [--no-launch-browser] pass-through to login');
+  print('                       [--register HOST[,HOST...]] auto-wire the MCP server into the named host');
+  print('                         (claude-code today; claude-desktop / cursor reserved for Wave 5)');
+  print('                       [--register-scope user|project|local] scope for the host-config write');
+  print('                         (default: user — every project sees the server)');
   print('  stop               Cleanly stop a running daemon (SIGTERM with SIGKILL fallback');
   print('                       after 5s). Also clears the keystore JWT as a best effort.');
   print('  login              Acquire a JWT via the device-code flow + store in keystore');
@@ -454,6 +459,45 @@ function resolveBrokerBinPath(): string {
 }
 
 /**
+ * Default `shellOut` implementation — spawns a child with argv (NOT
+ * shell-string interpolation), captures stdout/stderr, returns the
+ * three-tuple. Argv passes through verbatim, so a JSON blob containing
+ * shell metacharacters (`{`, `"`, `$`) is safe — node's `spawn` does
+ * NOT invoke `/bin/sh -c`. On Windows we set `shell: false` and rely on
+ * `.cmd` / `.exe` resolution via npm's bin-shim convention; if a host
+ * CLI is only available as a `.cmd` shim (typical for npm-global
+ * installs on Windows), Node's spawn falls back to invoking it through
+ * `cmd.exe` automatically since Node 18.
+ */
+function defaultShellOut(cmd: string, argv: readonly string[]): Promise<ShellResult> {
+  return new Promise<ShellResult>((resolve, reject) => {
+    const child = spawn(cmd, argv, {
+      // Inherit env so PATH + npm-shim resolution work; explicitly NOT
+      // forwarding stdio so the parent's transcript stays clean.
+      stdio: ['ignore', 'pipe', 'pipe'],
+      // Windows: .cmd / .ps1 shims under %APPDATA%\npm need cmd.exe
+      // to interpret them. Node 18+ auto-routes through cmd.exe when
+      // it sees a non-.exe extension, but explicitly setting
+      // `shell: true` on Windows is safer for npm-global PATH entries.
+      // On POSIX, `shell: false` (the default) is correct + safer.
+      shell: process.platform === 'win32',
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString('utf-8');
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf-8');
+    });
+    child.on('error', (err) => reject(err));
+    child.on('close', (code) => {
+      resolve({ exitCode: code ?? 0, stdout, stderr });
+    });
+  });
+}
+
+/**
  * Wire `runSetup` against the real cli helpers + IO. Kept here (not in
  * `setup.ts`) so the pure orchestrator stays free of the cli-only
  * `runLogin` import (which would pull device-flow + viem into the test
@@ -473,6 +517,7 @@ export async function runSetup(argv: readonly string[]): Promise<number> {
     env: process.env,
     platformId: process.platform,
     osRelease: release(),
+    shellOut: defaultShellOut,
   };
   return runSetupOrchestrator(argv, deps);
 }
