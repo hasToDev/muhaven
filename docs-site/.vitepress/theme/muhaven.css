@@ -572,12 +572,30 @@ kbd {
 
 @media (min-width: 1440px) {
   /* At ≥1440px VP shifts padding-left to a centered-gutter
-   * expression. Match it exactly so the painted band tracks the
-   * visible nav column even as the viewport widens further. */
+   * expression. Match VP's stock formula but using `100vw` instead
+   * of `100%`.
+   *
+   * Why: VP's stock `.VPSidebar { padding-left: max(32px, calc((100% -
+   * (var(--vp-layout-max-width) - 64px)) / 2)) }` applies to the sidebar
+   * itself, which is `position: fixed; left: 0`. For `padding`'s `%`
+   * resolution, the containing block of a fixed element is the initial
+   * containing block (viewport), so `100%` in VP's rule means viewport.
+   *
+   * Our `::before` is `position: absolute` — its containing block is the
+   * nearest positioned ancestor, which IS `.VPSidebar` (the fixed parent).
+   * So `100%` in the pseudo-element's `left` resolves to the SIDEBAR'S
+   * own width, not viewport. On a 4K (3840px) display the sidebar width
+   * is ~1312px, making `(100% - 1696)/2` negative; the `max()` falls
+   * back to 32px while VP's actual padding-left is ~1072px. The painted
+   * band starts 1040px to the left of the menu items — gross bleed.
+   *
+   * Fix: use `100vw` so the expression evaluates against viewport width
+   * regardless of containing-block resolution rules. This produces the
+   * SAME number VP's own padding-left computes, at every viewport. */
   .VPSidebar::before {
     left: max(
       32px,
-      calc((100% - (var(--vp-layout-max-width) - 64px)) / 2)
+      calc((100vw - (var(--vp-layout-max-width) - 64px)) / 2)
     );
   }
 }
