@@ -599,3 +599,84 @@ kbd {
     );
   }
 }
+
+/* ── Logo strip (.VPNavBarTitle) — align with sidebar painted band.
+ *
+ * Issue: VitePress's `.VPNavBar.has-sidebar .title` is `position:
+ * absolute; left: 0; width: chrome_gutter + sidebar_width - 32` —
+ * spans the full title-element width from window edge. Its visible
+ * artefact is `border-bottom: 1px solid var(--vp-c-divider)` (a
+ * horizontal line under the logo). On wide / 4K screens that line
+ * runs ~1072px past the sidebar's painted band on the left, making
+ * the logo strip read as "wider than the sidebar below it."
+ *
+ * Fix:
+ *   1. Kill VP's title border-bottom (so the line doesn't span the
+ *      gutter).
+ *   2. Paint a `::before` on the title that matches the sidebar's
+ *      painted band — same `left` expression (matches VP's padding-
+ *      left at every breakpoint), same `--vp-sidebar-bg-color`, and
+ *      a 1px bottom-border that runs only within the painted region.
+ *   3. Logo + site-title sit on z-index 1 so they ride on top of the
+ *      painted band.
+ *
+ * Result: the entire left column — logo strip on top of sidebar
+ * menu — reads as one unified painted block aligned with the
+ * centered chrome. Works at every viewport from 960 to 4K+.
+ */
+@media (min-width: 960px) {
+  /* Kill VP's full-width border-bottom on the title. We replace it
+   * with a constrained one inside our ::before. */
+  .VPNavBar.has-sidebar .title {
+    border-bottom: none !important;
+  }
+
+  /* The painted strip under the logo. Mirrors the sidebar's ::before
+   * (same `left`, same bg color, same right-edge column boundary)
+   * so the two paints align pixel-perfectly. */
+  .VPNavBar.has-sidebar .title::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 32px; /* matches VP stock padding-left at 960-1439px */
+    background-color: var(--vp-sidebar-bg-color);
+    /* 1px bottom border replaces VP's killed one; runs only within
+     * the painted region so it lines up with the sidebar's right
+     * edge (column boundary shadow). */
+    box-shadow:
+      inset -1px 0 0 var(--vp-c-divider),
+      inset 0 -1px 0 var(--vp-c-divider);
+    z-index: 0;
+    pointer-events: none;
+  }
+
+  /* Logo + wordmark + any title content sits on z-index 1. */
+  .VPNavBar.has-sidebar .title > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  /* Dark-mode amber bloom — mirrors the sidebar's bloom so the
+   * top-of-page glow continues seamlessly into the column. */
+  html.dark .VPNavBar.has-sidebar .title::before {
+    background-image: radial-gradient(
+      ellipse 60% 40% at 50% -10%,
+      rgba(255, 220, 161, 0.05),
+      transparent 60%
+    );
+  }
+}
+
+@media (min-width: 1440px) {
+  /* Match the sidebar's wide-screen left expression exactly so the
+   * two painted bands stay pixel-aligned. Same `100vw` reasoning as
+   * the sidebar block above. */
+  .VPNavBar.has-sidebar .title::before {
+    left: max(
+      32px,
+      calc((100vw - (var(--vp-layout-max-width) - 64px)) / 2)
+    );
+  }
+}
