@@ -180,8 +180,14 @@
 }
 
 /* ── Ambient amber bloom on elevated surfaces (dark only) ─────────── */
+/*
+ * NOTE — VPSidebar is intentionally EXCLUDED here. The sidebar gets its
+ * own composite background-image further down (light mode + dark mode)
+ * so the hard-stop band that fixes the "bleed past padding-left" issue
+ * doesn't get clobbered by this bloom. The bloom for the sidebar is
+ * folded into that composite as an extra gradient layer.
+ */
 .dark .VPNavBar.has-sidebar .content-body,
-.dark .VPSidebar,
 .dark .VPDoc {
   background-image:
     radial-gradient(
@@ -372,142 +378,144 @@ kbd {
  * Aside / TOC width is left at 224/256px on purpose — wider TOCs read poorly.
  */
 
-/* ≥1280px: nudge prose from 688 → 760 (still very readable, fits ~95 chars).
- * The chrome (--vp-layout-max-width) stays at 1440 here. */
+/* ≥1280px: nudge prose from 688 → 800 (≈100 chars Inter @16px, still
+ * readable). The chrome (--vp-layout-max-width) stays at 1440 here. */
 @media (min-width: 1280px) {
   .VPDoc.has-aside .content-container {
-    max-width: 760px;
+    max-width: 800px;
   }
 }
 
-/* ≥1440px: bump chrome to 1600, prose to 880. Sidebar-less pages get
- * a 1280px container with 920px prose so they don't look orphaned. */
+/* ≥1440px: bump chrome to 1600, prose to 960. Sidebar-less pages get
+ * a 1280px container with 960px prose so they don't look orphaned.
+ *
+ * Width parity (round-2 fix): prose is set to what the OLD card-grid
+ * "escape hatch" used to reach (880px prose + 80px negative margin =
+ * 960px effective). Now headings, paragraphs, tables, code blocks, and
+ * card grids ALL share the same left/right edges — no more "cards wider
+ * than the heading above them" mismatch the user flagged on
+ * /havenbot/overview and every "Where next" page. */
 @media (min-width: 1440px) {
   :root {
     --vp-layout-max-width: 1600px;
   }
   .VPDoc.has-aside .content-container {
-    max-width: 880px;
+    max-width: 960px;
   }
   .VPDoc:not(.has-sidebar) .container {
     max-width: 1280px;
   }
   .VPDoc:not(.has-sidebar) .content {
-    max-width: 920px;
+    max-width: 960px;
   }
 }
 
-/* ≥1920px: full QHD/4K treatment — 1760 chrome, 960 prose. Capped at
- * 960 to keep line-length under ~110 chars on Inter at body size. */
+/* ≥1920px: full QHD/4K treatment — 1760 chrome, 1040 prose. Pushing to
+ * ~110 chars/line on Inter @16px is the upper bound of comfortable
+ * scanning; cards/code blocks at this width fit four 240px columns on
+ * the donut chart-style grids. */
 @media (min-width: 1920px) {
   :root {
     --vp-layout-max-width: 1760px;
   }
   .VPDoc.has-aside .content-container {
-    max-width: 960px;
+    max-width: 1040px;
   }
   .VPDoc:not(.has-sidebar) .container {
     max-width: 1408px;
   }
   .VPDoc:not(.has-sidebar) .content {
-    max-width: 960px;
+    max-width: 1040px;
   }
 }
 
-/* ── Wide-content escape hatches: let code blocks and the mh-card grid
- * extend slightly beyond the prose cap on large screens. Tables are
- * intentionally LEFT INSIDE the prose column so that the descriptive
- * paragraph above each table visually aligns with the table itself —
- * a wider table than its intro prose looks ragged. Long table rows
- * scroll inside the prose width via the table-overflow rule below.
+/* ── Unified block width: every top-level child of the prose column
+ * shares the SAME effective width. Round-1 used a negative-margin
+ * "escape hatch" so code blocks + card grids would extend past the
+ * prose cap; that broke visual alignment with the headings/paragraphs
+ * around them. Round-2 drops the escape hatch entirely. Prose was
+ * widened above to match what the escape hatch used to reach, so we
+ * don't lose horizontal room — we just stop SOME blocks from being
+ * wider than others.
  *
- * Code blocks still escape because real code samples (long URLs, RPC
- * traces, contract addresses) benefit from horizontal room without
- * triggering horizontal scroll on every snippet.
- *
- * Negative margin + max-width trick: at ≥1440px we let these elements
- * expand up to 80px past the prose cap (40 each side); at ≥1920px up
- * to 160px (80 each side). The container's own max-width keeps them
- * from running into the TOC. */
-@media (min-width: 1440px) {
-  .vp-doc div[class*='language-'],
-  .vp-doc .vp-code-group,
-  .vp-doc .mh-card-grid {
-    /* Pull each side out by up to 40px, capped so we never push past
-     * the content-container. The browser clamps negative margin to 0
-     * if the wrapper has no room, so this is safe. */
-    margin-left: -40px;
-    margin-right: -40px;
-    max-width: calc(100% + 80px);
-  }
-}
-
-@media (min-width: 1920px) {
-  .vp-doc div[class*='language-'],
-  .vp-doc .vp-code-group,
-  .vp-doc .mh-card-grid {
-    margin-left: -80px;
-    margin-right: -80px;
-    max-width: calc(100% + 160px);
-  }
-}
-
-/* Tables stay inside the prose column at every breakpoint. If a row
- * is too wide, scroll inside the prose width instead of spilling out
- * past it. Wrap tables in a block container so overflow-x triggers
- * only when needed (default <table> is inline-table, which doesn't
- * scroll). */
+ * Tables still horizontal-scroll inside the prose column (long RPC
+ * traces / decoded calldata are fine to scroll); long code lines do
+ * the same. The trade is: occasional horizontal scroll inside one
+ * block, in exchange for every block visually aligning. */
 .vp-doc table {
   display: block;
   overflow-x: auto;
   max-width: 100%;
 }
 
-/* The card grid breathes with extra column room when widened. */
+/* Code blocks already scroll horizontally by default in VitePress, so
+ * no extra rule needed for them. */
+
+/* Card grid breathes with extra column room on wider prose. Each card
+ * minmax bumps up so 3-4 cards still fit per row at 960/1040px prose
+ * widths without re-flowing to one giant column. */
 @media (min-width: 1440px) {
+  .mh-card-grid {
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  }
+}
+
+@media (min-width: 1920px) {
   .mh-card-grid {
     grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   }
 }
 
-/* ── Sidebar bleed fix ───────────────────────────────────────────────
- * VitePress's stock VPSidebar is `position: fixed; left: 0` with a
- * background painted across its FULL width. At ≥1440px the default
- * theme uses `padding-left: max(32px, (100% - (max-width - 64px))/2)`
- * and `width: (100% - (max-width - 64px))/2 + sidebar-width - 32px`,
- * which means the sidebar's painted background extends from the
- * window's left edge across an empty strip and into the actual nav
- * column. On wide displays the empty strip is the visible "bleed."
+/* ── Sidebar bleed fix (round-2) ─────────────────────────────────────
+ * VitePress's stock `VPSidebar[data-v-781fc7c3]` is `position: fixed;
+ * left: 0` with `background-color: var(--vp-sidebar-bg-color)` and a
+ * computed width that, at ≥1440px, equals:
+ *   width: calc((100% - (max-width - 64px))/2 + sidebar-width - 32px)
+ *   padding-left: max(32px, calc((100% - (max-width - 64px))/2))
+ * Meaning: on wide displays the sidebar painted-area extends from the
+ * window's left edge across an empty "gutter" strip and into the nav
+ * column. The empty strip painted with --vp-c-bg-alt is the bleed.
  *
- * Fix: keep VitePress's left-edge anchor + padding so the nav text
- * stays in its expected position relative to the content, but PAINT
- * the background only behind the nav column itself (everything inside
- * the padding becomes transparent / inherits page bg).
+ * Round-1 attempt used a `linear-gradient` background-image with a
+ * hard-stop. That was clobbered by two cascade issues:
+ *   1. VitePress's scoped selector `.VPSidebar[data-v-781fc7c3]` beat
+ *      our unscoped `.VPSidebar` on `background-color` despite
+ *      !important not being enough — actually our !important DID win
+ *      for background-color (transparent), so the only paint left was
+ *      our linear-gradient via background-image.
+ *   2. THE DARK-MODE BLOOM RULE `.dark .VPSidebar { background-image:
+ *      radial-gradient(...) }` has higher specificity (2 classes) than
+ *      our unscoped `.VPSidebar` (1 class), so on dark mode it replaced
+ *      our linear-gradient with the radial bloom — the bloom paints the
+ *      whole sidebar including the empty strip, producing visible
+ *      amber tint to the left of "Welcome".
  *
- * Strategy: clear the sidebar's own background; use a child-targeting
- * background on the .nav region (which sits inside the padding) plus
- * an inset linear-gradient via background-image with hard stop so the
- * paint starts exactly at the padding-left offset. Mobile (<960px)
- * is left alone — the slide-in drawer fills its own width correctly.
+ * Round-2 fix:
+ *   - EXCLUDED VPSidebar from the dark-mode bloom rule (see edit
+ *     above) so the bloom no longer competes for background-image.
+ *   - Use a single composite background-image that holds BOTH (a) the
+ *     hard-stop band and (b) the bloom layer, with selectors that meet
+ *     the bloom's specificity (`html.dark .VPSidebar` etc.).
+ *   - Force `background-color: transparent` with !important AND raise
+ *     specificity via `html` + class chain so we beat any future
+ *     overrides without depending on scoped attribute selectors.
+ *
+ * Mobile (<960px) is left untouched — the slide-in drawer fills its
+ * own width correctly and has no gutter.
  */
 @media (min-width: 960px) {
-  .VPSidebar {
-    background-color: transparent !important;
-    /* Hard-stop gradient: transparent up to padding-left, then sidebar
-     * bg from there to the right edge. Uses the same custom prop the
-     * VitePress padding calc consumes so the two stay in lockstep. */
-    background-image: linear-gradient(
-      to right,
-      transparent 0,
-      transparent var(--mh-sidebar-pad-left, 32px),
-      var(--vp-sidebar-bg-color) var(--mh-sidebar-pad-left, 32px),
-      var(--vp-sidebar-bg-color) 100%
-    );
+  /* Default padding-left at ≥960px = 32px flat (VitePress stock). */
+  html .VPSidebar {
+    --mh-sidebar-pad-left: 32px;
   }
-  /* The sticky `.curtain` element (covers the nav-bar overlap area at
-   * the top) inherits the same paint band so the top of the sidebar
-   * doesn't look hollow when the nav-bar is translucent. */
-  .VPSidebar .curtain {
+
+  /* Light mode: transparent background-color + hard-stop band that
+   * starts painting --vp-sidebar-bg-color from --mh-sidebar-pad-left
+   * onwards. Selector chain `html .VPSidebar` = specificity 0,1,1
+   * which ties the scoped `.VPSidebar[data-v-781fc7c3]` (0,1,1) — but
+   * our rule comes later in the cascade so it wins. */
+  html .VPSidebar,
+  html .VPSidebar .curtain {
     background-color: transparent !important;
     background-image: linear-gradient(
       to right,
@@ -515,14 +523,40 @@ kbd {
       transparent var(--mh-sidebar-pad-left, 32px),
       var(--vp-sidebar-bg-color) var(--mh-sidebar-pad-left, 32px),
       var(--vp-sidebar-bg-color) 100%
-    );
+    ) !important;
+  }
+
+  /* Dark mode: same hard-stop band, PLUS the amber bloom layered on
+   * top (radial-gradient first, then the band). The bloom is now
+   * clipped to the painted area because it sits above the same
+   * transparent gutter — the gutter strip remains fully transparent
+   * because both layers stop there. Selector specificity 0,2,1 to
+   * beat the bloom-on-VPSidebar rule that was removed above; this
+   * also beats any future `.dark .VPSidebar` overrides. */
+  html.dark .VPSidebar,
+  html.dark .VPSidebar .curtain {
+    background-color: transparent !important;
+    background-image:
+      radial-gradient(
+        ellipse 60% 40% at 50% -10%,
+        rgba(255, 220, 161, 0.05),
+        transparent 60%
+      ),
+      linear-gradient(
+        to right,
+        transparent 0,
+        transparent var(--mh-sidebar-pad-left, 32px),
+        var(--vp-sidebar-bg-color) var(--mh-sidebar-pad-left, 32px),
+        var(--vp-sidebar-bg-color) 100%
+      ) !important;
   }
 }
 
 @media (min-width: 1440px) {
-  .VPSidebar {
-    /* Match VitePress's own padding-left expression so the paint band
-     * starts exactly where the visible nav column starts. */
+  /* At ≥1440px VitePress shifts padding-left to a centered-gutter
+   * expression. Match it exactly so the paint band starts where the
+   * visible nav column starts. */
+  html .VPSidebar {
     --mh-sidebar-pad-left: max(
       32px,
       calc((100% - (var(--vp-layout-max-width) - 64px)) / 2)
