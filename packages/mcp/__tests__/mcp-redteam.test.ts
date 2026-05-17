@@ -431,13 +431,14 @@ describe('redteam · scope-bypass via 403 on policy tool with read-only JWT', ()
     }
   });
 
-  it('full registry advertises all 22 tools (7 read + 4 position + 4 policy + 5 issuer + 2 governance)', async () => {
+  it('full registry advertises all 23 tools (7 read + 4 position + 1 cash + 4 policy + 5 issuer + 2 governance)', async () => {
     const h = await buildHarness();
     const list = await h.client.listTools();
-    expect(list.tools.length).toBe(22);
+    expect(list.tools.length).toBe(23);
     const groups = countBy(list.tools.map((t) => t.name.split('.')[1]));
     expect(groups.read).toBe(7);
     expect(groups.position).toBe(4);
+    expect(groups.cash).toBe(1);
     expect(groups.policy).toBe(4);
     expect(groups.issuer).toBe(5);
     expect(groups.governance).toBe(2);

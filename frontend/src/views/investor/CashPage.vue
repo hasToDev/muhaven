@@ -449,6 +449,17 @@ onMounted(() => {
   // timeout is generous enough that healthy staging RPCs always resolve
   // first; only genuinely degraded sessions hit the fallback.
   setTimeout(() => { balancesLoaded.value = true }, 1500)
+
+  // Path C deep-link from @muhaven/mcp `cash.wrap({ amount: 100 })` →
+  // `/cash?amount=100`. Pre-fill the form so the user just reviews +
+  // taps Convert; we NEVER auto-submit. The amount is in human-readable
+  // USDC units (e.g. "100" for $100), matching the form's own unit
+  // convention. Reject non-numeric / negative values silently — a bad
+  // pre-fill just leaves the field empty.
+  const queryAmount = route.query.amount as string | undefined
+  if (queryAmount && /^\d+(\.\d+)?$/.test(queryAmount)) {
+    amount.value = queryAmount
+  }
 })
 
 // ── Mode switcher ──────────────────────────────────────────────────────

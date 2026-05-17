@@ -199,33 +199,131 @@ export async function readAudit(
 
 // ---------- position group ----------
 
-interface PositionEnvelopeData {
-  intentHash: `0x${string}`;
-  unsignedUserOp: {
-    target: string;
-    data: string;
-    note: string;
+/**
+ * 2026-05-18 Option A (Path C): position tools no longer return an
+ * unsigned UserOp envelope + broker signature. Instead they return a
+ * deep-link URL the LLM relays to the user; the user opens it in their
+ * browser, the existing dashboard page (TradePage / CashPage /
+ * YieldsPage) loads with the form pre-filled, the user reviews + taps,
+ * the existing passkey + ZeroDev kernel flow settles.
+ *
+ * Why this shape:
+ *  - The placeholder-envelope path (`broker signs an intent hash`) was
+ *    never actually executable on-chain — the canonical UserOp shape
+ *    never landed in P6 as planned, leaving the tools as attestation-
+ *    only with no follow-up surface. Operators reasonably reported
+ *    "can I buy via MCP or not?" — the honest answer was "no".
+ *  - Reusing the dashboard's existing TradePage / CashPage / YieldsPage
+ *    means MCP-driven actions go through the SAME passkey ceremony,
+ *    SAME slippage previews, SAME post-trade refresh as a user clicking
+ *    through the dashboard directly. No new attack surface.
+ *  - The broker daemon is no longer required for position tools — they
+ *    talk to the backend for token-catalog resolution + URL building
+ *    only. Read tools + governance + issuer tools still use the broker
+ *    JWT path (auth-required wrapper).
+ *
+ * Drawback explicitly accepted: MCP cannot programmatically observe
+ * settlement. The LLM verifies a buy landed by calling
+ * `muhaven.read.portfolio` after the user reports done. Closing the
+ * settle-side gap requires Arch-B (ERC-7715 caveated permissions) +
+ * an SSE-aware broker — Wave 5.
+ */
+interface PositionPrefillData {
+  /**
+   * Absolute deep-link URL the LLM relays to the user. Of shape
+   *   `<dashboardBaseUrl>/<page>?<form-prefill-query>&from=mcp`
+   * The `from=mcp` flag is reserved for a future audit-attribution UI
+   * but does NOT affect the existing page logic today.
+   */
+  readonly dashboardUrl: string;
+  /**
+   * Short verb the LLM uses when relaying the URL ("review the buy",
+   * "review the redemption", "review the claim", "review the wrap").
+   * Pre-built here so the prompt-engineering layer doesn't have to map
+   * tool name → verb.
+   */
+  readonly action: 'buy' | 'sell' | 'claim' | 'wrap';
+  /**
+   * Two-line, copy-paste-friendly text the LLM can show the user. The
+   * MCP server pre-formats this so different hosts render it
+   * consistently. Trailing newline preserved by the host's markdown.
+   *
+   * Example:
+   *   "Open this link to review and authorize the buy of 5 mhUSDC of TBILL1:
+   *    https://muhaven.app/trade?mode=buy&token=TBILL1&amount=5"
+   */
+  readonly instructions: string;
+  /**
+   * Mirror of the input so the LLM can verify the URL it received
+   * matches what it asked for (defense against a future backend bug
+   * that returns a misrouted URL). Cleartext, not encrypted.
+   */
+  readonly echo: {
+    readonly action: 'buy' | 'sell' | 'claim' | 'wrap';
+    readonly token?: string;
+    readonly amount?: string;
+    readonly shares?: string;
+    readonly epoch?: string;
   };
-  brokerSignature?: `0x${string}`;
-  signerAddress?: `0x${string}`;
 }
 
 /**
- * Compute the digest the broker will sign. Wave 4 P3 ships a *placeholder*
- * intent hash — the canonical UserOp hash construction (with chainId /
- * entryPoint / nonce) lands in P6 when the on-chain pieces wire up.
+ * Build the deep-link URL for a position action. Pure — testable via
+ * `buildPositionDeeplink` unit tests without spawning anything.
  *
- * Domain-separated with a literal version prefix
- * (`muhaven.placeholder.intent.v0:`) so a P3 placeholder signature can
- * NEVER be replayed as a real EIP-712 / EIP-4337 UserOp hash — the
- * preimage lives in a different namespace than any real signing target.
- * Without this separator, an attacker who controls the LLM input could
- * craft intent JSON whose keccak collides with a UserOp hash the user
- * will later approve.
+ * Path parameter (`/trade`, `/cash`, `/yields`) is hardcoded per
+ * action because the destination page is a contract of this surface
+ * (not the LLM's choice). Query params are URL-encoded via
+ * URLSearchParams which handles the `&` / `=` / non-ASCII edge cases.
+ *
+ * Trailing slash on `dashboardBaseUrl` is tolerated — we trim it so
+ * the joined URL never has `//page`.
  */
+export function buildPositionDeeplink(
+  dashboardBaseUrl: string,
+  action: 'buy' | 'sell' | 'claim' | 'wrap',
+  params: Record<string, string>,
+): string {
+  const base = dashboardBaseUrl.replace(/\/+$/, '');
+  const path =
+    action === 'buy' || action === 'sell'
+      ? '/trade'
+      : action === 'claim'
+        ? '/yields'
+        : '/cash';
+  const search = new URLSearchParams();
+  if (action === 'buy' || action === 'sell') search.set('mode', action);
+  for (const [k, v] of Object.entries(params)) search.set(k, v);
+  // `from=mcp` reserved for the future "originated by your MCP client"
+  // badge on the dashboard pages. Today it's a no-op marker.
+  search.set('from', 'mcp');
+  return `${base}${path}?${search.toString()}`;
+}
+
+/**
+ * Pure: format the amount input from base-6 USDC units (string)
+ * back into a human-readable decimal ("5000000" → "5"; "1500000" → "1.5").
+ * Used to build the URL `amount=` param the dashboard pages parse.
+ * Truncates trailing-zero fractional digits so `5.000000` displays as
+ * `5` — matches what the dashboard form would show after manual entry.
+ */
+export function formatUsdc6ToDecimal(amountUsdc6: string): string {
+  if (!/^\d+$/.test(amountUsdc6)) {
+    throw new Error(`amountUsdc6 must be a non-negative integer string: ${amountUsdc6}`);
+  }
+  const padded = amountUsdc6.padStart(7, '0');
+  const intPart = padded.slice(0, -6).replace(/^0+(?=\d)/, '');
+  const fracPart = padded.slice(-6).replace(/0+$/, '');
+  return fracPart === '' ? intPart : `${intPart}.${fracPart}`;
+}
+
+// Legacy intent-hash helpers, retained but unused by position tools
+// post-Path-C. Kept exported for any future attestation surface that
+// wants to sign a domain-separated digest (e.g., an audit-only
+// notary mode the broker could expose later).
 const PLACEHOLDER_INTENT_DOMAIN = 'muhaven.placeholder.intent.v0:';
 
-function computeIntentHash(intent: Record<string, unknown>): `0x${string}` {
+export function computeIntentHash(intent: Record<string, unknown>): `0x${string}` {
   const canonical = JSON.stringify(sortKeys(intent));
   return keccak256(toBytes(PLACEHOLDER_INTENT_DOMAIN + canonical));
 }
@@ -259,138 +357,152 @@ function sortKeys<T>(value: T): T {
  * NOT cached — we clear the slot so a later call retries instead of
  * surfacing the same stale rejection forever.
  */
-let cachedHasSessionKeyProbe: Promise<boolean> | null = null;
-
-async function signEnvelope(
-  intent: Record<string, unknown>,
-  toolName: string,
-  summary: string,
-  deps: ToolDeps,
-): Promise<ToolResult<PositionEnvelopeData>> {
-  const intentHash = computeIntentHash(intent);
-  if (!deps.broker) {
-    return err(
-      'broker.unavailable',
-      'position tools require a running muhaven-broker daemon — see README §Broker setup',
-    );
-  }
-  const broker = deps.broker;
-  // Probe `hello.hasSessionKey` once per process so a read-only-posture
-  // daemon surfaces a structured `SESSION_KEY_REQUIRED` payload pointing
-  // at the dashboard mint flow, instead of a generic broker error from
-  // the eventual `sign_hash` failure. Concurrent calls during the first
-  // probe share the same in-flight hello (cache stores the Promise, not
-  // the resolved value).
-  if (cachedHasSessionKeyProbe === null) {
-    // The clear-on-rejection step lives INSIDE the IIFE (not in a separate
-    // `.catch` chain) so the slot is cleared synchronously with the throw —
-    // every subsequent caller awaiting this Promise sees a null slot the
-    // moment its `await` rejects. A `.catch(() => { cachedHasSessionKeyProbe
-    // = null })` would clear on a later microtask, leaving a window where
-    // a concurrent second caller reads the stale rejected slot and gets
-    // the same `mapBrokerError` instead of retrying. Code Reviewer M1 fix.
-    cachedHasSessionKeyProbe = (async () => {
-      try {
-        const hello = await broker.hello();
-        return hello.hasSessionKey ?? true;
-      } catch (err) {
-        cachedHasSessionKeyProbe = null;
-        throw err;
-      }
-    })();
-  }
-  let hasSessionKey: boolean;
-  try {
-    hasSessionKey = await cachedHasSessionKeyProbe;
-  } catch (e) {
-    return mapBrokerError(e);
-  }
-  if (hasSessionKey === false) {
-    return sessionKeyRequiredPayload(deps.dashboardBaseUrl);
-  }
-  try {
-    const sig = await broker.signHash(intentHash, { tool: toolName, summary });
-    return ok({
-      intentHash,
-      unsignedUserOp: {
-        target: 'see backend',
-        data: 'see backend',
-        note: 'P3 returns a placeholder envelope; P6 wires the canonical UserOp shape.',
-      },
-      brokerSignature: sig.signature,
-      signerAddress: sig.signerAddress,
-    });
-  } catch (e) {
-    // Safety net — if the daemon transitioned states between our probe
-    // and now (extremely unlikely; daemon process can't change state
-    // without a restart), surface SESSION_KEY_REQUIRED rather than the
-    // generic broker error. broker_error.message embeds the daemon's
-    // remediation string verbatim, which we'd rather route through our
-    // structured payload. Update the cache so subsequent calls
-    // short-circuit at the probe instead of re-hitting `signHash`.
-    if (
-      e instanceof BrokerClientError &&
-      e.code === 'broker_error' &&
-      /session_key_unavailable/.test(e.message)
-    ) {
-      cachedHasSessionKeyProbe = Promise.resolve(false);
-      return sessionKeyRequiredPayload(deps.dashboardBaseUrl);
-    }
-    return mapBrokerError(e);
-  }
+/**
+ * 2026-05-18: `signEnvelope` + the broker session-key probe were
+ * deleted alongside the placeholder UserOp envelope. Position tools no
+ * longer need the broker to sign anything — they build a dashboard
+ * deep-link URL and the user's existing kernel + passkey sign on the
+ * dashboard pages.
+ *
+ * `__resetSessionKeyProbeCacheForTests` is retained as a no-op so
+ * any external test harness importing it still compiles (the symbol
+ * was exported in 0.1.6). Safe to drop in a future major.
+ */
+export function __resetSessionKeyProbeCacheForTests(): void {
+  // No-op since 0.1.7 — the cache it cleared was removed alongside
+  // signEnvelope's broker probe. Kept for back-compat with any test
+  // module that referenced the symbol.
 }
 
-/** Test-only: reset the in-process cache so vitest can drive both paths. */
-export function __resetSessionKeyProbeCacheForTests(): void {
-  cachedHasSessionKeyProbe = null;
+/**
+ * Resolve the dashboard base URL from deps. The MCP server is
+ * configured at boot with `MUHAVEN_DASHBOARD_URL` (defaulting to
+ * `https://muhaven.app` per the setup script env defaults); the host
+ * passes it through `dashboardBaseUrl`. Falls back to the prod
+ * default for back-compat with hosts that don't set the dep.
+ */
+function resolveDashboardBaseUrl(deps: ToolDeps): string {
+  return deps.dashboardBaseUrl ?? 'https://muhaven.app';
 }
 
 export async function positionBuy(
   input: PositionBuyInput,
   deps: ToolDeps,
-): Promise<ToolResult<PositionEnvelopeData>> {
-  return signEnvelope(
-    { kind: 'buy', token: input.token, amountUsdc6: input.amountUsdc6 },
-    'muhaven.position.buy',
-    `buy ${input.amountUsdc6} USDC of ${input.token}`,
-    deps,
-  );
+): Promise<ToolResult<PositionPrefillData>> {
+  const amount = formatUsdc6ToDecimal(input.amountUsdc6);
+  const dashboardUrl = buildPositionDeeplink(resolveDashboardBaseUrl(deps), 'buy', {
+    token: input.token,
+    amount,
+  });
+  return ok({
+    dashboardUrl,
+    action: 'buy',
+    instructions:
+      `Open this link to review and authorize the buy of ${amount} mhUSDC of ${input.token}:\n${dashboardUrl}`,
+    echo: { action: 'buy', token: input.token, amount },
+  });
 }
 
 export async function positionSell(
   input: PositionSellInput,
   deps: ToolDeps,
-): Promise<ToolResult<PositionEnvelopeData>> {
-  return signEnvelope(
-    { kind: 'sell', token: input.token, amountShares: input.amountShares },
-    'muhaven.position.sell',
-    `sell ${input.amountShares} shares of ${input.token}`,
-    deps,
-  );
+): Promise<ToolResult<PositionPrefillData>> {
+  // Sell input is `amountShares` (raw share count, not USDC). Pass
+  // through verbatim — the TradePage form parses `?shares=` in sell
+  // mode separately from `?amount=` in buy mode. Numeric check at the
+  // boundary: the dashboard's form ignores non-numeric pre-fills.
+  if (!/^\d+(\.\d+)?$/.test(input.amountShares)) {
+    return err(
+      'invalid_input',
+      `amountShares must be a non-negative number string: ${JSON.stringify(input.amountShares)}`,
+    );
+  }
+  const dashboardUrl = buildPositionDeeplink(resolveDashboardBaseUrl(deps), 'sell', {
+    token: input.token,
+    shares: input.amountShares,
+  });
+  return ok({
+    dashboardUrl,
+    action: 'sell',
+    instructions:
+      `Open this link to review and authorize the sale of ${input.amountShares} shares of ${input.token}:\n${dashboardUrl}`,
+    echo: { action: 'sell', token: input.token, shares: input.amountShares },
+  });
 }
 
 export async function positionClaim(
   input: PositionClaimInput,
   deps: ToolDeps,
-): Promise<ToolResult<PositionEnvelopeData>> {
-  return signEnvelope(
-    { kind: 'claim', token: input.token, escrowId: input.escrowId ?? null },
-    'muhaven.position.claim',
-    `claim ${input.token}${input.escrowId ? ` escrow#${input.escrowId}` : ' (all)'}`,
-    deps,
-  );
+): Promise<ToolResult<PositionPrefillData>> {
+  // `escrowId` is the optional epoch id for the Wave-3.5 YieldSnapshot
+  // claim path. When set we deep-link to the specific row + highlight
+  // it on the page; when omitted, /yields renders the full claimable
+  // list and the user picks. Both paths use the same passkey ceremony.
+  const params: Record<string, string> = { token: input.token };
+  if (input.escrowId) params.epoch = input.escrowId;
+  const dashboardUrl = buildPositionDeeplink(resolveDashboardBaseUrl(deps), 'claim', params);
+  const claimDescriptor = input.escrowId
+    ? `the claim for epoch #${input.escrowId} of ${input.token}`
+    : `your claimable epochs for ${input.token}`;
+  return ok({
+    dashboardUrl,
+    action: 'claim',
+    instructions: `Open this link to review and authorize ${claimDescriptor}:\n${dashboardUrl}`,
+    echo: {
+      action: 'claim',
+      token: input.token,
+      ...(input.escrowId ? { epoch: input.escrowId } : {}),
+    },
+  });
 }
 
 export async function positionRebalance(
-  input: PositionRebalanceInput,
-  deps: ToolDeps,
-): Promise<ToolResult<PositionEnvelopeData>> {
-  return signEnvelope(
-    { kind: 'rebalance', legs: input.legs },
-    'muhaven.position.rebalance',
-    `rebalance ${input.legs.length} legs`,
-    deps,
+  _input: PositionRebalanceInput,
+  _deps: ToolDeps,
+): Promise<ToolResult<never>> {
+  // Multi-leg rebalance is intentionally NOT mapped to a deep-link in
+  // Path C. The dashboard's TradePage handles one leg at a time; a
+  // multi-leg rebalance needs `executeBatch` on the kernel + a
+  // composite preview UI that doesn't exist yet. Wave 5 ships this as
+  // `position.execute_plan(legs[])` against a dedicated rebalance page.
+  // For now, surface a clear deferred-feature error so the LLM stops
+  // proposing it.
+  return err(
+    'not_implemented',
+    'position.rebalance is deferred to Wave 5. Today, ask the user to execute legs one at a time via position.buy / position.sell, or use the dashboard /trade page directly.',
   );
+}
+
+// ---------- cash group ----------
+//
+// `wrap` (USDC → mhUSDC) is exposed because the most common LLM
+// follow-up to a buy proposal is "user has USDC but no mhUSDC". The
+// LLM can chain: read.portfolio → notice 0 mhUSDC → cash.wrap → then
+// position.buy. Each step is a deep-link the user reviews + signs.
+//
+// `unwrap` (mhUSDC → USDC) intentionally NOT exposed in v0.1.7 —
+// there's no working unwrap surface in the dashboard today (CashPage
+// is wrap-only). When the page lands the tool can be added in one
+// edit here without an architecture change.
+
+export async function cashWrap(
+  input: import('./schemas.js').CashWrapInput,
+  deps: ToolDeps,
+): Promise<ToolResult<PositionPrefillData>> {
+  // `amountUsdc` is human-readable USDC (e.g. "100" for $100). Per the
+  // schema validation upstream, this is already a positive decimal
+  // string — pass through to the URL verbatim. The dashboard's
+  // CashPage form parses `?amount=` as USDC base-1 units (not 1e-6).
+  const dashboardUrl = buildPositionDeeplink(resolveDashboardBaseUrl(deps), 'wrap', {
+    amount: input.amountUsdc,
+  });
+  return ok({
+    dashboardUrl,
+    action: 'wrap',
+    instructions:
+      `Open this link to review and authorize the conversion of ${input.amountUsdc} USDC into mhUSDC:\n${dashboardUrl}`,
+    echo: { action: 'wrap', amount: input.amountUsdc },
+  });
 }
 
 // ---------- policy group ----------

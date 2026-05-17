@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { nextTick, ref, computed, onMounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { toast } from 'vue-sonner'
 import type { Address } from 'viem'
 import { YieldSnapshotClient } from '@muhaven/sdk'
@@ -30,6 +31,25 @@ const portfolioStore = usePortfolioStore()
 const { address, connected } = useWallet()
 const { getEphemeralEOA } = useFhe()
 const marketplace = useMarketplaceStore()
+const route = useRoute()
+
+/**
+ * Path C deep-link target (`?token=<sym|addr>&epoch=<n>`). When set, the
+ * epoch row with matching `(snapshotAddress, epochId)` gets a gold ring
+ * + smooth-scroll into view on first render. The user still clicks
+ * Claim manually — the highlight is purely a "the LLM pointed you here"
+ * affordance.
+ *
+ * We resolve the token address from a symbol via the marketplace store
+ * so `@muhaven/mcp position.claim({ token: 'TBILL1' })` works without
+ * forcing the LLM to look up the contract first.
+ *
+ * `null` when there's no deep-link target — every row renders un-
+ * highlighted. The page already auto-loads + lists every claimable
+ * epoch independently of this; the deep-link is opt-in convenience.
+ */
+const highlightedTokenAddr = ref<string | null>(null)
+const highlightedEpochId = ref<string | null>(null)
 
 const claimingKeys = ref<Set<string>>(new Set())
 const activeRange = ref<'1m' | '3m' | '6m' | '1y'>('6m')
@@ -47,6 +67,46 @@ onMounted(async () => {
   if (connected.value && address.value) {
     if (!epochsStore.loaded || epochsStore.lastLoadedFor?.toLowerCase() !== address.value.toLowerCase()) {
       await epochsStore.load(address.value as Address)
+    }
+  }
+
+  // Path C deep-link from @muhaven/mcp `position.claim({ token, epoch? })`.
+  // Resolve token (symbol or 0x-address) → store both lowercased keys for
+  // matching against epoch row data attributes. Epoch is optional; when
+  // present we scroll-to + ring the matching row.
+  const queryToken = route.query.token as string | undefined
+  if (queryToken) {
+    const looksLikeAddress = /^0x[a-fA-F0-9]{40}$/.test(queryToken)
+    const matched = looksLikeAddress
+      ? marketplace.tokens.find(
+          (t) => t.address.toLowerCase() === queryToken.toLowerCase(),
+        )
+      : marketplace.tokens.find(
+          (t) => t.symbol.toLowerCase() === queryToken.toLowerCase(),
+        )
+    if (matched) {
+      highlightedTokenAddr.value = matched.address.toLowerCase()
+      // Pre-select the NAV chart token so the trend panel mirrors what
+      // the LLM proposed. The selectableTokens watcher would otherwise
+      // pick the first epoch's token, which may not match.
+      selectedToken.value = matched.address as Address
+    }
+  }
+  const queryEpoch = route.query.epoch as string | undefined
+  if (queryEpoch && /^\d+$/.test(queryEpoch)) {
+    highlightedEpochId.value = queryEpoch
+  }
+
+  // Scroll-into-view AFTER the v-for has had a chance to render the
+  // matched row. The `data-highlighted="true"` attribute we set in the
+  // template gives us a stable selector regardless of which row matched.
+  if (highlightedTokenAddr.value && highlightedEpochId.value) {
+    await nextTick()
+    const el = document.querySelector<HTMLElement>(
+      '[data-testid="epoch-row"][data-highlighted="true"]',
+    )
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
     }
   }
 })
@@ -275,9 +335,20 @@ async function claimEpoch(entry: EpochEntry) {
               :key="`${e.snapshotAddress}:${e.epochId}`"
               data-testid="epoch-row"
               :data-epoch-id="String(e.epochId)"
-              class="flex items-center justify-between gap-4 p-4 md:p-5 rounded-xl
-                     border border-haze dark:border-white/5 bg-mist/40 dark:bg-[#171717]
-                     hover:border-gold/30 dark:hover:border-signal/25 transition-colors duration-300"
+              :data-token-address="e.tokenAddress.toLowerCase()"
+              :data-highlighted="(
+                highlightedTokenAddr === e.tokenAddress.toLowerCase()
+                && highlightedEpochId === String(e.epochId)
+              ) ? 'true' : 'false'"
+              :class="[
+                'flex items-center justify-between gap-4 p-4 md:p-5 rounded-xl',
+                'border bg-mist/40 dark:bg-[#171717]',
+                'transition-colors duration-300',
+                highlightedTokenAddr === e.tokenAddress.toLowerCase()
+                  && highlightedEpochId === String(e.epochId)
+                  ? 'border-gold ring-2 ring-gold/40 dark:border-signal dark:ring-signal/40 shadow-[0_0_24px_-4px_rgba(255,186,32,0.45)] dark:shadow-[0_0_24px_-4px_rgba(255,220,161,0.35)]'
+                  : 'border-haze dark:border-white/5 hover:border-gold/30 dark:hover:border-signal/25',
+              ]"
             >
               <div class="flex items-center gap-4 min-w-0 flex-1">
                 <div

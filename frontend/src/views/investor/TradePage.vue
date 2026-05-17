@@ -400,12 +400,39 @@ onMounted(async () => {
 
   mode.value = readQueryMode()
 
+  // Token can be either a 0x-address OR a symbol (e.g. "TBILL1") so MCP
+  // deep-links from `@muhaven/mcp position.buy({ token: 'TBILL1' })` can
+  // pre-fill without forcing the LLM to look up the contract address
+  // first. Symbol match is case-insensitive (operator may type lowercase).
   const queryToken = route.query.token as string | undefined
-  if (queryToken && marketplace.getByAddress(queryToken)) {
-    selectedToken.value = queryToken
-  } else if (marketplace.filtered.length > 0 && !selectedToken.value) {
+  if (queryToken) {
+    const looksLikeAddress = /^0x[a-fA-F0-9]{40}$/.test(queryToken)
+    const matched = looksLikeAddress
+      ? marketplace.getByAddress(queryToken)
+      : marketplace.tokens.find(
+          (t) => t.symbol.toLowerCase() === queryToken.toLowerCase(),
+        )
+    if (matched) {
+      selectedToken.value = matched.address
+    }
+  }
+  if (!selectedToken.value && marketplace.filtered.length > 0) {
     selectedToken.value = marketplace.filtered[0].address
   }
+
+  // Amount pre-fill — `?amount=` for buy mode (mhUSDC notional),
+  // `?shares=` for sell mode (raw share count). Both fields land in
+  // the same `amount` form ref; mode disambiguates the unit. Reject
+  // non-numeric / negative values silently — never auto-submit, so a
+  // bad pre-fill just leaves the field empty and the user types.
+  // Path C contract: deep-links pre-fill the form; they never sign.
+  const queryAmount = route.query.amount as string | undefined
+  const queryShares = route.query.shares as string | undefined
+  const prefill = mode.value === 'sell' ? queryShares : queryAmount
+  if (prefill && /^\d+(\.\d+)?$/.test(prefill)) {
+    amount.value = prefill
+  }
+
   // Trigger sell-mode reads if we deep-linked into ?mode=sell
   if (mode.value === 'sell') {
     refreshHolding()

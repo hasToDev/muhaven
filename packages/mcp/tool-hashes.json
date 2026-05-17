@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-05-07T07:40:21.258Z",
+  "generatedAt": "2026-05-17T18:17:06.859Z",
   "tools": [
     {
       "name": "muhaven.read.portfolio",
@@ -23,19 +23,23 @@
     },
     {
       "name": "muhaven.position.buy",
-      "sha256": "638c905c66d8eea6dcfebb412ebf7020d768fb3e023b3b7ec5783718592e99d0"
+      "sha256": "f24c9628249e91ed485031f9114053fa6b174a5d55aedfb4109392eb5795c9e4"
     },
     {
       "name": "muhaven.position.sell",
-      "sha256": "20eb118ca994c2a1d4fd688c4832ecdfebb3f350e94dc6c4756a683d181f51c4"
+      "sha256": "707545106fdd505d7d942153bcb34d7ead53c2539b9699e0733159a57c72177d"
     },
     {
       "name": "muhaven.position.claim",
-      "sha256": "daa1c23ce6cf1a113f73ff1326e807e4a18c07c06db0f05c15e5ac01c8c15e86"
+      "sha256": "31a6b9472f8b34e69ca28b888e60178dafd01b8644e2a61e6f36515660b68838"
     },
     {
       "name": "muhaven.position.rebalance",
-      "sha256": "750bfe5524ac611354d692b8f48d9d3ed41858a89340d2553e2260b34986a0d7"
+      "sha256": "ad32f2e9c2b6aafb6bd3acd33079dc7541035f0f405045178f95489f80cc922e"
+    },
+    {
+      "name": "muhaven.cash.wrap",
+      "sha256": "1ae4cb949e0d09e7fb7e8957e51bfc63b43397c253849c217b835aaa9505b8c9"
     },
     {
       "name": "muhaven.policy.set_tier",

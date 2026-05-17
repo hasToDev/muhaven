@@ -10,8 +10,9 @@ describe('tool registry', () => {
   //  - P3 shipped 13 tools (5 read + 4 position + 4 policy)
   //  - P7 added 5 issuer tools  → 18
   //  - P11 added 2 read + 2 governance → 22
-  it('full registry contains all 22 tools (P3 + P7 + P11)', () => {
-    expect(fullToolRegistry().length).toBe(22);
+  //  - 0.1.7 (Path C) added 1 cash tool (cash.wrap) → 23
+  it('full registry contains all 23 tools (P3 + P7 + P11 + Path C)', () => {
+    expect(fullToolRegistry().length).toBe(23);
   });
 
   it('read-only filter exposes 7 read.* tools only (5 P3 + 2 P11)', () => {
@@ -21,7 +22,7 @@ describe('tool registry', () => {
   });
 
   it('selectRegistry(false) === full', () => {
-    expect(selectRegistry(false).length).toBe(22);
+    expect(selectRegistry(false).length).toBe(23);
   });
 
   it('selectRegistry(true) === read-only', () => {

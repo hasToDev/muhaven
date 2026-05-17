@@ -18,6 +18,31 @@ const addressSchema = z
   .string()
   .regex(HEX_ADDRESS_RE, 'must be a 0x-prefixed 20-byte hex address');
 
+/**
+ * Symbol OR 0x-address. Used by Path C deep-link tools (`position.buy`,
+ * `position.sell`, `position.claim`) so the LLM can pass either form
+ * without first round-tripping `read.tokens` to look up the address.
+ * The dashboard pages (TradePage / YieldsPage) resolve the symbol via
+ * the marketplace store at mount time; an unknown identifier just
+ * leaves the form blank for the user to fill in (Path C contract:
+ * deep-links pre-fill, they never auto-submit).
+ *
+ * Symbol shape: 1-12 chars, uppercase ASCII letters + digits. Matches
+ * the constraint surface of every onboarded MuHaven RWA token symbol
+ * (TBILL1 / GOLD1 / NOVUS / OCEAN / ASTRAT / TESTRUN2 / SUMMIT etc.).
+ * Case-insensitive on input — the frontend normalizes both sides.
+ */
+const TOKEN_SYMBOL_RE = /^[A-Za-z][A-Za-z0-9]{0,11}$/;
+const tokenIdentifierSchema = z
+  .string()
+  .refine(
+    (v) => HEX_ADDRESS_RE.test(v) || TOKEN_SYMBOL_RE.test(v),
+    {
+      message:
+        'must be a 0x-prefixed 20-byte hex address OR a token symbol (1-12 alphanumeric chars, starting with a letter)',
+    },
+  );
+
 const tierSchema = z.enum(['advisory', 'confirm-per-action', 'policy-bound', 'paused']);
 
 const surfaceSchema = z.enum(['havenbot', 'mcp', 'openclaw', 'checkout']);
@@ -74,7 +99,8 @@ export const ReadAuditInputSchema = z
 
 export const PositionBuyInputSchema = z
   .object({
-    token: addressSchema,
+    /** Symbol (e.g. "TBILL1") or 0x-address. Path C dashboard resolves either. */
+    token: tokenIdentifierSchema,
     /** Investor candidate spend, denominated in USDC base units (uint64). */
     amountUsdc6: z.string().regex(/^\d+$/, 'must be a base-10 integer string'),
   })
@@ -82,7 +108,7 @@ export const PositionBuyInputSchema = z
 
 export const PositionSellInputSchema = z
   .object({
-    token: addressSchema,
+    token: tokenIdentifierSchema,
     /** Encrypted-balance share count to redeem, denominated in fhERC-20 base units. */
     amountShares: z.string().regex(/^\d+$/, 'must be a base-10 integer string'),
   })
@@ -90,8 +116,8 @@ export const PositionSellInputSchema = z
 
 export const PositionClaimInputSchema = z
   .object({
-    token: addressSchema,
-    /** When set, claim only the named escrow id; else claim-all. */
+    token: tokenIdentifierSchema,
+    /** When set, deep-link highlights the specific epoch row; else /yields renders the full claimable list. */
     escrowId: z.string().regex(/^\d+$/).optional(),
   })
   .strict();
@@ -102,7 +128,7 @@ export const PositionRebalanceInputSchema = z
       .array(
         z
           .object({
-            token: addressSchema,
+            token: tokenIdentifierSchema,
             side: z.enum(['buy', 'sell']),
             amount: z.string().regex(/^\d+$/),
           })
@@ -110,6 +136,26 @@ export const PositionRebalanceInputSchema = z
       )
       .min(2)
       .max(8),
+  })
+  .strict();
+
+// ---------- cash group (Path C) ----------
+//
+// Path C deep-link wrapper around the dashboard's CashPage. Today's
+// only working flow is USDC → mhUSDC; the inverse (`cash.unwrap`)
+// awaits a frontend surface and is intentionally absent from the
+// v0.1.7 catalog (adding it later is a one-edit change).
+
+export const CashWrapInputSchema = z
+  .object({
+    /**
+     * USDC amount in human-readable units ("100" for $100, "1.5" for
+     * $1.50). Forwarded verbatim to `/cash?amount=`. Decimal optional
+     * — CashPage parses both `\d+` and `\d+\.\d+`.
+     */
+    amountUsdc: z
+      .string()
+      .regex(/^\d+(\.\d+)?$/, 'must be a positive decimal number string'),
   })
   .strict();
 
@@ -228,6 +274,8 @@ export type PositionBuyInput = z.infer<typeof PositionBuyInputSchema>;
 export type PositionSellInput = z.infer<typeof PositionSellInputSchema>;
 export type PositionClaimInput = z.infer<typeof PositionClaimInputSchema>;
 export type PositionRebalanceInput = z.infer<typeof PositionRebalanceInputSchema>;
+
+export type CashWrapInput = z.infer<typeof CashWrapInputSchema>;
 
 export type PolicySetTierInput = z.infer<typeof PolicySetTierInputSchema>;
 export type PolicyPauseInput = z.infer<typeof PolicyPauseInputSchema>;

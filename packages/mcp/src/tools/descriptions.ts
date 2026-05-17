@@ -31,7 +31,7 @@ export interface ToolDescriptor {
    *  `read` so `--read-only` keeps them available; the two propose
    *  tools (`muhaven.governance.propose`, `muhaven.governance.cast_vote`)
    *  are filtered off in read-only mode. */
-  readonly group: 'read' | 'position' | 'policy' | 'issuer' | 'governance';
+  readonly group: 'read' | 'position' | 'policy' | 'issuer' | 'governance' | 'cash';
   /** Human-readable description shown in the host UI. */
   readonly description: string;
   /** When true, the host SHOULD render a confirmation cue before invoking. */
@@ -91,28 +91,36 @@ export const TOOL_DESCRIPTORS: readonly ToolDescriptor[] = [
     name: 'muhaven.position.buy',
     group: 'position',
     description:
-      'PROPOSE a Subscription buy. Returns an unsigned UserOp envelope plus a broker-signed session-key signature. The host MUST present the unsigned envelope to the user for passkey confirmation before submission to the bundler — this tool NEVER auto-submits. Fails when the user is in Advisory or Paused tier.',
+      'Prepare a Subscription buy. Returns a dashboard deep-link URL (muhaven.app/trade?mode=buy&...) the user opens to review the pre-filled form, then taps Authorize. The user\'s passkey + ZeroDev kernel sign on the dashboard — this MCP tool never holds or submits a signing key. Use after the user names a clear amount + token (e.g. "Buy 5 mhUSDC of TBILL1"). Token accepts either a symbol ("TBILL1") or 0x-address. Settlement is NOT observable from MCP — verify by calling muhaven.read.portfolio after the user confirms done.',
     sensitive: true,
   },
   {
     name: 'muhaven.position.sell',
     group: 'position',
     description:
-      'PROPOSE a redemption-queue sell. Same envelope-plus-signature pattern as muhaven.position.buy. Requires the user to be in Confirm-per-action or Policy-bound tier on the MCP surface.',
+      'Prepare a Subscription sell. Returns a dashboard deep-link URL (muhaven.app/trade?mode=sell&...) with the form pre-filled. Same passkey + verify-after pattern as muhaven.position.buy. Input is amountShares (raw share count), NOT mhUSDC notional.',
     sensitive: true,
   },
   {
     name: 'muhaven.position.claim',
     group: 'position',
     description:
-      'PROPOSE a yield claim from RedemptionQueue / YieldSnapshot for a given token. Returns an unsigned UserOp + broker signature. Idempotent — proposing twice produces the same intent hash.',
+      'Prepare a yield claim. Returns a dashboard deep-link URL (muhaven.app/yields?...) pointing at the YieldsPage. When escrowId is set, the matching epoch row is highlighted + scrolled into view; when omitted, the page renders the user\'s full claimable list and they pick. User passkey-signs on the dashboard.',
     sensitive: true,
   },
   {
     name: 'muhaven.position.rebalance',
     group: 'position',
     description:
-      'PROPOSE a multi-leg atomic rebalance bundling buy + sell legs into a single UserOp. Each leg is constrained by the user\'s installed @zerodev/permissions CallPolicy.',
+      'NOT IMPLEMENTED in this release — returns an error pointing the user at single-leg position.buy / position.sell or the dashboard /trade page. Multi-leg execute_plan lands in Wave 5 with a composite preview UI + executeBatch on the kernel.',
+    sensitive: true,
+  },
+  // ── Path C cash group (2026-05-18) ────────────────────────────────
+  {
+    name: 'muhaven.cash.wrap',
+    group: 'cash',
+    description:
+      'Prepare a USDC → mhUSDC wrap (the encrypted-balance conversion that funds buys). Returns a dashboard deep-link URL (muhaven.app/cash?action=wrap&...) with the amount pre-filled. Input amountUsdc is human-readable USDC ("100" = $100). Common LLM chain: read.portfolio → notice 0 mhUSDC → cash.wrap → then position.buy (each is its own user-confirmed deep-link). Settlement not observable from MCP — re-call read.portfolio to verify.',
     sensitive: true,
   },
   {

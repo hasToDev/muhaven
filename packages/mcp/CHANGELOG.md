@@ -7,6 +7,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7] — 2026-05-18
+
+`position.*` tools can now drive real on-chain action via @muhaven/mcp
+— Path C of MCP Option A (dashboard URL elicitation → existing passkey
+ceremony). Pre-0.1.7, position tools returned a placeholder UserOp
+envelope + broker signature that no host could submit; the path was
+attestation-only despite implying buy/sell/claim. 0.1.7 swaps the
+envelope for a pre-filled dashboard deep-link URL the user opens to
+review + tap their passkey through the existing dashboard flow.
+
+### Added
+
+- **`muhaven.cash.wrap`** — new tool. Returns a `/cash?amount=` deep-
+  link for USDC → mhUSDC conversion. Common LLM chain: `read.portfolio`
+  → notice 0 mhUSDC → `cash.wrap` → then `position.buy` (each is its
+  own user-confirmed deep-link). Input is human-readable USDC ("100" =
+  $100). 23 tools total now (was 22).
+
+- **Token identifier accepts symbols OR addresses.** Every `position.*`
+  tool's `token` field used to require a 0x-address. Now accepts either
+  a symbol ("TBILL1") or a 0x-address. The dashboard pages resolve the
+  symbol via the marketplace store; unknown identifiers leave the form
+  blank for the user to fill in. Saves the LLM a round-trip through
+  `read.tokens` for the common "buy 5 of TBILL1" flow.
+
+- **Exported pure helpers** (`buildPositionDeeplink`,
+  `formatUsdc6ToDecimal`) so third-party MCP servers + tests can reason
+  about the URL shape without spawning anything.
+
+### Changed
+
+- **`position.buy/sell/claim` return shape** is now `{ dashboardUrl,
+  action, instructions, echo }` instead of `{ intentHash,
+  unsignedUserOp, brokerSignature, signerAddress }`. The `instructions`
+  field is a pre-formatted two-line string the LLM can show the user
+  verbatim ("Open this link to review and authorize..."). The `echo`
+  field mirrors input for LLM self-verification. **Breaking** for any
+  consumer that pinned the 0.1.6 response shape — the prior shape was
+  itself never end-to-end usable (placeholder envelope), so the
+  practical impact is "MCP buy now actually works" rather than
+  regression.
+
+- **`position.rebalance`** returns `not_implemented` with a clear
+  next-step hint pointing at single-leg `position.buy` / `position.sell`
+  or the dashboard. Multi-leg `execute_plan` (one URL, one passkey,
+  one batched UserOp) lands in Wave 5 with composite preview UI.
+
+- **Broker dep no longer required for position tools.** Previously, a
+  `position.buy` call without a running `muhaven-broker` daemon
+  returned `broker.unavailable`. Now position tools talk only to the
+  dashboard URL — the broker is still needed for `read.*` / governance
+  / issuer / policy tools (those use the JWT-authed path).
+
+### Removed
+
+- `signEnvelope` + `PositionEnvelopeData` + the per-process
+  `hasSessionKey` probe cache + `__resetSessionKeyProbeCacheForTests`'s
+  cache (the function is retained as a no-op for back-compat with any
+  test harness importing it). The whole broker-attestation path for
+  position tools is gone — they don't need a signing key at all.
+
+### Internal
+
+- 21 new vitest cases in `__tests__/position-deeplink.test.ts`,
+  replacing `session-key-required.test.ts` (deleted — covered a
+  removed code path). Total `@muhaven/mcp` suite: **262/262 passing**
+  (was 241). Tool-hash count: **23** (was 22).
+
+### Operator notes
+
+- Once installed, the fresh-install ritual is unchanged: `muhaven-broker
+  setup --register claude-code` still wires the MCP server into Claude
+  Code via `claude mcp add-json`.
+- Existing 0.1.6 installs: `npm install -g @muhaven/mcp@latest` picks up
+  the new bin; no setup re-run needed.
+- `MUHAVEN_DASHBOARD_URL` env var (defaults to `https://muhaven.app`)
+  now drives the deep-link URL prefix; staging operators set it to
+  `https://muhaven-staging.example` and the URLs flow through.
+
 ## [0.1.6] — 2026-05-17
 
 Adds `muhaven-broker setup --register HOST` so a fresh install no longer
