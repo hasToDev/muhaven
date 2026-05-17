@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] — 2026-05-17
+
+Re-bundles against `@muhaven/mcp@0.1.5` so the new `muhaven-broker
+stop` subcommand is available to skill consumers (who also install
+`@muhaven/mcp` globally for the broker bin per SKILL.md "How to
+install"). No tool-subset or sandbox changes; passthrough version bump.
+
+### Changed
+
+- **Bundled `@muhaven/mcp` bumped 0.1.4 → 0.1.5** (`manifest.json#mcp.bundled_version`
+  + `SKILL.md` frontmatter + the `verify-subset.ts` triple-match guard).
+  Operators following SKILL.md should `npm install -g @muhaven/mcp@0.1.5`
+  so the new `muhaven-broker stop` is on `$PATH` alongside the existing
+  `muhaven-broker setup`.
+
 ## [0.1.3] — 2026-05-17
 
 Re-bundles against `@muhaven/mcp@0.1.4` so the new

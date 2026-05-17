@@ -15,6 +15,12 @@
  * keeper of the device-flow JWT (per ADR-3 D1 "polling, not loopback
  * callback") in addition to the session-key private half.
  *
+ * @muhaven/mcp@0.1.5 added `hello.pid` (still protocol 0.3.0 — additive
+ * optional field) so `muhaven-broker stop` can reach into the daemon
+ * process by PID without forcing operators to grep `ps` output. Older
+ * 0.1.4 daemons omit the field; `runStop` falls back to a structured
+ * error message in that case.
+ *
  * Threat-model invariants:
  *  - The broker NEVER reaches out to the network. It only:
  *      (a) signs hashes that the MCP server received from the backend,
@@ -102,6 +108,13 @@ export interface BrokerHelloResponse {
     readonly backendBaseUrl: string;
     readonly dashboardBaseUrl: string;
   };
+  /**
+   * OS process id of the daemon. Surfaced so `muhaven-broker stop` can
+   * `process.kill(pid, 'SIGTERM')` without grepping `ps` output. Added in
+   * @muhaven/mcp@0.1.5 (no protocol-version bump — additive optional
+   * field). Older daemons omit; consumers MUST handle `undefined`.
+   */
+  readonly pid?: number;
 }
 
 export interface BrokerSignHashResponse {

@@ -27,6 +27,11 @@ import {
   waitForBroker,
   type SetupDeps,
 } from './setup.js';
+import {
+  defaultKillProcess,
+  runStop as runStopOrchestrator,
+  type StopDeps,
+} from './stop.js';
 
 function print(line: string): void {
   process.stdout.write(line + '\n');
@@ -396,9 +401,11 @@ function printUsage(): void {
   print('                       [--foreground|-f] keeps the daemon attached (skip background spawn)');
   print('                       [--skip-login] starts the daemon but lets you run login later');
   print('                       [--no-launch-browser] pass-through to login');
+  print('  stop               Cleanly stop a running daemon (SIGTERM with SIGKILL fallback');
+  print('                       after 5s). Also clears the keystore JWT as a best effort.');
   print('  login              Acquire a JWT via the device-code flow + store in keystore');
   print('                       [--from-daemon] resolves backend/dashboard URLs from the running daemon');
-  print('  logout             Clear the JWT from the keystore');
+  print('  logout             Clear the JWT from the keystore (does NOT stop the daemon)');
   print('  doctor             Print environment + keystore + reachability report');
   print('  -h, --help         Show this help');
   print('  -v, --version      Print the @muhaven/mcp package version');
@@ -470,6 +477,23 @@ export async function runSetup(argv: readonly string[]): Promise<number> {
   return runSetupOrchestrator(argv, deps);
 }
 
+/**
+ * Wire `runStop` against the real BrokerClient + Node's process.kill.
+ */
+export async function runStop(): Promise<number> {
+  const config = loadMcpConfig();
+  const deps: StopDeps = {
+    print,
+    printErr,
+    newBrokerClient: (endpoint, timeoutMs) => new BrokerClient({ endpoint, timeoutMs }),
+    killProcess: defaultKillProcess,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    endpoint: config.brokerEndpoint,
+    brokerTimeoutMs: config.brokerTimeoutMs,
+  };
+  return runStopOrchestrator(deps);
+}
+
 export async function runCli(argv: readonly string[]): Promise<number> {
   const [sub, ...rest] = argv;
   switch (sub) {
@@ -478,6 +502,8 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       return 0;
     case 'setup':
       return runSetup(rest);
+    case 'stop':
+      return runStop();
     case 'login':
       return runLogin(rest);
     case 'logout':

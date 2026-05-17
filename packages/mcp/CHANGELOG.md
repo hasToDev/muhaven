@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] — 2026-05-17
+
+Adds the `muhaven-broker stop` subcommand so operators can cleanly tear
+down a detached daemon spawned by `muhaven-broker setup` without
+hunting for PIDs in `ps` output or hand-rolling `taskkill` recipes.
+Surfaced after `muhaven-broker setup` lands in 0.1.4 — operators
+naturally asked "how do I stop this?" and the answer (`muhaven-broker
+logout` + manual `kill`) was non-obvious.
+
+### Added
+
+- **`muhaven-broker stop` subcommand** — clean shutdown:
+  - Probes the broker via `hello()`. Unreachable → "not running,
+    nothing to stop." exit 0.
+  - Best-effort `clearJwt()` so the OS keychain doesn't keep a stale
+    JWT after shutdown. Warning + continue on failure (don't abort
+    the kill).
+  - Reads `hello.pid` (new optional field — see below). On pre-0.1.5
+    daemons that omit the field, prints a manual-kill hint with
+    cross-platform commands and exits 1.
+  - `process.kill(pid, 'SIGTERM')` → polls `hello()` until it fails
+    (clean exit) or 5s elapses, then `process.kill(pid, 'SIGKILL')`.
+  - Pure orchestrator (`runStop` in `src/broker/stop.ts`) with
+    injectable IO so every branch is unit-testable without spawning
+    real processes.
+
+### Changed
+
+- **`hello` response gains optional `pid?: number`** field (broker
+  protocol stays at 0.3.0 — additive optional field, back-compat with
+  pre-0.1.5 daemons). Populated from `process.pid` at request-handle
+  time; consumers MUST handle `undefined` for older daemons.
+
+### Tests
+
+- 206 vitest pass (up from 197 in 0.1.4). Net +9 cases in new
+  `__tests__/stop.test.ts`:
+  - `runStop` not-running short-circuit
+  - happy path (hello → clearJwt → SIGTERM → exit-detected → 0)
+  - pre-0.1.5 daemon (no `pid` in hello) returns 1 with manual hint
+  - SIGKILL fallback after gracefulShutdownMs timeout
+  - SIGTERM permission error returns 1
+  - SIGKILL permission error returns 1 with "may be orphaned" hint
+  - `clearJwt` failure does NOT abort the kill (warning + continue)
+  - `defaultKillProcess` returns false on ESRCH (process gone)
+  - `defaultKillProcess` rethrows non-ESRCH errors (POSIX-only test)
+
 ## [0.1.4] — 2026-05-17
 
 Adds the one-shot `muhaven-broker setup` subcommand so a fresh install

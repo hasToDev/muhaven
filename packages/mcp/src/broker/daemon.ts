@@ -81,6 +81,13 @@ export interface HandleBrokerRequestOptions {
     readonly backendBaseUrl: string;
     readonly dashboardBaseUrl: string;
   };
+  /**
+   * The daemon's own OS PID. Injectable so unit tests can pin a value;
+   * production callers pass `process.pid` from the daemon process at
+   * handler-construction time. Surfaced via `hello.pid` so
+   * `muhaven-broker stop` can SIGTERM by PID. Added in @muhaven/mcp@0.1.5.
+   */
+  pid?: number;
 }
 
 export async function handleBrokerRequest(
@@ -108,6 +115,7 @@ export async function handleBrokerRequest(
         hasJwt,
         hasSessionKey,
         ...(options.effectiveConfig ? { effectiveConfig: options.effectiveConfig } : {}),
+        ...(options.pid !== undefined ? { pid: options.pid } : {}),
       };
     }
     case 'sign_hash': {
@@ -379,6 +387,7 @@ export class BrokerDaemon {
             backendBaseUrl: this.config.backendBaseUrl,
             dashboardBaseUrl: this.config.dashboardBaseUrl,
           },
+          pid: process.pid,
         },
       );
       socket.end(serializeResponse(res));

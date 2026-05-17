@@ -1,6 +1,6 @@
 {
   "name": "@muhaven/openclaw-skill",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "OpenClaw skill bundling a curated subset of @muhaven/mcp for the muhaven-rwa-skill ClawHub publish. Three-tier confirmation surface (Telegram inline / Mini App OTP / dashboard passkey deep-link).",
   "type": "module",
   "private": true,
