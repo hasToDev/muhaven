@@ -550,18 +550,27 @@ kbd {
   }
 
   /* The painted band — bounded left to VP's stock padding-left
-   * minus 16px (so menu text has a soft "inner padding" between
-   * its left edge and the band's left edge), right to the sidebar's
-   * own right edge. z-index 0 keeps it behind any positioned
-   * descendants but above the page (positioned-fixed parent creates
-   * its own stacking context). */
+   * minus 24px (so menu text has a comfortable "inner padding"
+   * between its left edge and the band's left edge), right to the
+   * sidebar's own right edge. z-index 0 keeps it behind any
+   * positioned descendants but above the page (positioned-fixed
+   * parent creates its own stacking context).
+   *
+   * Why 24px (and not 16): the previous 16px felt cramped at
+   * viewports where the chrome's left margin is growing — once VP's
+   * dynamic padding-left wins the max() (viewport > max-width + 64),
+   * the band starts tracking the chrome rightward while the inside
+   * breathing-room stays fixed. 16px is enough at narrow viewports
+   * but the eye expects more room inside the painted band as the
+   * surrounding chrome margin gets larger. 24px reads as comfortable
+   * across the full 960px-to-4K range. */
   .VPSidebar::before {
     content: '';
     position: absolute;
     top: 0;
     right: 0;
     bottom: 0;
-    left: 16px; /* VP stock padding-left (32px) minus 16px breathing room */
+    left: 8px; /* VP stock padding-left (32px) minus 24px breathing room */
     background-color: var(--vp-sidebar-bg-color);
     /* Subtle right-edge column boundary so the sidebar reads as a
      * defined column once the gutter to its left disappears. */
@@ -611,8 +620,8 @@ kbd {
    * SAME number VP's own padding-left computes, at every viewport. */
   .VPSidebar::before {
     left: max(
-      16px,
-      calc((100vw - (var(--vp-layout-max-width) - 64px)) / 2 - 16px)
+      8px,
+      calc((100vw - (var(--vp-layout-max-width) - 64px)) / 2 - 24px)
     );
   }
 }
@@ -672,7 +681,7 @@ kbd {
     top: 0;
     right: 0;
     bottom: 0;
-    left: 16px; /* VP stock padding-left (32px) minus 16px breathing room */
+    left: 8px; /* mirrors .VPSidebar::before — 24px breathing room past VP padding-left */
     background-color: var(--vp-sidebar-bg-color);
     z-index: 0;
     pointer-events: none;
@@ -702,8 +711,8 @@ kbd {
    * left-padding inside the band. */
   .VPNavBar.has-sidebar .title::before {
     left: max(
-      16px,
-      calc((100vw - (var(--vp-layout-max-width) - 64px)) / 2 - 16px)
+      8px,
+      calc((100vw - (var(--vp-layout-max-width) - 64px)) / 2 - 24px)
     );
   }
 }
