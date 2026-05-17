@@ -501,38 +501,83 @@ kbd {
  * Mobile (<960px) is left untouched — the slide-in drawer fills its
  * own width correctly and has no gutter.
  */
-/* Sidebar bleed — final fix.
+/* Sidebar bleed — fix attempt 4 (structural pseudo-element).
  *
- * The previous attempts (transparent linear-gradient hard-stop; then
- * a structural `left: max(...)` shift) both fought VitePress's design
- * and lost. The cleanest fix is to neutralise the contrast that makes
- * the bleed visible at all: tint `--vp-sidebar-bg-color` to the SAME
- * value as `--vp-c-bg` (the page background). The sidebar still spans
- * from window edge to its right boundary, but with bg-color === page
- * bg-color there is nothing visually distinguishable to bleed into
- * the gutter on wide screens — the "colored band" simply disappears.
+ * Round 1 + 2 used a linear-gradient `background-image` hard-stop
+ * which the user still saw bleed through. Round 3 neutralised the
+ * color contrast entirely (sidebar bg === page bg) which killed the
+ * bleed but also killed the visual differentiation the user wants.
  *
- * The sidebar keeps visual definition via:
- *   - The text + indicator colors of its own items
- *   - A subtle right-border at the column boundary
- *   - VitePress's stock hover/active treatments
+ * This round restores VitePress's stock distinct sidebar bg
+ * (--vp-c-bg-alt, slightly distinct from --vp-c-bg) but paints it
+ * via a positioned pseudo-element that's bounded to the visible nav
+ * column — NOT spanning the full sidebar element. The sidebar
+ * element itself (which has VitePress's expanding padding-left for
+ * wide-screen chrome alignment) stays transparent, so no paint
+ * extends into the gutter regardless of viewport width.
  *
- * Works at every viewport (narrow drawer, wide centered chrome) and
- * survives future VitePress padding-left/width tweaks because we
- * never touch positioning — only the paint.
+ * Verified the pseudo-element's `left` matches VitePress's stock
+ * padding-left expression exactly at every breakpoint so the
+ * painted band starts where the menu items start.
  */
+
+/* Restore VitePress default — bg color slightly distinct from page. */
 :root {
-  --vp-sidebar-bg-color: var(--vp-c-bg);
+  --vp-sidebar-bg-color: var(--vp-c-bg-alt);
 }
 
 @media (min-width: 960px) {
-  /* Subtle column boundary at the right edge of the visible nav area.
-   * Without this the sidebar would feel unanchored once the bg blends
-   * into the page. We rely on `box-shadow` (not `border-right`)
-   * because VitePress already lays out the content area assuming no
-   * extra border width on the sidebar — a shadow adds the visual
-   * separator without nudging layout math. */
+  /* Sidebar element itself: transparent. The visible color comes
+   * from the ::before pseudo-element below. */
   .VPSidebar {
+    background-color: transparent !important;
+    background-image: none !important;
+  }
+
+  /* The painted band — bounded left to VP's stock padding-left
+   * expression, right to the sidebar's own right edge. z-index 0
+   * keeps it behind any positioned descendants but above the page
+   * (positioned-fixed parent creates its own stacking context). */
+  .VPSidebar::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 32px; /* matches VP stock padding-left at 960-1439px */
+    background-color: var(--vp-sidebar-bg-color);
+    /* Subtle right-edge column boundary so the sidebar reads as a
+     * defined column once the gutter to its left disappears. */
     box-shadow: inset -1px 0 0 var(--vp-c-divider);
+    z-index: 0;
+    pointer-events: none;
+  }
+
+  /* Menu items + headings sit on top of the band. */
+  .VPSidebar > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  /* Dark-mode ambient amber bloom inside the painted band — adds
+   * the subtle warmth without bleeding past the band's left edge. */
+  html.dark .VPSidebar::before {
+    background-image: radial-gradient(
+      ellipse 60% 40% at 50% -10%,
+      rgba(255, 220, 161, 0.05),
+      transparent 60%
+    );
+  }
+}
+
+@media (min-width: 1440px) {
+  /* At ≥1440px VP shifts padding-left to a centered-gutter
+   * expression. Match it exactly so the painted band tracks the
+   * visible nav column even as the viewport widens further. */
+  .VPSidebar::before {
+    left: max(
+      32px,
+      calc((100% - (var(--vp-layout-max-width) - 64px)) / 2)
+    );
   }
 }

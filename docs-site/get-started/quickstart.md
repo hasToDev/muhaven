@@ -43,19 +43,17 @@ A given passkey can be either an investor *or* an issuer, not both. If you plan 
 
 ## Step 2 — Run the onboarding wizard
 
-In the sidebar, click **Agent** — that lands you on `/agent`. To go through the first-time wizard, navigate to **`/agent/onboarding`** (the dashboard doesn't auto-redirect; type the URL or follow a "Run onboarding" link from the page menu).
+In the sidebar, click **Agent** — that lands you on `/agent`. To go through the first-time wizard, navigate to **`/agent/onboarding`** (the dashboard doesn't auto-redirect; type the URL or use the **Run onboarding** entry in the page menu).
 
-The wizard has three steps:
+The wizard walks you through:
 
-1. **Passkey ready** — auto-detected from your authentication state.
-2. **KYC whitelist** — one click to add yourself to the ERC-3643 identity registry.
-3. **First position** — the wizard drafts a 50-share buy of the first active token; you confirm with your passkey.
+1. **Welcome** — a short explainer with the "sealed-glass-envelope" copy (your balances are encrypted; you hold the key).
+2. **Funding** — a button that takes you to the testnet mhUSDC faucet. Grab some test stablecoin and come back.
+3. **First buy** — pick a token from the list of active RWAs, enter an amount, and click **Continue**.
 
 The wizard skips steps you've already done — if your MuHaven wallet already holds positions, you'll land on the celebrate screen instead.
 
-::: tip Funding first
-You need a small amount of **mhUSDC** in your MuHaven wallet for the first buy to succeed. On testnet, grab some from the mhUSDC faucet before launching the wizard. On production, use the dashboard's funding flow / on-ramp picker.
-:::
+See [HavenBot onboarding](/havenbot/onboarding) for the full walkthrough.
 
 ## Step 3 — Have your first conversation
 
