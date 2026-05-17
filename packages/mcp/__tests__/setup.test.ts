@@ -5,6 +5,8 @@ import {
   mintSessionKey,
   parseSetupFlags,
   runSetup,
+  validateBrokerEndpointFlag,
+  validateHttpUrlFlag,
   waitForBroker,
   type SetupDeps,
 } from '../src/broker/setup.js';
@@ -109,6 +111,75 @@ describe('mintSessionKey', () => {
     const a = mintSessionKey();
     const b = mintSessionKey();
     expect(a).not.toEqual(b);
+  });
+
+  it('produces a value in the valid secp256k1 scalar range (via viem)', () => {
+    // viem's generatePrivateKey rejects 0 and values ≥ curve order. Sample
+    // a batch + assert none are 0x00...00 (the only failure mode visible
+    // without importing the curve order constant).
+    for (let i = 0; i < 256; i++) {
+      const k = mintSessionKey();
+      expect(k).not.toBe('0x' + '00'.repeat(32));
+    }
+  });
+});
+
+describe('validateHttpUrlFlag', () => {
+  it('accepts https URLs', () => {
+    expect(validateHttpUrlFlag('--backend-base-url', 'https://api.muhaven.app')).toBeNull();
+    expect(validateHttpUrlFlag('--backend-base-url', 'https://api-stage.muhaven.app/')).toBeNull();
+  });
+
+  it('accepts http://localhost and http://127.0.0.1 (dev carve-out)', () => {
+    expect(validateHttpUrlFlag('--backend-base-url', 'http://localhost:3000')).toBeNull();
+    expect(validateHttpUrlFlag('--backend-base-url', 'http://127.0.0.1:8080')).toBeNull();
+    expect(validateHttpUrlFlag('--backend-base-url', 'http://[::1]:3000')).toBeNull();
+  });
+
+  it('rejects http://<non-loopback>', () => {
+    const err = validateHttpUrlFlag('--backend-base-url', 'http://evil.example.com');
+    expect(err).toMatch(/must use https/);
+    expect(err).toMatch(/refusing to ship JWT cleartext/);
+  });
+
+  it('rejects javascript: / file: / data: schemes', () => {
+    expect(validateHttpUrlFlag('--backend-base-url', 'javascript:alert(1)')).toMatch(/must use https/);
+    expect(validateHttpUrlFlag('--backend-base-url', 'file:///etc/passwd')).toMatch(/must use https/);
+    expect(validateHttpUrlFlag('--backend-base-url', 'data:text/html,<script>')).toMatch(/must use https/);
+  });
+
+  it('rejects unparseable input', () => {
+    expect(validateHttpUrlFlag('--backend-base-url', 'not a url')).toMatch(/not a valid URL/);
+    expect(validateHttpUrlFlag('--backend-base-url', '')).toMatch(/not a valid URL/);
+  });
+});
+
+describe('validateBrokerEndpointFlag', () => {
+  it('accepts \\\\.\\pipe\\... paths on win32', () => {
+    expect(validateBrokerEndpointFlag('\\\\.\\pipe\\muhaven-broker-alice', 'win32')).toBeNull();
+    // forward-slash spelling seen in Git Bash on Windows
+    expect(validateBrokerEndpointFlag('//./pipe/muhaven-broker-alice', 'win32')).toBeNull();
+  });
+
+  it('rejects non-pipe paths on win32', () => {
+    expect(validateBrokerEndpointFlag('/tmp/muhaven-broker.sock', 'win32')).toMatch(/named pipe/);
+    expect(validateBrokerEndpointFlag('C:\\Users\\evil\\fake', 'win32')).toMatch(/named pipe/);
+  });
+
+  it('accepts absolute paths on POSIX', () => {
+    expect(validateBrokerEndpointFlag('/run/muhaven/broker.sock', 'linux')).toBeNull();
+    expect(validateBrokerEndpointFlag('/Users/alice/.muhaven/broker.sock', 'darwin')).toBeNull();
+  });
+
+  it('rejects relative paths on POSIX', () => {
+    expect(validateBrokerEndpointFlag('./broker.sock', 'linux')).toMatch(/absolute path/);
+    expect(validateBrokerEndpointFlag('../broker.sock', 'linux')).toMatch(/absolute path/);
+    expect(validateBrokerEndpointFlag('broker.sock', 'linux')).toMatch(/absolute path/);
+  });
+
+  it('rejects empty string on both platforms', () => {
+    expect(validateBrokerEndpointFlag('', 'win32')).toMatch(/cannot be empty/);
+    expect(validateBrokerEndpointFlag('', 'linux')).toMatch(/cannot be empty/);
   });
 });
 
@@ -456,5 +527,151 @@ describe('runSetup orchestrator', () => {
     expect(h.output.join('\n')).toMatch(/Session key: using MUHAVEN_BROKER_SESSION_KEY from env/);
     const spawnArgs = h.spawnDaemon.mock.calls[0][0];
     expect(spawnArgs.env.MUHAVEN_BROKER_SESSION_KEY).toBe(caller);
+  });
+
+  // ---------- security regressions ----------
+
+  it('does NOT echo the session-key value to stdout / stderr', async () => {
+    // Use a grep-able sentinel for the harness's mintSessionKey mock.
+    const SENTINEL = 'aa'.repeat(32);
+    const h = makeHarness({
+      helloResults: [new Error('ECONNREFUSED')],
+      waitForBrokerResult: { hasJwt: false },
+      loginExitCode: 0,
+    });
+    await runSetup([], h.deps);
+    const all = [...h.output, ...h.errOutput].join('\n');
+    expect(all).not.toContain(SENTINEL);
+    expect(all).not.toContain('0x' + SENTINEL);
+  });
+
+  it('does NOT mutate process.env.MUHAVEN_BROKER_SESSION_KEY (no leak to later children)', async () => {
+    vi.stubEnv('MUHAVEN_BROKER_SESSION_KEY', '');
+    expect(process.env.MUHAVEN_BROKER_SESSION_KEY).toBe('');
+    const h = makeHarness({
+      helloResults: [new Error('ECONNREFUSED')],
+      waitForBrokerResult: { hasJwt: false },
+      loginExitCode: 0,
+    });
+    await runSetup([], h.deps);
+    // After setup returns, process.env must NOT contain the minted key — it
+    // lives only in the spawned daemon's env and in this orchestrator's
+    // local var (released at function exit).
+    expect(process.env.MUHAVEN_BROKER_SESSION_KEY).toBe('');
+  });
+
+  it('does NOT echo preserved env values (only names — they belong to the operator)', async () => {
+    const SENTINEL_URL = 'https://api-preserved-secret.example.test';
+    const h = makeHarness({
+      helloResults: [new Error('ECONNREFUSED')],
+      waitForBrokerResult: { hasJwt: false },
+      loginExitCode: 0,
+      env: { MUHAVEN_BACKEND_URL: SENTINEL_URL },
+    });
+    await runSetup(['--skip-login'], h.deps);
+    const stdout = h.output.join('\n');
+    expect(stdout).toMatch(/Env preserved: MUHAVEN_BACKEND_URL/);
+    // Value MUST NOT appear in any output line — it's operator-supplied
+    // material, treat as opaque.
+    expect(stdout).not.toContain(SENTINEL_URL);
+  });
+
+  it('always prints endpoint in the closing summary (even on already_ready path)', async () => {
+    const h = makeHarness({
+      helloResults: [{ hasJwt: true }],
+    });
+    await runSetup([], h.deps);
+    const stdout = h.output.join('\n');
+    expect(stdout).toMatch(/Setup complete/);
+    expect(stdout).toMatch(/Endpoint\s*:/);
+    expect(stdout).toMatch(/Daemon\s*:\s*already running/);
+  });
+
+  it('closing summary uses Stop-Process on win32, kill on POSIX', async () => {
+    const hWin = makeHarness({
+      helloResults: [new Error('ECONNREFUSED')],
+      waitForBrokerResult: { hasJwt: false },
+      loginExitCode: 0,
+      platformId: 'win32',
+    });
+    await runSetup([], hWin.deps);
+    const win = hWin.output.join('\n');
+    expect(win).toMatch(/Stop daemon: Stop-Process -Id 99999/);
+    expect(win).not.toMatch(/Stop daemon: kill/);
+
+    const hPosix = makeHarness({
+      helloResults: [new Error('ECONNREFUSED')],
+      waitForBrokerResult: { hasJwt: false },
+      loginExitCode: 0,
+      platformId: 'linux',
+    });
+    await runSetup([], hPosix.deps);
+    const posix = hPosix.output.join('\n');
+    expect(posix).toMatch(/Stop daemon: kill 99999/);
+    expect(posix).not.toMatch(/Stop daemon: Stop-Process/);
+  });
+
+  it('closing summary documents logout as JWT-only (not daemon shutdown)', async () => {
+    const h = makeHarness({
+      helloResults: [new Error('ECONNREFUSED')],
+      waitForBrokerResult: { hasJwt: false },
+      loginExitCode: 0,
+    });
+    await runSetup([], h.deps);
+    const stdout = h.output.join('\n');
+    expect(stdout).toMatch(/Sign out\s*:\s*muhaven-broker logout/);
+    expect(stdout).toMatch(/clears JWT, leaves daemon running/);
+  });
+
+  // ---------- input validation ----------
+
+  it('rejects --backend-base-url with http:// to non-loopback before spawning', async () => {
+    const h = makeHarness();
+    const code = await runSetup(['--backend-base-url', 'http://evil.example.com'], h.deps);
+    expect(code).toBe(2);
+    expect(h.errOutput.join('\n')).toMatch(/must use https/);
+    expect(h.spawnDaemon).not.toHaveBeenCalled();
+    expect(h.runLogin).not.toHaveBeenCalled();
+  });
+
+  it('rejects --dashboard-base-url with javascript: scheme', async () => {
+    const h = makeHarness();
+    const code = await runSetup(['--dashboard-base-url', 'javascript:alert(1)'], h.deps);
+    expect(code).toBe(2);
+    expect(h.errOutput.join('\n')).toMatch(/must use https/);
+    expect(h.spawnDaemon).not.toHaveBeenCalled();
+  });
+
+  it('rejects --broker-endpoint with a relative path on POSIX', async () => {
+    const h = makeHarness({ platformId: 'linux' });
+    const code = await runSetup(['--broker-endpoint', './attacker.sock'], h.deps);
+    expect(code).toBe(2);
+    expect(h.errOutput.join('\n')).toMatch(/absolute path/);
+    expect(h.spawnDaemon).not.toHaveBeenCalled();
+  });
+
+  it('rejects --broker-endpoint with a non-pipe path on win32', async () => {
+    const h = makeHarness({ platformId: 'win32' });
+    const code = await runSetup(['--broker-endpoint', 'C:\\Users\\evil\\fake'], h.deps);
+    expect(code).toBe(2);
+    expect(h.errOutput.join('\n')).toMatch(/named pipe/);
+    expect(h.spawnDaemon).not.toHaveBeenCalled();
+  });
+
+  it('accepts --broker-endpoint with a value that starts with -- (flag-injection defense)', async () => {
+    // parseSetupFlags MUST NOT treat the value as a sibling flag. Today it
+    // does, because the parser greedily consumes the next token as the
+    // value (no further look-ahead). Lock that behavior here so a future
+    // refactor that "fixes" the look-ahead doesn't accidentally break the
+    // negative test below.
+    const parsed = parseSetupFlags(['--broker-endpoint', '--from-daemon']);
+    expect(parsed.brokerEndpoint).toBe('--from-daemon');
+    // …but the downstream broker-endpoint validation rejects the
+    // suspicious value before spawn, so the security property holds.
+    const h = makeHarness({ platformId: 'linux' });
+    const code = await runSetup(['--broker-endpoint', '--from-daemon'], h.deps);
+    expect(code).toBe(2);
+    expect(h.errOutput.join('\n')).toMatch(/absolute path/);
+    expect(h.spawnDaemon).not.toHaveBeenCalled();
   });
 });

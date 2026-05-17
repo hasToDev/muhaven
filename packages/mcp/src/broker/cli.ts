@@ -11,6 +11,7 @@
 
 import { hostname, platform, release } from 'node:os';
 import { exec } from 'node:child_process';
+import { resolve as resolvePath } from 'node:path';
 import {
   defaultBrokerEndpoint,
   loadMcpConfig,
@@ -36,12 +37,15 @@ function printErr(line: string): void {
 }
 
 function detectMcpHost(): string {
-  // Best-effort: parent process name is the MCPB host. Falls back to
-  // the env var Claude Desktop / Cursor / Claude Code commonly set.
+  // Best-effort: env vars set by some MCP hosts.
+  // Note: `npm_lifecycle_event` is intentionally NOT used as a fallback
+  // even though it's always present when run from `npm run …` — it's
+  // the npm script name, not an MCP host identity, and ends up surfaced
+  // on the dashboard `/link` page's "requesting client" panel where it
+  // would mislead the user authorising the device flow.
   return (
     process.env.MCP_HOST_NAME ??
     process.env.CLAUDE_CODE_HOST ??
-    process.env.npm_lifecycle_event ??
     'muhaven-broker-cli'
   );
 }
@@ -397,6 +401,49 @@ function printUsage(): void {
   print('  logout             Clear the JWT from the keystore');
   print('  doctor             Print environment + keystore + reachability report');
   print('  -h, --help         Show this help');
+  print('  -v, --version      Print the @muhaven/mcp package version');
+}
+
+/**
+ * `__SERVER_VERSION__` is replaced by tsup at build time (see tsup.config.ts
+ * `define`) — same constant the MCP server's `serverInfo.version` resolves
+ * from. Mirrored here (rather than importing from `../server.js`) because
+ * tsup builds `broker.cjs` as a separate entry; importing from server.ts
+ * would pull the entire MCP server module + viem + zod + SDK into the
+ * broker bundle. The 5-line duplication is cheaper than the ~600KB of
+ * inlined deps.
+ */
+declare const __SERVER_VERSION__: string | undefined;
+
+export function getBrokerPackageVersion(): string {
+  if (typeof __SERVER_VERSION__ === 'string' && __SERVER_VERSION__) {
+    return __SERVER_VERSION__;
+  }
+  // Test / unbundled fallback — only reached when cli.ts is imported
+  // outside the tsup-built broker.cjs (e.g. vitest direct import).
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const pkg = require('../../package.json') as { version: string };
+  return pkg.version;
+}
+
+function printVersion(): void {
+  print(`muhaven-broker @muhaven/mcp@${getBrokerPackageVersion()}`);
+}
+
+/**
+ * Resolve the absolute path to the `muhaven-broker.cjs` bin entry the
+ * daemon should be spawned from. Uses __dirname (provided by tsup's
+ * `shims: true` for both ESM and CJS outputs) so the spawn target is
+ * deterministic and doesn't depend on `process.argv[1]` — which on
+ * Windows global npm installs can be a `.cmd` / `.ps1` shim path that
+ * `spawn(node, [shim])` doesn't know how to launch.
+ *
+ * At runtime, this file is bundled to `<pkg>/dist/broker.cjs`; the bin
+ * lives next door at `<pkg>/bin/muhaven-broker.cjs`. Same package,
+ * deterministic relative offset.
+ */
+function resolveBrokerBinPath(): string {
+  return resolvePath(__dirname, '..', 'bin', 'muhaven-broker.cjs');
 }
 
 /**
@@ -415,7 +462,7 @@ export async function runSetup(argv: readonly string[]): Promise<number> {
     waitForBroker,
     runLogin,
     runForegroundDaemon: runBrokerDaemonCli,
-    resolveBinPath: () => process.argv[1] ?? '',
+    resolveBinPath: resolveBrokerBinPath,
     env: process.env,
     platformId: process.platform,
     osRelease: release(),
@@ -440,6 +487,10 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     case '-h':
     case '--help':
       printUsage();
+      return 0;
+    case '-v':
+    case '--version':
+      printVersion();
       return 0;
     default:
       printErr(`unknown subcommand: ${sub}`);

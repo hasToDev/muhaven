@@ -47,7 +47,7 @@ muhaven-broker setup
 
 That one command does everything:
 
-1. **Env defaults** — `MUHAVEN_BACKEND_URL=https://api.muhaven.app` and `MUHAVEN_DASHBOARD_URL=https://muhaven.app` are applied when unset. On Windows / WSL2 / devcontainers / Codespaces / SSH-remote shells, `MUHAVEN_KEYRING=file` is auto-applied too (same heuristic as `muhaven-broker doctor`'s environment detector). Native macOS / Linux desktop leaves the keyring on the default (OS keychain).
+1. **Env defaults** — `MUHAVEN_BACKEND_URL=https://api.muhaven.app` and `MUHAVEN_DASHBOARD_URL=https://muhaven.app` are applied when unset. On Windows, WSL2, devcontainers, Codespaces, and SSH-remote shells, `MUHAVEN_KEYRING=file` is auto-applied too (the OS keychain is typically unavailable or unwise on those surfaces). Native macOS / Linux desktop leaves the keyring on the default (OS keychain).
 2. **Session key** — mints an ephemeral 32-byte key into `MUHAVEN_BROKER_SESSION_KEY` if not already present.
 3. **Daemon** — spawns the broker daemon detached in the background. Idempotent: if a daemon is already running, this step is skipped.
 4. **Device-code login** — opens your default browser to `https://muhaven.app/link?code=ABCD-1234`. Verify the requesting client metadata (name, scopes, fingerprint) matches the broker you just started, then approve with your passkey. The broker receives a scoped JWT (`mcp.read.*` + `mcp.propose.*`) and stores it in your OS keychain (or `~/.muhaven/jwt.json` with file keyring).

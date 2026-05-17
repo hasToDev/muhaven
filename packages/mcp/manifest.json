@@ -94,5 +94,5 @@
       "sensitive": false
     }
   ],
-  "$comment_setup": "First-run instructions: (1) install this package via your MCPB host (Claude Desktop / Cursor / Claude Code). (2) Start the broker daemon: `muhaven-broker` (running in the background; see README for systemd / launchd / Windows-Service recipes). (3) Authenticate: `muhaven-broker login` — opens browser to https://muhaven.app/link?code=XXXX-XXXX, complete passkey ceremony. (4) Use any tool in this MCP package."
+  "$comment_setup": "First-run instructions: (1) install this package via your MCPB host (Claude Desktop / Cursor / Claude Code) or globally via `npm install -g @muhaven/mcp`. (2) Run `muhaven-broker setup` — one-shot: applies env defaults, mints an ephemeral session key, spawns the broker daemon detached, then walks you through the passkey-bound device-code login (opens browser to https://muhaven.app/link?code=XXXX-XXXX). The daemon stays running after `setup` returns. Use `muhaven-broker setup --foreground` if systemd / launchd / a Windows service will own the daemon's lifecycle instead. (3) Use any tool in this MCP package."
 }

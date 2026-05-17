@@ -14,7 +14,8 @@ goes from `npm install -g @muhaven/mcp` straight to a working MCP host
 in two commands. Surfaced during the Wave 4 demo-recording prep — the
 prior five-line manual ritual (env exports + session-key mint +
 background daemon + login) was the longest opaque block in the demo
-script.
+script. Also adds `--version` / `--help` to both `muhaven-broker` and
+`muhaven-mcp` bins.
 
 ### Added
 
@@ -43,13 +44,78 @@ script.
   in keystore.`. Against a daemon that's up but unauthenticated, it
   skips the spawn and only runs the login step.
 
-  Closing summary surfaces the daemon PID + endpoint + stop command so
-  the operator knows how to tear it down.
+  Closing summary always surfaces the broker endpoint and a
+  platform-specific "Stop daemon" command (`kill <pid>` on POSIX,
+  `Stop-Process -Id <pid>` on Windows). Sign-out is explicitly
+  documented as separate from daemon shutdown — `muhaven-broker logout`
+  clears the JWT but leaves the daemon running.
+
+- **`muhaven-broker --version` / `-v`** — prints `muhaven-broker
+  @muhaven/mcp@<version>` and exits 0. Wired into the dispatcher
+  alongside the existing `--help` / `-h`. Reads the package version
+  from the tsup-injected `__SERVER_VERSION__` constant.
+
+- **`muhaven-mcp --version` / `-v` and `--help` / `-h`** — bin shim
+  short-circuits before requiring `dist/index.cjs`, so the flags exit
+  cleanly without spinning up the broker IPC + tool registry. Reads
+  the version from the sibling `package.json` directly.
+
+### Security
+
+- **Session key never lands in `process.env`** — the orchestrator
+  builds a local `effectiveEnv` snapshot and passes the minted
+  session key only to the spawned daemon's env. Prior version
+  mutated `process.env.MUHAVEN_BROKER_SESSION_KEY` so any subsequent
+  child of the operator's shell would inherit the key. Foreground
+  mode brackets its required `process.env` mutation in a try/finally
+  that restores the original values on exit.
+
+- **Spawned daemon strips `NODE_OPTIONS` / `NODE_TLS_REJECT_UNAUTHORIZED`
+  / `NODE_EXTRA_CA_CERTS` / `NODE_PATH`** from inherited env so a
+  same-user attacker who set those in the operator's shell can't
+  hijack the daemon's execution to exfiltrate the session key.
+
+- **URL flag validation** — `--backend-base-url` / `--dashboard-base-url`
+  must be `https://` (with `http://localhost` / `127.0.0.1` /
+  `[::1]` dev carve-out). Rejects `javascript:`, `file:`, `data:`,
+  and plain `http:` to non-loopback BEFORE the spawn — defense
+  against the OAuth-device-flow phishing vector where a malicious
+  `--backend-base-url` would ship the JWT to an attacker host.
+
+- **`--broker-endpoint` path validation** — must be a `\\.\pipe\…`
+  path on Windows or an absolute path on POSIX. Rejects relative
+  paths + flag-injection (e.g. `--broker-endpoint --from-daemon` is
+  parsed but rejected at validation, preventing the spawned daemon
+  from being bound to an attacker-controlled location).
+
+- **Preserved env values not echoed** — `Env preserved: NAME (set in
+  your shell)` only — values stay opaque. Prior version printed
+  `Env preserved: NAME=value` which would leak operator-supplied
+  values to shell history / CI logs.
+
+- **Session key minted via viem's `generatePrivateKey`** — guarantees
+  the result is in the valid secp256k1 scalar range. Prior version
+  used raw `crypto.randomBytes(32)`, which had a (negligible but
+  nonzero) probability of returning an out-of-range value that the
+  signer would reject as invalid much later in the flow.
+
+- **Bin path resolved via `__dirname`** — `resolveBrokerBinPath` walks
+  from the bundled `dist/broker.cjs` to the sibling
+  `bin/muhaven-broker.cjs` deterministically, so Windows global-npm
+  shim wrappers (`.cmd` / `.ps1` in `process.argv[1]`) don't end up
+  as the spawn target.
+
+- **`detectMcpHost` no longer falls through to `npm_lifecycle_event`**
+  — that var is the npm script name, not an MCP-host identity. The
+  device-flow `/link` page's "requesting client" panel would have
+  displayed "setup" for operators running via `npm run setup`,
+  misleading the passkey ceremony.
 
 ### Tests
 
-- 170 vitest pass (up from 134 in 0.1.3). Net +36 cases in
-  `__tests__/setup.test.ts`:
+- 197 vitest pass (up from 134 in 0.1.3). Net +58 cases in
+  `__tests__/setup.test.ts` (+22 over the initial +36 after the
+  parallel agent security review) + 5 in `__tests__/cli-version-flag.test.ts`:
   - **+10** `applyEnvDefaults` — defaults applied on empty env;
     backend/dashboard preserved when set; KEYRING auto-applied on
     win32/WSL2/SSH/devcontainer/Codespaces; left unset on native

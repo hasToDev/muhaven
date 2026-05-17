@@ -18,11 +18,37 @@
  * so vitest can exercise the decision tree without spawning child
  * processes.
  */
-import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { platform, release } from 'node:os';
+import { release } from 'node:os';
+import { generatePrivateKey } from 'viem/accounts';
 import { BrokerClient } from '../clients/broker-client.js';
 import { loadMcpConfig } from '../config.js';
+
+/**
+ * Env vars we deliberately strip from the spawned daemon's env, even if the
+ * operator's shell has them set. Any one of these lets a same-user attacker
+ * hijack the long-lived daemon's execution and exfiltrate the session-key
+ * private half:
+ *
+ *   - `NODE_OPTIONS`: `--require=/tmp/x.js` loads arbitrary JS into the
+ *     daemon process.
+ *   - `NODE_TLS_REJECT_UNAUTHORIZED=0`: disables TLS-cert verification on
+ *     every outbound HTTPS call the daemon makes.
+ *   - `NODE_EXTRA_CA_CERTS`: silently adds attacker-controlled CAs to the
+ *     trust store.
+ *   - `NODE_PATH`: redirects module resolution.
+ *
+ * Defense-in-depth: the parent setup process inherits these from the
+ * operator's shell, but the spawned daemon (which holds the session key)
+ * MUST NOT. Stripped at spawn time by `spawnDaemon`. Security review
+ * 2026-05-17 (parallel agent pass after the initial setup landing).
+ */
+const DANGEROUS_NODE_ENV_VARS = [
+  'NODE_OPTIONS',
+  'NODE_TLS_REJECT_UNAUTHORIZED',
+  'NODE_EXTRA_CA_CERTS',
+  'NODE_PATH',
+] as const;
 
 /**
  * Plan-of-record for the env defaults setup will apply. Each entry maps a
@@ -97,12 +123,15 @@ export function applyEnvDefaults(input: EnvDefaultsInput): EnvDefaultsResult {
 }
 
 /**
- * Returns a freshly minted 32-byte session key in 0x-prefixed hex form.
- * Caller decides whether to use this — `applyEnvDefaults` does not mint
- * keys (it never reaches into crypto).
+ * Returns a freshly minted secp256k1-valid private key in 0x-prefixed hex
+ * form. Uses viem's `generatePrivateKey` so the result is guaranteed to be
+ * in the valid scalar range `[1, n-1]` for secp256k1 — `crypto.randomBytes`
+ * alone has a (negligible but nonzero) probability of returning a value
+ * that the signer would reject as invalid, surfacing later as a confusing
+ * runtime error.
  */
 export function mintSessionKey(): string {
-  return '0x' + randomBytes(32).toString('hex');
+  return generatePrivateKey();
 }
 
 export type SetupActionKind =
@@ -150,7 +179,17 @@ export interface SpawnDaemonOptions {
  * layer rather than calling here.
  */
 export function spawnDaemon(options: SpawnDaemonOptions): number {
-  const merged: NodeJS.ProcessEnv = { ...process.env, ...options.env };
+  // Strip dangerous NODE_* env vars before merging (see DANGEROUS_NODE_ENV_VARS
+  // doc-comment above for the threat model). The daemon holds the session-key
+  // private half for its lifetime; an attacker who can inject NODE_OPTIONS
+  // into the operator's shell would otherwise bypass every other defense.
+  const sanitized: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (!DANGEROUS_NODE_ENV_VARS.includes(k as (typeof DANGEROUS_NODE_ENV_VARS)[number])) {
+      sanitized[k] = v;
+    }
+  }
+  const merged: NodeJS.ProcessEnv = { ...sanitized, ...options.env };
   const child = spawn(process.execPath, [options.binPath], {
     detached: true,
     stdio: 'ignore',
@@ -162,6 +201,63 @@ export function spawnDaemon(options: SpawnDaemonOptions): number {
     throw new Error('failed to spawn muhaven-broker daemon — child pid is undefined');
   }
   return child.pid;
+}
+
+/**
+ * Validate a URL the operator passed via `--backend-base-url` or
+ * `--dashboard-base-url`. Returns `null` on valid; an error string on
+ * invalid. The check is:
+ *
+ *   - Parses cleanly via `new URL(value)`.
+ *   - Protocol is `https:`, OR `http:` for localhost / 127.0.0.1 (dev carve-out).
+ *
+ * Refuses `javascript:`, `file:`, `data:`, plain `http:` to non-loopback,
+ * and unparseable input. Defense against the OAuth-device-flow phishing
+ * vector where a malicious `--backend-base-url` ships the JWT to an attacker.
+ */
+export function validateHttpUrlFlag(name: string, value: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return `${name} is not a valid URL: ${value}`;
+  }
+  if (parsed.protocol === 'https:') return null;
+  if (parsed.protocol === 'http:') {
+    const host = parsed.hostname;
+    if (host === 'localhost' || host === '127.0.0.1' || host === '[::1]') return null;
+    return `${name} must use https:// (got http:// to ${host} — refusing to ship JWT cleartext)`;
+  }
+  return `${name} must use https:// (got ${parsed.protocol})`;
+}
+
+/**
+ * Validate a broker IPC endpoint passed via `--broker-endpoint`. Returns
+ * `null` on valid; an error string on invalid. Shape-only check —
+ * doesn't probe whether anything is bound at that endpoint.
+ */
+export function validateBrokerEndpointFlag(
+  value: string,
+  platformId: NodeJS.Platform,
+): string | null {
+  if (!value || value.length === 0) {
+    return '--broker-endpoint cannot be empty';
+  }
+  if (platformId === 'win32') {
+    // Must be a named pipe path. Accept the two forward-slash spelling some
+    // bash-on-Windows installs surface; both normalize to the same kernel
+    // object.
+    if (value.startsWith('\\\\.\\pipe\\') || value.startsWith('//./pipe/')) {
+      return null;
+    }
+    return '--broker-endpoint on Windows must be a named pipe path (\\\\.\\pipe\\...)';
+  }
+  // POSIX socket — must be an absolute path. Defense against `--broker-endpoint
+  // attacker.sock` resolved against the caller's CWD.
+  if (!value.startsWith('/')) {
+    return '--broker-endpoint on POSIX must be an absolute path (e.g. /run/muhaven/broker.sock)';
+  }
+  return null;
 }
 
 export interface WaitForBrokerOptions {
@@ -317,22 +413,61 @@ export async function runSetup(argv: readonly string[], deps: SetupDeps): Promis
     return 2;
   }
 
-  // 1. Env defaults — these are scoped to the child / the login flow.
+  // Validate URL + endpoint flags BEFORE spawning anything. A bad
+  // `--backend-base-url` value would otherwise ship the JWT to an attacker
+  // host via the device-flow ceremony.
+  if (flags.backendBaseUrl) {
+    const err = validateHttpUrlFlag('--backend-base-url', flags.backendBaseUrl);
+    if (err) {
+      deps.printErr(`error: ${err}`);
+      return 2;
+    }
+  }
+  if (flags.dashboardBaseUrl) {
+    const err = validateHttpUrlFlag('--dashboard-base-url', flags.dashboardBaseUrl);
+    if (err) {
+      deps.printErr(`error: ${err}`);
+      return 2;
+    }
+  }
+  if (flags.brokerEndpoint) {
+    const err = validateBrokerEndpointFlag(flags.brokerEndpoint, deps.platformId);
+    if (err) {
+      deps.printErr(`error: ${err}`);
+      return 2;
+    }
+  }
+
+  // 1. Env defaults. Build an effective-env snapshot locally INSTEAD of
+  // mutating process.env — that mutation would leak the session key (and
+  // backend URLs) into any subsequent process the operator's shell
+  // spawns. Security review 2026-05-17.
   const overrides = applyEnvDefaults({
     env: deps.env,
     platformId: deps.platformId,
     osRelease: deps.osRelease,
   });
+  const effectiveEnv: Record<string, string> = {};
+  // Seed with caller-provided env (only string values; node typings allow
+  // undefined which loadMcpConfig handles, but our local map shouldn't carry
+  // them).
+  for (const [k, v] of Object.entries(deps.env)) {
+    if (typeof v === 'string') effectiveEnv[k] = v;
+  }
+  // Apply defaults.
   for (const [k, v] of Object.entries(overrides.toSet)) {
-    process.env[k] = v;
+    effectiveEnv[k] = v;
   }
   // Explicit CLI flag overrides win over auto-default values.
-  if (flags.brokerEndpoint) process.env.MUHAVEN_BROKER_ENDPOINT = flags.brokerEndpoint;
-  if (flags.backendBaseUrl) process.env.MUHAVEN_BACKEND_URL = flags.backendBaseUrl;
-  if (flags.dashboardBaseUrl) process.env.MUHAVEN_DASHBOARD_URL = flags.dashboardBaseUrl;
+  if (flags.brokerEndpoint) effectiveEnv.MUHAVEN_BROKER_ENDPOINT = flags.brokerEndpoint;
+  if (flags.backendBaseUrl) effectiveEnv.MUHAVEN_BACKEND_URL = flags.backendBaseUrl;
+  if (flags.dashboardBaseUrl) effectiveEnv.MUHAVEN_DASHBOARD_URL = flags.dashboardBaseUrl;
 
+  // Print env state. Names only for preserved vars (the value belongs to the
+  // operator — don't echo it into shell history / CI logs). Values shown for
+  // defaulted vars because *we* chose them and they're public.
   for (const name of overrides.preserved) {
-    deps.print(`Env preserved: ${name}=${deps.env[name]}`);
+    deps.print(`Env preserved: ${name} (set in your shell)`);
   }
   for (const [k, v] of Object.entries(overrides.toSet)) {
     deps.print(`Env defaulted: ${k}=${v}`);
@@ -341,25 +476,55 @@ export async function runSetup(argv: readonly string[], deps: SetupDeps): Promis
   // 2. Session key. Self-mint if not provided. The minted value is
   // session-scoped (this process tree); the bound JWT is what governs
   // access, so the key itself is single-use authorization material.
+  // Keep in a local var — NEVER mutate process.env, or any later
+  // child of this shell sees the key in its env (POSIX
+  // /proc/<pid>/environ; Windows OpenProcess).
+  let sessionKey = effectiveEnv.MUHAVEN_BROKER_SESSION_KEY;
   let mintedKey = false;
-  if (!process.env.MUHAVEN_BROKER_SESSION_KEY || process.env.MUHAVEN_BROKER_SESSION_KEY === '') {
-    process.env.MUHAVEN_BROKER_SESSION_KEY = deps.mintSessionKey();
+  if (!sessionKey || sessionKey === '') {
+    sessionKey = deps.mintSessionKey();
     mintedKey = true;
-    deps.print('Session key: minted fresh (32 random bytes).');
+    deps.print('Session key: minted fresh (secp256k1, ephemeral to this daemon).');
   } else {
     deps.print('Session key: using MUHAVEN_BROKER_SESSION_KEY from env.');
   }
+  effectiveEnv.MUHAVEN_BROKER_SESSION_KEY = sessionKey;
 
-  // 3. Foreground mode short-circuits everything else.
+  // 3. Foreground mode short-circuits everything else. The foreground
+  // daemon reads from process.env (it's a separate call into
+  // runBrokerDaemonCli), so we DO need to mutate here — but bracket the
+  // mutation with a try/finally that restores the original values when
+  // the daemon exits.
   if (flags.foreground) {
     deps.print('Foreground mode — running daemon attached to this shell. Ctrl-C to stop.');
-    await deps.runForegroundDaemon();
+    const restorationKeys = [
+      ...Object.keys(overrides.toSet),
+      'MUHAVEN_BROKER_SESSION_KEY',
+      ...(flags.brokerEndpoint ? ['MUHAVEN_BROKER_ENDPOINT'] : []),
+      ...(flags.backendBaseUrl ? ['MUHAVEN_BACKEND_URL'] : []),
+      ...(flags.dashboardBaseUrl ? ['MUHAVEN_DASHBOARD_URL'] : []),
+    ];
+    const originalValues: Record<string, string | undefined> = {};
+    for (const k of restorationKeys) {
+      originalValues[k] = process.env[k];
+      process.env[k] = effectiveEnv[k];
+    }
+    try {
+      await deps.runForegroundDaemon();
+    } finally {
+      // Restore env on exit so a re-run of setup doesn't inherit stale
+      // values, and so the operator's shell env stays clean.
+      for (const k of restorationKeys) {
+        if (originalValues[k] === undefined) delete process.env[k];
+        else process.env[k] = originalValues[k];
+      }
+    }
     return 0;
   }
 
-  // 4. Probe broker. loadMcpConfig reads from process.env so the defaults
-  // we set above are picked up.
-  const config = loadMcpConfig(process.env);
+  // 4. Probe broker. loadMcpConfig accepts an explicit env — we pass our
+  // local effectiveEnv so we don't depend on process.env mutation.
+  const config = loadMcpConfig(effectiveEnv);
   const broker = deps.newBrokerClient(config.brokerEndpoint, config.brokerTimeoutMs);
 
   let helloProbe: { hasJwt: boolean } | null = null;
@@ -377,13 +542,15 @@ export async function runSetup(argv: readonly string[], deps: SetupDeps): Promis
     daemonPid = deps.spawnDaemon({
       binPath: deps.resolveBinPath(),
       env: {
-        // Mirror the resolved env onto the child so a future spawn (e.g.
-        // restarted shell) inherits the same view.
+        // Explicit env for the spawned daemon. Includes every var that the
+        // daemon's loadBrokerConfig will read, sourced from our resolved
+        // effectiveEnv (NOT from process.env). spawnDaemon will sanitize
+        // process.env-inherited values further (strips NODE_OPTIONS etc.).
         ...overrides.toSet,
-        ...(flags.brokerEndpoint ? { MUHAVEN_BROKER_ENDPOINT: flags.brokerEndpoint } : {}),
-        ...(flags.backendBaseUrl ? { MUHAVEN_BACKEND_URL: flags.backendBaseUrl } : {}),
-        ...(flags.dashboardBaseUrl ? { MUHAVEN_DASHBOARD_URL: flags.dashboardBaseUrl } : {}),
-        MUHAVEN_BROKER_SESSION_KEY: process.env.MUHAVEN_BROKER_SESSION_KEY!,
+        MUHAVEN_BROKER_ENDPOINT: config.brokerEndpoint,
+        MUHAVEN_BACKEND_URL: effectiveEnv.MUHAVEN_BACKEND_URL!,
+        MUHAVEN_DASHBOARD_URL: effectiveEnv.MUHAVEN_DASHBOARD_URL!,
+        MUHAVEN_BROKER_SESSION_KEY: sessionKey,
       },
     });
     try {
@@ -401,12 +568,18 @@ export async function runSetup(argv: readonly string[], deps: SetupDeps): Promis
     deps.print(`Broker daemon: already reachable at ${config.brokerEndpoint}.`);
   }
 
-  // 5. Login (unless --skip-login or already authenticated).
+  // 5. Login (unless --skip-login or already authenticated). The login
+  // step needs env to find the right backend — temporarily seed process.env
+  // for the call duration, then restore (login internally reads
+  // process.env via loadMcpConfig).
+  const needsLogin = !flags.skipLogin && !(helloProbe && helloProbe.hasJwt);
   if (flags.skipLogin) {
     deps.print('Login: skipped per --skip-login.');
   } else if (helloProbe && helloProbe.hasJwt) {
     deps.print('Login: skipped — JWT already in keystore.');
-  } else {
+  }
+
+  if (needsLogin) {
     const loginArgv: string[] = [];
     if (flags.noLaunchBrowser) loginArgv.push('--no-launch-browser');
     if (flags.brokerEndpoint) {
@@ -418,32 +591,57 @@ export async function runSetup(argv: readonly string[], deps: SetupDeps): Promis
     if (flags.dashboardBaseUrl) {
       loginArgv.push('--dashboard-base-url', flags.dashboardBaseUrl);
     }
-    const code = await deps.runLogin(loginArgv);
+    // login reads loadMcpConfig() which defaults to process.env. Seed +
+    // restore around the call so we don't pollute the operator's shell.
+    const restorationKeys = ['MUHAVEN_BACKEND_URL', 'MUHAVEN_DASHBOARD_URL', 'MUHAVEN_BROKER_ENDPOINT'];
+    const originalValues: Record<string, string | undefined> = {};
+    for (const k of restorationKeys) {
+      originalValues[k] = process.env[k];
+      if (effectiveEnv[k]) process.env[k] = effectiveEnv[k];
+    }
+    let code: number;
+    try {
+      code = await deps.runLogin(loginArgv);
+    } finally {
+      for (const k of restorationKeys) {
+        if (originalValues[k] === undefined) delete process.env[k];
+        else process.env[k] = originalValues[k];
+      }
+    }
     if (code !== 0) {
-      deps.printErr('Setup: login step failed — daemon is still running, re-run `muhaven-broker login` to retry.');
+      deps.printErr(
+        'Setup: login step failed — daemon is still running, re-run `muhaven-broker login` to retry.',
+      );
       if (daemonPid !== null) {
-        deps.printErr(`  (daemon PID ${daemonPid}; stop with: kill ${daemonPid})`);
+        const killCmd =
+          deps.platformId === 'win32'
+            ? `Stop-Process -Id ${daemonPid}`
+            : `kill ${daemonPid}`;
+        deps.printErr(`  (daemon PID ${daemonPid}; stop with: ${killCmd})`);
       }
       return code;
     }
   }
 
-  // 6. Closing summary.
+  // 6. Closing summary. Always print the endpoint (so the idempotent
+  // already-ready path still surfaces where the daemon lives). PID + stop
+  // command are scoped to the spawn path because we don't know the PID
+  // of a pre-existing daemon.
   deps.print('');
   deps.print('================================');
   deps.print('Setup complete.');
   if (daemonPid !== null) {
     deps.print(`  Daemon PID : ${daemonPid}`);
-    deps.print(`  Endpoint   : ${config.brokerEndpoint}`);
-    deps.print(
-      `  Stop later : muhaven-broker logout${
-        deps.platformId === 'win32' ? '' : ` && kill ${daemonPid}`
-      }`,
-    );
-    if (deps.platformId === 'win32') {
-      deps.print(`               (Windows: kill via Task Manager / Stop-Process -Id ${daemonPid})`);
-    }
+    const killCmd =
+      deps.platformId === 'win32'
+        ? `Stop-Process -Id ${daemonPid}`
+        : `kill ${daemonPid}`;
+    deps.print(`  Stop daemon: ${killCmd}`);
+  } else {
+    deps.print('  Daemon     : already running');
   }
+  deps.print(`  Endpoint   : ${config.brokerEndpoint}`);
+  deps.print('  Sign out   : muhaven-broker logout   (clears JWT, leaves daemon running)');
   if (mintedKey) {
     deps.print('  Session key: ephemeral — minted by setup, lives only in the daemon process.');
   }
