@@ -534,6 +534,21 @@ kbd {
     background-image: none !important;
   }
 
+  /* VitePress ships a `.curtain` child element inside `.VPSidebar`
+   * with `position: sticky; margin-left: -32px; margin-right: -32px;
+   * height: nav-height; background: var(--vp-sidebar-bg-color)`. It
+   * was designed to paint a scroll-aware backdrop strip at the top
+   * of the sidebar but extends LEFT past `padding-left` and RIGHT
+   * past the sidebar's right edge by 32px on each side — visible as
+   * a wider colored band in the title area on every viewport ≥1440
+   * (and even slightly so at <1440 where it extends 32px past the
+   * sidebar's right). Make it transparent — our ::before is the
+   * single source of truth for the painted column, bounded to the
+   * exact visible nav region at every viewport. */
+  .VPSidebar .curtain {
+    background-color: transparent !important;
+  }
+
   /* The painted band — bounded left to VP's stock padding-left
    * expression, right to the sidebar's own right edge. z-index 0
    * keeps it behind any positioned descendants but above the page
