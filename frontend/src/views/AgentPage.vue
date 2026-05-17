@@ -2,6 +2,8 @@
 import { ref, computed, watch, nextTick, onMounted } from 'vue'
 import { useMediaQuery } from '@vueuse/core'
 import { useAgentStore } from '@/stores/agent'
+import { usePortfolioStore } from '@/stores/portfolio'
+import { useWallet } from '@/composables/useWallet'
 import { cn } from '@/lib/utils'
 import { renderMarkdownSafe, renderMarkdownStreaming } from '@/lib/markdown'
 import ActionCard from '@/components/agent/ActionCard.vue'
@@ -9,13 +11,15 @@ import ConfirmModal from '@/components/agent/ConfirmModal.vue'
 import { runAgentAction } from '@/composables/useAgentActionRunner'
 import { useOpenClawIntentEvents } from '@/composables/useOpenClawIntentEvents'
 import type { ActionDescriptor } from '@/services/api'
-import { openClawApi } from '@/services/api'
+import { openClawApi, portfolioApi } from '@/services/api'
 import { toast } from 'vue-sonner'
 import {
   Sparkles, Send, Zap, PieChart, ArrowDown, Shield, User, ShieldCheck, Lightbulb,
 } from 'lucide-vue-next'
 
 const agentStore = useAgentStore()
+const portfolio = usePortfolioStore()
+const { address: walletAddress } = useWallet()
 const input = ref('')
 const messagesEl = ref<HTMLElement | null>(null)
 const inputFocused = ref(false)
@@ -358,6 +362,36 @@ function onConfirmComplete(payload: {
   if (payload.ok === true && payload.action.kind !== 'create_checkout') {
     const next = agentStore.pendingActions[0] ?? null
     activeAction.value = next
+  }
+
+  // Auto-refresh the portfolio store after an on-chain buy so /portfolio
+  // (and any glance-bar consumer reading the store) reflects the new
+  // holding + total without a manual reload. Symmetric with TradePage's
+  // `refreshAfterTrade` posture — without this, an agent-driven buy
+  // settles on-chain but the dashboard keeps showing the pre-buy total
+  // because the agent flow has no equivalent of TradePage's post-trade
+  // hook. addPosition fires first so the backend tracks the new token
+  // before refreshAfterTrade re-fetches; portfolio.load also has an
+  // auto-discover walk that would catch it on the next visit, but the
+  // explicit add keeps the backend's position list authoritative.
+  // Fire-and-forget shape — a refresh failure must NOT mask the success
+  // toast / audit row.
+  if (payload.ok === true && payload.action.kind === 'buy' && walletAddress.value) {
+    const tokenAddress = String(payload.action.preview.tokenAddress) as `0x${string}`
+    const tokenSymbol = String(payload.action.preview.tokenSymbol)
+    const addr = walletAddress.value as `0x${string}`
+    void (async () => {
+      try {
+        await portfolioApi.addPosition(tokenAddress, tokenSymbol)
+      } catch (e) {
+        console.warn('[AgentPage] post-buy addPosition failed', e)
+      }
+      try {
+        await portfolio.refreshAfterTrade(addr, { mintedTokenAddress: tokenAddress })
+      } catch (e) {
+        console.warn('[AgentPage] post-buy portfolio refresh failed', e)
+      }
+    })()
   }
 }
 

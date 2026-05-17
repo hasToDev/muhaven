@@ -364,13 +364,27 @@ export const usePortfolioStore = defineStore('portfolio', () => {
   /**
    * Decrypt a single holding's balance. Privacy-first: user explicitly opts in.
    * Uses client-side decryptForView (CoFHE SDK) — no on-chain transaction needed.
+   *
+   * Resolves the holding by tokenAddress (not by stale index) before every
+   * mutation that follows an await. Reveal All / inbound-watcher / agent
+   * post-buy re-decrypt can race against the 30s safety-poll `load()`,
+   * which rebuilds `holdings.value` from scratch — the array reference,
+   * the per-holding object identity, and the original index all change.
+   * The previous index-anchored code mutated the orphaned old-array
+   * object, leaving the freshly-built holding stuck at `decryptedBalance:
+   * null`. Visible symptom: Reveal All on 3+ holdings reports every
+   * decrypt succeeded but one or more cards stay locked on screen.
    */
   async function decryptHolding(index: number, accountAddress: `0x${string}`) {
-    const holding = holdings.value[index]
-    if (!holding || holding.decrypting) return
+    const initial = holdings.value[index]
+    if (!initial || initial.decrypting) return
+    // Token address is the stable identity across `load()` rebuilds; the
+    // index isn't.
+    const tokenAddress = initial.tokenAddress
 
-    holding.decrypting = true
-    holding.decryptedBalance = null
+    // Mutating the synchronously-resolved holding is safe — no awaits yet.
+    initial.decrypting = true
+    initial.decryptedBalance = null
 
     try {
       // Read the encrypted balance handle from THIS holding's token
@@ -381,23 +395,110 @@ export const usePortfolioStore = defineStore('portfolio', () => {
       // every Wave 3.5 holding as "decrypted balance == 0".
       const ctHash = await TokenService.encryptedBalanceOf(
         accountAddress,
-        holding.tokenAddress,
+        tokenAddress,
       )
 
       // Decrypt client-side via CoFHE SDK (permit-based, no tx needed).
-      // Pass `holding.tokenAddress` so the 403 refresh fallback dispatches
+      // Pass `tokenAddress` so the 403 refresh fallback dispatches
       // `refreshDecryptGrant` against the correct per-token contract.
       const { useFhe } = await import('@/composables/useFhe')
       const fhe = useFhe()
       await fhe.initialize()
-      holding.decryptedBalance = await fhe.decryptUint128ForView(
-        ctHash,
-        holding.tokenAddress,
-      )
+      const balance = await fhe.decryptUint128ForView(ctHash, tokenAddress)
+
+      // Resolve the CURRENT holding by address — if `load()` rebuilt the
+      // array while we were awaiting, the old `initial` object is now
+      // orphaned and mutating it would be invisible to the UI.
+      const current = findHoldingByAddress(tokenAddress)
+      if (current) {
+        current.decryptedBalance = balance
+      } else {
+        // Token left the registry between read and write (uncommon —
+        // would require an issuer deregister between mid-decrypt). Drop
+        // the value silently rather than reviving a stale card.
+        console.warn(
+          `[portfolio] holding for ${tokenAddress} disappeared during decrypt`,
+        )
+      }
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Decrypt failed'
     } finally {
-      holding.decrypting = false
+      // Same address re-resolve for the spinner flag.
+      const current = findHoldingByAddress(tokenAddress)
+      if (current) current.decrypting = false
+    }
+  }
+
+  /** Lowercased lookup so EIP-55 checksum vs lowercased addresses don't
+   *  miss each other (memory: `feedback_address_case_at_repo_boundary`). */
+  function findHoldingByAddress(
+    tokenAddress: `0x${string}`,
+  ): PortfolioHolding | undefined {
+    const lower = tokenAddress.toLowerCase()
+    return holdings.value.find((h) => h.tokenAddress.toLowerCase() === lower)
+  }
+
+  /**
+   * Refresh holdings + USDC + (iff revealed) mhUSDC after a trade or
+   * transfer; re-decrypt any RWA holding that was revealed before the
+   * refresh so the post-trade total reflects the new on-chain balance
+   * without the user having to click Decrypt again. Caller passes the
+   * token address that was just bought/sold/received so the re-decrypt
+   * set always includes it (covers the brand-new-holding case where the
+   * pre-refresh snapshot wouldn't have included that address).
+   *
+   * Sequential per-holding decrypts mirror PortfolioPage's `decryptAll`
+   * rationale (memory: N+1 concurrent kernel UserOps collide on nonces /
+   * bundler queueing on fresh sessions).
+   *
+   * Best-effort: a failure inside any one step is logged but does NOT
+   * throw — refresh after a successful on-chain action must never mask
+   * the success.
+   */
+  async function refreshAfterTrade(
+    walletAddress: `0x${string}`,
+    opts: { mintedTokenAddress?: `0x${string}` } = {},
+  ): Promise<void> {
+    const wasPusdcRevealed = pusdcConfidentialBalance.value !== null
+    const revealedSet = new Set(
+      holdings.value
+        .filter((h) => h.decryptedBalance !== null)
+        .map((h) => h.tokenAddress.toLowerCase()),
+    )
+    if (opts.mintedTokenAddress) {
+      // The freshly-bought token wasn't in the pre-refresh snapshot if
+      // this is the user's first buy of it; surface it as a revealed
+      // target so the post-buy total includes it without a manual click.
+      // For an existing holding, this is a no-op (already in the set).
+      revealedSet.add(opts.mintedTokenAddress.toLowerCase())
+    }
+
+    try {
+      await load(walletAddress)
+    } catch (e) {
+      console.warn('[portfolio] refreshAfterTrade load failed', e)
+      return
+    }
+
+    for (let i = 0; i < holdings.value.length; i++) {
+      const h = holdings.value[i]
+      if (!revealedSet.has(h.tokenAddress.toLowerCase())) continue
+      try {
+        await decryptHolding(i, walletAddress)
+      } catch (e) {
+        console.warn(
+          `[portfolio] refreshAfterTrade re-decrypt of ${h.symbol} failed`,
+          e,
+        )
+      }
+    }
+
+    if (wasPusdcRevealed) {
+      try {
+        await decryptPusdc(walletAddress)
+      } catch (e) {
+        console.warn('[portfolio] refreshAfterTrade mhUSDC re-decrypt failed', e)
+      }
     }
   }
 
@@ -496,6 +597,7 @@ export const usePortfolioStore = defineStore('portfolio', () => {
     load,
     decryptHolding,
     decryptPusdc,
+    refreshAfterTrade,
     reset,
   }
 })
