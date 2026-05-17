@@ -19,6 +19,13 @@ import { BrokerClient } from '../clients/broker-client.js';
 import { DeviceFlowClient, DeviceFlowAbortedError } from '../auth/device-flow.js';
 import { openKeystore } from './keystore.js';
 import { runBrokerDaemonCli } from './daemon.js';
+import {
+  mintSessionKey,
+  runSetup as runSetupOrchestrator,
+  spawnDaemon,
+  waitForBroker,
+  type SetupDeps,
+} from './setup.js';
 
 function print(line: string): void {
   process.stdout.write(line + '\n');
@@ -381,11 +388,39 @@ function printUsage(): void {
   print('usage: muhaven-broker [<subcommand>] [options]');
   print('');
   print('  (no subcommand)    Run the daemon (production mode)');
+  print('  setup              One-shot install: env defaults + session key + detached daemon + login');
+  print('                       [--foreground|-f] keeps the daemon attached (skip background spawn)');
+  print('                       [--skip-login] starts the daemon but lets you run login later');
+  print('                       [--no-launch-browser] pass-through to login');
   print('  login              Acquire a JWT via the device-code flow + store in keystore');
   print('                       [--from-daemon] resolves backend/dashboard URLs from the running daemon');
   print('  logout             Clear the JWT from the keystore');
   print('  doctor             Print environment + keystore + reachability report');
   print('  -h, --help         Show this help');
+}
+
+/**
+ * Wire `runSetup` against the real cli helpers + IO. Kept here (not in
+ * `setup.ts`) so the pure orchestrator stays free of the cli-only
+ * `runLogin` import (which would pull device-flow + viem into the test
+ * surface unnecessarily).
+ */
+export async function runSetup(argv: readonly string[]): Promise<number> {
+  const deps: SetupDeps = {
+    print,
+    printErr,
+    mintSessionKey,
+    newBrokerClient: (endpoint, timeoutMs) => new BrokerClient({ endpoint, timeoutMs }),
+    spawnDaemon,
+    waitForBroker,
+    runLogin,
+    runForegroundDaemon: runBrokerDaemonCli,
+    resolveBinPath: () => process.argv[1] ?? '',
+    env: process.env,
+    platformId: process.platform,
+    osRelease: release(),
+  };
+  return runSetupOrchestrator(argv, deps);
 }
 
 export async function runCli(argv: readonly string[]): Promise<number> {
@@ -394,6 +429,8 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     case undefined:
       await runBrokerDaemonCli();
       return 0;
+    case 'setup':
+      return runSetup(rest);
     case 'login':
       return runLogin(rest);
     case 'logout':

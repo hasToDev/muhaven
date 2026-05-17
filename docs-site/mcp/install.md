@@ -39,39 +39,25 @@ muhaven-mcp --help
 The default keyring uses your OS keychain (Keychain on macOS, Secret Service on Linux, Credential Manager on Windows). On WSL2, devcontainers, and SSH-remote shells, that's often unavailable. Set `MUHAVEN_KEYRING=file` to use a 0600-mode file at `~/.muhaven/jwt.json` instead.
 :::
 
-## Step 2 — Mint a session key, start the broker, log in
-
-Self-mint a 32-byte session key:
+## Step 2 — One-shot setup
 
 ```bash
-# 1. Generate a session key (one-time)
-export MUHAVEN_BROKER_SESSION_KEY=0x$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))")
-
-# 2. (Optional) point at staging instead of prod
-# export MUHAVEN_BACKEND_URL=https://api-stage.muhaven.app
-
-# 3. (Optional) file keyring on WSL2 / devcontainer / SSH-remote
-# export MUHAVEN_KEYRING=file
-
-# 4. Start the broker (leave running in this terminal)
-muhaven-broker
+muhaven-broker setup
 ```
 
-In a second terminal:
+That one command does everything:
 
-```bash
-# 5. One-time device-code login
-muhaven-broker login
-```
+1. **Env defaults** — `MUHAVEN_BACKEND_URL=https://api.muhaven.app` and `MUHAVEN_DASHBOARD_URL=https://muhaven.app` are applied when unset. On Windows / WSL2 / devcontainers / Codespaces / SSH-remote shells, `MUHAVEN_KEYRING=file` is auto-applied too (same heuristic as `muhaven-broker doctor`'s environment detector). Native macOS / Linux desktop leaves the keyring on the default (OS keychain).
+2. **Session key** — mints an ephemeral 32-byte key into `MUHAVEN_BROKER_SESSION_KEY` if not already present.
+3. **Daemon** — spawns the broker daemon detached in the background. Idempotent: if a daemon is already running, this step is skipped.
+4. **Device-code login** — opens your default browser to `https://muhaven.app/link?code=ABCD-1234`. Verify the requesting client metadata (name, scopes, fingerprint) matches the broker you just started, then approve with your passkey. The broker receives a scoped JWT (`mcp.read.*` + `mcp.propose.*`) and stores it in your OS keychain (or `~/.muhaven/jwt.json` with file keyring).
+5. **Closing summary** — prints the daemon PID + endpoint + the command to stop it later.
 
-This:
+The login JWT is currently **1 hour**. After expiry, run `muhaven-broker setup` again (or just `muhaven-broker login` if the daemon is still running).
 
-1. Opens your default browser to `https://muhaven.app/link?code=ABCD-1234`.
-2. The `/link` page shows the **requesting client metadata** (name, scopes, fingerprint) — verify it matches the broker you just started.
-3. You authorize with your passkey.
-4. The broker receives a scoped JWT (`mcp.read.*` + `mcp.propose.*`) and stores it in your OS keychain (or `~/.muhaven/jwt.json` with file keyring).
-
-The login JWT is currently **1 hour**. After expiry, run `muhaven-broker login` again.
+::: tip Supervised daemon? Use `--foreground`
+If systemd / launchd / a process supervisor will own the broker daemon's lifecycle, run `muhaven-broker setup --foreground` (or `-f`) — that path applies env defaults + mints the session key, then runs the daemon attached so the supervisor can see its stderr + handle restarts. The login step is skipped in foreground mode (run `muhaven-broker login` afterward from a second shell).
+:::
 
 Verify:
 
@@ -80,6 +66,22 @@ muhaven-broker doctor
 ```
 
 Outputs your bound wallet address, the scopes on your JWT, the keystore location, and the broker socket path.
+
+### What if I want to do this manually?
+
+The five-step ritual `setup` replaces is still available:
+
+```bash
+# Terminal A
+export MUHAVEN_BROKER_SESSION_KEY=0x$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))")
+export MUHAVEN_KEYRING=file                            # if on Windows / WSL2 / SSH
+export MUHAVEN_BACKEND_URL=https://api.muhaven.app
+export MUHAVEN_DASHBOARD_URL=https://muhaven.app
+muhaven-broker                                          # leave running
+
+# Terminal B
+muhaven-broker login                                    # passkey ceremony
+```
 
 ## Step 3 — Wire your host
 

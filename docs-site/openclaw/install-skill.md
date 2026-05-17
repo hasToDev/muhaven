@@ -31,40 +31,31 @@ clawhub install muhaven-rwa-skill
 
 What happens:
 
-1. ClawHub downloads `muhaven-rwa-skill-0.1.2.tgz`.
+1. ClawHub downloads `muhaven-rwa-skill-0.1.3.tgz`.
 2. Verifies the Sigstore signature (Rekor index pinned to the GitHub OIDC issuer `hasToDev/muhaven`).
 3. Validates the manifest's permissions (network egress allowlist, no filesystem writes, no process spawn, OS-keychain-only secrets).
 4. Extracts to your OpenClaw skill directory.
 5. Prints a 5-item `post_install_review` checklist (broker-bin on PATH, runtime version, network egress, etc.).
 
-::: warning ClawHub install does NOT run npm install
-As of clawhub `v0.12.3`, the install step extracts the tarball but doesn't run `npm install --omit=dev`. You need to run it manually in the skill directory:
-
-```bash
-cd ~/.openclaw/skills/muhaven-rwa-skill
-npm install --omit=dev
-```
+::: tip No `npm install` needed
+Since skill `0.1.1`, the tarball inline-bundles `@muhaven/mcp` + its transitive deps (tsup `noExternal`). `clawhub install` extracts a self-contained artifact — you can jump straight to Step 2.
 :::
 
-## Step 2 — Start the broker + authorize
-
-The skill bundle's runtime expects `muhaven-broker` on `$PATH`:
+## Step 2 — One-shot broker setup + authorize
 
 ```bash
-# Generate a session key (one-time)
-export MUHAVEN_BROKER_SESSION_KEY=0x$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))")
-
-# Start the broker
-muhaven-broker
+muhaven-broker setup
 ```
 
-In a second terminal:
+That single command:
 
-```bash
-muhaven-broker login
-```
+1. Applies sensible env defaults (`MUHAVEN_BACKEND_URL=https://api.muhaven.app`, `MUHAVEN_DASHBOARD_URL=https://muhaven.app`, plus `MUHAVEN_KEYRING=file` on Windows / WSL / SSH / devcontainer).
+2. Mints an ephemeral 32-byte session key into `MUHAVEN_BROKER_SESSION_KEY`.
+3. Spawns the broker daemon detached in the background.
+4. Runs the device-code flow — opens `https://muhaven.app/link?code=...` for passkey-bound authorization.
+5. Prints the daemon PID + endpoint + stop command.
 
-This opens `https://muhaven.app/link?code=...` for the passkey-bound device-code authorization. See [MCP install](/mcp/install) §Step 2 for the full flow.
+See [MCP install](/mcp/install) §Step 2 for the full breakdown, including the manual five-step ritual if you'd rather drive each step yourself.
 
 ## Step 3 — Run the skill
 

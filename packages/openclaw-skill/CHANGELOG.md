@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-05-17
+
+Re-bundles against `@muhaven/mcp@0.1.4` so the new
+`muhaven-broker setup` subcommand is available to skill consumers who
+also install `@muhaven/mcp` globally for the broker bin (per
+SKILL.md "How to install" prerequisite). No tool-subset or sandbox
+changes; this is a passthrough version bump that flows the upstream
+0.1.4 release into the published skill bundle.
+
+### Changed
+
+- **Bundled `@muhaven/mcp` bumped 0.1.3 → 0.1.4** (`manifest.json#mcp.bundled_version`
+  + `SKILL.md` frontmatter + the `verify-subset.ts` triple-match guard).
+  Operators following the SKILL.md install runbook should
+  `npm install -g @muhaven/mcp@0.1.4` so the `muhaven-broker setup`
+  bin is on `$PATH`.
+- **`SKILL.md` install steps** updated to reference `setup` as the
+  one-shot install path; the prior five-line manual broker ritual is
+  no longer the documented happy path.
+
 ## [0.1.2] — 2026-05-17
 
 Cosmetic fix — corrects the display name shown on ClawHub. No code or

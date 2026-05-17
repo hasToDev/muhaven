@@ -85,14 +85,22 @@ broker → client:  {"ok":true,"signature":"0xdef..."}\n
 ## `muhaven-broker` subcommands
 
 ```bash
-muhaven-broker                       # start the broker (no subcommand = daemon mode)
-muhaven-broker login                 # device-code flow
+muhaven-broker setup                 # one-shot: env defaults + key + detached daemon + login
+muhaven-broker                       # start the broker attached (no subcommand = daemon mode)
+muhaven-broker login                 # device-code flow only
 muhaven-broker logout                # clear JWT from keystore
 muhaven-broker doctor                # print environment + keystore + reachability report
 muhaven-broker --help                # show usage
 ```
 
-To stop a running daemon: Ctrl-C in its terminal, or `kill <pid>` from anywhere.
+`setup` is the easy path for fresh installs (added in 0.1.4). Flags worth knowing:
+
+- `muhaven-broker setup --foreground` (`-f`) — run the daemon attached to the current shell instead of spawning it detached. Useful when a process supervisor will own the lifecycle.
+- `muhaven-broker setup --skip-login` — spawn + return without minting a JWT (defer the login step).
+- `muhaven-broker setup --no-launch-browser` — print the `/link` URL without trying to open it (handy on headless / SSH boxes).
+- `muhaven-broker setup --backend-base-url <URL>` / `--dashboard-base-url <URL>` — explicit overrides (mirrors `login`'s same flags).
+
+To stop a running daemon: Ctrl-C in its terminal if attached, or `kill <pid>` from anywhere if `setup` spawned it detached (PID is printed in the closing summary).
 
 ::: tip Run `muhaven-broker doctor` first
 For any "auth broken" issue, `doctor` is the first thing to run. It prints:

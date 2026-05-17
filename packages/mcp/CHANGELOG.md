@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] — 2026-05-17
+
+Adds the one-shot `muhaven-broker setup` subcommand so a fresh install
+goes from `npm install -g @muhaven/mcp` straight to a working MCP host
+in two commands. Surfaced during the Wave 4 demo-recording prep — the
+prior five-line manual ritual (env exports + session-key mint +
+background daemon + login) was the longest opaque block in the demo
+script.
+
+### Added
+
+- **`muhaven-broker setup` subcommand** — orchestrates env defaulting +
+  session-key minting + detached daemon spawn + login in a single
+  invocation. Flags:
+  - `--foreground` / `-f`: keep the daemon attached to the current
+    shell (useful when systemd/launchd will supervise instead of the
+    backgrounded child).
+  - `--skip-login`: spawn the daemon but defer the device-code flow.
+  - `--no-launch-browser`: pass-through to the embedded `login` step.
+  - `--broker-endpoint`, `--backend-base-url`, `--dashboard-base-url`:
+    same overrides as `login`.
+
+  Env defaults applied (only when the var is unset):
+  - `MUHAVEN_BACKEND_URL=https://api.muhaven.app`
+  - `MUHAVEN_DASHBOARD_URL=https://muhaven.app`
+  - `MUHAVEN_KEYRING=file` (auto-applied on Windows / WSL2 /
+    devcontainer / GitHub Codespace / SSH — same heuristic as
+    `muhaven-broker doctor`'s environment detector). Native macOS +
+    Linux desktop leave the value unset so the OS keychain remains
+    the default.
+
+  Idempotent: re-running `setup` against an already-up daemon detects
+  the existing JWT and short-circuits to `Login: skipped — JWT already
+  in keystore.`. Against a daemon that's up but unauthenticated, it
+  skips the spawn and only runs the login step.
+
+  Closing summary surfaces the daemon PID + endpoint + stop command so
+  the operator knows how to tear it down.
+
+### Tests
+
+- 170 vitest pass (up from 134 in 0.1.3). Net +36 cases in
+  `__tests__/setup.test.ts`:
+  - **+10** `applyEnvDefaults` — defaults applied on empty env;
+    backend/dashboard preserved when set; KEYRING auto-applied on
+    win32/WSL2/SSH/devcontainer/Codespaces; left unset on native
+    macOS/Linux desktop; explicit `MUHAVEN_KEYRING=os` preserved on
+    Windows; empty-string vars treated as unset.
+  - **+2** `mintSessionKey` — 0x-prefixed 32-byte hex shape;
+    non-deterministic across calls.
+  - **+3** `decideSetupAction` — spawn-and-login / login-only /
+    already-ready decision tree.
+  - **+6** `parseSetupFlags` — defaults; `--foreground` and `-f`
+    aliases; `--skip-login`; `--no-launch-browser` pass-through; value
+    flag parsing; unknown-flag rejection.
+  - **+3** `waitForBroker` — first-call success; retry-until-success
+    with virtual clock; timeout throws with last error in message.
+  - **+12** `runSetup` orchestrator — flag-error path returns 2;
+    foreground mode short-circuits; spawn_and_login happy path;
+    login_only path; already_ready path; `--skip-login`; login-failure
+    bubbles exit code + leaves daemon running; wait timeout returns 1;
+    `--no-launch-browser` pass-through; value-flag pass-through;
+    session key minted vs preserved.
+
 ## [0.1.3] — 2026-05-16
 
 Q2 fix bundle from the post-§4 queue closing four findings from §3e⁶

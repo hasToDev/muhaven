@@ -3,7 +3,7 @@
   "schema_version": "1.0",
   "name": "muhaven-rwa-skill",
   "display_name": "MuHaven RWA Portfolio",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Confidential RWA portfolio agent on Fhenix CoFHE. Reads encrypted balances, stages buy + claim intents, never auto-submits. Three-tier confirmation surface (inline / Mini App OTP / passkey deep-link) keyed on intent notional.",
   "license": "MIT",
   "homepage": "https://muhaven.app",
@@ -82,7 +82,7 @@
   },
   "mcp": {
     "bundled": "@muhaven/mcp",
-    "bundled_version": "0.1.3",
+    "bundled_version": "0.1.4",
     "transport": "stdio",
     "command": "node",
     "$comment_args_template_resolver": "`${__dirname}` is the MCPB-canonical template token (resolves to the skill's install-time root). Plain OpenClaw's manifest resolver behavior is empirically verified during §3 Path (a) A.4 (operator-driven). The bin shim is the launch target (NOT `dist/index.cjs` directly) because it wraps `runOpenClawSkill()` in `.then(...) .catch(err => process.stderr.write(\"fatal: \" + err.stack))` — direct-launch of `dist/index.cjs` would crash silently on an unhandled rejection. If a runtime fails to expand `${__dirname}`, the `runtime.entry_point: dist/index.cjs` field at manifest line 40 is the documented fallback hook.",

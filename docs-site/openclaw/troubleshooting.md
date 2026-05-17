@@ -9,22 +9,17 @@ description: Symptom → fix for skill install and Telegram bot issues.
 
 ### "ClawHub install succeeded but the skill won't start"
 
-Most common cause: `npm install --omit=dev` wasn't run in the skill directory. Run it manually:
-
-```bash
-cd ~/.openclaw/skills/muhaven-rwa-skill
-npm install --omit=dev
-```
+Since skill `0.1.1` the tarball inline-bundles `@muhaven/mcp` + its transitive deps (tsup `noExternal`), so the legacy "run `npm install --omit=dev` in the skill dir" workaround is no longer needed. If the skill won't start, check the `muhaven-broker` daemon (next item) — that's now the most common cause.
 
 ### "muhaven-broker not found"
 
-The skill's `mcp.bundled` binary is `@muhaven/mcp`, which the ClawHub install pulls from npm. But the **broker bin** (`muhaven-broker`) needs to be globally installed and on `$PATH`:
+The skill's bundled `@muhaven/mcp` only exposes the MCP server — the **broker daemon bin** has to be installed separately so it lands on `$PATH`:
 
 ```bash
-npm install -g @muhaven/mcp@0.1.3
+npm install -g @muhaven/mcp@0.1.4
 ```
 
-This is documented in the skill's `config.json#post_install_review.items` (`broker-bin-on-path`).
+Then run `muhaven-broker setup` to start + authorize the daemon. This is also documented in the skill's `config.json#post_install_review.items` (`broker-bin-on-path`).
 
 ### "Sigstore signature verification failed"
 

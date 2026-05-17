@@ -1,7 +1,7 @@
 ---
 name: muhaven-rwa-skill
 display_name: MuHaven RWA Portfolio
-version: 0.1.2
+version: 0.1.3
 schema_version: "1.0"
 description: |
   Confidential real-world-asset (RWA) portfolio agent built on MuHaven's
@@ -61,7 +61,7 @@ mcp:
   # pre-publish review: the runtime + CI gates enforce exact equality,
   # not semver-minor-range; the field name implied a softer pin than the
   # code actually delivered.
-  bundled_version: 0.1.3
+  bundled_version: 0.1.4
   toolset_subset:
     - muhaven.read.portfolio
     - muhaven.read.yields
@@ -166,7 +166,7 @@ MuHaven backend at `https://api.muhaven.app`.
 2. Install the broker daemon **separately as a global** so its bin
    lands on `$PATH` regardless of ClawHub's bin-handling:
    ```bash
-   npm install -g @muhaven/mcp@0.1.3
+   npm install -g @muhaven/mcp@0.1.4
    muhaven-broker --version    # sanity check
    ```
    (The skill itself bundles `@muhaven/mcp` inline since 0.1.1 via tsup
@@ -177,12 +177,19 @@ MuHaven backend at `https://api.muhaven.app`.
    daemon CLI.)
 3. Install the skill:
    ```bash
-   clawhub install muhaven-rwa-skill@0.1.2
+   clawhub install muhaven-rwa-skill@0.1.3
    ```
-4. Start the broker daemon: `muhaven-broker` (see `@muhaven/mcp` README).
-5. Authenticate: `muhaven-broker login` — opens browser to
-   `https://muhaven.app/link?code=XXXX-XXXX`, complete passkey.
-6. Optional: link your Telegram account for the `/agent/openclaw/*`
+4. One-shot broker setup + passkey login:
+   ```bash
+   muhaven-broker setup
+   ```
+   This applies sensible env defaults, mints an ephemeral session key,
+   spawns the daemon detached, and runs the device-code login — opens
+   `https://muhaven.app/link?code=XXXX-XXXX` in your browser for
+   passkey approval. The daemon stays running after `setup` returns.
+   Use `muhaven-broker setup --foreground` if a supervisor will manage
+   the daemon process.
+5. Optional: link your Telegram account for the `/agent/openclaw/*`
    confirmation surface. From the dashboard `/agent` page → Telegram
    tab → "Link Telegram" → message the bot at `@muhaven_bot` with the
    one-time link code.
