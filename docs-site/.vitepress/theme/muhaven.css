@@ -550,16 +550,18 @@ kbd {
   }
 
   /* The painted band — bounded left to VP's stock padding-left
-   * expression, right to the sidebar's own right edge. z-index 0
-   * keeps it behind any positioned descendants but above the page
-   * (positioned-fixed parent creates its own stacking context). */
+   * minus 16px (so menu text has a soft "inner padding" between
+   * its left edge and the band's left edge), right to the sidebar's
+   * own right edge. z-index 0 keeps it behind any positioned
+   * descendants but above the page (positioned-fixed parent creates
+   * its own stacking context). */
   .VPSidebar::before {
     content: '';
     position: absolute;
     top: 0;
     right: 0;
     bottom: 0;
-    left: 32px; /* matches VP stock padding-left at 960-1439px */
+    left: 16px; /* VP stock padding-left (32px) minus 16px breathing room */
     background-color: var(--vp-sidebar-bg-color);
     /* Subtle right-edge column boundary so the sidebar reads as a
      * defined column once the gutter to its left disappears. */
@@ -609,8 +611,8 @@ kbd {
    * SAME number VP's own padding-left computes, at every viewport. */
   .VPSidebar::before {
     left: max(
-      32px,
-      calc((100vw - (var(--vp-layout-max-width) - 64px)) / 2)
+      16px,
+      calc((100vw - (var(--vp-layout-max-width) - 64px)) / 2 - 16px)
     );
   }
 }
@@ -647,23 +649,31 @@ kbd {
   }
 
   /* The painted strip under the logo. Mirrors the sidebar's ::before
-   * (same `left`, same bg color, same right-edge column boundary)
-   * so the two paints align pixel-perfectly AND flow seamlessly into
-   * one another. No bottom border — that would create a visible
-   * "shelf" cutting the logo off from the sidebar; the design is one
-   * unified painted column, not two stacked boxes. */
+   * (same `left` offset, same bg color) so the two paints align
+   * pixel-perfectly AND flow seamlessly into one another. No bottom
+   * border — that would create a visible "shelf" cutting the logo
+   * off from the sidebar; the design is one unified painted column,
+   * not two stacked boxes.
+   *
+   * NO right-edge box-shadow here (unlike .VPSidebar::before). The
+   * .title element's containing block (.VPNavBar, position: relative)
+   * has a width that EXCLUDES the vertical scrollbar, while
+   * .VPSidebar (position: fixed) is sized off `100vw` which INCLUDES
+   * the scrollbar. Net effect: the .title's right edge sits ~17px
+   * left of .VPSidebar's right edge. A right-edge shadow on
+   * .title::before would render that ~17px to the LEFT of where the
+   * sidebar's shadow renders below it, producing a visible stray
+   * grey vertical line in the gap. The sidebar's own ::before shadow
+   * is the single column-boundary; the logo strip flows into it
+   * without its own right shadow. */
   .VPNavBar.has-sidebar .title::before {
     content: '';
     position: absolute;
     top: 0;
     right: 0;
     bottom: 0;
-    left: 32px; /* matches VP stock padding-left at 960-1439px */
+    left: 16px; /* VP stock padding-left (32px) minus 16px breathing room */
     background-color: var(--vp-sidebar-bg-color);
-    /* Right-edge column boundary only — matches the sidebar's
-     * shadow so the vertical line is continuous from top of logo
-     * down through bottom of sidebar. */
-    box-shadow: inset -1px 0 0 var(--vp-c-divider);
     z-index: 0;
     pointer-events: none;
   }
@@ -688,11 +698,12 @@ kbd {
 @media (min-width: 1440px) {
   /* Match the sidebar's wide-screen left expression exactly so the
    * two painted bands stay pixel-aligned. Same `100vw` reasoning as
-   * the sidebar block above. */
+   * the sidebar block above, with the same -16px offset for visual
+   * left-padding inside the band. */
   .VPNavBar.has-sidebar .title::before {
     left: max(
-      32px,
-      calc((100vw - (var(--vp-layout-max-width) - 64px)) / 2)
+      16px,
+      calc((100vw - (var(--vp-layout-max-width) - 64px)) / 2 - 16px)
     );
   }
 }
