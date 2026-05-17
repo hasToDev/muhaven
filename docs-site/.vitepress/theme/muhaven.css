@@ -633,7 +633,10 @@ kbd {
 
   /* The painted strip under the logo. Mirrors the sidebar's ::before
    * (same `left`, same bg color, same right-edge column boundary)
-   * so the two paints align pixel-perfectly. */
+   * so the two paints align pixel-perfectly AND flow seamlessly into
+   * one another. No bottom border — that would create a visible
+   * "shelf" cutting the logo off from the sidebar; the design is one
+   * unified painted column, not two stacked boxes. */
   .VPNavBar.has-sidebar .title::before {
     content: '';
     position: absolute;
@@ -642,12 +645,10 @@ kbd {
     bottom: 0;
     left: 32px; /* matches VP stock padding-left at 960-1439px */
     background-color: var(--vp-sidebar-bg-color);
-    /* 1px bottom border replaces VP's killed one; runs only within
-     * the painted region so it lines up with the sidebar's right
-     * edge (column boundary shadow). */
-    box-shadow:
-      inset -1px 0 0 var(--vp-c-divider),
-      inset 0 -1px 0 var(--vp-c-divider);
+    /* Right-edge column boundary only — matches the sidebar's
+     * shadow so the vertical line is continuous from top of logo
+     * down through bottom of sidebar. */
+    box-shadow: inset -1px 0 0 var(--vp-c-divider);
     z-index: 0;
     pointer-events: none;
   }
