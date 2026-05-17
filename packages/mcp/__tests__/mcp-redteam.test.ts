@@ -268,11 +268,12 @@ describe('redteam · schema-bypass / additional-properties', () => {
   });
 
   it('rejects PositionBuy amount with leading + sign', async () => {
-    // The regex ^\d+$ rejects the + prefix; some attackers try this to
-    // sneak past a parseInt() that would otherwise accept it.
+    // 0.2.0: schema accepts decimal mhUSDC amounts; the regex still
+    // rejects the + prefix that some attackers use to sneak past a
+    // parseFloat() that would otherwise accept it.
     const res = await h.client.callTool({
       name: 'muhaven.position.buy',
-      arguments: { token: '0x' + 'aa'.repeat(20), amountUsdc6: '+1000' },
+      arguments: { token: '0x' + 'aa'.repeat(20), amountUsdc: '+1000' },
     });
     const payload = parseSingleTextPayload(res);
     expect(payload).toMatchObject({ ok: false, code: 'invalid_input' });
@@ -281,7 +282,7 @@ describe('redteam · schema-bypass / additional-properties', () => {
   it('rejects PositionBuy amount with scientific notation', async () => {
     const res = await h.client.callTool({
       name: 'muhaven.position.buy',
-      arguments: { token: '0x' + 'aa'.repeat(20), amountUsdc6: '1e6' },
+      arguments: { token: '0x' + 'aa'.repeat(20), amountUsdc: '1e6' },
     });
     const payload = parseSingleTextPayload(res);
     expect(payload).toMatchObject({ ok: false, code: 'invalid_input' });
@@ -341,13 +342,13 @@ describe('redteam · zod schemas reject prototype + extra keys directly', () => 
     expect(out.maxRows).toBe(1000);
   });
 
-  it('PositionBuy rejects amountUsdc6 = "0" only when paired with negative wrap (basic well-formedness)', () => {
-    // Note: ^\d+$ accepts "0" — the spec correctly delegates the
-    // "must be > 0" check to the use case (cleartext zero is a valid
-    // wire-shape, business logic rejects). Document that posture by
-    // proving the schema accepts "0".
+  it('PositionBuy accepts amountUsdc = "0" (wire-shape valid; business logic rejects)', () => {
+    // 0.2.0: decimal regex accepts "0" — the spec correctly delegates
+    // the "must be > 0" check to the use case (cleartext zero is a
+    // valid wire-shape, business logic rejects on the on-chain leg).
+    // Document that posture by proving the schema accepts "0".
     expect(() =>
-      PositionBuyInputSchema.parse({ token: '0x' + 'aa'.repeat(20), amountUsdc6: '0' }),
+      PositionBuyInputSchema.parse({ token: '0x' + 'aa'.repeat(20), amountUsdc: '0' }),
     ).not.toThrow();
   });
 });
@@ -407,7 +408,7 @@ describe('redteam · scope-bypass via 403 on policy tool with read-only JWT', ()
 
     const res2 = await h.client.callTool({
       name: 'muhaven.position.buy',
-      arguments: { token: '0x' + 'aa'.repeat(20), amountUsdc6: '1000' },
+      arguments: { token: '0x' + 'aa'.repeat(20), amountUsdc: '1000' },
     });
     const payload2 = parseSingleTextPayload(res2);
     expect(payload2).toMatchObject({ ok: false, code: 'unknown_tool' });

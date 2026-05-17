@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import type { IPortfolioRepository } from '../../../domain/portfolio/repository/portfolio.repository.js';
 import { Portfolio } from '../../../domain/portfolio/model/portfolio.js';
 import { portfolios } from './schema.js';
@@ -37,8 +37,24 @@ export class PgPortfolioRepository implements IPortfolioRepository {
   }
 
   async findByUserId(userId: string): Promise<Portfolio[]> {
+    // Sort freshest-first by last_synced_at so the frontend's dedup pass
+    // (Map<lower-addr, first-seen-wins>) and this repo agree on which
+    // row's symbol survives when legacy data carries dups. Pre-2026-05-18
+    // we returned rows in insertion order (no ORDER BY), the frontend
+    // kept first-seen, the dedup script kept freshest — three different
+    // tiebreaks for the same invariant. Aligning here lets the frontend
+    // keep its cheap Map-based dedup while still picking the freshest
+    // canonical row (Code Reviewer N2).
+    //
+    // SQL ORDER BY: NULLS LAST puts any never-synced rows last;
+    // `id` tiebreak makes the order deterministic across pg planner
+    // choices so vitest assertions stay stable.
     const rows = await this.db.query.portfolios.findMany({
       where: eq(portfolios.userId, userId),
+      orderBy: [
+        sql`${portfolios.lastSyncedAt} DESC NULLS LAST`,
+        desc(portfolios.id),
+      ],
     });
     return rows.map((r) => this.toDomain(r));
   }

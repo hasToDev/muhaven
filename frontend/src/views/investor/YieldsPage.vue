@@ -11,6 +11,7 @@ import { useFhe } from '@/composables/useFhe'
 import { useMarketplaceStore } from '@/stores/marketplace'
 import { buildWriteContext } from '@/services/v35/context'
 import { arbiscanTx } from '@/lib/external'
+import { resolveTokenIdentifier } from '@/lib/prefill'
 import MButton from '@/components/ui/MButton.vue'
 import MPageLoader from '@/components/ui/MPageLoader.vue'
 import NavTrendChart from '@/components/charts/NavTrendChart.vue'
@@ -51,6 +52,29 @@ const route = useRoute()
 const highlightedTokenAddr = ref<string | null>(null)
 const highlightedEpochId = ref<string | null>(null)
 
+/**
+ * Surfaces a deep-link banner when `?token=X` didn't resolve (Frontend
+ * H-1 / Code Reviewer L2). The page already shows every claimable
+ * epoch in the user's wallet, so a silent miss is less damaging here
+ * than on TradePage — but explicitly attributing the failure ("your
+ * assistant referenced a token we don't recognise") keeps the user
+ * from wondering why no epoch got highlighted.
+ */
+const prefillTokenMissError = ref<string | null>(null)
+
+/**
+ * Track whether the one-shot deep-link scroll already fired so a
+ * second epochsStore.load (e.g. wallet swap) doesn't re-scroll the
+ * page. Set to true after the first successful scrollIntoView.
+ */
+const scrolledToHighlight = ref<boolean>(false)
+
+// Hoisted BEFORE onMounted (and BEFORE the `selectableTokens` watcher
+// registration further down) so a synchronous deep-link assignment in
+// onMounted lands before the immediate:true watcher's first run sees
+// `null` and snaps to `list[0]` — Frontend H-5 race fix.
+const selectedToken = ref<Address | null>(null)
+
 const claimingKeys = ref<Set<string>>(new Set())
 const activeRange = ref<'1m' | '3m' | '6m' | '1y'>('6m')
 const ranges = [
@@ -63,53 +87,80 @@ const ranges = [
 // ── Lifecycle ───────────────────────────────────────────────────────────
 
 onMounted(async () => {
-  if (!marketplace.loaded) await marketplace.load()
-  if (connected.value && address.value) {
-    if (!epochsStore.loaded || epochsStore.lastLoadedFor?.toLowerCase() !== address.value.toLowerCase()) {
-      await epochsStore.load(address.value as Address)
+  if (!marketplace.loaded) {
+    try {
+      await marketplace.load()
+    } catch (err) {
+      console.warn('[YieldsPage] marketplace.load failed:', err)
+      // Continue — symbol resolution will report a token-miss banner
+      // when the marketplace list is empty.
     }
   }
 
-  // Path C deep-link from @muhaven/mcp `position.claim({ token, epoch? })`.
-  // Resolve token (symbol or 0x-address) → store both lowercased keys for
-  // matching against epoch row data attributes. Epoch is optional; when
-  // present we scroll-to + ring the matching row.
+  // Path C deep-link parse — done BEFORE any other awaits so the
+  // `selectableTokens` watcher registered below sees `selectedToken`
+  // already set on its immediate:true first run. Without this ordering,
+  // the watcher would snap selectedToken to `list[0]` and the
+  // deep-link's token assignment would race-overwrite that — producing
+  // a momentary flash of the wrong token in the NAV chart (Frontend H-5).
   const queryToken = route.query.token as string | undefined
-  if (queryToken) {
-    const looksLikeAddress = /^0x[a-fA-F0-9]{40}$/.test(queryToken)
-    const matched = looksLikeAddress
-      ? marketplace.tokens.find(
-          (t) => t.address.toLowerCase() === queryToken.toLowerCase(),
-        )
-      : marketplace.tokens.find(
-          (t) => t.symbol.toLowerCase() === queryToken.toLowerCase(),
-        )
-    if (matched) {
-      highlightedTokenAddr.value = matched.address.toLowerCase()
-      // Pre-select the NAV chart token so the trend panel mirrors what
-      // the LLM proposed. The selectableTokens watcher would otherwise
-      // pick the first epoch's token, which may not match.
-      selectedToken.value = matched.address as Address
-    }
+  const matched = resolveTokenIdentifier(queryToken, marketplace.tokens)
+  if (queryToken && !matched) {
+    prefillTokenMissError.value = queryToken.trim().slice(0, 32)
+  } else if (matched) {
+    highlightedTokenAddr.value = matched.address.toLowerCase()
+    selectedToken.value = matched.address as Address
   }
   const queryEpoch = route.query.epoch as string | undefined
   if (queryEpoch && /^\d+$/.test(queryEpoch)) {
     highlightedEpochId.value = queryEpoch
   }
 
-  // Scroll-into-view AFTER the v-for has had a chance to render the
-  // matched row. The `data-highlighted="true"` attribute we set in the
-  // template gives us a stable selector regardless of which row matched.
-  if (highlightedTokenAddr.value && highlightedEpochId.value) {
+  // Epochs load happens AFTER deep-link parse so the watch below that
+  // owns the scroll-into-view sees a populated `epochsStore.items`
+  // when it first fires.
+  if (connected.value && address.value) {
+    if (!epochsStore.loaded || epochsStore.lastLoadedFor?.toLowerCase() !== address.value.toLowerCase()) {
+      await epochsStore.load(address.value as Address)
+    }
+  }
+})
+
+/**
+ * Smooth-scroll to the highlighted epoch row when:
+ *  (a) both deep-link refs are set,
+ *  (b) `epochsStore.items` has the matching row rendered, AND
+ *  (c) we haven't already scrolled in this page lifetime.
+ *
+ * Watching `epochsStore.items.length` handles three races the previous
+ * one-shot `await nextTick(); querySelector(...)` in onMounted missed:
+ *   - User lands disconnected (no epochsStore.load fires in onMounted).
+ *     Wallet hydrates 200-800ms later → the address watcher below fires
+ *     epochsStore.load → items.length transitions 0→N → this watch
+ *     fires AT THAT MOMENT, not at mount time.
+ *   - User lands with a cached epochsStore from a prior nav. items
+ *     populates synchronously on `selectableTokens` recompute → this
+ *     watch's `immediate: true` first run sees the matching row + scrolls.
+ *   - Reactive `data-highlighted` template binding waits one extra tick
+ *     to flush. nextTick after the watch fire gives Vue time to render
+ *     the attribute before querySelector runs.
+ */
+watch(
+  () => [epochsStore.items.length, highlightedTokenAddr.value, highlightedEpochId.value] as const,
+  async ([itemsLen, tokenAddr, epochId]) => {
+    if (scrolledToHighlight.value) return
+    if (!tokenAddr || !epochId || itemsLen === 0) return
     await nextTick()
     const el = document.querySelector<HTMLElement>(
       '[data-testid="epoch-row"][data-highlighted="true"]',
     )
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      scrolledToHighlight.value = true
     }
-  }
-})
+  },
+  { immediate: true },
+)
 
 // React to wallet swaps after mount.
 watch(() => address.value, async (next) => {
@@ -129,8 +180,11 @@ const showLoader = computed(() =>
 // Selector tokens = those for which the user has at least one snapshot.
 // On /yields we anchor the asset trend on epoch activity rather than
 // portfolio holdings — the page is about claim activity, not allocation.
+//
+// `selectedToken` declaration was hoisted above onMounted so the deep-
+// link path can set it synchronously before this watcher's immediate
+// first run sees `null` and snaps to `list[0]` (Frontend H-5 race fix).
 const selectableTokens = computed(() => epochsStore.tokensWithEpochs)
-const selectedToken = ref<Address | null>(null)
 
 watch(selectableTokens, (list) => {
   if (list.length === 0) {
@@ -221,6 +275,28 @@ async function claimEpoch(entry: EpochEntry) {
     </div>
 
     <div v-else class="flex flex-col gap-6">
+      <!-- Path C deep-link miss banner — renders when ?token=X didn't
+           resolve. Frontend H-1 / Code Reviewer L2 fix: explicitly
+           attribute the failure to the user's assistant instead of
+           silently rendering no highlight. -->
+      <div
+        v-if="prefillTokenMissError"
+        data-testid="yields-prefill-token-miss"
+        role="alert"
+        class="flex items-start gap-3 px-4 py-3 rounded-xl
+               bg-gold/8 dark:bg-signal/8 border border-gold/25 dark:border-signal/25"
+      >
+        <AlertTriangle :size="16" :stroke-width="1.8" class="text-compute dark:text-signal flex-shrink-0 mt-0.5" />
+        <div class="flex-1 min-w-0">
+          <p class="font-sans text-sm font-semibold text-midnight dark:text-white">
+            Couldn't find token <span class="font-mono">{{ prefillTokenMissError }}</span> in your catalog.
+          </p>
+          <p class="font-sans text-xs text-cool mt-1">
+            The link from your assistant referenced a token we don't recognise. Your full claimable list is below — pick the epoch you want to claim.
+          </p>
+        </div>
+      </div>
+
       <!-- Privacy proof hero strip -->
       <section
         v-motion

@@ -91,14 +91,14 @@ export const TOOL_DESCRIPTORS: readonly ToolDescriptor[] = [
     name: 'muhaven.position.buy',
     group: 'position',
     description:
-      'Prepare a Subscription buy. Returns a dashboard deep-link URL (muhaven.app/trade?mode=buy&...) the user opens to review the pre-filled form, then taps Authorize. The user\'s passkey + ZeroDev kernel sign on the dashboard — this MCP tool never holds or submits a signing key. Use after the user names a clear amount + token (e.g. "Buy 5 mhUSDC of TBILL1"). Token accepts either a symbol ("TBILL1") or 0x-address. Settlement is NOT observable from MCP — verify by calling muhaven.read.portfolio after the user confirms done.',
+      'Prepare a Subscription buy. Returns a dashboard deep-link URL (muhaven.app/trade?mode=buy&...) the user opens to review the pre-filled form, then taps Authorize. The user\'s passkey + ZeroDev kernel sign on the dashboard — this MCP tool never holds or submits a signing key. Use after the user names a clear amount + token (e.g. "Buy 5 mhUSDC of TBILL1" → `amountUsdc: "5"`). Token accepts either a symbol ("TBILL1") or 0x-address. The `amountUsdc` field is HUMAN-DECIMAL mhUSDC ("5" = 5 mhUSDC, "0.5" = half a mhUSDC) — NOT base-6 integer. Max 6 fractional digits. Settlement is NOT observable from MCP — verify by calling muhaven.read.portfolio after the user confirms done.',
     sensitive: true,
   },
   {
     name: 'muhaven.position.sell',
     group: 'position',
     description:
-      'Prepare a Subscription sell. Returns a dashboard deep-link URL (muhaven.app/trade?mode=sell&...) with the form pre-filled. Same passkey + verify-after pattern as muhaven.position.buy. Input is amountShares (raw share count), NOT mhUSDC notional.',
+      'Prepare a Subscription sell. Returns a dashboard deep-link URL (muhaven.app/trade?mode=sell&...) with the form pre-filled. Same passkey + verify-after pattern as muhaven.position.buy. Input is amountShares (raw POSITIVE INTEGER share count, NOT mhUSDC notional) — fhERC-20 shares have no decimals so fractional inputs are rejected.',
     sensitive: true,
   },
   {

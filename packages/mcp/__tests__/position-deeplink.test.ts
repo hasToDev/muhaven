@@ -24,13 +24,17 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   buildPositionDeeplink,
   cashWrap,
-  formatUsdc6ToDecimal,
   positionBuy,
   positionClaim,
   positionRebalance,
   positionSell,
   type ToolDeps,
 } from '../src/tools/handlers.js';
+import {
+  CashWrapInputSchema,
+  PositionBuyInputSchema,
+  PositionSellInputSchema,
+} from '../src/tools/schemas.js';
 import type { BackendClient } from '../src/clients/backend-client.js';
 
 function stubBackend(): BackendClient {
@@ -48,28 +52,60 @@ function makeDeps(dashboardBaseUrl = 'https://muhaven.app'): ToolDeps {
   };
 }
 
-// ---------- formatUsdc6ToDecimal ----------
+// ---------- decimal amount schema (PositionBuyInput / CashWrapInput) ----------
+//
+// 0.2.0 swapped position.buy from base-6 integer (`amountUsdc6`) to
+// human-decimal (`amountUsdc`), matching cash.wrap. The LLM-footgun
+// these tests pin: a model hearing "buy 5 dollars" must NOT be able to
+// silently encode that as $0.000005 via misinterpreting base-6 units.
 
-describe('formatUsdc6ToDecimal', () => {
+describe('decimal mhUSDC amount schema (position.buy + cash.wrap)', () => {
   it.each([
-    ['5000000', '5'],
-    ['1500000', '1.5'],
-    ['1000000', '1'],
-    ['100', '0.0001'],
-    ['1', '0.000001'],
-    ['0', '0'],
-    ['999999', '0.999999'],
-    ['1000000000', '1000'],
-    ['1234567890123456', '1234567890.123456'],
-  ])('renders %s base-6 units as %s', (input, expected) => {
-    expect(formatUsdc6ToDecimal(input)).toBe(expected);
+    ['5', true],
+    ['0.5', true],
+    ['1.5', true],
+    ['100', true],
+    ['1234.567', true],
+    ['1234.567890', true],
+    ['0', true],
+    ['100.000000', true],
+  ])('accepts %s', (raw, valid) => {
+    expect(PositionBuyInputSchema.safeParse({ token: 'TBILL1', amountUsdc: raw }).success).toBe(valid);
+    expect(CashWrapInputSchema.safeParse({ amountUsdc: raw }).success).toBe(valid);
   });
 
-  it('rejects non-numeric input', () => {
-    expect(() => formatUsdc6ToDecimal('5.0')).toThrow(/must be a non-negative integer/);
-    expect(() => formatUsdc6ToDecimal('abc')).toThrow();
-    expect(() => formatUsdc6ToDecimal('-1')).toThrow();
-    expect(() => formatUsdc6ToDecimal('')).toThrow();
+  it.each([
+    ['5.0000001'],     // 7 fractional digits — silent-floor hazard rejected
+    ['-1'],            // negative
+    ['1e6'],           // scientific notation
+    ['+1'],            // signed
+    ['abc'],
+    [''],
+    ['1,000'],         // thousands separator
+    ['1.2.3'],
+    ['00'],            // leading-zero canonicalization rejected
+    ['05'],
+    ['.5'],            // leading dot rejected
+    ['5.'],            // trailing dot rejected
+  ])('rejects %s', (raw) => {
+    expect(PositionBuyInputSchema.safeParse({ token: 'TBILL1', amountUsdc: raw }).success).toBe(false);
+    expect(CashWrapInputSchema.safeParse({ amountUsdc: raw }).success).toBe(false);
+  });
+
+  it('rejects URL-bloat amounts past 48 chars', () => {
+    const huge = '1' + '0'.repeat(48); // 49 chars
+    expect(PositionBuyInputSchema.safeParse({ token: 'TBILL1', amountUsdc: huge }).success).toBe(false);
+  });
+});
+
+describe('PositionSellInputSchema rejects fractional shares', () => {
+  // fhERC-20 shares are integer base units; pre-fill must NEVER carry
+  // "2.5 shares" that would silently floor on the on-chain submit.
+  it.each([['1'], ['10'], ['9999']])('accepts integer %s', (raw) => {
+    expect(PositionSellInputSchema.safeParse({ token: 'TBILL1', amountShares: raw }).success).toBe(true);
+  });
+  it.each([['0'], ['2.5'], ['-1'], ['']])('rejects %s', (raw) => {
+    expect(PositionSellInputSchema.safeParse({ token: 'TBILL1', amountShares: raw }).success).toBe(false);
   });
 });
 
@@ -152,7 +188,7 @@ describe('buildPositionDeeplink', () => {
 describe('positionBuy', () => {
   it('returns dashboardUrl + instructions + echo for a symbol token', async () => {
     const result = await positionBuy(
-      { token: 'TBILL1', amountUsdc6: '5000000' } as never,
+      { token: 'TBILL1', amountUsdc: '5' } as never,
       makeDeps(),
     );
     expect(result.ok).toBe(true);
@@ -174,10 +210,10 @@ describe('positionBuy', () => {
     }
   });
 
-  it('handles 0x-address token verbatim', async () => {
+  it('handles 0x-address token verbatim with fractional amount', async () => {
     const addr = '0x8D773C8b3Ea15Eef2E2F1E6f43Ee8d52c7e57b0D';
     const result = await positionBuy(
-      { token: addr, amountUsdc6: '1500000' } as never,
+      { token: addr, amountUsdc: '1.5' } as never,
       makeDeps(),
     );
     expect(result.ok).toBe(true);
@@ -189,7 +225,7 @@ describe('positionBuy', () => {
 
   it('uses provided dashboardBaseUrl (staging override)', async () => {
     const result = await positionBuy(
-      { token: 'TBILL1', amountUsdc6: '5000000' } as never,
+      { token: 'TBILL1', amountUsdc: '5' } as never,
       makeDeps('https://stage.muhaven.app'),
     );
     expect(result.ok).toBe(true);
@@ -202,7 +238,7 @@ describe('positionBuy', () => {
 
   it('falls back to production dashboard URL when dep omits it', async () => {
     const result = await positionBuy(
-      { token: 'TBILL1', amountUsdc6: '5000000' } as never,
+      { token: 'TBILL1', amountUsdc: '5' } as never,
       { backend: stubBackend(), surface: 'mcp' } as ToolDeps,
     );
     expect(result.ok).toBe(true);
@@ -213,10 +249,27 @@ describe('positionBuy', () => {
 
   it('does NOT require a broker dep — Path C tools talk only to dashboard URL', async () => {
     const result = await positionBuy(
-      { token: 'TBILL1', amountUsdc6: '5000000' } as never,
+      { token: 'TBILL1', amountUsdc: '5' } as never,
       { backend: stubBackend(), surface: 'mcp', dashboardBaseUrl: 'https://muhaven.app' } as ToolDeps,
     );
     expect(result.ok).toBe(true);
+  });
+
+  it('preserves human-readable amount verbatim (no base-6 conversion footgun)', async () => {
+    // 0.2.0 regression test for Code Reviewer H1: in 0.1.7,
+    // positionBuy({amountUsdc6: '5'}) silently produced amount=0.000005
+    // (LLM saying "5 dollars" → user buys $5e-6). 0.2.0 takes
+    // amountUsdc as human-decimal so "5" means $5. Lock the new behavior.
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '5' } as never,
+      makeDeps(),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(new URL(result.data.dashboardUrl).searchParams.get('amount')).toBe('5');
+      // NOT '0.000005' (the 0.1.7 footgun output)
+      expect(new URL(result.data.dashboardUrl).searchParams.get('amount')).not.toBe('0.000005');
+    }
   });
 });
 
@@ -241,27 +294,11 @@ describe('positionSell', () => {
     }
   });
 
-  it('rejects non-numeric amountShares with invalid_input', async () => {
-    const result = await positionSell(
-      { token: 'TBILL1', amountShares: 'all' } as never,
-      makeDeps(),
-    );
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.code).toBe('invalid_input');
-    }
-  });
-
-  it('accepts fractional share counts (decimal string)', async () => {
-    const result = await positionSell(
-      { token: 'TBILL1', amountShares: '2.5' } as never,
-      makeDeps(),
-    );
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(new URL(result.data.dashboardUrl).searchParams.get('shares')).toBe('2.5');
-    }
-  });
+  // 0.2.0: fractional shares now REJECTED at the schema boundary (see
+  // PositionSellInputSchema regex test above). The handler-level
+  // runtime check was deleted because the schema is now the boundary.
+  // Bad inputs throw at MCP-server schema-parse time, not inside the
+  // handler — these are pinned in the schema describe block above.
 });
 
 // ---------- positionClaim handler ----------

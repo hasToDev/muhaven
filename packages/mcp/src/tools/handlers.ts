@@ -18,7 +18,6 @@
  *    MUST NOT auto-retry 4xx.
  */
 
-import { keccak256, toBytes } from 'viem';
 import type { BackendClient } from '../clients/backend-client.js';
 import { BackendError } from '../clients/backend-client.js';
 import type { BrokerClient } from '../clients/broker-client.js';
@@ -300,44 +299,12 @@ export function buildPositionDeeplink(
   return `${base}${path}?${search.toString()}`;
 }
 
-/**
- * Pure: format the amount input from base-6 USDC units (string)
- * back into a human-readable decimal ("5000000" → "5"; "1500000" → "1.5").
- * Used to build the URL `amount=` param the dashboard pages parse.
- * Truncates trailing-zero fractional digits so `5.000000` displays as
- * `5` — matches what the dashboard form would show after manual entry.
- */
-export function formatUsdc6ToDecimal(amountUsdc6: string): string {
-  if (!/^\d+$/.test(amountUsdc6)) {
-    throw new Error(`amountUsdc6 must be a non-negative integer string: ${amountUsdc6}`);
-  }
-  const padded = amountUsdc6.padStart(7, '0');
-  const intPart = padded.slice(0, -6).replace(/^0+(?=\d)/, '');
-  const fracPart = padded.slice(-6).replace(/0+$/, '');
-  return fracPart === '' ? intPart : `${intPart}.${fracPart}`;
-}
-
-// Legacy intent-hash helpers, retained but unused by position tools
-// post-Path-C. Kept exported for any future attestation surface that
-// wants to sign a domain-separated digest (e.g., an audit-only
-// notary mode the broker could expose later).
-const PLACEHOLDER_INTENT_DOMAIN = 'muhaven.placeholder.intent.v0:';
-
-export function computeIntentHash(intent: Record<string, unknown>): `0x${string}` {
-  const canonical = JSON.stringify(sortKeys(intent));
-  return keccak256(toBytes(PLACEHOLDER_INTENT_DOMAIN + canonical));
-}
-
-function sortKeys<T>(value: T): T {
-  if (Array.isArray(value)) return value.map(sortKeys) as unknown as T;
-  if (value && typeof value === 'object') {
-    const obj = value as Record<string, unknown>;
-    const sorted: Record<string, unknown> = {};
-    for (const k of Object.keys(obj).sort()) sorted[k] = sortKeys(obj[k]);
-    return sorted as unknown as T;
-  }
-  return value;
-}
+// 0.2.0 cleanup: `formatUsdc6ToDecimal` removed — `position.buy.amountUsdc`
+// is now a human-decimal input matching `cash.wrap.amountUsdc`, so the
+// base-6-to-decimal conversion is unnecessary. Same change deletes the
+// `computeIntentHash` / `PLACEHOLDER_INTENT_DOMAIN` / `sortKeys` exports
+// that previously served the broker-attestation path (also removed in
+// 0.1.7 with the placeholder envelope).
 
 /**
  * Per-process cache of the most recent `hello.hasSessionKey` value. A
@@ -357,22 +324,12 @@ function sortKeys<T>(value: T): T {
  * NOT cached — we clear the slot so a later call retries instead of
  * surfacing the same stale rejection forever.
  */
-/**
- * 2026-05-18: `signEnvelope` + the broker session-key probe were
- * deleted alongside the placeholder UserOp envelope. Position tools no
- * longer need the broker to sign anything — they build a dashboard
- * deep-link URL and the user's existing kernel + passkey sign on the
- * dashboard pages.
- *
- * `__resetSessionKeyProbeCacheForTests` is retained as a no-op so
- * any external test harness importing it still compiles (the symbol
- * was exported in 0.1.6). Safe to drop in a future major.
- */
-export function __resetSessionKeyProbeCacheForTests(): void {
-  // No-op since 0.1.7 — the cache it cleared was removed alongside
-  // signEnvelope's broker probe. Kept for back-compat with any test
-  // module that referenced the symbol.
-}
+// 0.2.0 cleanup: `__resetSessionKeyProbeCacheForTests` (retained as a
+// no-op in 0.1.7 for "back-compat") and `signEnvelope` + the broker
+// session-key probe (deleted in 0.1.7 alongside the placeholder UserOp
+// envelope) — all gone. Position tools build dashboard deep-link URLs;
+// no signing-path code lives here anymore. A future attestation
+// surface that wants a domain-separated digest can re-add as needed.
 
 /**
  * Resolve the dashboard base URL from deps. The MCP server is
@@ -389,17 +346,19 @@ export async function positionBuy(
   input: PositionBuyInput,
   deps: ToolDeps,
 ): Promise<ToolResult<PositionPrefillData>> {
-  const amount = formatUsdc6ToDecimal(input.amountUsdc6);
+  // 0.2.0: amount is human-decimal mhUSDC directly. Pass-through to URL;
+  // schema already validated regex + length. The dashboard's TradePage
+  // parses `?amount=` as mhUSDC (matching the form's own convention).
   const dashboardUrl = buildPositionDeeplink(resolveDashboardBaseUrl(deps), 'buy', {
     token: input.token,
-    amount,
+    amount: input.amountUsdc,
   });
   return ok({
     dashboardUrl,
     action: 'buy',
     instructions:
-      `Open this link to review and authorize the buy of ${amount} mhUSDC of ${input.token}:\n${dashboardUrl}`,
-    echo: { action: 'buy', token: input.token, amount },
+      `Open this link to review and authorize the buy of ${input.amountUsdc} mhUSDC of ${input.token}:\n${dashboardUrl}`,
+    echo: { action: 'buy', token: input.token, amount: input.amountUsdc },
   });
 }
 
@@ -407,16 +366,10 @@ export async function positionSell(
   input: PositionSellInput,
   deps: ToolDeps,
 ): Promise<ToolResult<PositionPrefillData>> {
-  // Sell input is `amountShares` (raw share count, not USDC). Pass
-  // through verbatim — the TradePage form parses `?shares=` in sell
-  // mode separately from `?amount=` in buy mode. Numeric check at the
-  // boundary: the dashboard's form ignores non-numeric pre-fills.
-  if (!/^\d+(\.\d+)?$/.test(input.amountShares)) {
-    return err(
-      'invalid_input',
-      `amountShares must be a non-negative number string: ${JSON.stringify(input.amountShares)}`,
-    );
-  }
+  // 0.2.0: schema now enforces positive integer (no fractional shares
+  // since fhERC-20 shares are integer base units per
+  // `project_decimals_lie_wave4_p0`). Defense-in-depth runtime check
+  // dropped — schema is the boundary.
   const dashboardUrl = buildPositionDeeplink(resolveDashboardBaseUrl(deps), 'sell', {
     token: input.token,
     shares: input.amountShares,

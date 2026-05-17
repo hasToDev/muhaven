@@ -97,20 +97,57 @@ export const ReadAuditInputSchema = z
 
 // ---------- position group ----------
 
+/**
+ * Path C input: human-decimal mhUSDC amount, NOT base-6 integer.
+ *
+ * Why this matters: in 0.1.7 the field was `amountUsdc6` (base-6
+ * integer string), which trained an LLM hearing "buy 5 dollars" to
+ * naively emit `"5"` and silently produce `amount=0.000005` in the
+ * dashboard URL. 0.2.0 unifies the unit convention across the whole
+ * Path C surface — `cash.wrap.amountUsdc` already used decimal; now
+ * `position.buy.amountUsdc` does too. The two reads "5 mhUSDC" the
+ * same way the user said it.
+ *
+ * Maximum 6 fractional digits (mhUSDC base unit floor); regex
+ * rejects "5.0000001" so the LLM can't smuggle imprecision past the
+ * dashboard form which would otherwise floor it silently.
+ */
+const decimalUsdcAmountSchema = z
+  .string()
+  .regex(
+    /^(0|[1-9]\d*)(\.\d{1,6})?$/,
+    'must be a positive decimal mhUSDC amount with at most 6 fractional digits (e.g. "5", "0.5", "1234.567")',
+  )
+  // Length cap defense-in-depth against URL-bloat (Security L-5). A
+  // 40-digit cap covers ~10^40 USDC, far past any realistic issuance.
+  .max(48, 'must be at most 48 characters');
+
 export const PositionBuyInputSchema = z
   .object({
     /** Symbol (e.g. "TBILL1") or 0x-address. Path C dashboard resolves either. */
     token: tokenIdentifierSchema,
-    /** Investor candidate spend, denominated in USDC base units (uint64). */
-    amountUsdc6: z.string().regex(/^\d+$/, 'must be a base-10 integer string'),
+    /**
+     * mhUSDC amount in human-decimal units ("5" = 5 mhUSDC, "0.5" =
+     * half a mhUSDC). Forwarded verbatim to the dashboard form via
+     * `/trade?amount=`. Replaces the prior `amountUsdc6` base-6 integer
+     * field — see schema doc above for rationale (LLM-footgun fix).
+     */
+    amountUsdc: decimalUsdcAmountSchema,
   })
   .strict();
 
 export const PositionSellInputSchema = z
   .object({
     token: tokenIdentifierSchema,
-    /** Encrypted-balance share count to redeem, denominated in fhERC-20 base units. */
-    amountShares: z.string().regex(/^\d+$/, 'must be a base-10 integer string'),
+    /**
+     * Share count to redeem. fhERC-20 shares are integer base units
+     * (no decimals — see memory `project_decimals_lie_wave4_p0`).
+     * Regex rejects any fractional input so a deep-link can't pre-fill
+     * "2.5 shares" that would silently floor on the on-chain submit.
+     */
+    amountShares: z
+      .string()
+      .regex(/^[1-9]\d*$/, 'must be a positive integer share count'),
   })
   .strict();
 
@@ -149,13 +186,13 @@ export const PositionRebalanceInputSchema = z
 export const CashWrapInputSchema = z
   .object({
     /**
-     * USDC amount in human-readable units ("100" for $100, "1.5" for
-     * $1.50). Forwarded verbatim to `/cash?amount=`. Decimal optional
-     * — CashPage parses both `\d+` and `\d+\.\d+`.
+     * USDC amount in human-decimal units ("100" for $100, "1.5" for
+     * $1.50). Same shape + same regex as `PositionBuyInputSchema.amountUsdc`
+     * so the LLM doesn't have to learn two different unit conventions
+     * across the Path C surface. Max 6 fractional digits (USDC's base
+     * unit floor); 48-char length cap is URL-bloat defense.
      */
-    amountUsdc: z
-      .string()
-      .regex(/^\d+(\.\d+)?$/, 'must be a positive decimal number string'),
+    amountUsdc: decimalUsdcAmountSchema,
   })
   .strict();
 

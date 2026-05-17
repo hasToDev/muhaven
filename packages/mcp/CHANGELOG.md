@@ -7,6 +7,122 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-05-18
+
+**Minor bump signals a breaking change to `position.buy`'s input
+shape.** This release consolidates the pre-Codex review of the 0.1.7
+Path C bundle: 4 parallel agents (Code Reviewer, Frontend Developer,
+Security Engineer, Reality Checker) surfaced ≥5 cross-confirmed HIGH
+findings and several MEDIUM/LOW items. 0.2.0 lands all of them.
+
+### Breaking
+
+- **`muhaven.position.buy.amountUsdc6` → `amountUsdc` (human decimal).**
+  Pre-0.2.0, the field was base-6 integer string ("5000000" = $5).
+  An LLM hearing "buy 5 dollars" would naively emit `"5"` and silently
+  produce a URL with `amount=0.000005` — user buys $5e-6 instead of $5.
+  0.2.0 unifies the unit convention across the whole Path C surface
+  (matches `cash.wrap.amountUsdc` shape): `"5"` means 5 mhUSDC. Max
+  6 fractional digits, 48-char length cap. Server-side schema rejects
+  scientific notation, leading +, thousands separators, leading zeros,
+  bare leading/trailing dots.
+
+- **`muhaven.position.sell.amountShares` rejects fractional input.**
+  fhERC-20 shares are integer base units (memory:
+  `project_decimals_lie_wave4_p0`). Pre-0.2.0 accepted "2.5" which
+  silently floored to 2 on the on-chain submit. 0.2.0 schema regex
+  `^[1-9]\d*$` rejects any fractional or leading-zero input at the
+  MCP-server boundary.
+
+- **Position tool response shape** stays the `{ dashboardUrl, action,
+  instructions, echo }` format from 0.1.7 — no change here, but the
+  schema breaking changes above are what trigger the minor bump per
+  semver.
+
+### Removed (cleanup of 0.1.7 deprecation candidates)
+
+- `__resetSessionKeyProbeCacheForTests` — was retained as a no-op in
+  0.1.7 for "back-compat with downstream test consumers." Verified
+  empirically (Security Engineer review) that no consumer outside our
+  own tests imported it. Deleted entirely.
+- `formatUsdc6ToDecimal` + `computeIntentHash` +
+  `PLACEHOLDER_INTENT_DOMAIN` — orphaned helpers tied to the
+  pre-0.1.7 attestation path. No external consumers; deleted.
+
+### Fixed
+
+- **`MUHAVEN_DASHBOARD_URL` env-poisoning** (Security M-2): the URL
+  is used to build every position deep-link. Pre-0.2.0, a malicious
+  npm dep or attacker with write access to `~/.claude.json` could
+  set `MUHAVEN_DASHBOARD_URL=https://muhaven-app.com` and have the
+  MCP server route every user click to a typosquat phishing clone.
+  Validation now happens at boot in `loadMcpConfig` + `loadBrokerConfig`
+  using the same `https-or-loopback` rule as the existing
+  `--dashboard-base-url` CLI flag. Hard-fails at server start with a
+  clear error message if invalid.
+
+- **`buildRegisterEnv` shell-metachar sanitization** (Security M-1):
+  the JSON config blob passed via argv to `claude mcp add-json` could
+  carry a crafted `MUHAVEN_KEYRING='file" & calc.exe &"'` past
+  Windows's `shell: true` invocation, reaching `cmd.exe`'s parser as
+  a command-injection vector. 0.2.0 rejects (not escapes) any value
+  containing shell metacharacters (`"` `\` newline `&` `|` `;`
+  `` ` `` `<` `>` `(` `)` `%` `$`) and restricts `MUHAVEN_KEYRING` to
+  the recognized values (`file` / `os`). Rejected values surface as
+  warnings on stderr; setup continues with the cleaned env.
+
+- **`claude mcp remove` exit-code capture** (Code Reviewer H2 +
+  Security M-3): pre-0.2.0 swallowed every exit code from the
+  idempotent remove step. A perm-locked scope or stale lockfile that
+  failed remove + then failed add showed an opaque error attributing
+  the failure only to add. 0.2.0 captures remove's exit + stderr,
+  swallows only the expected "no such server" pattern, and surfaces
+  any anomaly as a warning on the success path or folds it into the
+  failure reason on the error path. Closes the split-brain
+  `~/.claude.json` operator-confusion class.
+
+- **`decimalUsdcAmountSchema.max(48)` length cap** (Security L-5):
+  defense-in-depth against URL bloat (LLM emits a 10MB digit string).
+
+### Sibling commits (same hotfix bundle, deployed in lockstep)
+
+- Backend `pg-portfolio.repository.findByUserId` now orders by
+  `last_synced_at DESC NULLS LAST` so the frontend's first-seen Map
+  dedup picks the freshest row — aligns the tiebreak across backend +
+  frontend + dedup script (Code Reviewer N2).
+- `backend/scripts/dedup-portfolios.ts` moved the discovery SELECT
+  inside the dedup transaction + added `SELECT FOR UPDATE` row locks
+  + `pg_advisory_xact_lock`. Closes the TOCTOU window where a
+  concurrent backend write could lose data (Security H-1).
+- Frontend TradePage / YieldsPage now render an inline AlertTriangle
+  banner when `?token=` doesn't resolve instead of silently falling
+  back to `marketplace.filtered[0]`. Closes the LLM-token-swap footgun
+  (Frontend H-1).
+- TradePage marketplace.load() failure surfaces a Retry CTA instead
+  of half-rendering (Frontend H-2).
+- TradePage / CashPage `?amount=` pre-fill uses a shared
+  `sanitizePrefillAmount` helper that bounds precision to 6 dp and
+  rejects fractional shares (Frontend H-4 / Code Reviewer L1).
+- YieldsPage scroll-into-view moved into a watch keyed on
+  `epochsStore.items.length` so deep-link landings on disconnected
+  wallets still scroll once the items render (Frontend H-3).
+- YieldsPage `selectedToken` declaration hoisted above onMounted so
+  the deep-link path sets the ref synchronously before the
+  `selectableTokens` watcher (`immediate: true`) snaps it to `list[0]`
+  (Frontend H-5).
+
+### Internal
+
+- `__tests__/position-deeplink.test.ts`: rewrote amount tests for the
+  decimal-string schema; added schema-level corpus tests pinning the
+  reject list (negative, scientific notation, leading +, thousands
+  separator, leading zeros, etc.); added a regression test for the
+  base-6 footgun (`position.buy({amountUsdc: '5'})` must produce
+  `amount=5`, NOT `0.000005`).
+- `__tests__/mcp-redteam.test.ts`: updated field name from `amountUsdc6`
+  to `amountUsdc` in 4 call sites.
+- Total tool count unchanged at 23.
+
 ## [0.1.7] — 2026-05-18
 
 `position.*` tools can now drive real on-chain action via @muhaven/mcp

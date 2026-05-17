@@ -118,9 +118,72 @@ export function trimTrailingSlash(s: string): string {
   return s.endsWith('/') ? s.slice(0, -1) : s;
 }
 
+/**
+ * Validate a public-URL env var (backend / dashboard). Returns null on
+ * valid, an error string on invalid. Mirrors the shape of
+ * `validateHttpUrlFlag` in `broker/setup.ts` — same logic, applied at
+ * boot-time config load so a misconfigured env can't ship attacker-
+ * controlled URLs into position deep-links.
+ *
+ * Rules:
+ *  - Must parse cleanly as a URL.
+ *  - Protocol must be `https:` OR `http:` to a loopback host
+ *    (localhost / 127.0.0.1 / [::1]) — dev carve-out only.
+ *  - Refuses `javascript:`, `file:`, `data:`, plain `http:` to non-loopback.
+ *
+ * Closes Security review M-2: a malicious sibling npm dep or attacker
+ * with write access to `~/.claude.json` could otherwise inject
+ * `MUHAVEN_DASHBOARD_URL=https://muhaven-app.com` (typosquat) and have
+ * every position deep-link route the user to a phishing clone. The
+ * RP-ID binding on `muhaven.app` prevents WebAuthn credential reuse,
+ * but the clone can phish for OAuth secondaries / recovery phrases /
+ * fresh passkey re-registration ceremonies.
+ */
+export function validatePublicUrlEnv(name: string, value: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return `${name} is not a valid URL: ${value}`;
+  }
+  if (parsed.protocol === 'https:') return null;
+  if (parsed.protocol === 'http:') {
+    const host = parsed.hostname;
+    if (host === 'localhost' || host === '127.0.0.1' || host === '[::1]') return null;
+    return `${name} must use https:// (got http:// to ${host} — refusing to route MCP deep-links over cleartext to a non-loopback host)`;
+  }
+  return `${name} must use https:// (got ${parsed.protocol})`;
+}
+
+/**
+ * Resolve + validate a public URL env value, applying the trim-trailing-
+ * slash convention and hard-failing at boot when the value violates the
+ * https-or-loopback rule (Security M-2). Wraps `validatePublicUrlEnv`
+ * so every loader path (loadMcpConfig + loadBrokerConfig) uses the
+ * same checks without duplicating the throw site.
+ */
+function resolvePublicUrlEnv(
+  name: string,
+  rawValue: string | undefined,
+  defaultValue: string,
+): string {
+  const value = rawValue ?? defaultValue;
+  const err = validatePublicUrlEnv(name, value);
+  if (err) throw new Error(err);
+  return trimTrailingSlash(value);
+}
+
 export function loadMcpConfig(env: NodeJS.ProcessEnv = process.env): McpRuntimeConfig {
-  const backendBaseUrl = trimTrailingSlash(env.MUHAVEN_BACKEND_URL ?? DEFAULT_BACKEND_URL);
-  const dashboardBaseUrl = trimTrailingSlash(env.MUHAVEN_DASHBOARD_URL ?? DEFAULT_DASHBOARD_URL);
+  const backendBaseUrl = resolvePublicUrlEnv(
+    'MUHAVEN_BACKEND_URL',
+    env.MUHAVEN_BACKEND_URL,
+    DEFAULT_BACKEND_URL,
+  );
+  const dashboardBaseUrl = resolvePublicUrlEnv(
+    'MUHAVEN_DASHBOARD_URL',
+    env.MUHAVEN_DASHBOARD_URL,
+    DEFAULT_DASHBOARD_URL,
+  );
   const brokerEndpoint = env.MUHAVEN_BROKER_ENDPOINT ?? defaultBrokerEndpoint();
   const readOnly = readEnvBool('MUHAVEN_READ_ONLY', false, env);
   const requestTimeoutMs = readEnvInt('MUHAVEN_REQUEST_TIMEOUT_MS', DEFAULT_REQUEST_TIMEOUT_MS, env);
@@ -165,8 +228,18 @@ export function loadBrokerConfig(env: NodeJS.ProcessEnv = process.env): BrokerRu
   // (rather than punning loadMcpConfig). Surfaced via `hello.effectiveConfig`
   // so a later `muhaven-broker login --from-daemon` stays in lockstep with
   // the daemon's view even when the CLI was invoked from a different shell.
-  const backendBaseUrl = trimTrailingSlash(env.MUHAVEN_BACKEND_URL ?? DEFAULT_BACKEND_URL);
-  const dashboardBaseUrl = trimTrailingSlash(env.MUHAVEN_DASHBOARD_URL ?? DEFAULT_DASHBOARD_URL);
+  // Same boot-time https-or-loopback validation as loadMcpConfig closes
+  // the env-poisoning vector for daemon-resolved URLs (Security M-2).
+  const backendBaseUrl = resolvePublicUrlEnv(
+    'MUHAVEN_BACKEND_URL',
+    env.MUHAVEN_BACKEND_URL,
+    DEFAULT_BACKEND_URL,
+  );
+  const dashboardBaseUrl = resolvePublicUrlEnv(
+    'MUHAVEN_DASHBOARD_URL',
+    env.MUHAVEN_DASHBOARD_URL,
+    DEFAULT_DASHBOARD_URL,
+  );
 
   return {
     endpoint,

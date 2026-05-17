@@ -481,14 +481,70 @@ export interface SetupDeps {
  * different endpoint). Backend / dashboard URLs + keyring choice are
  * the load-bearing trio.
  */
+/**
+ * 0.2.0 hardening (Security M-1): reject env values containing shell
+ * metacharacters before packaging them into the JSON argv we pass to
+ * `claude mcp add-json`. Today's three known vars
+ * (`MUHAVEN_BACKEND_URL`, `MUHAVEN_DASHBOARD_URL`, `MUHAVEN_KEYRING`)
+ * are operator-controlled and the URL ones are URL-validated by
+ * `loadMcpConfig` / `--backend-base-url` / `--dashboard-base-url`. But
+ * `MUHAVEN_KEYRING` had NO validation and would happily forward a
+ * crafted value like `'file" & calc.exe & "'` into the JSON. On
+ * Windows, `defaultShellOut` uses `shell: true` which routes argv
+ * through `cmd.exe /d /s /c` — `cmd.exe`'s parser differs from
+ * `CreateProcess` and metacharacters inside an arg can bite.
+ *
+ * Sanitization posture: reject (not escape) so the operator notices.
+ * Forbidden bytes: `"` / `\\` / `\n` / `\r` / `&` / `|` / `;` /
+ * `` ` `` / `<` / `>` / `(` / `)` / `%` / `$`. Anything else passes.
+ * Each rejection appends to `warnings` so the caller can surface them
+ * to the operator without throwing — a malformed env var shouldn't
+ * abort the whole register step.
+ */
+const SHELL_METACHAR_RE = /["\\\n\r&|;`<>()%$]/;
+const SAFE_KEYRING_VALUES = new Set(['file', 'os']);
+
+export interface BuildRegisterEnvResult {
+  readonly env: Record<string, string>;
+  readonly warnings: readonly string[];
+}
+
 export function buildRegisterEnv(
   effectiveEnv: Readonly<Record<string, string>>,
-): Record<string, string> {
+): BuildRegisterEnvResult {
   const env: Record<string, string> = {};
-  if (effectiveEnv.MUHAVEN_BACKEND_URL) env.MUHAVEN_BACKEND_URL = effectiveEnv.MUHAVEN_BACKEND_URL;
-  if (effectiveEnv.MUHAVEN_DASHBOARD_URL) env.MUHAVEN_DASHBOARD_URL = effectiveEnv.MUHAVEN_DASHBOARD_URL;
-  if (effectiveEnv.MUHAVEN_KEYRING) env.MUHAVEN_KEYRING = effectiveEnv.MUHAVEN_KEYRING;
-  return env;
+  const warnings: string[] = [];
+
+  function acceptOrWarn(name: string, value: string | undefined): void {
+    if (!value) return;
+    if (SHELL_METACHAR_RE.test(value)) {
+      warnings.push(
+        `${name} contains shell metacharacters and was dropped from the host config — set a clean value in your env if you need a non-default.`,
+      );
+      return;
+    }
+    env[name] = value;
+  }
+
+  acceptOrWarn('MUHAVEN_BACKEND_URL', effectiveEnv.MUHAVEN_BACKEND_URL);
+  acceptOrWarn('MUHAVEN_DASHBOARD_URL', effectiveEnv.MUHAVEN_DASHBOARD_URL);
+
+  // MUHAVEN_KEYRING is the highest-risk field — pre-2026-05-18 it had
+  // no validation. Now: must be one of `file` / `os`. Anything else
+  // gets dropped + a warning so the host config doesn't carry a
+  // crafted value into `cmd.exe`'s parser on Windows.
+  const keyring = effectiveEnv.MUHAVEN_KEYRING;
+  if (keyring) {
+    if (!SAFE_KEYRING_VALUES.has(keyring)) {
+      warnings.push(
+        `MUHAVEN_KEYRING="${keyring}" is not one of the recognized values (file, os) — dropped from the host config.`,
+      );
+    } else {
+      env.MUHAVEN_KEYRING = keyring;
+    }
+  }
+
+  return { env, warnings };
 }
 
 /**
@@ -539,14 +595,36 @@ export interface RegisterHostOptions {
 }
 
 export type RegisterHostOutcome =
-  /** Successfully wired into the host. */
-  | { readonly status: 'registered'; readonly host: RegisterHost; readonly scope: RegisterScope }
+  /** Successfully wired into the host. `warnings` carries non-fatal
+   *  notes the operator should see (e.g. `claude mcp remove` returned
+   *  an unexpected non-found error before the add succeeded — useful
+   *  forensic info if a duplicate ever appears). */
+  | {
+      readonly status: 'registered';
+      readonly host: RegisterHost;
+      readonly scope: RegisterScope;
+      readonly warnings?: readonly string[];
+    }
   /** Host's CLI wasn't found on PATH — register skipped. */
   | { readonly status: 'cli_missing'; readonly host: RegisterHost; readonly cmd: string }
   /** Host is recognized but no registrar is implemented yet. */
   | { readonly status: 'not_implemented'; readonly host: RegisterHost }
   /** Register step errored — surfaced as a warning, doesn't unwind setup. */
   | { readonly status: 'failed'; readonly host: RegisterHost; readonly reason: string };
+
+/**
+ * Match the stderr shape of `claude mcp remove` when the named server
+ * isn't registered — the only failure mode we silently swallow. Anything
+ * else (perm denied, lockfile, parse error) surfaces as a warning on
+ * the successful-add path so a future operator can diagnose split-brain
+ * configs without re-running setup blind.
+ *
+ * Patterns cover the wording variations Claude Code has shipped across
+ * versions ("not found", "does not exist", "no server named X").
+ * Conservative — if we don't match, we WARN; we never escalate to a
+ * failure for the remove step alone (the add step is the boundary).
+ */
+const CLAUDE_REMOVE_NOT_FOUND_RE = /(no.*server|not found|does not exist|no MCP server)/i;
 
 /**
  * Best-effort: wire the MCP server into one host. The contract:
@@ -613,11 +691,44 @@ async function registerWithClaudeCode(
     };
   }
 
-  // Idempotent remove. Ignore the exit code — `claude mcp remove` errors
-  // when the server isn't registered, which is the common case on the
-  // first ever setup. We only care that the add below succeeds; if the
-  // server WAS registered, the remove cleans it up and the add follows.
-  await deps.shellOut('claude', buildClaudeMcpRemoveArgv(options.serverName, options.scope));
+  // Idempotent remove. Pre-2026-05-18 swallowed the exit code wholesale,
+  // which masked a class of operator-confusing failure modes (Code
+  // Reviewer H2 / Security M-3): if the remove returned non-zero for a
+  // reason OTHER than "no such server" (perm-locked scope, stale
+  // ~/.claude.json lockfile, ENOENT on the config file), the subsequent
+  // add could either fail with the same root cause OR succeed in a
+  // different shadow scope leaving two `muhaven` entries on disk.
+  // Now we capture the exit code + stderr and pass forensic info up
+  // through the outcome's `warnings` field so the operator sees the
+  // remove anomaly even when the add succeeds.
+  const warnings: string[] = [];
+  let removeResult: ShellResult | null = null;
+  try {
+    removeResult = await deps.shellOut(
+      'claude',
+      buildClaudeMcpRemoveArgv(options.serverName, options.scope),
+    );
+  } catch (err) {
+    warnings.push(
+      `claude mcp remove threw before exit: ${(err as Error).message}. ` +
+        `If the add below succeeds but you see duplicates in ~/.claude.json, ` +
+        `inspect file permissions.`,
+    );
+  }
+  if (removeResult && removeResult.exitCode !== 0) {
+    const stderr = removeResult.stderr.trim();
+    const stdout = removeResult.stdout.trim();
+    const combined = [stderr, stdout].filter((s) => s.length > 0).join(' | ');
+    if (!CLAUDE_REMOVE_NOT_FOUND_RE.test(combined)) {
+      warnings.push(
+        `claude mcp remove returned exit ${removeResult.exitCode}: ${combined || '(no stderr)'}. ` +
+          `Continuing with add. If you see duplicate muhaven entries afterwards, ` +
+          `inspect ~/.claude.json or the project's .mcp.json manually.`,
+      );
+    }
+    // else: "not found" / "does not exist" — the expected first-run
+    // case. Silently swallow.
+  }
 
   const json = buildClaudeMcpRegisterJson(options.registerEnv);
   const addArgv = buildClaudeMcpAddJsonArgv(options.serverName, json, options.scope);
@@ -634,14 +745,20 @@ async function registerWithClaudeCode(
   if (add.exitCode !== 0) {
     // Combine stderr + stdout for the operator-facing reason — `claude
     // mcp add-json` writes some failure detail to each stream depending
-    // on version.
-    const reason = [add.stderr, add.stdout]
+    // on version. Also fold in any remove warnings so the operator sees
+    // the full forensic trail when diagnosing a failed add.
+    const addReason = [add.stderr, add.stdout]
       .map((s) => s.trim())
       .filter((s) => s.length > 0)
       .join(' | ') || `exit ${add.exitCode}`;
+    const reason = warnings.length > 0
+      ? `${addReason} (preceding remove also surfaced: ${warnings.join('; ')})`
+      : addReason;
     return { status: 'failed', host: options.host, reason };
   }
-  return { status: 'registered', host: options.host, scope: options.scope };
+  return warnings.length > 0
+    ? { status: 'registered', host: options.host, scope: options.scope, warnings }
+    : { status: 'registered', host: options.host, scope: options.scope };
 }
 
 /**
@@ -892,7 +1009,15 @@ export async function runSetup(argv: readonly string[], deps: SetupDeps): Promis
   // hit a transient `claude` outage can re-run the step in isolation.
   const registerOutcomes: RegisterHostOutcome[] = [];
   if (flags.register.length > 0) {
-    const registerEnv = buildRegisterEnv(effectiveEnv);
+    const { env: registerEnv, warnings: envWarnings } = buildRegisterEnv(effectiveEnv);
+    // Surface env-sanitization warnings BEFORE the register step so the
+    // operator sees them even on a CLI-missing outcome that prints
+    // nothing else. Security M-1 hardening: MUHAVEN_KEYRING / URL env
+    // values containing shell metacharacters are dropped rather than
+    // packaged into the JSON argv.
+    for (const w of envWarnings) {
+      deps.printErr(`Host register env: ${w}`);
+    }
     for (const host of flags.register) {
       const outcome = await registerWithHost(deps, {
         host,
@@ -907,6 +1032,15 @@ export async function runSetup(argv: readonly string[], deps: SetupDeps): Promis
             `Host register: ${outcome.host} wired (scope: ${outcome.scope}). ` +
               `Restart the host to pick up the new MCP server.`,
           );
+          // Surface forensic warnings from `claude mcp remove` anomalies
+          // even though the overall register succeeded — closes the
+          // split-brain operator-confusion failure mode (Code Reviewer
+          // H2 / Security M-3).
+          if (outcome.warnings) {
+            for (const w of outcome.warnings) {
+              deps.printErr(`Host register warning: ${w}`);
+            }
+          }
           break;
         case 'cli_missing':
           deps.printErr(

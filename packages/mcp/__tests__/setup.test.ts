@@ -790,7 +790,7 @@ describe('parseSetupFlags --register', () => {
 
 describe('buildRegisterEnv', () => {
   it('passes through the load-bearing trio when set', () => {
-    const env = buildRegisterEnv({
+    const { env, warnings } = buildRegisterEnv({
       MUHAVEN_BACKEND_URL: 'https://api.muhaven.app',
       MUHAVEN_DASHBOARD_URL: 'https://muhaven.app',
       MUHAVEN_KEYRING: 'file',
@@ -800,10 +800,11 @@ describe('buildRegisterEnv', () => {
       MUHAVEN_DASHBOARD_URL: 'https://muhaven.app',
       MUHAVEN_KEYRING: 'file',
     });
+    expect(warnings).toEqual([]);
   });
 
   it('omits MUHAVEN_KEYRING when it was not auto-defaulted (native macOS / Linux desktop)', () => {
-    const env = buildRegisterEnv({
+    const { env, warnings } = buildRegisterEnv({
       MUHAVEN_BACKEND_URL: 'https://api.muhaven.app',
       MUHAVEN_DASHBOARD_URL: 'https://muhaven.app',
     });
@@ -812,13 +813,14 @@ describe('buildRegisterEnv', () => {
       MUHAVEN_DASHBOARD_URL: 'https://muhaven.app',
     });
     expect(env.MUHAVEN_KEYRING).toBeUndefined();
+    expect(warnings).toEqual([]);
   });
 
   it('excludes the broker session key + endpoint even when present', () => {
     // These live with the daemon; baking them into the host config would
     // either leak a long-lived secret or desync the client when the
     // operator re-runs setup with a different endpoint.
-    const env = buildRegisterEnv({
+    const { env } = buildRegisterEnv({
       MUHAVEN_BACKEND_URL: 'https://api.muhaven.app',
       MUHAVEN_DASHBOARD_URL: 'https://muhaven.app',
       MUHAVEN_BROKER_SESSION_KEY: '0x' + 'aa'.repeat(32),
@@ -826,6 +828,34 @@ describe('buildRegisterEnv', () => {
     });
     expect(env.MUHAVEN_BROKER_SESSION_KEY).toBeUndefined();
     expect(env.MUHAVEN_BROKER_ENDPOINT).toBeUndefined();
+  });
+
+  // 0.2.0 hardening (Security M-1) — shell-metachar rejection. URL
+  // fields are pre-validated upstream in normal flows but this is
+  // defense-in-depth at the JSON-argv boundary.
+  it.each([
+    ['MUHAVEN_BACKEND_URL', 'https://api.muhaven.app" & calc.exe & "'],
+    ['MUHAVEN_DASHBOARD_URL', 'https://muhaven.app$(curl evil)'],
+  ])('drops %s containing shell metachars with a warning', (key, value) => {
+    const { env, warnings } = buildRegisterEnv({ [key]: value });
+    expect(env[key]).toBeUndefined();
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(warnings[0]).toMatch(/shell metacharacters/);
+  });
+
+  it.each([['malicious'], ['file" & calc.exe &"'], ['os; rm -rf /']])(
+    'restricts MUHAVEN_KEYRING to recognized values; rejects %s',
+    (value) => {
+      const { env, warnings } = buildRegisterEnv({ MUHAVEN_KEYRING: value });
+      expect(env.MUHAVEN_KEYRING).toBeUndefined();
+      expect(warnings.length).toBeGreaterThan(0);
+    },
+  );
+
+  it.each([['file'], ['os']])('accepts MUHAVEN_KEYRING=%s', (value) => {
+    const { env, warnings } = buildRegisterEnv({ MUHAVEN_KEYRING: value });
+    expect(env.MUHAVEN_KEYRING).toBe(value);
+    expect(warnings).toEqual([]);
   });
 });
 

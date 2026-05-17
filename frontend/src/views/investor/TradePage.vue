@@ -23,6 +23,7 @@ import * as MuHavenStableService from '@/services/contracts/MuHavenStableService
 import { addresses } from '@/contracts/addresses'
 import { arbiscanTx } from '@/lib/external'
 import { formatUSD } from '@/lib/utils'
+import { resolveTokenIdentifier, sanitizePrefillAmount } from '@/lib/prefill'
 import MButton from '@/components/ui/MButton.vue'
 import { muHavenTokenAbi } from '@/contracts/abis'
 import {
@@ -64,6 +65,18 @@ const txHash = ref<string | null>(null)
 const settledAs = ref<'instant' | 'queued' | null>(null)
 const queuedRequestId = ref<bigint | null>(null)
 const errMsg = ref<string | null>(null)
+
+// Path C deep-link state surfaced to the template:
+//  - `prefillTokenMissError`: set when `?token=X` was provided but X
+//    didn't resolve. Renders an inline AlertTriangle banner so the
+//    user knows the LLM's proposed token wasn't recognised — NEVER
+//    silently snap to `filtered[0]` (Frontend review H-1: silent
+//    fallback was actively swapping mismatched proposals to the
+//    user's most-traded token).
+//  - `marketplaceLoadFailed`: set when marketplace.load() throws.
+//    Renders a Retry CTA instead of the half-rendered page state.
+const prefillTokenMissError = ref<string | null>(null)
+const marketplaceLoadFailed = ref<boolean>(false)
 
 // `?mode=sell` deep-links straight into Sell. Token comes from `?token=`.
 function readQueryMode(): Mode {
@@ -396,7 +409,19 @@ onMounted(async () => {
     refreshKyc()
     refreshSubOperatorStatus()
   }
-  if (!marketplace.loaded) await marketplace.load()
+  // Surface marketplace.load() failures (Frontend H-2). Without this
+  // try/catch, a backend hiccup leaves the page half-rendered with no
+  // error state and no retry path — the user sees a blank token picker
+  // and thinks the deep-link broke.
+  if (!marketplace.loaded) {
+    try {
+      await marketplace.load()
+    } catch (err) {
+      console.warn('[TradePage] marketplace.load failed:', err)
+      marketplaceLoadFailed.value = true
+      // Continue — we can still render the mode toggle + an error banner.
+    }
+  }
 
   mode.value = readQueryMode()
 
@@ -404,33 +429,44 @@ onMounted(async () => {
   // deep-links from `@muhaven/mcp position.buy({ token: 'TBILL1' })` can
   // pre-fill without forcing the LLM to look up the contract address
   // first. Symbol match is case-insensitive (operator may type lowercase).
+  // Frontend H-1 fix: when the query token doesn't resolve, render an
+  // inline banner ("Couldn't find token X — pick one below") and DO NOT
+  // snap selectedToken to filtered[0]. The previous silent fallback was
+  // actively swapping mismatched LLM proposals (LLM says "GOLD1", user's
+  // most-traded TBILL1 silently fills in) → user taps Buy on wrong asset.
   const queryToken = route.query.token as string | undefined
-  if (queryToken) {
-    const looksLikeAddress = /^0x[a-fA-F0-9]{40}$/.test(queryToken)
-    const matched = looksLikeAddress
-      ? marketplace.getByAddress(queryToken)
-      : marketplace.tokens.find(
-          (t) => t.symbol.toLowerCase() === queryToken.toLowerCase(),
-        )
-    if (matched) {
-      selectedToken.value = matched.address
-    }
-  }
-  if (!selectedToken.value && marketplace.filtered.length > 0) {
+  const matched = resolveTokenIdentifier(queryToken, marketplace.tokens)
+  if (queryToken && !matched) {
+    prefillTokenMissError.value = queryToken.trim().slice(0, 32)
+    // Leave selectedToken empty — user must explicitly pick from the
+    // dropdown. The banner makes the failure mode visible.
+  } else if (matched) {
+    selectedToken.value = matched.address
+  } else if (marketplace.filtered.length > 0) {
+    // No queryToken AND we have a list — default to first as before.
+    // This path is the "direct nav to /trade" UX, NOT the deep-link path.
     selectedToken.value = marketplace.filtered[0].address
   }
 
-  // Amount pre-fill — `?amount=` for buy mode (mhUSDC notional),
-  // `?shares=` for sell mode (raw share count). Both fields land in
-  // the same `amount` form ref; mode disambiguates the unit. Reject
-  // non-numeric / negative values silently — never auto-submit, so a
-  // bad pre-fill just leaves the field empty and the user types.
-  // Path C contract: deep-links pre-fill the form; they never sign.
-  const queryAmount = route.query.amount as string | undefined
-  const queryShares = route.query.shares as string | undefined
-  const prefill = mode.value === 'sell' ? queryShares : queryAmount
-  if (prefill && /^\d+(\.\d+)?$/.test(prefill)) {
-    amount.value = prefill
+  // Amount pre-fill via the shared sanitizer:
+  //  - sell mode: integer-only (fhERC-20 shares have no decimals;
+  //    fractional input would silently floor on the on-chain submit).
+  //  - buy mode: decimal allowed up to 6 dp (matches mhUSDC base-unit
+  //    floor; longer fractional parts are rejected so the est-cost
+  //    preview can't diverge from the actual on-chain submit).
+  // Path C contract: silent reject is better than surfacing an
+  // incorrect pre-fill the user might tap through.
+  if (mode.value === 'sell') {
+    const cleaned = sanitizePrefillAmount(route.query.shares as string | undefined, {
+      allowDecimals: false,
+    })
+    if (cleaned !== null) amount.value = cleaned
+  } else {
+    const cleaned = sanitizePrefillAmount(route.query.amount as string | undefined, {
+      allowDecimals: true,
+      maxDp: 6,
+    })
+    if (cleaned !== null) amount.value = cleaned
   }
 
   // Trigger sell-mode reads if we deep-linked into ?mode=sell
@@ -439,6 +475,21 @@ onMounted(async () => {
     refreshInstantCap()
   }
 })
+
+async function retryMarketplaceLoad(): Promise<void> {
+  marketplaceLoadFailed.value = false
+  try {
+    await marketplace.load()
+    // On success, re-attempt the deep-link token resolution if there was
+    // a pending one — keeps the post-retry UX consistent with onMounted.
+    if (!selectedToken.value && !prefillTokenMissError.value && marketplace.filtered.length > 0) {
+      selectedToken.value = marketplace.filtered[0].address
+    }
+  } catch (err) {
+    console.warn('[TradePage] marketplace.load retry failed:', err)
+    marketplaceLoadFailed.value = true
+  }
+}
 
 // ── Mode switcher (URL sync) ────────────────────────────────────────────
 
@@ -745,6 +796,55 @@ const cashLinkLoud = computed(() =>
         />
 
         <div class="p-8 md:p-10 relative">
+          <!-- Path C deep-link error states. Both banners render BEFORE
+               the form so the user sees the failure mode before any
+               pre-fill state. Closes Frontend H-1 (silent token swap)
+               and H-2 (silent half-rendered marketplace.load failure). -->
+          <div
+            v-if="marketplaceLoadFailed"
+            data-testid="trade-marketplace-load-failed"
+            role="alert"
+            class="flex items-start gap-3 px-4 py-3 mb-6 rounded-xl
+                   bg-negative/10 border border-negative/25"
+          >
+            <AlertTriangle :size="16" :stroke-width="1.8" class="text-negative flex-shrink-0 mt-0.5" />
+            <div class="flex-1 min-w-0">
+              <p class="font-sans text-sm font-semibold text-negative">
+                Couldn't load the token catalog.
+              </p>
+              <p class="font-sans text-xs text-cool mt-1 mb-2">
+                A network blip or backend hiccup blocked the load. Retry to populate the token picker.
+              </p>
+              <button
+                type="button"
+                @click="retryMarketplaceLoad"
+                data-testid="trade-marketplace-retry"
+                class="font-sans text-xs font-semibold uppercase tracking-[0.18em]
+                       text-compute dark:text-signal hover:underline cursor-pointer"
+              >
+                Retry
+              </button>
+            </div>
+          </div>
+
+          <div
+            v-if="prefillTokenMissError"
+            data-testid="trade-prefill-token-miss"
+            role="alert"
+            class="flex items-start gap-3 px-4 py-3 mb-6 rounded-xl
+                   bg-gold/8 dark:bg-signal/8 border border-gold/25 dark:border-signal/25"
+          >
+            <AlertTriangle :size="16" :stroke-width="1.8" class="text-compute dark:text-signal flex-shrink-0 mt-0.5" />
+            <div class="flex-1 min-w-0">
+              <p class="font-sans text-sm font-semibold text-midnight dark:text-white">
+                Couldn't find token <span class="font-mono">{{ prefillTokenMissError }}</span> in your catalog.
+              </p>
+              <p class="font-sans text-xs text-cool mt-1">
+                The link from your assistant referenced a token we don't recognise. Pick one from the dropdown below — no token has been pre-selected.
+              </p>
+            </div>
+          </div>
+
           <!-- Mode toggle — segmented pill, hidden on success/error so
                the resolved card stays the focal point -->
           <div
