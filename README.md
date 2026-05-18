@@ -4,6 +4,8 @@
 
 **The first autonomous RWA portfolio manager where nobody can see your strategy, your balances, or your yields — not even the agent. A two-sided platform: issuers create tokens with confidential distribution, investors manage portfolios with AI-powered privacy.**
 
+🌐 **Live at [https://muhaven.app](https://muhaven.app)** · API at [https://api.muhaven.app](https://api.muhaven.app) · `@muhaven/mcp` on [npm](https://www.npmjs.com/package/@muhaven/mcp)
+
 ---
 
 ### Quick navigation
@@ -13,7 +15,7 @@
 | [Architecture](./docs/ARCHITECTURE.md) | System layers, data flow diagrams, integration points |
 | [Smart Contracts](./docs/SMART_CONTRACTS.md) | Contract specs, interfaces, EIP compliance, Solidity code |
 | [MuHaven SDK](./docs/SDK.md) | TypeScript SDK — quickstart, API reference, integration guide |
-| [AI Agent Design](./docs/AGENT_DESIGN.md) | Agent architecture, tool definitions, four-surface rollout (chat scaffold shipped, full agentic layer in active Wave 4 development) |
+| [AI Agent Design](./docs/AGENT_DESIGN.md) | Agent architecture, tool definitions, four-surface rollout — Wave 4 shipped + live on prod |
 | [Issuer Model](./docs/ISSUER_MODEL.md) | Supply side: how RWA tokens enter MuHaven, yield flow, issuer experience |
 | [Token Lifecycle](./docs/TOKEN_LIFECYCLE.md) | Four-state lifecycle model: Active → Paused → Winding Down → Archived (post-hackathon spec) |
 | [Threat Model](./docs/THREAT_MODEL.md) | Privacy boundary, known leakage points, side-channel resistance, ZK/TEE/MPC comparison |
@@ -67,7 +69,7 @@ The DeFAI (DeFi + AI) market is exploding — AI agents that manage portfolios, 
 
 MuHaven is the first confidential, AI-powered RWA portfolio manager. It's a **two-sided platform**: issuers create and list RWA tokens, deposit yield, and manage distribution — while investors manage portfolios with AI-powered privacy. Nobody can see the strategy, the balances, or the yields. Not competitors, not MEV bots, not even the agent itself.
 
-> **Status (production live · 2026-05-04):** the full **production-grade RWA flow** is deployed on Arbitrum Sepolia and serving traffic at [muhaven.app](https://muhaven.app) (frontend) backed by [api.muhaven.app](https://api.muhaven.app) (API). 11 platform contracts behind transparent proxies — atomic `MuHavenSubscription` for buy/redeem, per-token `MuHavenTreasury` custody, pluggable `IPriceOracle` with `IssuerControlledOracle` + `ChainlinkFunctionsOracle` reference impls, `RedemptionQueue` for overflow, pull-based `YieldSnapshot` per epoch, ERC-3643 modular compliance topology (`MuHavenIdentityRegistry` + `ModularCompliance` + module library), and the `MuHavenStable` confidential USDC wrapper (mhUSDC) replacing legacy PUSDC for MuHaven flows. fhERC-20 balances, ZeroDev passkey kernel + scoped session keys, backend + FHE worker + NAV worker + NAV publisher on a Cloudflare tunnel. TBILL1 + GOLD1 onboarded end-to-end. Investors and issuers drive every flow directly from the Vue 3 dashboard today; self-serve issuer onboarding wizard ships per-token contracts on-chain in one transaction batch. The **AI agent layer is in active development on a parallel branch** (HavenBot in-dashboard copilot, `@muhaven/mcp` MCPB server, OpenClaw skill, hosted checkout at `muhaven.app/pay`, tiered-autonomy engine) — see [AI Agent Design](./docs/AGENT_DESIGN.md).
+> **Status (production live · 2026-05-18):** the full RWA pipeline + the **Wave 4 agentic AI layer** are live on Arbitrum Sepolia, serving traffic at [muhaven.app](https://muhaven.app) (frontend) backed by [api.muhaven.app](https://api.muhaven.app) (API). 11 platform contracts behind transparent proxies — atomic `MuHavenSubscription` for buy/redeem, per-token `MuHavenTreasury` custody, pluggable `IPriceOracle` with `IssuerControlledOracle` + `ChainlinkFunctionsOracle` reference impls, `RedemptionQueue` for overflow, pull-based `YieldSnapshot` per epoch, ERC-3643 modular compliance topology, the `MuHavenStable` confidential USDC wrapper (mhUSDC), plus the P11 carry-over contracts (`DefaultProtection`, `EncryptedGovernance`, `KYCAttestationRegistry` + `MuHavenKYCVerifier`). fhERC-20 balances, ZeroDev passkey kernel + `@zerodev/permissions` scoped session keys, backend + FHE worker + NAV worker + NAV publisher on a Cloudflare tunnel. TBILL1 + GOLD1 onboarded end-to-end. **Four agentic surfaces are shipped:** HavenBot in-dashboard copilot (`/agent`), `@muhaven/mcp@0.2.1` published to npm with OIDC trusted-publishing + Sigstore provenance (24 tools across read / position / cash / policy / issuer / governance), the OpenClaw skill `muhaven-rwa-skill` on ClawHub with cosign + GitHub OIDC, and a Telegram bot with three-tier confirmation. The tiered-autonomy engine (Advisory / Confirm-per-action / Policy-bound) backs every surface; MCP-driven on-chain trades route through a pre-filled dashboard deep-link so the investor's passkey signs the actual settle (Path C). Prod cutover landed 2026-05-13.
 
 **How it works in 30 seconds:**
 
@@ -275,35 +277,30 @@ Pluggable sender pattern (`walletClientToSender` for EOA/scripts, `createZeroDev
 
 Every RWA token on MuHaven moves through a four-state lifecycle — **Active → Paused → Winding Down → Archived** — governing minting, transfers, distributions, and investor redemption at each stage. The contract + backend hooks are in place in Wave 3; full implementation lands post-hackathon. Full spec: [TOKEN_LIFECYCLE.md](./docs/TOKEN_LIFECYCLE.md).
 
-### AI agent layer (Wave 4 — in active development)
+### AI agent layer (Wave 4 — Live)
 
-> **Status:** the chat scaffold and tool schemas shipped with the production cutover. The full agentic execution loop is in active development on a parallel branch (~203h of ~327h shipped: tiered-autonomy engine, MCPB server + broker daemon, OpenClaw skill + Telegram surface, hosted checkout, encrypted policy primitives, DefaultProtection + EncryptedGovernance + KYC attestation stubs). It awaits the production cutover settlement before it merges back to develop. Investors and issuers can drive every flow directly from the Vue dashboard today.
+> **Status (live on prod since 2026-05-13):** the four agentic surfaces — HavenBot in-dashboard copilot, `@muhaven/mcp` published to npm, OpenClaw skill on ClawHub, Telegram bot — all route through the same ZeroDev kernel, session keys, backend tool catalog, and audit log. The tiered-autonomy engine (Advisory / Confirm-per-action / Policy-bound) backs every surface; `/pause` kill-switch uninstalls the active session validator in ≤1 Arb block. Safety hardening (PromptArmor + CaMeL planner/action split + recursive output sanitiser + lethal-trifecta strict CI lint + OWASP LLM Top 10 / Agentic Top 10 red-team corpus) gates every commit.
 
 **Four agentic surfaces** sit on the same MuHaven SDK + `@zerodev/permissions` policy gate:
 
 | Surface | Description | Status |
 |---|---|---|
-| **HavenBot** | In-dashboard streaming chat at `/agent`. Per-action confirm modals with FHE-decrypted preview. Onboarding flow targets <6 min passkey → KYC → first-buy | scaffold shipped (chat UI + stub); execution loop in Wave 4 P2 |
-| **`@muhaven/mcp` MCPB server** | Local MCP server with `manifest.json` declaring secrets `sensitive: true` → OS keychain. Companion `muhaven-broker` daemon over Unix socket holds session-key private half. Toolsets: `muhaven.read.*`, `muhaven.position.*`, `muhaven.policy.*` | shipped on parallel branch (Wave 4 P3) |
-| **OpenClaw skill** | `muhaven-rwa-skill` published to ClawHub via Sigstore + GitHub OIDC. Bundles a subset of the MCP toolset. Telegram surface with three confirmation tiers (inline ≤$200, Mini App + 6-digit OTP $200–$5K, deep-link passkey >$5K). A2A Agent Card for VibeKit / Google ADK discovery | shipped on parallel branch (Wave 4 P4) |
-| **Hosted checkout `muhaven.app/pay`** | Stripe-pattern hosted-checkout URL `muhaven.app/pay/c/<ulid>#k=<base64url(32B)>`. AES-256-GCM enc_payload with key in URL fragment (server cannot read alone). HMAC-SHA256 webhook signing, 5-min replay window. SSE realtime status. ZeroDev passkey ceremony for first-time buyers | shipped on parallel branch (Wave 4 P5) |
+| **HavenBot** | In-dashboard streaming chat at `/agent`. Gemini planner → deterministic policy gate → cleartext ActionDescriptor → ConfirmModal preview → passkey-bound kernel signs. SSE wire shape is provider-agnostic (Vercel-AI-SDK / Claude swap is one line) | **Live on prod** |
+| **`@muhaven/mcp` MCP server** | `@muhaven/mcp@0.2.1` on npm with OIDC trusted-publishing + Sigstore provenance. 24 tools across `read.*` / `position.*` / `cash.*` / `policy.*` / `issuer.*` / `governance.*`. Companion `muhaven-broker` daemon over Unix socket / named pipe, OS-keychain JWT via `@napi-rs/keyring` with file fallback. Device-code OAuth + scoped JWT (`mcp.read.*` / `mcp.propose.*`). Tool-description SHA-256 hash pinning gates CI (post-MCPoison defense) | **Live on npm + Claude Desktop / Code / Cursor** |
+| **OpenClaw skill** | `muhaven-rwa-skill` published to ClawHub via cosign + GitHub OIDC. Bundles a read-and-position subset of the MCP toolset. A2A Agent Card for VibeKit / Google ADK discovery | **Live on ClawHub** |
+| **Telegram bot** | Three-tier confirmation: inline keyboard ≤$200 · Mini App + 6-digit OTP $200–$5K · dashboard passkey deep-link >$5K. `chat.id` ≠ `from.id` enforced to defeat the bot-protocol footgun | **Live** |
+| **Hosted checkout `muhaven.app/pay`** | Stripe-pattern hosted-checkout URL `muhaven.app/pay/c/<ulid>#k=<base64url(32B)>`. AES-256-GCM enc_payload with key in URL fragment (server cannot decrypt alone). HMAC-SHA256 webhook signing, 5-min replay window. SSE realtime status. ZeroDev passkey ceremony for first-time buyers | **Live** |
 
-**Tool catalog** (executed via the deterministic policy gate, never by the LLM directly):
+**Tool catalog** (24 tools live in `@muhaven/mcp@0.2.1`; the HavenBot in-dashboard surface mirrors the same shape with a `muhaven_*` naming). Every tool flows through the deterministic policy gate — the LLM never signs directly:
 
-| Tool | What it does | Underlying |
+| Tool group | Examples | Underlying |
 |------|-------------|-----------|
-| `muhaven_portfolio_summary` | Encrypted balance preview + `ebool` signal flags (`isOverexposed`, `isUnderYield`) | CoFHE `decryptForView` + permit |
-| `muhaven_quote(asset, amount)` | Cleartext NAV × amount preview before purchase | `IPriceOracle.getNAV` |
-| `muhaven_propose_buy` | Atomic purchase via `MuHavenSubscription.purchase` | MuHaven SDK |
-| `muhaven_propose_redeem` | Instant redeem with auto-escalate on cap overflow | MuHavenSubscription + RedemptionQueue |
-| `muhaven_propose_claim` | Pull yield for a finalized epoch | YieldSnapshot |
-| `muhaven_set_policy(tier, params)` | Tiered-autonomy state machine (Advisory / Confirm / Policy-bound) | `@zerodev/permissions` validators + RiskParams |
-| `muhaven_pause` | Single-tx kill-switch; uninstalls active session validator | ZeroDev kernel |
-| `muhaven_unseal_position(handle, permit)` | Permit-based decrypt of a specific handle | CoFHE `decryptForView` |
-| `muhaven_check_protection_coverage` | Read public `reserveRateBps` from DefaultProtection | DefaultProtection (Wave 4 P11) |
-| `muhaven_propose_governance_vote`, `muhaven_cast_encrypted_vote` | Encrypted ballot via `FHE.select` + async tally | EncryptedGovernance (Wave 4 P11) |
-
-**Issuer-facing** tools cover token onboarding, NAV writes, snapshot + fund-epoch wizard, KYC whitelist, audit copilot — folded into the same agent surfaces.
+| `muhaven.read.*` | `portfolio`, `tokens`, `yields`, `activity`, `audit`, `distribution`, `protection_coverage`, `kyc_attestation` | Backend read repos + CoFHE `decryptForView` for permitted handles |
+| `muhaven.position.*` | `buy`, `sell`, `claim`, `rebalance` — return a pre-filled dashboard deep-link (`muhaven.app/trade?mode=buy&token=…`); investor's passkey signs the actual settle on dashboard (Path C) | MuHaven SDK + ZeroDev kernel |
+| `muhaven.cash.*` | `wrap` — pre-fills the CashPage USDC → mhUSDC wrap form | `MuHavenStable.deposit` |
+| `muhaven.policy.*` | `set_tier`, `pause`, `audit_export`, `session_key_status` | Tiered-autonomy state machine + `@zerodev/permissions` |
+| `muhaven.issuer.*` | `distribute_yield`, `kyc_add`, `kyc_remove`, `unpause_token`, `audit_query` | Issuer-side SDK + ERC-3643 adapter |
+| `muhaven.governance.*` | `propose`, `cast_vote` (encrypted ballot via `FHE.select` + async tally) | `EncryptedGovernance` |
 
 > See [AGENT_DESIGN.md](./docs/AGENT_DESIGN.md) for staged rollout, wallet model (kernel + scoped session keys, no separate agent wallet), tiered-autonomy state machine, threat model, and full design spec.
 
@@ -469,19 +466,28 @@ Every existing DeFAI agent operates on transparent state — strategies are visi
 
 ### Roadmap
 
-**In active Wave 4 development (~203h of ~327h shipped on a parallel branch, awaits production cutover settlement before merge):**
+**Wave 4 — Shipped (live on prod):**
 
 - Tiered-autonomy engine + audit log + `/pause` kill-switch (Advisory / Confirm-per-action / Policy-bound state machine)
-- HavenBot in-dashboard streaming chat with per-action confirm modals
-- `@muhaven/mcp` MCPB server + `muhaven-broker` daemon (OS-keychain credentials, Unix-socket signing)
-- OpenClaw skill `muhaven-rwa-skill` (Sigstore + GitHub OIDC trusted publishing) + Telegram surface with three confirmation tiers
-- Hosted checkout `muhaven.app/pay` (Stripe-pattern URL, AES-256-GCM enc_payload, HMAC-SHA256 webhooks, ZeroDev passkey ceremony for first-time buyers)
-- Encrypted policy primitives in `RiskParams` (branchless `FHE.select` hot path, breach-only async decrypt, investor-signed permit scoping)
-- DefaultProtection + EncryptedGovernance + KYC attestation stub contracts
+- HavenBot in-dashboard streaming chat with per-action confirm modals + cleartext ActionDescriptor preview
+- `@muhaven/mcp@0.2.1` on npm with OIDC trusted-publishing + Sigstore provenance; `muhaven-broker` daemon (OS-keychain credentials, Unix-socket / named-pipe signing); device-code OAuth + scoped JWT
+- OpenClaw skill `muhaven-rwa-skill` on ClawHub (cosign + GitHub OIDC) + Telegram bot with three-tier confirmation (inline ≤$200 · Mini App + OTP $200–$5K · dashboard passkey deep-link >$5K)
+- Encrypted policy primitives in `RiskParams` (branchless `FHE.select` hot path, breach-only async decrypt, `ebool` signal flags, EIP-712 `AgentPermit` with monotonic nonces)
+- `DefaultProtection` + `EncryptedGovernance` + `KYCAttestationRegistry` + `MuHavenKYCVerifier` contracts (upgradeable proxies on Arb Sepolia)
+- Issuer-side agent tools: `distribute_yield`, `kyc_add`, `kyc_remove`, `unpause_token`, `audit_query`
+- Safety hardening: PromptArmor + CaMeL planner/action split + recursive output sanitiser + `pnpm run lint:trifecta` strict CI gate + 69-case OWASP LLM Top 10 / Agentic Top 10 red-team corpus
+- Hosted checkout at `muhaven.app/pay` (Stripe-pattern URL, AES-256-GCM enc_payload, HMAC-SHA256 webhooks, SSE realtime status)
+- Public `/metrics` page (aggregate-only indexer counts, zero per-investor leakage)
+- User-facing documentation scaffolded for `docs.muhaven.app` (VitePress + Golden Hour Midnight theme)
 
-**Post-Wave 4:**
+**Wave 5 — Next:**
 
-- Native token issuance (without vault wrap) — research
+- Session-key-bound autonomous MCP `buy` / `sell` — the Policy-bound tier executing real on-chain trades inside `@zerodev/permissions` validators without a per-action passkey tap
+- ERC-7715 caveated permissions for finer-grained autonomous delegation
+- Real WebAuthn passkey deep-link verification for the >$5K Telegram tier (replaces the Wave 4 `'wave4-stub'` assertion stub with `@simplewebauthn/server` round-trip)
+- Cross-user permit-gated audit copilot (investor-signed EIP-712 "audit-mode permit" so compliance officers can read another user's audit log)
+- Multi-leg multicall `execute_plan` for in-modal rebalance ceremonies
+- Native token issuance (without vault wrap)
 - Stealth addresses (ERC-5564 / ERC-6538) for deposit-side privacy
 - Cross-chain KYC full implementation (CCIP revocation broadcast)
 - Revenue model activation: wrapping fee (0.1%), issuance fee (0.2%), yield distribution fee (0.1%) — see [ISSUER_MODEL.md](./docs/ISSUER_MODEL.md)
@@ -507,7 +513,7 @@ Every existing DeFAI agent operates on transparent state — strategies are visi
 | Backend | Node 20 + tsx (Clean Architecture from ReineiraOS Platform Modules), Drizzle + Postgres, Docker Compose, Cloudflare tunnel | —     |
 | Cross-chain | Circle CCTP V2 (planned for fiat on-ramp surfaces) | —        |
 | Frontend | Vue 3 + Vite + Bun + Tailwind CSS v4 (in-progress Golden Hour Midnight revamp) | —        |
-| AI agent | Anthropic Claude Sonnet 4.5 via Vercel AI SDK (HavenBot); host-LLM-agnostic for MCP / OpenClaw | —     |
+| AI agent | Google Gemini via `@google/genai` (HavenBot — SSE wire shape is provider-agnostic, Vercel-AI-SDK / Claude swap is a one-line provider change); host-LLM-agnostic for MCP / OpenClaw / Telegram | —     |
 | Package manager | pnpm (Fhenix recommended) | v9+      |
 
 > **SDK stability warning**: Fhenix `cofhe-contracts` is under active development. The team warns it "will be changing frequently." MuHaven contracts are built against `v0.1.3` with `@cofhe/sdk v0.5.1`. Check [compatibility docs](https://cofhe-docs.fhenix.zone/get-started/introduction/compatibility) before updating. See [SMART_CONTRACTS.md](./docs/SMART_CONTRACTS.md) for a checklist of what to verify if the SDK updates.
@@ -569,8 +575,10 @@ Full env-var reference for each backend service: [BACKEND_SETUP.md](./docs/BACKE
 ### Run tests
 
 ```bash
-pnpm test                                         # All tests (~180, FHE mock environment)
+pnpm test                                         # All Hardhat cases (~850, FHE mock environment)
 pnpm test test/MuHavenSdk.integration.test.ts     # SDK integration (25 cases)
+pnpm --filter @muhaven/mcp test                   # MCP server vitest (~330 cases)
+pnpm --filter backend test                        # Backend vitest (~890 cases)
 ```
 
 ### Deploy to testnet
@@ -628,7 +636,7 @@ muhaven/
 │   ├── ARCHITECTURE.md          # System layers, data flow
 │   ├── SMART_CONTRACTS.md       # Contract specs + EIP compliance
 │   ├── SDK.md                   # MuHaven TypeScript SDK reference
-│   ├── AGENT_DESIGN.md          # Agent design (chat UI shipped, loop Wave 4)
+│   ├── AGENT_DESIGN.md          # Agent design — Wave 4 shipped + live on prod
 │   ├── ISSUER_MODEL.md          # Supply side
 │   ├── TOKEN_LIFECYCLE.md       # Four-state lifecycle spec
 │   ├── BACKEND_SETUP.md         # Docker stack + tunnel + env vars
@@ -659,11 +667,22 @@ muhaven/
 │   └── mocks/                       # TestTreasury, MockPUSDC, MockPriceOracle, MockSequencerUptimeFeed, …
 │
 ├── packages/
-│   └── sdk/                         # @muhaven/sdk — TypeScript SDK with pluggable sender
-│       ├── src/clients/             # MuHavenClient + Subscription/Treasury/Queue/Snapshot/Oracle clients
-│       └── test/
+│   ├── sdk/                         # @muhaven/sdk — TypeScript SDK with pluggable sender
+│   │   ├── src/clients/             # MuHavenClient + Subscription/Treasury/Queue/Snapshot/Oracle clients
+│   │   └── test/
+│   ├── mcp/                         # @muhaven/mcp — MCP server (on npm @0.2.1 with OIDC + Sigstore)
+│   │                                #                + muhaven-broker daemon (Unix socket / named pipe)
+│   └── openclaw-skill/              # muhaven-rwa-skill — published to ClawHub (cosign + GitHub OIDC)
 │
-├── test/                            # Hardhat / cofhe-mock tests (786 cases)
+├── apps/
+│   ├── checkout-pay/                # Hosted-checkout buyer SPA at muhaven.app/pay
+│   └── telegram-mini-app/           # Telegram Mini App for the $200–$5K confirmation tier
+│
+├── telegram-bot/                    # Telegram bot worker — webhook + three-tier confirmation
+│
+├── docs-site/                       # VitePress user-facing docs (Golden Hour Midnight theme)
+│
+├── test/                            # Hardhat / cofhe-mock tests (~850 cases)
 │
 ├── scripts/
 │   ├── deploy.ts                    # Legacy Wave 3 deploy (read-only artifact)
@@ -684,7 +703,7 @@ muhaven/
 │   └── history/                     # Deployment snapshots
 │
 ├── backend/                         # Node 20 + tsx, Clean Architecture
-│   ├── api/v1/                      # REST handlers (auth, portfolio, issuer, agent stub)
+│   ├── api/v1/                      # REST handlers (auth, portfolio, issuer, agent, mcp, checkout)
 │   ├── src/                         # core, domain, application, infrastructure, interface
 │   ├── drizzle/                     # Drizzle schema (declarative push, not versioned migrations)
 │   └── Dockerfile
