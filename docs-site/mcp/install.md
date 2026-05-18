@@ -39,10 +39,10 @@ muhaven-mcp --help
 The default keyring uses your OS keychain (Keychain on macOS, Secret Service on Linux, Credential Manager on Windows). On WSL2, devcontainers, and SSH-remote shells, that's often unavailable. Set `MUHAVEN_KEYRING=file` to use a 0600-mode file at `~/.muhaven/jwt.json` instead.
 :::
 
-## Step 2 — One-shot setup
+## Step 2 — One-shot setup with auto-register
 
 ```bash
-muhaven-broker setup
+muhaven-broker setup --register claude-code
 ```
 
 That one command does everything:
@@ -51,7 +51,12 @@ That one command does everything:
 2. **Session key** — mints an ephemeral 32-byte key into `MUHAVEN_BROKER_SESSION_KEY` if not already present.
 3. **Daemon** — spawns the broker daemon detached in the background. Idempotent: if a daemon is already running, this step is skipped.
 4. **Device-code login** — opens your default browser to `https://muhaven.app/link?code=ABCD-1234`. Verify the requesting client metadata (name, scopes, fingerprint) matches the broker you just started, then approve with your passkey. The broker receives a scoped JWT (`mcp.read.*` + `mcp.propose.*`) and stores it in your OS keychain (or `~/.muhaven/jwt.json` with file keyring).
-5. **Closing summary** — prints the daemon PID + endpoint + the command to stop it later.
+5. **Host register** *(new in 0.1.6, requires `--register HOST` flag)* — shells out to `claude mcp add-json muhaven '<json>' --scope user`. Removes any prior `muhaven` entry first (idempotent). Default scope is `user` so every project on this machine sees the server. Pass `--register-scope project` to write `.mcp.json` in the current directory instead, or `--register-scope local` for per-project user-only entries.
+6. **Closing summary** — prints the daemon PID + endpoint + the command to stop it later.
+
+::: tip Why `--register` instead of editing `.mcp.json` by hand?
+Pre-0.1.6 the operator had to `cat > .mcp.json` with a hand-rolled JSON block. `--register claude-code` calls the official `claude mcp add-json` CLI, so the host config gets the same shape Claude Code's own tooling writes. Reserved host names (`claude-desktop`, `cursor`) parse but print a "not implemented" hint — file-edit registrars for those hosts land in a follow-up release.
+:::
 
 The login JWT is currently **1 hour**. After expiry, run `muhaven-broker setup` again (or just `muhaven-broker login` if the daemon is still running).
 
@@ -87,32 +92,21 @@ muhaven-broker login                                    # passkey ceremony
 
 ### Claude Code
 
-Add an entry to your global `.mcp.json` (typically `~/.claude/.mcp.json`):
+**If you ran `muhaven-broker setup --register claude-code` in Step 2, you're done.** Skip to "Verify end-to-end" below.
 
-```json
-{
-  "mcpServers": {
-    "muhaven": {
-      "command": "muhaven-mcp"
-    }
-  }
-}
+If you want to register manually (or your `--register` step printed a warning), use the official `claude mcp` CLI:
+
+```bash
+claude mcp add-json muhaven '{"type":"stdio","command":"muhaven-mcp","env":{"MUHAVEN_BACKEND_URL":"https://api.muhaven.app","MUHAVEN_DASHBOARD_URL":"https://muhaven.app"}}' --scope user
 ```
 
-If you installed with `npm install -g`, the `muhaven-mcp` binary is on your PATH. If you installed locally (`npm install`), use the absolute path:
+The CLI writes the entry into `~/.claude.json`. `--scope project` writes `.mcp.json` in the current directory instead (committed to your team's repo); `--scope local` writes a per-project user-only entry (Claude Code's default).
 
-```json
-{
-  "mcpServers": {
-    "muhaven": {
-      "command": "node",
-      "args": ["/abs/path/to/node_modules/@muhaven/mcp/bin/muhaven-mcp.cjs"]
-    }
-  }
-}
-```
+::: tip Why the official CLI instead of editing JSON by hand?
+The `claude mcp add-json` command shipped in 2025-Q4 alongside MCP Elicitation support and is the supported way to register a server. Hand-edited `.mcp.json` files still work, but the CLI handles scope semantics + idempotency + the future migration to URL-elicitation flows cleanly.
+:::
 
-Restart Claude Code. The next time you start a chat, `muhaven` appears in the MCP server list and the 22 tools are available.
+Restart Claude Code. The next time you start a chat, `muhaven` appears in the MCP server list and the 23 tools are available.
 
 ### Claude Desktop
 
