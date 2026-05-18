@@ -39,14 +39,15 @@ export interface ToolDescriptor {
 }
 
 /**
- * The 22 Wave 4 MCP tools across five groups:
- *   muhaven.read.*       (7 — incl. P11 protection_coverage + kyc_attestation)
+ * The 23 MCP tools across five groups:
+ *   muhaven.read.*       (8 — incl. P11 protection_coverage + kyc_attestation
+ *                            + 0.2.1 read.activity for Path C settle verify)
  *   muhaven.position.*   (4)
  *   muhaven.policy.*     (4)
  *   muhaven.issuer.*     (5 — P7)
  *   muhaven.governance.* (2 — P11; cast_vote frontend runner deferred to Wave 5)
  *
- * `MUHAVEN_READ_ONLY=true` exposes only the 7 `muhaven.read.*` tools.
+ * `MUHAVEN_READ_ONLY=true` exposes only the 8 `muhaven.read.*` tools.
  * P5's `muhaven.checkout.*` namespace was retired before Wave 4 close — the
  * hosted checkout surface ships as a separate Vite SPA (apps/checkout-pay/),
  * not as an MCP tool group.
@@ -88,17 +89,24 @@ export const TOOL_DESCRIPTORS: readonly ToolDescriptor[] = [
     sensitive: false,
   },
   {
+    name: 'muhaven.read.activity',
+    group: 'read',
+    description:
+      'Return the authenticated investor\'s on-chain activity feed (buys / sells / wraps / unwraps / yield claims / transfers). Each row carries token address, tx hash, block timestamp, and event type — but NEVER cleartext amounts (encrypted handles only, decryptable client-side via permit). USE THIS to verify a Path C dashboard action settled: after position.buy / position.sell / cash.wrap, the user opens the deep-link, taps Authorize, the on-chain tx lands → a new row appears here. Far more reliable than re-calling read.portfolio (which only changes shape when a NEW token enters the catalog).',
+    sensitive: false,
+  },
+  {
     name: 'muhaven.position.buy',
     group: 'position',
     description:
-      'Prepare a Subscription buy. Returns a dashboard deep-link URL (muhaven.app/trade?mode=buy&...) the user opens to review the pre-filled form, then taps Authorize. The user\'s passkey + ZeroDev kernel sign on the dashboard — this MCP tool never holds or submits a signing key. Use after the user names a clear amount + token (e.g. "Buy 5 mhUSDC of TBILL1" → `amountUsdc: "5"`). Token accepts either a symbol ("TBILL1") or 0x-address. The `amountUsdc` field is HUMAN-DECIMAL mhUSDC ("5" = 5 mhUSDC, "0.5" = half a mhUSDC) — NOT base-6 integer. Max 6 fractional digits. Settlement is NOT observable from MCP — verify by calling muhaven.read.portfolio after the user confirms done.',
+      'Prepare a Subscription buy. Returns a dashboard deep-link URL (muhaven.app/trade?mode=buy&...) the user opens to review the pre-filled form, then taps Authorize. The user\'s passkey + ZeroDev kernel sign on the dashboard — this MCP tool never holds or submits a signing key. Use after the user names a clear amount + token (e.g. "Buy 5 mhUSDC of TBILL1" → `amountUsdc: "5"`). Token accepts either a symbol ("TBILL1") or 0x-address. The `amountUsdc` field is HUMAN-DECIMAL mhUSDC ("5" = 5 mhUSDC, "0.5" = half a mhUSDC) — NOT base-6 integer. Max 6 fractional digits. The tool fetches the current on-chain NAV for the token and converts the notional to integer shares (floor) before building the URL — so "Buy 3 mhUSDC of GOLD1" at NAV $0.01 becomes "Buy 300 GOLD1 shares (~3 mhUSDC)". Refuses with `amount_too_small_for_share` when the notional won\'t buy at least 1 share at current NAV; the error message tells the user the minimum mhUSDC needed. Settlement is NOT observable from MCP — verify by calling muhaven.read.activity after the user confirms done (a new "buy" row with the tx hash will appear).',
     sensitive: true,
   },
   {
     name: 'muhaven.position.sell',
     group: 'position',
     description:
-      'Prepare a Subscription sell. Returns a dashboard deep-link URL (muhaven.app/trade?mode=sell&...) with the form pre-filled. Same passkey + verify-after pattern as muhaven.position.buy. Input is amountShares (raw POSITIVE INTEGER share count, NOT mhUSDC notional) — fhERC-20 shares have no decimals so fractional inputs are rejected.',
+      'Prepare a Subscription sell. Returns a dashboard deep-link URL (muhaven.app/trade?mode=sell&...) with the form pre-filled. Same passkey + verify-after pattern as muhaven.position.buy. Input is amountShares (raw POSITIVE INTEGER share count, NOT mhUSDC notional) — fhERC-20 shares have no decimals so fractional inputs are rejected. Verify settlement by calling muhaven.read.activity (look for a "sell" or "sell-queued" row with the tx hash).',
     sensitive: true,
   },
   {
@@ -120,7 +128,7 @@ export const TOOL_DESCRIPTORS: readonly ToolDescriptor[] = [
     name: 'muhaven.cash.wrap',
     group: 'cash',
     description:
-      'Prepare a USDC → mhUSDC wrap (the encrypted-balance conversion that funds buys). Returns a dashboard deep-link URL (muhaven.app/cash?action=wrap&...) with the amount pre-filled. Input amountUsdc is human-readable USDC ("100" = $100). Common LLM chain: read.portfolio → notice 0 mhUSDC → cash.wrap → then position.buy (each is its own user-confirmed deep-link). Settlement not observable from MCP — re-call read.portfolio to verify.',
+      'Prepare a USDC → mhUSDC wrap (the encrypted-balance conversion that funds buys). Returns a dashboard deep-link URL (muhaven.app/cash?action=wrap&...) with the amount pre-filled. Input amountUsdc is human-readable USDC ("100" = $100). Common LLM chain: read.portfolio → notice 0 mhUSDC → cash.wrap → then position.buy (each is its own user-confirmed deep-link). Verify settlement by calling muhaven.read.activity (a new "wrap" row will appear with the tx hash).',
     sensitive: true,
   },
   {

@@ -94,4 +94,35 @@ describe('BackendClient', () => {
     const headers = captured?.headers as Record<string, string>;
     expect(headers.authorization).toBeUndefined();
   });
+
+  // 0.2.1: positionBuy's NAV-resolution path hits the public
+  // `/api/v1/tokens` endpoint, so the MCP needs a GET that does NOT
+  // attach the Bearer header. Without this, the broker's JwtSource
+  // would be called on every NAV lookup — failing AUTH_REQUIRED for
+  // a not-yet-logged-in user (H1 in the multi-agent review).
+  it('getUnauth omits Authorization header and does not consult JwtSource', async () => {
+    let captured: RequestInit | undefined;
+    const fetchImpl = vi.fn(async (_u: URL, init?: RequestInit) => {
+      captured = init;
+      return jsonResponse({ tokens: [] });
+    });
+    const jwtSource = makeJwtSource();
+    const jwtSpy = vi.spyOn(jwtSource, 'get');
+    const client = new BackendClient({
+      baseUrl: 'https://b.example.com',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      jwtSource: jwtSource as any,
+      timeoutMs: 5000,
+      allowedHosts: ['b.example.com'],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      fetchImpl: fetchImpl as any,
+    });
+    const result = await client.getUnauth<{ tokens: unknown[] }>('/api/v1/tokens');
+    expect(result.tokens).toEqual([]);
+    const headers = captured?.headers as Record<string, string>;
+    expect(headers.authorization).toBeUndefined();
+    // The handler MUST NOT call JwtSource.get() — the whole point of
+    // getUnauth is to skip the auth-token acquisition path.
+    expect(jwtSpy).not.toHaveBeenCalled();
+  });
 });

@@ -11,22 +11,23 @@ describe('tool registry', () => {
   //  - P7 added 5 issuer tools  → 18
   //  - P11 added 2 read + 2 governance → 22
   //  - 0.1.7 (Path C) added 1 cash tool (cash.wrap) → 23
-  it('full registry contains all 23 tools (P3 + P7 + P11 + Path C)', () => {
-    expect(fullToolRegistry().length).toBe(23);
+  //  - 0.2.1 added 1 read tool (read.activity) — Path C settle verify → 24
+  it('full registry contains all 24 tools (P3 + P7 + P11 + Path C + 0.2.1 activity)', () => {
+    expect(fullToolRegistry().length).toBe(24);
   });
 
-  it('read-only filter exposes 7 read.* tools only (5 P3 + 2 P11)', () => {
+  it('read-only filter exposes 8 read.* tools only (5 P3 + 2 P11 + 1 activity)', () => {
     const ro = registryForReadOnly();
-    expect(ro.length).toBe(7);
+    expect(ro.length).toBe(8);
     for (const e of ro) expect(e.descriptor.group).toBe('read');
   });
 
   it('selectRegistry(false) === full', () => {
-    expect(selectRegistry(false).length).toBe(23);
+    expect(selectRegistry(false).length).toBe(24);
   });
 
   it('selectRegistry(true) === read-only', () => {
-    expect(selectRegistry(true).length).toBe(7);
+    expect(selectRegistry(true).length).toBe(8);
   });
 
   it('every entry has a schema with .parse', () => {

@@ -95,6 +95,26 @@ export const ReadAuditInputSchema = z
   })
   .strict();
 
+/**
+ * On-chain activity feed input — wraps `/api/v1/activity` (`tax_events`).
+ *
+ * The LLM uses this to verify that a Path C dashboard buy/sell/wrap
+ * actually landed on-chain. Unlike `read.portfolio` (which only shows
+ * the token catalog the user holds), each row here is keyed on a
+ * specific tx hash + log index + block timestamp, so the LLM can say
+ * "yes, your buy of TBILL1 in tx 0xabc... settled at 10:42 UTC".
+ *
+ * `limit` capped at 50 (matches backend's offset+limit pagination).
+ * `offset` lets the LLM page back if the most recent N rows weren't
+ * the one it was looking for. Both default backend-side.
+ */
+export const ReadActivityInputSchema = z
+  .object({
+    limit: z.number().int().min(1).max(50).optional(),
+    offset: z.number().int().min(0).max(1000).optional(),
+  })
+  .strict();
+
 // ---------- position group ----------
 
 /**
@@ -306,6 +326,7 @@ export type ReadYieldsInput = z.infer<typeof ReadYieldsInputSchema>;
 export type ReadDistributionInput = z.infer<typeof ReadDistributionInputSchema>;
 export type ReadTokensInput = z.infer<typeof ReadTokensInputSchema>;
 export type ReadAuditInput = z.infer<typeof ReadAuditInputSchema>;
+export type ReadActivityInput = z.infer<typeof ReadActivityInputSchema>;
 
 export type PositionBuyInput = z.infer<typeof PositionBuyInputSchema>;
 export type PositionSellInput = z.infer<typeof PositionSellInputSchema>;

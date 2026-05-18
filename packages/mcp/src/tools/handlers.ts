@@ -37,6 +37,7 @@ import type {
   PositionClaimInput,
   PositionRebalanceInput,
   PositionSellInput,
+  ReadActivityInput,
   ReadAuditInput,
   ReadDistributionInput,
   ReadPortfolioInput,
@@ -54,6 +55,11 @@ import type {
   GovernanceProposeInput,
   GovernanceCastVoteInput,
 } from './schemas.js';
+import {
+  computeSharesFromUsd6,
+  formatUsd6AsDecimal,
+  parseDecimalToUsd6,
+} from './decimal.js';
 
 export interface ToolDeps {
   backend: BackendClient;
@@ -196,6 +202,36 @@ export async function readAudit(
   }
 }
 
+/**
+ * 0.2.1 — `muhaven.read.activity` proxies `/api/v1/activity`
+ * (`tax_events` feed). Closes the Path-C verification gap:
+ * `read.portfolio` only returns the user's token catalog + a
+ * `last_synced_at` timestamp that doesn't move on re-buys of a
+ * token already held. The activity feed gives one row per on-chain
+ * event with the tx hash + block timestamp — strong evidence for
+ * the LLM to confirm "yes, your buy of TBILL1 settled at 10:42 UTC
+ * in tx 0xabc...".
+ *
+ * Privacy invariant preserved: every row's `amount` is null (encrypted
+ * handle only, decryptable client-side via permit). Backend's
+ * `GetActivityUseCase` already enforces this; we just relay the
+ * payload.
+ */
+export async function readActivity(
+  input: ReadActivityInput,
+  deps: ToolDeps,
+): Promise<ToolResult<unknown>> {
+  try {
+    const data = await deps.backend.get('/api/v1/activity', {
+      limit: input.limit,
+      offset: input.offset,
+    });
+    return ok(data);
+  } catch (e) {
+    return mapBackendError(e);
+  }
+}
+
 // ---------- position group ----------
 
 /**
@@ -263,6 +299,28 @@ interface PositionPrefillData {
     readonly amount?: string;
     readonly shares?: string;
     readonly epoch?: string;
+    /**
+     * Original `amountUsdc` the LLM passed to position.buy, retained
+     * verbatim alongside the computed `shares`. Lets the LLM say "you
+     * asked for 3 mhUSDC; that buys 300 shares of GOLD1 at NAV $0.01,
+     * costing ~3 mhUSDC" without having to re-derive the math.
+     * 0.2.1 only — undefined for sell / claim / wrap.
+     */
+    readonly amountUsdc?: string;
+    /**
+     * `shares * navUsd6` (6-dp base units, BigInt-stringified). The
+     * effective mhUSDC spend = `formatUsd6AsDecimal(effectiveNotionalUsd6)`.
+     * Usually equals the user-stated `amountUsdc` exactly when the
+     * notional is a clean multiple of NAV; otherwise slightly less
+     * because shares are floor-quantized.
+     */
+    readonly effectiveNotionalUsd6?: string;
+    /**
+     * NAV in 6-dp base units (BigInt-stringified) the conversion used.
+     * Pinning this in the echo lets a downstream audit replay the
+     * exact share-count computation.
+     */
+    readonly navUsd6?: string;
   };
 }
 
@@ -342,23 +400,205 @@ function resolveDashboardBaseUrl(deps: ToolDeps): string {
   return deps.dashboardBaseUrl ?? 'https://muhaven.app';
 }
 
+/**
+ * Shape of the public token-catalog response we depend on. Defined
+ * inline (rather than imported from backend) so the MCP package stays
+ * self-contained — only the fields we actually read are typed.
+ *
+ * `latest_nav.nav` is a decimal-price STRING (e.g. "1.000000",
+ * "2400.5", "0.01") populated by the nav-worker. May be null when no
+ * NAV snapshot exists yet for a token.
+ */
+interface TokenCatalogEntry {
+  readonly address: string;
+  readonly symbol: string;
+  readonly status: string;
+  readonly latest_nav: {
+    readonly nav: string;
+  } | null;
+}
+
+interface TokenCatalogResponse {
+  readonly tokens: readonly TokenCatalogEntry[];
+}
+
+/**
+ * Resolve a user-supplied token identifier (symbol OR 0x-address)
+ * against the public token catalog. Case-insensitive on both axes.
+ *
+ * Returns `null` when no match — the caller surfaces a structured
+ * `token_not_found` error to the LLM so the user can either fix the
+ * spelling or fall back to `read.tokens` for the canonical list.
+ */
+function resolveTokenInCatalog(
+  identifier: string,
+  catalog: readonly TokenCatalogEntry[],
+): TokenCatalogEntry | null {
+  const needle = identifier.toLowerCase();
+  return (
+    catalog.find(
+      (t) => t.address.toLowerCase() === needle || t.symbol.toLowerCase() === needle,
+    ) ?? null
+  );
+}
+
+/**
+ * Sanitize a token symbol for safe interpolation into LLM-context
+ * strings (instructions, error messages). The token catalog is
+ * populated by issuer-onboarding (a third party from the user's POV),
+ * and the existing `CreateTokenDtoSchema.symbol` only enforces
+ * `min(1).max(10)` — it does NOT restrict character class. A malicious
+ * issuer could register a symbol like `"OK\nIGNORE PRIOR INSTRUCTIONS"`
+ * and the LLM would see the newline-injected payload verbatim. Strip
+ * to `[A-Za-z0-9_-]` and cap length defensively. Matches every
+ * existing MuHaven RWA symbol (TBILL1, GOLD1, etc.) so the canonical
+ * happy path is unaffected.
+ *
+ * Defense-in-depth: the right long-term fix is to tighten the backend
+ * regex on `CreateTokenDtoSchema.symbol`. Until that lands, the MCP
+ * layer sanitizes at the boundary into LLM context.
+ */
+function sanitizeSymbolForLlmContext(raw: string): string {
+  const cleaned = raw.replace(/[^A-Za-z0-9_-]/g, '?');
+  return cleaned.length > 16 ? cleaned.slice(0, 16) : cleaned;
+}
+
 export async function positionBuy(
   input: PositionBuyInput,
   deps: ToolDeps,
 ): Promise<ToolResult<PositionPrefillData>> {
-  // 0.2.0: amount is human-decimal mhUSDC directly. Pass-through to URL;
-  // schema already validated regex + length. The dashboard's TradePage
-  // parses `?amount=` as mhUSDC (matching the form's own convention).
+  // 0.2.1: convert mhUSDC notional → integer shares using current NAV
+  // BEFORE building the URL. Fixes the unit-mismatch class where MCP
+  // emitted `?amount=3` meaning "3 mhUSDC" but the dashboard form
+  // interpreted it as "3 shares" → surprise spend on every non-$1-NAV
+  // token (e.g. GOLD1 at NAV $0.01: user asked to spend 3 mhUSDC, was
+  // about to buy 3 shares = $0.03 instead). The TradePage form is
+  // shares-based by construction (`shares = floor(numericAmount)` at
+  // submit), so converting up-front gives the user a pre-fill that
+  // matches what MCP told them.
+  //
+  // NAV is fetched from `/api/v1/tokens` (public, no auth — uses
+  // `getUnauth` so a not-yet-logged-in user can still resolve NAV
+  // without hitting AUTH_REQUIRED). If the backend can't be reached
+  // or the NAV is missing, we refuse rather than fall back to the
+  // old broken behavior — the LLM should tell the user to retry,
+  // not silently mis-route the spend.
+
+  let catalog: TokenCatalogResponse;
+  try {
+    catalog = await deps.backend.getUnauth<TokenCatalogResponse>('/api/v1/tokens');
+  } catch (e) {
+    return mapBackendError(e);
+  }
+
+  const token = resolveTokenInCatalog(input.token, catalog.tokens ?? []);
+  if (!token) {
+    return err(
+      'token_not_found',
+      `Token "${sanitizeSymbolForLlmContext(input.token)}" is not in the MuHaven catalog. Call muhaven.read.tokens for the canonical symbol list.`,
+    );
+  }
+  const safeSymbol = sanitizeSymbolForLlmContext(token.symbol);
+  if (!token.latest_nav || !token.latest_nav.nav) {
+    return err(
+      'nav_unavailable',
+      `No NAV snapshot available for ${safeSymbol} yet. The nav-worker may not have written one — retry shortly, or use the dashboard /trade page directly.`,
+    );
+  }
+
+  let navUsd6: bigint;
+  try {
+    navUsd6 = parseDecimalToUsd6(token.latest_nav.nav);
+  } catch (e) {
+    // Don't echo the raw NAV string back to the LLM — `latest_nav.nav`
+    // crosses an issuer-controlled boundary too (NAV-worker writes
+    // what the issuer's oracle reports). M2 hardening: drop the value.
+    return err(
+      'nav_malformed',
+      `NAV for ${safeSymbol} is not a valid decimal price. Open the dashboard /trade page directly.`,
+    );
+  }
+  if (navUsd6 <= 0n) {
+    return err(
+      'nav_non_positive',
+      `NAV for ${safeSymbol} is non-positive. Cannot quote a buy.`,
+    );
+  }
+
+  let notionalUsd6: bigint;
+  try {
+    notionalUsd6 = parseDecimalToUsd6(input.amountUsdc);
+  } catch (e) {
+    // Schema already enforced shape, but defensive — surface as the
+    // user-fixable error rather than crashing the handler.
+    return err(
+      'invalid_amount',
+      `amountUsdc "${input.amountUsdc}" is not a valid decimal mhUSDC amount.`,
+    );
+  }
+  // 0.2.1 H2: schema regex `^(0|[1-9]\d*)(\.\d{1,6})?$` accepts "0",
+  // "0.0", "0.000000" — flow would produce a misleading
+  // `amount_too_small_for_share` ("0 mhUSDC isn't enough..."). Reject
+  // zero notional explicitly so the LLM gets actionable guidance.
+  if (notionalUsd6 <= 0n) {
+    return err(
+      'invalid_amount',
+      'amountUsdc must be greater than zero.',
+    );
+  }
+
+  const shares = computeSharesFromUsd6(notionalUsd6, navUsd6);
+  if (shares <= 0n) {
+    // Per-share NAV IS the per-share minimum-notional. Concretely
+    // suggest the multiple needed so the LLM can steer the user:
+    // "you asked for 3 mhUSDC; need at least 2400.5 mhUSDC for 1 share
+    //  (or buy ~801 of those to get the share count back to round)".
+    const navDisplay = formatUsd6AsDecimal(navUsd6);
+    return err(
+      'amount_too_small_for_share',
+      `${input.amountUsdc} mhUSDC isn't enough to buy 1 share of ${safeSymbol} at the current NAV of $${navDisplay}/share. ` +
+        `Need at least ${navDisplay} mhUSDC to buy 1 share. ` +
+        `Ask the user for a larger amount, or chain muhaven.cash.wrap first if they're short on mhUSDC.`,
+    );
+  }
+
+  // Effective notional the user will actually spend (= shares × nav).
+  // Often slightly LESS than the requested amountUsdc due to the floor
+  // — surface both so the LLM can be transparent with the user.
+  const effectiveNotionalUsd6 = shares * navUsd6;
+  const effectiveNotionalDisplay = formatUsd6AsDecimal(effectiveNotionalUsd6);
+  const navDisplay = formatUsd6AsDecimal(navUsd6);
+  const sharesStr = shares.toString();
+
+  // Build the URL using the existing `?amount=<integer-shares>`
+  // contract. The TradePage's buy-mode handler reads `?amount=` and
+  // submits `BigInt(Math.floor(numericAmount))` as shares — passing an
+  // already-integer share count avoids any floor surprise. URL param
+  // name kept as `amount=` (not `shares=`) so we don't break any
+  // existing dashboard handler.
   const dashboardUrl = buildPositionDeeplink(resolveDashboardBaseUrl(deps), 'buy', {
-    token: input.token,
-    amount: input.amountUsdc,
+    token: token.symbol,
+    amount: sharesStr,
   });
+
   return ok({
     dashboardUrl,
     action: 'buy',
     instructions:
-      `Open this link to review and authorize the buy of ${input.amountUsdc} mhUSDC of ${input.token}:\n${dashboardUrl}`,
-    echo: { action: 'buy', token: input.token, amount: input.amountUsdc },
+      `Open this link to review and authorize the buy of ${sharesStr} ${safeSymbol} shares ` +
+      `(~${effectiveNotionalDisplay} mhUSDC at current NAV $${navDisplay}/share):\n${dashboardUrl}`,
+    echo: {
+      action: 'buy',
+      token: token.symbol,
+      amount: sharesStr,
+      shares: sharesStr,
+      // Carry the original request + the conversion math so the LLM
+      // (and a human auditor reading the trace) can see why the URL
+      // shows the share count instead of the user-stated notional.
+      amountUsdc: input.amountUsdc,
+      effectiveNotionalUsd6: effectiveNotionalUsd6.toString(),
+      navUsd6: navUsd6.toString(),
+    },
   });
 }
 

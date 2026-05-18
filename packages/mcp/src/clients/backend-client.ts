@@ -80,6 +80,18 @@ export class BackendClient {
     return this.exchange<T>('POST', url, body, /* withAuth */ false);
   }
 
+  /**
+   * GET variant that sends no Authorization header. Use for backend
+   * endpoints that are intentionally public (e.g. `/api/v1/tokens`
+   * which the marketplace + the 0.2.1 `positionBuy` NAV-conversion
+   * both read). Avoids triggering the AUTH_REQUIRED branch for the
+   * "not yet logged in" case on read paths that don't need auth.
+   */
+  async getUnauth<T>(path: string, query?: Record<string, string | number | undefined>): Promise<T> {
+    const url = this.buildUrl(path, query);
+    return this.exchange<T>('GET', url, undefined, /* withAuth */ false);
+  }
+
   private buildUrl(path: string, query?: Record<string, string | number | undefined>): URL {
     if (!path.startsWith('/')) {
       throw new BackendError('bad_request', `path must start with "/": ${path}`);

@@ -3,6 +3,7 @@ import { container } from '../../../src/infrastructure/container.js';
 import { createGetHandler } from '../../../src/interface/handler-factory.js';
 import { withAuth } from '../../../src/interface/middleware/with-auth.js';
 import { withCors } from '../../../src/interface/middleware/with-cors.js';
+import { withScope } from '../../../src/interface/middleware/with-scope.js';
 import { Response } from '../../../src/interface/response.js';
 
 const useCase = new GetActivityUseCase(container.taxEventRepo, container.userRepo);
@@ -21,4 +22,8 @@ const handler = createGetHandler({
   },
 });
 
-export default withCors(withAuth(handler));
+// Wave 4 P3 ADR-3 D2: device-flow JWTs must carry `mcp.read.*` to
+// read the activity feed. Legacy unscoped (SIWE) tokens have no
+// `scope` claim and fall through with full access — preserves the
+// existing dashboard Activity page contract.
+export default withCors(withAuth(withScope(['mcp.read.*'])(handler)));

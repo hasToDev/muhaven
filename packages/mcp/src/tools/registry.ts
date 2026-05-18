@@ -23,6 +23,7 @@ import {
   PositionClaimInputSchema,
   PositionRebalanceInputSchema,
   PositionSellInputSchema,
+  ReadActivityInputSchema,
   ReadAuditInputSchema,
   ReadDistributionInputSchema,
   ReadPortfolioInputSchema,
@@ -50,6 +51,7 @@ import {
   positionClaim,
   positionRebalance,
   positionSell,
+  readActivity,
   readAudit,
   readDistribution,
   readPortfolio,
@@ -96,6 +98,10 @@ const HANDLERS: Record<string, Pick<ToolEntry, 'schema' | 'handler'>> = {
   'muhaven.read.audit': {
     schema: ReadAuditInputSchema,
     handler: readAudit as ToolEntry['handler'],
+  },
+  'muhaven.read.activity': {
+    schema: ReadActivityInputSchema,
+    handler: readActivity as ToolEntry['handler'],
   },
   'muhaven.position.buy': {
     schema: PositionBuyInputSchema,
