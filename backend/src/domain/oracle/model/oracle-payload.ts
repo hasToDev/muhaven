@@ -95,3 +95,86 @@ export interface OracleAssetWrite {
   snapshot: OracleSnapshotUpsert | null;
   timeseries: OracleTimeseriesPoint[];
 }
+
+// ── Read shapes (Wave 5 Q1 frontend / Q4 charts) ──────────────────────
+//
+// Pure data — no entity classes. The read endpoints serve the
+// marketplace cards, token detail page, and chart components. The
+// `is_yield_bearing` field returned to consumers is the EFFECTIVE
+// value (`override ?? rwaxyz_flag`), not the raw column — the
+// override semantic is implementation detail of the persistence layer.
+
+export interface TokenMetadataRead {
+  ticker: string;
+  displayName: string;
+  description: string | null;
+  iconUrl: string | null;
+  colorHex: string | null;
+  website: string | null;
+  /** Effective yield-bearing flag (override applied). */
+  isYieldBearing: boolean;
+  /** Raw rwa.xyz flag — exposed for transparency / debugging UIs. */
+  isYieldBearingRwaxyz: boolean;
+  distributesIncome: boolean | null;
+  assetClassSlug: string | null;
+  assetClassName: string | null;
+  issuerName: string | null;
+  issuerLegalName: string | null;
+  issuerLei: string | null;
+  issuerCountry: string | null;
+  managerName: string | null;
+  jurisdictionCountry: string | null;
+  regulatoryFramework: string | null;
+  governingBody: string | null;
+  legalStructure: string | null;
+  inceptionDate: string | null;
+  feeManagementBps: number | null;
+  feePerformanceBps: number | null;
+  feeStructureDescription: string | null;
+  pmSubscriptionFrequency: string | null;
+  pmSubscriptionMinimumDollar: string | null;
+  pmRedemptionFrequency: string | null;
+  pmKycRequired: boolean | null;
+  underlyingTokens: OracleUnderlyingToken[] | null;
+  lastRefreshedAt: Date;
+}
+
+export interface OracleSnapshotRead {
+  ticker: string;
+  snapshotAt: Date;
+  source: string;
+  navDollar: string | null;
+  priceDollar: string | null;
+  apy7Day: string | null;
+  apy30Day: string | null;
+  dailyYieldRate: string | null;
+  yieldToMaturityPercent: string | null;
+  dailyYieldDistributedDollar: string | null;
+  hypothetical10kPerformance: string | null;
+  totalSupplyToken: string | null;
+  totalAssetValueDollar: string | null;
+  marketValueDollar: string | null;
+  holdingAddressesCount: number | null;
+  top5HolderConcentration: string | null;
+  rwaxyzUpdatedAt: Date | null;
+}
+
+export interface OracleTimeseriesReadPoint {
+  date: string;
+  value: string;
+  unit: string | null;
+}
+
+export interface OracleTimeseriesQuery {
+  ticker: string;
+  measureSlug: string;
+  /** Inclusive lower bound. Null → from the earliest known point. */
+  from?: string;
+  /** Inclusive upper bound. Null → up to the latest known point. */
+  to?: string;
+  /**
+   * Hard row cap. Use case passes `MAX_POINTS + 1` so it can detect
+   * the "narrow the range" overflow without truncating silently.
+   */
+  limit?: number;
+}

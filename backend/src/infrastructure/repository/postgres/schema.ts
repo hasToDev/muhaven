@@ -897,10 +897,19 @@ export const tokenMetadata = pgTable(
     iconUrl: text('icon_url'),
     colorHex: text('color_hex'),
     website: text('website'),
-    // The boolean that branches the marketplace card variant + the daily
-    // yield-distribution cron (Q3). Yield-bearing → APY card + cron;
-    // non-yield (stocks) → "Monthly Volume" alt card + cron skip.
+    // rwa.xyz's canonical `isYieldBearing` flag captured verbatim. This
+    // is what their classifier says about the underlying token shape.
     isYieldBearing: boolean('is_yield_bearing').notNull().default(false),
+    // MuHaven's per-token override of rwa.xyz's classification. Null →
+    // honour `is_yield_bearing`. Set this when the rwa.xyz flag doesn't
+    // match how MuHaven wants to surface the token (e.g. CETES / EUTBL
+    // / syrupUSDC / ONyc are flagged false on rwa.xyz despite having
+    // APY data; MuHaven treats them as yield-bearing for the daily
+    // distribution cron + marketplace APY card). The read endpoint
+    // computes the final `is_yield_bearing` as
+    // `override ?? is_yield_bearing` — preserving provenance while
+    // letting MuHaven take editorial responsibility.
+    isYieldBearingOverride: boolean('is_yield_bearing_override'),
     distributesIncome: boolean('distributes_income'),
     // Asset class — slug form ("us-treasury-debt") + display name. Distinct
     // from the on-chain `rwa_tokens.asset_class` enum because the rwa.xyz
@@ -940,13 +949,13 @@ export const tokenMetadata = pgTable(
   (t) => [
     index('token_metadata_rwaxyz_asset_id_idx').on(t.rwaxyzAssetId),
     // Partial index — marketplace queries are dominated by
-    // "yield-bearing only" filtering. A full boolean index over a
-    // ~50/50 column adds write cost without changing scan choice;
-    // the partial form is small (one btree page) and the planner uses
-    // it when the predicate matches.
+    // "yield-bearing only" filtering. The predicate matches the
+    // effective-yield-bearing semantic (`override ?? is_yield_bearing`)
+    // so the planner can use it whether MuHaven has overridden the
+    // rwa.xyz flag or accepted it.
     index('token_metadata_is_yield_bearing_idx')
       .on(t.ticker)
-      .where(sql`is_yield_bearing = true`),
+      .where(sql`COALESCE(is_yield_bearing_override, is_yield_bearing) = true`),
   ],
 );
 

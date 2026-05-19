@@ -25,7 +25,8 @@
     "seed:tokens:v35": "tsx scripts/seed-tokens-v35.ts",
     "seed:sync-issuers": "tsx scripts/sync-token-issuers.ts",
     "seed:demo-issuers": "tsx scripts/seed-demo-issuers.ts",
-    "ingest:oracle": "tsx scripts/ingest-oracle.ts"
+    "ingest:oracle": "tsx scripts/ingest-oracle.ts",
+    "seed:yield-overrides": "tsx scripts/seed-yield-bearing-overrides.ts"
   },
   "dependencies": {
     "@google/genai": "^2.0.1",

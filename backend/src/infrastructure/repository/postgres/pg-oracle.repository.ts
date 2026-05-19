@@ -1,10 +1,15 @@
-import { sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, lte, sql } from 'drizzle-orm';
 import type { IOracleRepository } from '../../../domain/oracle/repository/oracle.repository.js';
 import type {
   OracleAssetWrite,
   OracleMetadataUpsert,
+  OracleSnapshotRead,
   OracleSnapshotUpsert,
   OracleTimeseriesPoint,
+  OracleTimeseriesQuery,
+  OracleTimeseriesReadPoint,
+  OracleUnderlyingToken,
+  TokenMetadataRead,
 } from '../../../domain/oracle/model/oracle-payload.js';
 import {
   oracleSnapshots,
@@ -55,6 +60,120 @@ export class PgOracleRepository implements IOracleRepository {
       };
     });
   }
+
+  async findMetadata(ticker: string): Promise<TokenMetadataRead | null> {
+    const row = await this.db.query.tokenMetadata.findFirst({
+      where: eq(tokenMetadata.ticker, ticker),
+    });
+    if (!row) return null;
+    // Effective yield-bearing flag — `override ?? raw`. Drizzle types
+    // the nullable boolean column as `boolean | null` (never
+    // `undefined`) so the nullish-coalescing fallback is exhaustive.
+    const effectiveYieldBearing =
+      row.isYieldBearingOverride ?? row.isYieldBearing;
+    return {
+      ticker: row.ticker,
+      displayName: row.displayName,
+      description: row.description ?? null,
+      iconUrl: row.iconUrl ?? null,
+      colorHex: row.colorHex ?? null,
+      website: row.website ?? null,
+      isYieldBearing: effectiveYieldBearing,
+      isYieldBearingRwaxyz: row.isYieldBearing,
+      distributesIncome: row.distributesIncome ?? null,
+      assetClassSlug: row.assetClassSlug ?? null,
+      assetClassName: row.assetClassName ?? null,
+      issuerName: row.issuerName ?? null,
+      issuerLegalName: row.issuerLegalName ?? null,
+      issuerLei: row.issuerLei ?? null,
+      issuerCountry: row.issuerCountry ?? null,
+      managerName: row.managerName ?? null,
+      jurisdictionCountry: row.jurisdictionCountry ?? null,
+      regulatoryFramework: row.regulatoryFramework ?? null,
+      governingBody: row.governingBody ?? null,
+      legalStructure: row.legalStructure ?? null,
+      inceptionDate: row.inceptionDate ?? null,
+      feeManagementBps: row.feeManagementBps ?? null,
+      feePerformanceBps: row.feePerformanceBps ?? null,
+      feeStructureDescription: row.feeStructureDescription ?? null,
+      pmSubscriptionFrequency: row.pmSubscriptionFrequency ?? null,
+      pmSubscriptionMinimumDollar: row.pmSubscriptionMinimumDollar ?? null,
+      pmRedemptionFrequency: row.pmRedemptionFrequency ?? null,
+      pmKycRequired: row.pmKycRequired ?? null,
+      // `underlyingTokens` is stored as jsonb — Drizzle types it as
+      // `unknown` so we cast through the domain shape. Safe because
+      // the ingest path narrows to `OracleUnderlyingToken[]` before
+      // insert.
+      underlyingTokens: (row.underlyingTokens as OracleUnderlyingToken[] | null) ?? null,
+      lastRefreshedAt: row.lastRefreshedAt,
+    };
+  }
+
+  async findLatestSnapshot(ticker: string): Promise<OracleSnapshotRead | null> {
+    const row = await this.db.query.oracleSnapshots.findFirst({
+      where: eq(oracleSnapshots.ticker, ticker),
+      orderBy: [desc(oracleSnapshots.snapshotAt)],
+    });
+    if (!row) return null;
+    return {
+      ticker: row.ticker,
+      snapshotAt: row.snapshotAt,
+      source: row.source,
+      navDollar: row.navDollar ?? null,
+      priceDollar: row.priceDollar ?? null,
+      apy7Day: row.apy7Day ?? null,
+      apy30Day: row.apy30Day ?? null,
+      dailyYieldRate: row.dailyYieldRate ?? null,
+      yieldToMaturityPercent: row.yieldToMaturityPercent ?? null,
+      dailyYieldDistributedDollar: row.dailyYieldDistributedDollar ?? null,
+      hypothetical10kPerformance: row.hypothetical10kPerformance ?? null,
+      totalSupplyToken: row.totalSupplyToken ?? null,
+      totalAssetValueDollar: row.totalAssetValueDollar ?? null,
+      marketValueDollar: row.marketValueDollar ?? null,
+      holdingAddressesCount: row.holdingAddressesCount ?? null,
+      top5HolderConcentration: row.top5HolderConcentration ?? null,
+      rwaxyzUpdatedAt: row.rwaxyzUpdatedAt ?? null,
+    };
+  }
+
+  async hasTicker(ticker: string): Promise<boolean> {
+    const row = await this.db
+      .select({ ticker: tokenMetadata.ticker })
+      .from(tokenMetadata)
+      .where(eq(tokenMetadata.ticker, ticker))
+      .limit(1);
+    return row.length > 0;
+  }
+
+  async findTimeseries(
+    query: OracleTimeseriesQuery,
+  ): Promise<OracleTimeseriesReadPoint[]> {
+    const conditions = [
+      eq(oracleTimeseries.ticker, query.ticker),
+      eq(oracleTimeseries.measureSlug, query.measureSlug),
+    ];
+    // `date` is a Postgres `date` column; Drizzle accepts `YYYY-MM-DD`
+    // string operands and pushes them through as-is. The strict ISO
+    // shape (+ real-calendar validation) is enforced at the route
+    // layer before reaching here.
+    if (query.from) conditions.push(gte(oracleTimeseries.date, query.from));
+    if (query.to) conditions.push(lte(oracleTimeseries.date, query.to));
+
+    // Caller-supplied `limit` cap — set by the use case to bound the
+    // response size. Default 10,001 (one above the use-case ceiling) so
+    // the use case can detect "would have exceeded" and 400-out vs
+    // truncating silently.
+    const rows = await this.db.query.oracleTimeseries.findMany({
+      where: and(...conditions),
+      orderBy: [asc(oracleTimeseries.date)],
+      limit: query.limit,
+    });
+    return rows.map((r) => ({
+      date: r.date,
+      value: r.value,
+      unit: r.unit ?? null,
+    }));
+  }
 }
 
 // Tx-scoped repo factored out so the transaction body stays thin and
@@ -64,6 +183,13 @@ class PgOracleTxRepository {
   constructor(private readonly tx: Db) {}
 
   async upsertMetadata(input: OracleMetadataUpsert): Promise<void> {
+    // Note: `is_yield_bearing_override` is intentionally NOT in this
+    // shape. The ingest pipeline carries rwa.xyz's raw flag only;
+    // the override is MuHaven's editorial decision set independently
+    // (via `backend/scripts/seed-yield-bearing-overrides.ts`). Drizzle's
+    // ON CONFLICT DO UPDATE only SETs the columns named in `set`, so
+    // the override column survives every subsequent ingest — exactly
+    // the semantic we want.
     const now = new Date();
     const fields = {
       ticker: input.ticker,

@@ -1,4 +1,10 @@
-import type { OracleAssetWrite } from '../model/oracle-payload.js';
+import type {
+  OracleAssetWrite,
+  OracleSnapshotRead,
+  OracleTimeseriesQuery,
+  OracleTimeseriesReadPoint,
+  TokenMetadataRead,
+} from '../model/oracle-payload.js';
 
 export interface IOracleRepository {
   /**
@@ -23,4 +29,32 @@ export interface IOracleRepository {
     snapshotInserted: boolean;
     timeseriesPointsUpserted: number;
   }>;
+
+  /**
+   * Returns `null` when no metadata row exists for the ticker. The
+   * `isYieldBearing` field is the EFFECTIVE value
+   * (`is_yield_bearing_override ?? is_yield_bearing`); the raw
+   * rwa.xyz flag is also returned for transparency UIs.
+   */
+  findMetadata(ticker: string): Promise<TokenMetadataRead | null>;
+
+  /**
+   * Cheap existence probe — used by `GET /timeseries` to distinguish
+   * "unknown ticker → 404" from "known ticker with no points in range
+   * → 200 with empty array". Returns true iff a metadata row exists.
+   */
+  hasTicker(ticker: string): Promise<boolean>;
+
+  /**
+   * Returns `null` when no snapshot has been ingested for the
+   * ticker. Q4's marketplace card + token detail page consume the
+   * latest snapshot for hero scalars (NAV / APY / supply).
+   */
+  findLatestSnapshot(ticker: string): Promise<OracleSnapshotRead | null>;
+
+  /**
+   * Range-filtered chart series. Returns the points sorted by `date`
+   * ascending. Empty array when no series matches.
+   */
+  findTimeseries(query: OracleTimeseriesQuery): Promise<OracleTimeseriesReadPoint[]>;
 }
