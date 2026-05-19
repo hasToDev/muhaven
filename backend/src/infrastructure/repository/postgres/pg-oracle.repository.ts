@@ -9,6 +9,7 @@ import type {
   OracleTimeseriesQuery,
   OracleTimeseriesReadPoint,
   OracleUnderlyingToken,
+  TokenListItem,
   TokenMetadataRead,
 } from '../../../domain/oracle/model/oracle-payload.js';
 import {
@@ -139,6 +140,96 @@ export class PgOracleRepository implements IOracleRepository {
       top5HolderConcentration: row.top5HolderConcentration ?? null,
       rwaxyzUpdatedAt: row.rwaxyzUpdatedAt ?? null,
     };
+  }
+
+  async findMetadataList(): Promise<TokenListItem[]> {
+    // Two parallel queries: card-shape metadata + DISTINCT ON
+    // (ticker) ORDER BY snapshot_at DESC for the latest snapshot per
+    // ticker. Merging in memory is cleaner than a single SQL join with
+    // DISTINCT ON aggregation, and the catalog is bounded (~11 rows
+    // today, designed up to hundreds).
+    //
+    // Drizzle's projection select keeps the wire payload small (~15
+    // fields per row) — the marketplace card doesn't need the full
+    // 30+ field metadata.
+    const [metadataRows, latestRows] = await Promise.all([
+      this.db
+        .select({
+          ticker: tokenMetadata.ticker,
+          displayName: tokenMetadata.displayName,
+          description: tokenMetadata.description,
+          iconUrl: tokenMetadata.iconUrl,
+          colorHex: tokenMetadata.colorHex,
+          isYieldBearing: tokenMetadata.isYieldBearing,
+          isYieldBearingOverride: tokenMetadata.isYieldBearingOverride,
+          assetClassSlug: tokenMetadata.assetClassSlug,
+          assetClassName: tokenMetadata.assetClassName,
+          issuerName: tokenMetadata.issuerName,
+          issuerCountry: tokenMetadata.issuerCountry,
+          pmSubscriptionMinimumDollar: tokenMetadata.pmSubscriptionMinimumDollar,
+          pmSubscriptionFrequency: tokenMetadata.pmSubscriptionFrequency,
+          inceptionDate: tokenMetadata.inceptionDate,
+          lastRefreshedAt: tokenMetadata.lastRefreshedAt,
+        })
+        .from(tokenMetadata)
+        .orderBy(asc(tokenMetadata.ticker)),
+      this.db.execute<{
+        ticker: string;
+        snapshot_at: Date | string;
+        nav_dollar: string | null;
+        price_dollar: string | null;
+        apy_7_day: string | null;
+        total_asset_value_dollar: string | null;
+        holding_addresses_count: number | null;
+      }>(sql`
+        SELECT DISTINCT ON (ticker)
+          ticker,
+          snapshot_at,
+          nav_dollar,
+          price_dollar,
+          apy_7_day,
+          total_asset_value_dollar,
+          holding_addresses_count
+        FROM oracle_snapshots
+        ORDER BY ticker, snapshot_at DESC
+      `),
+    ]);
+
+    const latestByTicker = new Map<string, TokenListItem['latestSnapshot']>();
+    // `db.execute` returns a `QueryResult` with rows on `.rows`. Column
+    // names land snake_case verbatim (no Drizzle camelCase aliasing
+    // on the raw-SQL path — see `pg-nav-history.repository.ts:73-85`
+    // for the same pattern).
+    for (const r of latestRows.rows) {
+      latestByTicker.set(r.ticker, {
+        snapshotAt:
+          r.snapshot_at instanceof Date ? r.snapshot_at : new Date(r.snapshot_at),
+        navDollar: r.nav_dollar,
+        priceDollar: r.price_dollar,
+        apy7Day: r.apy_7_day,
+        totalAssetValueDollar: r.total_asset_value_dollar,
+        holdingAddressesCount: r.holding_addresses_count,
+      });
+    }
+
+    return metadataRows.map((m) => ({
+      ticker: m.ticker,
+      displayName: m.displayName,
+      description: m.description ?? null,
+      iconUrl: m.iconUrl ?? null,
+      colorHex: m.colorHex ?? null,
+      isYieldBearing: m.isYieldBearingOverride ?? m.isYieldBearing,
+      isYieldBearingRwaxyz: m.isYieldBearing,
+      assetClassSlug: m.assetClassSlug ?? null,
+      assetClassName: m.assetClassName ?? null,
+      issuerName: m.issuerName ?? null,
+      issuerCountry: m.issuerCountry ?? null,
+      pmSubscriptionMinimumDollar: m.pmSubscriptionMinimumDollar ?? null,
+      pmSubscriptionFrequency: m.pmSubscriptionFrequency ?? null,
+      inceptionDate: m.inceptionDate ?? null,
+      lastRefreshedAt: m.lastRefreshedAt,
+      latestSnapshot: latestByTicker.get(m.ticker) ?? null,
+    }));
   }
 
   async findTimeseries(

@@ -87,6 +87,11 @@ async function tearDownUserStores(): Promise<void> {
     import('@/stores/portfolio').then((m) => m.usePortfolioStore().reset()),
     import('@/stores/activity').then((m) => m.useActivityStore().reset()),
     import('@/stores/marketplace').then((m) => m.useMarketplaceStore().reset()),
+    // Wave 5 Q1 — oracle-tracked RWA catalog. Not strictly user-scoped
+    // (the data is public), but the filter state (search query, asset
+    // class, yield toggle) is user-session state and should reset
+    // alongside other Pinia stores on logout.
+    import('@/stores/oracle-tokens').then((m) => m.useOracleTokensStore().reset()),
     // Wave 4 §5 Path D — issuer checkout dashboard store. Per the
     // `feedback_auth_boundary_teardown` memory: every new Pinia store
     // holding user-scoped state wires into tearDownUserStores so silent

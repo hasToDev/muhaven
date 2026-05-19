@@ -178,3 +178,40 @@ export interface OracleTimeseriesQuery {
    */
   limit?: number;
 }
+
+/**
+ * Card-shape projection — what the marketplace list endpoint returns.
+ * Subset of `TokenMetadataRead` (the fields a marketplace card
+ * actually renders) plus the inline latest snapshot so the page can
+ * fan out 1 list request instead of 11 × (metadata + snapshot).
+ *
+ * `latestSnapshot` is nullable because a metadata row may exist
+ * without any snapshot yet (e.g. a token onboarded but the first
+ * ingest snapshot hasn't landed). The frontend renders the static
+ * fields and hides the hero scalars in that case.
+ */
+export interface TokenListItem {
+  ticker: string;
+  displayName: string;
+  description: string | null;
+  iconUrl: string | null;
+  colorHex: string | null;
+  isYieldBearing: boolean;
+  isYieldBearingRwaxyz: boolean;
+  assetClassSlug: string | null;
+  assetClassName: string | null;
+  issuerName: string | null;
+  issuerCountry: string | null;
+  pmSubscriptionMinimumDollar: string | null;
+  pmSubscriptionFrequency: string | null;
+  inceptionDate: string | null;
+  lastRefreshedAt: Date;
+  latestSnapshot: {
+    snapshotAt: Date;
+    navDollar: string | null;
+    priceDollar: string | null;
+    apy7Day: string | null;
+    totalAssetValueDollar: string | null;
+    holdingAddressesCount: number | null;
+  } | null;
+}

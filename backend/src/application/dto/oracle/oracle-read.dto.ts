@@ -2,6 +2,7 @@ import type {
   OracleSnapshotRead,
   OracleTimeseriesReadPoint,
   OracleUnderlyingToken,
+  TokenListItem,
   TokenMetadataRead,
 } from '../../../domain/oracle/model/oracle-payload.js';
 
@@ -156,6 +157,66 @@ export function toOracleSnapshotDto(snap: OracleSnapshotRead): OracleSnapshotDto
     holding_addresses_count: snap.holdingAddressesCount,
     top_5_holder_concentration: snap.top5HolderConcentration,
     rwaxyz_updated_at: snap.rwaxyzUpdatedAt?.toISOString() ?? null,
+  };
+}
+
+export interface TokenListItemDto {
+  ticker: string;
+  display_name: string;
+  description: string | null;
+  icon_url: string | null;
+  color_hex: string | null;
+  is_yield_bearing: boolean;
+  is_yield_bearing_rwaxyz: boolean;
+  asset_class_slug: string | null;
+  asset_class_name: string | null;
+  issuer_name: string | null;
+  issuer_country: string | null;
+  pm_subscription_minimum_dollar: string | null;
+  pm_subscription_frequency: string | null;
+  inception_date: string | null;
+  last_refreshed_at: string;
+  latest_snapshot: {
+    snapshot_at: string;
+    nav_dollar: string | null;
+    price_dollar: string | null;
+    apy_7_day: string | null;
+    total_asset_value_dollar: string | null;
+    holding_addresses_count: number | null;
+  } | null;
+}
+
+export interface TokenListDto {
+  tokens: TokenListItemDto[];
+}
+
+export function toTokenListItemDto(item: TokenListItem): TokenListItemDto {
+  return {
+    ticker: item.ticker,
+    display_name: item.displayName,
+    description: item.description,
+    icon_url: item.iconUrl,
+    color_hex: item.colorHex,
+    is_yield_bearing: item.isYieldBearing,
+    is_yield_bearing_rwaxyz: item.isYieldBearingRwaxyz,
+    asset_class_slug: item.assetClassSlug,
+    asset_class_name: item.assetClassName,
+    issuer_name: item.issuerName,
+    issuer_country: item.issuerCountry,
+    pm_subscription_minimum_dollar: item.pmSubscriptionMinimumDollar,
+    pm_subscription_frequency: item.pmSubscriptionFrequency,
+    inception_date: item.inceptionDate,
+    last_refreshed_at: item.lastRefreshedAt.toISOString(),
+    latest_snapshot: item.latestSnapshot
+      ? {
+          snapshot_at: item.latestSnapshot.snapshotAt.toISOString(),
+          nav_dollar: item.latestSnapshot.navDollar,
+          price_dollar: item.latestSnapshot.priceDollar,
+          apy_7_day: item.latestSnapshot.apy7Day,
+          total_asset_value_dollar: item.latestSnapshot.totalAssetValueDollar,
+          holding_addresses_count: item.latestSnapshot.holdingAddressesCount,
+        }
+      : null,
   };
 }
 

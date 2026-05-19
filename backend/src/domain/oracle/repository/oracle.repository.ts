@@ -3,6 +3,7 @@ import type {
   OracleSnapshotRead,
   OracleTimeseriesQuery,
   OracleTimeseriesReadPoint,
+  TokenListItem,
   TokenMetadataRead,
 } from '../model/oracle-payload.js';
 
@@ -40,6 +41,15 @@ export interface IOracleRepository {
    * canonical row keyed by the case-preserved storage value.
    */
   findMetadata(ticker: string): Promise<TokenMetadataRead | null>;
+
+  /**
+   * Marketplace list — card-shape projection of every metadata row
+   * with the latest snapshot inlined. Two underlying queries (metadata
+   * + DISTINCT ON snapshots) merged in memory. Sorted by ticker so the
+   * response is deterministic for cache-key consistency. Bounded by
+   * the catalog size (currently 11 rows; designed up to hundreds).
+   */
+  findMetadataList(): Promise<TokenListItem[]>;
 
   /**
    * Returns `null` when no snapshot has been ingested for the

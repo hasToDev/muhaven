@@ -33,6 +33,16 @@ const router = createRouter({
       component: () => import('@/views/investor/MarketplacePage.vue'),
       meta: { title: 'Marketplace' },
     },
+    {
+      // Wave 5 Q1 — per-ticker detail page sourced from
+      // `/api/v1/oracle/tokens/:ticker/metadata`. The `:ticker` regex
+      // matches the ingest-side shape `^[A-Za-z0-9_-]{1,32}$`; bad
+      // values fall through to the global 404 catch-all.
+      path: '/marketplace/:ticker([A-Za-z0-9_-]{1,32})',
+      component: () => import('@/views/investor/TokenDetailPage.vue'),
+      meta: { title: 'Token Detail' },
+      props: true,
+    },
     // Wave 3.5 canonical: /trade is a single page with a Buy/Sell mode
     // toggle (Phase 6.5) — `MuHavenSubscription.purchase` for buy,
     // `MuHavenSubscription.redeem` for sell with auto-escalate-to-queue
