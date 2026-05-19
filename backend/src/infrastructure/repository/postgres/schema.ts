@@ -1031,9 +1031,19 @@ export const oracleTimeseries = pgTable(
   },
   // The composite PK `(ticker, measure_slug, date)` is itself a btree
   // whose leftmost prefix `(ticker, measure_slug)` already serves any
-  // chart query filtering on those two columns. A separate
-  // (ticker, measure_slug) index would double the per-row write cost
-  // and add ~46k redundant index entries during backfill for no read-
-  // path win.
-  (t) => [primaryKey({ columns: [t.ticker, t.measureSlug, t.date] })],
+  // chart query filtering on those two columns when the predicate is
+  // `ticker = ?`. Repo lookups use `lower(ticker) = lower(?)` for the
+  // case-insensitive contract (see `feedback_address_case_at_repo_boundary`
+  // — same pattern), and `lower()` defeats the PK btree. The functional
+  // index below makes `lower(ticker)` sargable so the `findMetadata`
+  // DISTINCT measure_slug query (and any future case-insensitive
+  // timeseries lookups) plan an index scan instead of a seq scan.
+  // Cheap to maintain at 28k rows; mandatory before the catalog scales.
+  (t) => [
+    primaryKey({ columns: [t.ticker, t.measureSlug, t.date] }),
+    index('oracle_timeseries_lower_ticker_measure_idx').on(
+      sql`lower(${t.ticker})`,
+      t.measureSlug,
+    ),
+  ],
 );

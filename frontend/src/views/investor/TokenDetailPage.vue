@@ -10,9 +10,11 @@ import {
 import { formatUSD } from '@/lib/utils'
 import MButton from '@/components/ui/MButton.vue'
 import MPageLoader from '@/components/ui/MPageLoader.vue'
+import OracleTimeseriesChart from '@/components/charts/OracleTimeseriesChart.vue'
 import {
   ArrowLeft, Globe, ShieldCheck, TrendingUp, Sparkles,
   Building2, FileText, Users, CircleDollarSign, ExternalLink, AlertCircle,
+  LineChart,
 } from 'lucide-vue-next'
 
 /**
@@ -385,6 +387,34 @@ const issuerLine = computed(() => {
             </span>
           </div>
         </div>
+      </section>
+
+      <!-- ═══════════════════════════════════════════════════════════
+           Q4 chart — historical timeseries with measure + range
+           toggles. Sits between the hero and the two-column body so
+           the chart is the first thing below the headline scalars.
+           Skip when the token has no snapshot yet (no data to chart).
+           ═══════════════════════════════════════════════════════════ -->
+      <section
+        v-if="snapshot"
+        v-motion
+        :initial="{ opacity: 0, y: 12 }"
+        :visible-once="{ opacity: 1, y: 0, transition: { duration: 480, delay: 120 } }"
+        class="py-10 border-b border-haze dark:border-white/5"
+        aria-labelledby="token-chart-heading"
+      >
+        <h2
+          id="token-chart-heading"
+          class="flex items-center gap-2 font-sans text-xs uppercase tracking-[0.18em] font-bold text-cool mb-6"
+        >
+          <LineChart :size="14" :stroke-width="2" aria-hidden="true" />
+          Historical Performance
+        </h2>
+        <OracleTimeseriesChart
+          :ticker="metadata.ticker"
+          :is-yield-bearing="metadata.is_yield_bearing"
+          :published-measures="metadata.published_measures"
+        />
       </section>
 
       <!-- ═══════════════════════════════════════════════════════════

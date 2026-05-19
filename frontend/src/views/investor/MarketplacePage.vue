@@ -4,8 +4,9 @@ import { useOracleTokensStore } from '@/stores/oracle-tokens'
 import { formatUSD } from '@/lib/utils'
 import MButton from '@/components/ui/MButton.vue'
 import MPageLoader from '@/components/ui/MPageLoader.vue'
+import OracleSparkline from '@/components/charts/OracleSparkline.vue'
 import {
-  Search, TrendingUp, ShieldCheck, Inbox, EyeOff, Sparkles,
+  Search, ShieldCheck, Inbox, EyeOff, Sparkles,
 } from 'lucide-vue-next'
 import type { OracleTokenListItemDto } from '@/services/api'
 
@@ -306,6 +307,11 @@ function formatApy(raw: string | null | undefined): string {
                   </p>
                 </div>
               </div>
+              <!-- Bottom row: asset-class chip (left) + 90-day sparkline
+                   stacked above the APY/appreciation scalar (right).
+                   Stacking the sparkline above the data scalar reads as
+                   "decorative trend chrome above the headline figure"
+                   rather than competing with the identity block above. -->
               <div class="flex justify-between items-end gap-3">
                 <span
                   v-if="token.asset_class_name"
@@ -316,21 +322,30 @@ function formatApy(raw: string | null | undefined): string {
                 </span>
                 <span v-else />
 
-                <span
-                  v-if="token.is_yield_bearing"
-                  data-testid="marketplace-token-apy"
-                  class="font-accent italic font-extrabold text-2xl text-compute dark:text-signal tabular-nums leading-none"
-                >
-                  {{ formatApy(token.latest_snapshot?.apy_7_day) }}
-                </span>
-                <span
-                  v-else
-                  data-testid="marketplace-token-non-yield"
-                  class="font-sans text-[10px] font-bold uppercase tracking-wider px-3 py-1.5 rounded
-                         bg-mist/70 dark:bg-white/5 text-cool border border-haze/70 dark:border-white/5"
-                >
-                  Capital appreciation
-                </span>
+                <div class="flex flex-col items-end gap-2">
+                  <OracleSparkline
+                    :ticker="token.ticker"
+                    :measure="token.is_yield_bearing ? 'apy_7_day' : 'price_dollar'"
+                    :label="token.is_yield_bearing ? '7D APY' : 'Price'"
+                    :kind="token.is_yield_bearing ? 'pct' : 'usd'"
+                    :days="90"
+                  />
+                  <span
+                    v-if="token.is_yield_bearing"
+                    data-testid="marketplace-token-apy"
+                    class="font-accent italic font-extrabold text-2xl text-compute dark:text-signal tabular-nums leading-none"
+                  >
+                    {{ formatApy(token.latest_snapshot?.apy_7_day) }}
+                  </span>
+                  <span
+                    v-else
+                    data-testid="marketplace-token-non-yield"
+                    class="font-sans text-[10px] font-bold uppercase tracking-wider px-3 py-1.5 rounded
+                           bg-mist/70 dark:bg-white/5 text-cool border border-haze/70 dark:border-white/5"
+                  >
+                    Capital appreciation
+                  </span>
+                </div>
               </div>
             </div>
           </RouterLink>

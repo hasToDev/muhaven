@@ -105,6 +105,22 @@ const selectedTokenData = computed<TokenResponseDto | undefined>(() =>
   selectedToken.value ? marketplace.getByAddress(selectedToken.value) : undefined,
 )
 
+// Wave 5 zero-burn: tokens in `winding_down` / `paused` / `archived`
+// keep their balances on-chain (existing holders can still sell) but
+// new buys are gated off — the Buy CTA disables and a deprecation
+// banner explains why. Drives both `ctaDisabled` and the banner v-if.
+const tokenIsRetired = computed(
+  () => selectedTokenData.value?.status !== undefined
+    && selectedTokenData.value.status !== 'active',
+)
+const retirementLabel = computed(() => {
+  const s = selectedTokenData.value?.status
+  if (s === 'winding_down') return 'Winding down'
+  if (s === 'paused') return 'Paused'
+  if (s === 'archived') return 'Archived'
+  return ''
+})
+
 // `maxSharesHint` defaults to 10% above the requested amount per FLOWS.md
 // suggestion. Silent-fail protects against over-purchase / over-redeem
 // anyway — the hint is about cap accounting, not the actual cap.
@@ -760,6 +776,11 @@ const ctaDisabled = computed(() => {
   // The right-aside glance bar already shows the "short $Z" warning +
   // a loud Top-up-cash CTA; disabling the button removes the foot-gun.
   if (mode.value === 'buy' && insufficientMhUsdc.value) return true
+  // Wave 5 zero-burn: retired tokens (winding_down / paused / archived)
+  // cannot be bought; existing holders can still sell on-chain. The
+  // deprecation banner above the form explains the gate so users
+  // aren't left wondering why the CTA is dead.
+  if (mode.value === 'buy' && tokenIsRetired.value) return true
   return false
 })
 
@@ -841,6 +862,34 @@ const cashLinkLoud = computed(() =>
               </p>
               <p class="font-sans text-xs text-cool mt-1">
                 The link from your assistant referenced a token we don't recognise. Pick one from the dropdown below — no token has been pre-selected.
+              </p>
+            </div>
+          </div>
+
+          <!-- Wave 5 zero-burn: surfaces when the selected token has been
+               retired (TBILL1/GOLD1 → winding_down). Existing holders
+               keep their balances and can still sell; the Buy CTA is
+               separately disabled by `ctaDisabled` so this banner just
+               explains why. Lives ABOVE the mode toggle so the user sees
+               the retirement context before deciding buy vs sell. -->
+          <div
+            v-if="tokenIsRetired && !showSuccess && !errMsg"
+            id="trade-retired-banner"
+            data-testid="trade-token-retired"
+            role="status"
+            class="flex items-start gap-3 px-4 py-3 mb-6 rounded-xl
+                   bg-gold/8 dark:bg-signal/8 border border-gold/25 dark:border-signal/25"
+          >
+            <AlertTriangle :size="16" :stroke-width="1.8" aria-hidden="true" class="text-gold dark:text-signal flex-shrink-0 mt-0.5" />
+            <div class="flex-1 min-w-0">
+              <p class="font-sans text-sm font-semibold text-midnight dark:text-white">
+                {{ selectedTokenData?.symbol ?? 'This token' }} is {{ retirementLabel.toLowerCase() }}.
+              </p>
+              <!-- Mode-agnostic: in buy mode the disabled CTA above
+                   does the work; in sell mode the user just reads
+                   "you can still sell" as a confirmation. -->
+              <p class="font-sans text-xs text-cool mt-1">
+                New purchases are disabled. Existing holders can still sell their position.
               </p>
             </div>
           </div>
@@ -1342,11 +1391,17 @@ const cashLinkLoud = computed(() =>
               </div>
             </transition>
 
-            <!-- CTA -->
+            <!-- CTA. `aria-describedby` ties the disabled state to the
+                 retirement banner so an SR user tabbing to the dead
+                 button hears the reason ("TBILL1 is winding down…")
+                 without needing to backtrack. Cleared when the token is
+                 active so the dropdown's prior-traverse announcement
+                 isn't repeated for healthy tokens. -->
             <button
               type="button"
               @click="handleSubmit"
               :disabled="ctaDisabled"
+              :aria-describedby="mode === 'buy' && tokenIsRetired ? 'trade-retired-banner' : undefined"
               :data-testid="mode === 'buy' ? 'buy-cta' : 'redeem-cta'"
               class="btn-gold-sweep w-full py-4 rounded-lg font-sans font-semibold text-sm tracking-wide
                      flex items-center justify-center gap-2.5 cursor-pointer

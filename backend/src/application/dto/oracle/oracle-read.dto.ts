@@ -55,6 +55,13 @@ export interface TokenMetadataDto {
     decimals: number;
     standards: string[] | null;
   }> | null;
+  /**
+   * Measure slugs the chart toggle should keep enabled. Slugs not in
+   * this set get disabled so users don't click into a guaranteed-empty
+   * state. Empty array == "no timeseries ingested yet" (metadata-only
+   * state).
+   */
+  published_measures: string[];
   last_refreshed_at: string;
 }
 
@@ -118,6 +125,7 @@ export function toTokenMetadataDto(meta: TokenMetadataRead): TokenMetadataDto {
     pm_redemption_frequency: meta.pmRedemptionFrequency,
     pm_kyc_required: meta.pmKycRequired,
     underlying_tokens: meta.underlyingTokens?.map(toUnderlyingTokenDto) ?? null,
+    published_measures: meta.publishedMeasures,
     last_refreshed_at: meta.lastRefreshedAt.toISOString(),
   };
 }

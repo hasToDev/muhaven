@@ -68,9 +68,23 @@ export class PgOracleRepository implements IOracleRepository {
     // to remember the canonical case. Mirrors the same pattern used
     // for addresses (see `feedback_address_case_at_repo_boundary`).
     // Cost is negligible at 11 rows + PK-bounded scan.
-    const row = await this.db.query.tokenMetadata.findFirst({
-      where: sql`lower(${tokenMetadata.ticker}) = lower(${ticker})`,
-    });
+    //
+    // Parallelise the published-measures probe — the chart toggle uses
+    // it to disable buttons for measures the asset doesn't publish. The
+    // DISTINCT measure_slug query is bounded by the timeseries PK
+    // index. ~5 distinct slugs per ticker today, both queries return
+    // in <5ms; running them serially would double the metadata-page
+    // round-trip for no reason.
+    const [row, measureRows] = await Promise.all([
+      this.db.query.tokenMetadata.findFirst({
+        where: sql`lower(${tokenMetadata.ticker}) = lower(${ticker})`,
+      }),
+      this.db
+        .selectDistinct({ slug: oracleTimeseries.measureSlug })
+        .from(oracleTimeseries)
+        .where(sql`lower(${oracleTimeseries.ticker}) = lower(${ticker})`)
+        .orderBy(asc(oracleTimeseries.measureSlug)),
+    ]);
     if (!row) return null;
     // Effective yield-bearing flag — `override ?? raw`. Drizzle types
     // the nullable boolean column as `boolean | null` (never
@@ -111,6 +125,7 @@ export class PgOracleRepository implements IOracleRepository {
       // the ingest path narrows to `OracleUnderlyingToken[]` before
       // insert.
       underlyingTokens: (row.underlyingTokens as OracleUnderlyingToken[] | null) ?? null,
+      publishedMeasures: measureRows.map((r) => r.slug),
       lastRefreshedAt: row.lastRefreshedAt,
     };
   }

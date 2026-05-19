@@ -649,6 +649,12 @@ export interface OracleTokenMetadataDto {
   pm_redemption_frequency: string | null
   pm_kyc_required: boolean | null
   underlying_tokens: OracleUnderlyingTokenDto[] | null
+  /**
+   * Distinct timeseries measure slugs available for this ticker. The
+   * chart's measure toggle disables buttons for slugs not in this set.
+   * Empty array means metadata-only state (no timeseries ingested).
+   */
+  published_measures: string[]
   last_refreshed_at: string
 }
 

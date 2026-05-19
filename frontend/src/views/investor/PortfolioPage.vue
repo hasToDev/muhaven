@@ -372,6 +372,27 @@ function formatTokenAmount(value: number): string {
   return value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 4 })
 }
 
+/**
+ * Wave 5 zero-burn: returns a badge label for non-active tokens so the
+ * holder sees "this is winding down" inline on the row, or empty string
+ * for active tokens (badge hidden). Resolves through `marketplace`
+ * because the portfolio holding object doesn't carry `status`; the
+ * marketplace store is loaded on the same page as portfolio (both
+ * mounted from PortfolioPage's `onMounted`) so the lookup is hot.
+ * Returns '' on cache miss — the badge then doesn't render, which is
+ * the right behaviour for tokens that aren't in the marketplace catalog
+ * (e.g. a P2P-received token that the user holds but the marketplace
+ * page hasn't loaded yet).
+ */
+function holdingStatusBadge(tokenAddress: string): string {
+  const data = marketplace.getByAddress(tokenAddress)
+  if (!data) return ''
+  if (data.status === 'winding_down') return 'Winding down'
+  if (data.status === 'paused') return 'Paused'
+  if (data.status === 'archived') return 'Archived'
+  return ''
+}
+
 function holdingUsdValue(h: typeof portfolio.holdings[number]): string {
   if (h.decryptedBalance === null) return ''
   // Wave 3.5: shares are raw integer units (1 share == 1n on-chain).
@@ -993,6 +1014,23 @@ const showBlurredAllocation = computed(() =>
                 </span>
                 <span class="font-sans text-[10px] text-cool uppercase tracking-[0.18em]">
                   {{ h.assetClass.replace(/_/g, ' ') }}
+                </span>
+                <!-- Wave 5 zero-burn: surfaces non-active tokens
+                     (winding_down / paused / archived) so holders know
+                     the position is in legacy state. Existing balance
+                     stays sellable on /trade; new buys are gated there.
+                     Gold tint distinguishes it from the asset-class
+                     chip's neutral mist. SR-only "Status:" prefix so
+                     a screen reader reads "TBILL1, Treasury, Status:
+                     Winding down" rather than the orphan label. -->
+                <span
+                  v-if="holdingStatusBadge(h.tokenAddress)"
+                  :data-testid="`portfolio-holding-status-${h.symbol}`"
+                  class="font-sans text-[10px] uppercase tracking-[0.18em] font-bold
+                         px-2 py-0.5 rounded bg-gold/15 dark:bg-signal/10
+                         border border-gold/30 dark:border-signal/25 text-gold dark:text-signal"
+                >
+                  <span class="sr-only">Status: </span>{{ holdingStatusBadge(h.tokenAddress) }}
                 </span>
               </div>
             </div>

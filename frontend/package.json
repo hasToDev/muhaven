@@ -1,6 +1,6 @@
 {
   "name": "muhaven-frontend",
-  "version": "0.3.62",
+  "version": "0.3.68",
   "private": true,
   "type": "module",
   "scripts": {

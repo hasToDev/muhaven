@@ -146,6 +146,16 @@ export interface TokenMetadataRead {
   pmRedemptionFrequency: string | null;
   pmKycRequired: boolean | null;
   underlyingTokens: OracleUnderlyingToken[] | null;
+  /**
+   * Distinct `measure_slug` values present in `oracle_timeseries` for
+   * this ticker. The chart's measure toggle uses this to disable
+   * buttons for measures the asset doesn't publish (e.g. BUIDL has no
+   * `price_dollar`) — saves a fetch+empty-state round trip and gives
+   * the user a clearer "this isn't available" affordance up front.
+   * Sorted ascending for deterministic UI ordering. Empty array when
+   * the metadata row exists but no timeseries have been ingested.
+   */
+  publishedMeasures: string[];
   lastRefreshedAt: Date;
 }
 
