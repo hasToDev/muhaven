@@ -137,7 +137,14 @@ const aggregateSchema = z
   .object({
     label: z.string().max(128),
     type: z.string().max(32).optional(),
-    value: z.number().nullable().optional(),
+    // rwa.xyz wire quirk: most aggregates carry a numeric `value`
+    // (Total Asset Value, NAV, Holders, 7D APY), but BUIDL's
+    // "Management Fee" aggregate ships a string range like
+    // `"0.20-0.50%"`. Accept either. The use case doesn't read this
+    // field (scalars are pulled from `marketData.*`), but we still
+    // validate shape + cap length so a poisoned payload can't smuggle
+    // an arbitrarily-long string here.
+    value: z.union([z.number(), z.string().max(128)]).nullable().optional(),
   })
   .passthrough();
 
