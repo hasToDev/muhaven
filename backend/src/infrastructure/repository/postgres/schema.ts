@@ -7,6 +7,7 @@ import {
   numeric,
   jsonb,
   boolean,
+  date,
   index,
   uniqueIndex,
   primaryKey,
@@ -923,7 +924,7 @@ export const tokenMetadata = pgTable(
     feeStructureDescription: text('fee_structure_description'),
     // Primary market terms
     pmSubscriptionFrequency: text('pm_subscription_frequency'),
-    pmSubscriptionMinimumDollar: numeric('pm_subscription_minimum_dollar'),
+    pmSubscriptionMinimumDollar: numeric('pm_subscription_minimum_dollar', { precision: 20, scale: 8 }),
     pmRedemptionFrequency: text('pm_redemption_frequency'),
     pmKycRequired: boolean('pm_kyc_required'),
     // Per-chain underlying token list — `[{ network, networkId, address,
@@ -932,24 +933,31 @@ export const tokenMetadata = pgTable(
     // EUTBL has 1, etc.) — a separate table would be over-normalized for
     // a display-only field.
     underlyingTokens: jsonb('underlying_tokens'),
-    // Free-form raw payload kept for forward-compat: when the ingest
-    // endpoint validates against a new field that's not yet in this
-    // schema, the raw blob is still here for backfill.
-    rawPayload: jsonb('raw_payload'),
     lastRefreshedAt: timestamp('last_refreshed_at').notNull().defaultNow(),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow(),
   },
   (t) => [
     index('token_metadata_rwaxyz_asset_id_idx').on(t.rwaxyzAssetId),
-    index('token_metadata_is_yield_bearing_idx').on(t.isYieldBearing),
+    // Partial index — marketplace queries are dominated by
+    // "yield-bearing only" filtering. A full boolean index over a
+    // ~50/50 column adds write cost without changing scan choice;
+    // the partial form is small (one btree page) and the planner uses
+    // it when the predicate matches.
+    index('token_metadata_is_yield_bearing_idx')
+      .on(t.ticker)
+      .where(sql`is_yield_bearing = true`),
   ],
 );
 
 export const oracleSnapshots = pgTable(
   'oracle_snapshots',
   {
-    id: text('id').primaryKey(),
+    // Natural PK — every snapshot for a ticker is unique by ingest
+    // moment. The earlier UUID PK let retries within the same epoch
+    // double-insert (charts would then pick arbitrarily); the natural
+    // PK fails loud, the use case routes through `onConflictDoNothing`
+    // so a same-second retry is a no-op.
     ticker: text('ticker').notNull(),
     snapshotAt: timestamp('snapshot_at').notNull().defaultNow(),
     // Source provenance — match `nav_source_type` semantics: every Q1/Q2
@@ -958,25 +966,29 @@ export const oracleSnapshots = pgTable(
     source: text('source').notNull().default('rwaxyz_scrape'),
     // Scalars — all nullable because field availability varies per asset
     // (stocks have no APY; some treasuries hide concentration metrics).
-    navDollar: numeric('nav_dollar'),
-    priceDollar: numeric('price_dollar'),
-    apy7Day: numeric('apy_7_day'),
-    apy30Day: numeric('apy_30_day'),
-    dailyYieldRate: numeric('daily_yield_rate'),
-    yieldToMaturityPercent: numeric('yield_to_maturity_percent'),
-    dailyYieldDistributedDollar: numeric('daily_yield_distributed_dollar'),
-    hypothetical10kPerformance: numeric('hypothetical_10k_performance'),
-    totalSupplyToken: numeric('total_supply_token'),
-    totalAssetValueDollar: numeric('total_asset_value_dollar'),
-    marketValueDollar: numeric('market_value_dollar'),
+    // Numeric bounds picked while the table is empty: dollar amounts
+    // (NAV / price / TVL) at (20, 8); percent rates (APY / yield-rate /
+    // concentration) at (10, 6); token supply at (36, 18) to match
+    // on-chain ERC-20 18-decimals semantics. Switching later requires
+    // a column rewrite, so anchor them now.
+    navDollar: numeric('nav_dollar', { precision: 20, scale: 8 }),
+    priceDollar: numeric('price_dollar', { precision: 20, scale: 8 }),
+    apy7Day: numeric('apy_7_day', { precision: 10, scale: 6 }),
+    apy30Day: numeric('apy_30_day', { precision: 10, scale: 6 }),
+    dailyYieldRate: numeric('daily_yield_rate', { precision: 10, scale: 6 }),
+    yieldToMaturityPercent: numeric('yield_to_maturity_percent', { precision: 10, scale: 6 }),
+    dailyYieldDistributedDollar: numeric('daily_yield_distributed_dollar', { precision: 20, scale: 8 }),
+    hypothetical10kPerformance: numeric('hypothetical_10k_performance', { precision: 20, scale: 8 }),
+    totalSupplyToken: numeric('total_supply_token', { precision: 36, scale: 18 }),
+    totalAssetValueDollar: numeric('total_asset_value_dollar', { precision: 20, scale: 8 }),
+    marketValueDollar: numeric('market_value_dollar', { precision: 20, scale: 8 }),
     holdingAddressesCount: integer('holding_addresses_count'),
-    top5HolderConcentration: numeric('top_5_holder_concentration'),
+    top5HolderConcentration: numeric('top_5_holder_concentration', { precision: 10, scale: 6 }),
     rwaxyzUpdatedAt: timestamp('rwaxyz_updated_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },
   (t) => [
-    index('oracle_snapshots_ticker_at_idx').on(t.ticker, t.snapshotAt),
-    index('oracle_snapshots_at_idx').on(t.snapshotAt),
+    primaryKey({ columns: [t.ticker, t.snapshotAt] }),
   ],
 );
 
@@ -985,21 +997,29 @@ export const oracleTimeseries = pgTable(
   {
     ticker: text('ticker').notNull(),
     measureSlug: text('measure_slug').notNull(),
-    // Stored as YYYY-MM-DD string — matches rwa.xyz's wire format
-    // (`["2023-10-19", 6035174.27]`) and avoids tz drift on day
-    // boundaries. The composite PK forces idempotent upsert so re-running
-    // the daily refresh either rewrites stale historical values (rwa.xyz
-    // occasionally back-corrects) or appends new days.
-    date: text('date').notNull(),
-    value: numeric('value').notNull(),
+    // Postgres `date` — Drizzle accepts the same YYYY-MM-DD string
+    // input as the prior `text` form but gives us range planner stats,
+    // `BETWEEN` ergonomics, and future declarative partitioning by
+    // month/year. The repo lookup pattern `WHERE date >= '2025-01-01'`
+    // is the dominant chart query.
+    date: date('date').notNull(),
+    // Wide enough to hold dollar billions + sub-cent precision; matches
+    // the `oracle_snapshots.*_dollar` scale class. The 8-scale also
+    // covers percent rates (3.13140000) and holder counts (44.00000000)
+    // without ambiguity.
+    value: numeric('value', { precision: 28, scale: 8 }).notNull(),
     // Optional unit metadata pulled from the measure descriptor — kept
     // here so a chart consumer can render "$1.23" vs "3.14%" vs "44
     // holders" without round-tripping to `token_metadata`.
     unit: text('unit'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
   },
-  (t) => [
-    primaryKey({ columns: [t.ticker, t.measureSlug, t.date] }),
-    index('oracle_timeseries_ticker_measure_idx').on(t.ticker, t.measureSlug),
-  ],
+  // The composite PK `(ticker, measure_slug, date)` is itself a btree
+  // whose leftmost prefix `(ticker, measure_slug)` already serves any
+  // chart query filtering on those two columns. A separate
+  // (ticker, measure_slug) index would double the per-row write cost
+  // and add ~46k redundant index entries during backfill for no read-
+  // path win.
+  (t) => [primaryKey({ columns: [t.ticker, t.measureSlug, t.date] })],
 );

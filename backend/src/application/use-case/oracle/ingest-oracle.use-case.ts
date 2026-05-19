@@ -1,6 +1,6 @@
-import { randomUUID } from 'node:crypto';
 import type { IOracleRepository } from '../../../domain/oracle/repository/oracle.repository.js';
 import type {
+  OracleAssetWrite,
   OracleMetadataUpsert,
   OracleSnapshotUpsert,
   OracleTimeseriesPoint,
@@ -16,20 +16,15 @@ import {
  *
  * Reads the per-asset payload written by
  * `development/ORACLE_DATA_MINE/scripts/extract-asset.ts` and lands it
- * in three tables:
+ * in three tables via a single per-asset transaction:
  *   1. `token_metadata`   — UPSERT keyed on (ticker)
- *   2. `oracle_snapshots` — INSERT (append-only point-in-time)
+ *   2. `oracle_snapshots` — INSERT … ON CONFLICT DO NOTHING on natural
+ *                            PK `(ticker, snapshot_at)`
  *   3. `oracle_timeseries`— UPSERT keyed on (ticker, measure_slug, date)
  *
  * Per-asset failures DO NOT abort the batch — each result lands in the
- * response with its own status. The operator script can re-run with
- * just the failing tickers without losing the partial progress.
- *
- * Idempotency: re-running an identical payload is a no-op aside from
- * `oracle_snapshots` (which gains a fresh row per call — that's
- * intentional, snapshots are point-in-time and used for rolling charts).
- * If the operator wants strict idempotence on a re-run, that's a
- * separate decision; for now the snapshot ledger grows monotonically.
+ * response with its own status. Within an asset, all three writes share
+ * one transaction so a mid-chunk failure rolls everything back.
  */
 export class IngestOracleUseCase {
   constructor(private readonly oracleRepo: IOracleRepository) {}
@@ -60,27 +55,21 @@ export class IngestOracleUseCase {
   ): Promise<OracleIngestPerTokenResult> {
     const ticker = asset.ticker;
     try {
-      const metadata = this.toMetadata(asset);
-      await this.oracleRepo.upsertMetadata(metadata);
+      const write: OracleAssetWrite = {
+        metadata: this.toMetadata(asset),
+        snapshot: this.toSnapshot(asset),
+        timeseries: this.toTimeseriesPoints(asset),
+      };
 
-      const snapshot = this.toSnapshot(asset);
-      let snapshotInserted = false;
-      if (snapshot) {
-        await this.oracleRepo.insertSnapshot(snapshot);
-        snapshotInserted = true;
-      }
-
-      const points = this.toTimeseriesPoints(asset);
-      if (points.length > 0) {
-        await this.oracleRepo.upsertTimeseries(points);
-      }
+      const { metadataUpserted, snapshotInserted, timeseriesPointsUpserted } =
+        await this.oracleRepo.ingestAsset(write);
 
       return {
         ticker,
         status: 'ok',
-        metadataUpserted: true,
+        metadataUpserted,
         snapshotInserted,
-        timeseriesPointsUpserted: points.length,
+        timeseriesPointsUpserted,
       };
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
@@ -91,10 +80,6 @@ export class IngestOracleUseCase {
   private toMetadata(asset: OracleAssetPayload): OracleMetadataUpsert {
     const ticker = asset.ticker;
     const displayName = asset.title ?? ticker;
-
-    // Decimal-as-string conversions — numeric Postgres columns accept
-    // string-form decimals, which keeps full precision without the
-    // 64-bit float → text round-trip ambiguity.
     const pmMin = asset.primaryMarket?.subscription_minimum_amount;
 
     return {
@@ -110,12 +95,12 @@ export class IngestOracleUseCase {
       isYieldBearing: asset.isYieldBearing,
       distributesIncome: asset.distributesIncome ?? undefined,
       assetClassSlug: asset.assetClass?.slug,
-      assetClassName: asset.assetClass?.name,
-      issuerName: asset.issuer?.name,
-      issuerLegalName: asset.issuer?.legal_name,
+      assetClassName: asset.assetClass?.name ?? undefined,
+      issuerName: asset.issuer?.name ?? undefined,
+      issuerLegalName: asset.issuer?.legal_name ?? undefined,
       issuerLei: asset.issuer?.lei ?? undefined,
       issuerCountry: asset.issuer?.legal_structure_country ?? undefined,
-      managerName: asset.manager?.name,
+      managerName: asset.manager?.name ?? undefined,
       jurisdictionCountry: asset.jurisdiction?.country ?? undefined,
       regulatoryFramework: asset.jurisdiction?.regulatoryFramework ?? undefined,
       governingBody: asset.jurisdiction?.governingBody ?? undefined,
@@ -136,14 +121,10 @@ export class IngestOracleUseCase {
         decimals: t.decimals,
         standards: t.standards,
       })),
-      rawPayload: asset,
     };
   }
 
   private toSnapshot(asset: OracleAssetPayload): OracleSnapshotUpsert | null {
-    // Skip the snapshot if neither aggregates nor marketData are present
-    // — nothing to capture. The metadata row still upserts so cosmetic
-    // refreshes (description / fees) don't bloat the snapshot ledger.
     const md = asset.marketData;
     if (!md && !asset.aggregates) return null;
 
@@ -152,9 +133,6 @@ export class IngestOracleUseCase {
     const supplyData = md?.supply;
     const holderData = md?.holders;
 
-    // rwaxyzUpdatedAt is the source's last-recompute moment; snapshotAt
-    // is when WE ingested it. They drift apart when the scraper batches
-    // multiple assets across minutes.
     const rwaxyzUpdatedAtRaw = asset.source?.rwaxyzUpdatedAt;
     let rwaxyzUpdatedAt: Date | undefined;
     if (rwaxyzUpdatedAtRaw) {
@@ -163,7 +141,6 @@ export class IngestOracleUseCase {
     }
 
     return {
-      id: randomUUID(),
       ticker: asset.ticker,
       snapshotAt: new Date(),
       source: 'rwaxyz_scrape',
@@ -195,25 +172,39 @@ export class IngestOracleUseCase {
     const ticker = asset.ticker;
 
     // Each (measure_slug, date) key collapses to a single stored value
-    // because `oracle_timeseries`'s PK is (ticker, measure_slug, date).
-    // rwa.xyz ships per-network groups for some measures
-    // (`bridged_token_value_dollar` etc.) where the aggregate function
-    // is `sum` — those rows must be summed across groups to produce the
-    // asset-level total the chart consumes. Single-group measures
-    // (`apy_7_day`, `net_asset_value_dollar`, …) collapse to the only
-    // value present. We sum unconditionally: it's a no-op when there's
-    // only one group, and correct for sum-grouped measures. Non-sum
-    // aggregate functions (`max`, `mean`, …) are not used by any
-    // measure we currently chart — if rwa.xyz introduces one we'd
-    // need a per-measure rule here.
+    // because the table PK is (ticker, measure_slug, date). For
+    // measures with `aggregateFunction: sum` (e.g.
+    // `bridged_token_value_dollar`) rwa.xyz ships per-network groups
+    // that must be summed across groups to produce the asset-level
+    // total the chart consumes. Single-group measures (`apy_7_day`,
+    // `net_asset_value_dollar`, …) collapse to the only value
+    // present.
+    //
+    // Group sort: deterministic numeric key so the float `+=`
+    // accumulation order is stable across scrapes. rwa.xyz does NOT
+    // guarantee group ordering between refreshes — without this sort
+    // two ingests of "the same" payload could stringify to different
+    // values (`0.3` vs `0.30000000000000004`), churn the DB on
+    // upserts, and break idempotence claims. Sorting by `id` first
+    // (numeric — rwa.xyz's stable network identifier) then `name`
+    // (string — fallback) is robust across the rwa.xyz wire shapes
+    // observed so far.
     const aggregated = new Map<string, { value: number; unit?: string }>();
 
-    for (const [measureSlug, payload] of Object.entries(asset.timeseries)) {
+    const measureKeys = Object.keys(asset.timeseries).sort();
+    for (const measureSlug of measureKeys) {
+      const payload = asset.timeseries[measureSlug]!;
       const unit = payload.measure?.unit;
-      for (const group of payload.groups) {
+      const groups = [...payload.groups].sort((a, b) => {
+        const aId = typeof a.id === 'number' ? a.id : Number.MAX_SAFE_INTEGER;
+        const bId = typeof b.id === 'number' ? b.id : Number.MAX_SAFE_INTEGER;
+        if (aId !== bId) return aId - bId;
+        return (a.name ?? '').localeCompare(b.name ?? '');
+      });
+      for (const group of groups) {
         for (const point of group.points) {
           const [date, value] = point;
-          if (!isIsoDate(date) || typeof value !== 'number' || !Number.isFinite(value)) {
+          if (!isStrictIsoDate(date) || typeof value !== 'number' || !Number.isFinite(value)) {
             continue;
           }
           const key = `${measureSlug}|${date}`;
@@ -248,9 +239,17 @@ function numToInt(v: number | null | undefined): number | undefined {
   return Math.trunc(v);
 }
 
-function isIsoDate(s: string): boolean {
-  // Cheap shape check — accept `YYYY-MM-DD`; reject anything else so we
-  // can't accidentally insert "2026-01-01T00:00:00Z" into the date
-  // column.
-  return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
+/**
+ * Real ISO-date validator (not just regex). Accepts strict
+ * `YYYY-MM-DD` AND verifies the calendar — `2026-13-45` fails because
+ * round-tripping through `Date` produces a different string. Regex-
+ * only would silently accept impossible dates and Postgres' `date`
+ * type would then reject the row, blowing up the entire chunk's
+ * transaction.
+ */
+function isStrictIsoDate(s: string): boolean {
+  if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const d = new Date(`${s}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return false;
+  return d.toISOString().slice(0, 10) === s;
 }

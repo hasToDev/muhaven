@@ -2,8 +2,8 @@
  * Wave 5 Q1 — RWA oracle ingest operator script.
  *
  * Reads every `development/ORACLE_DATA_MINE/data/*.json` payload (the
- * per-asset output of `extract-asset.ts`) and POSTs the bundle to
- * `POST /api/v1/admin/oracle/ingest` on the configured backend.
+ * per-asset output of `extract-asset.ts`) and POSTs each one to
+ * `POST /api/v1/oracle/ingest` on the configured backend.
  *
  * USAGE (operator dev machine):
  *
@@ -25,13 +25,7 @@
  * Why a script, not a route handler that scans the filesystem itself:
  * the backend container does NOT mount `development/ORACLE_DATA_MINE/`,
  * and that's intentional — the rwa.xyz scrape lives on the operator
- * machine with the persistent Chromium profile + cookies. The script
- * runs from the repo root and pushes the harvested JSON into the
- * backend via the same HTTPS path the future 8-hour cron will use.
- *
- * NOT committed: the `data/*.json` payloads themselves — the entire
- * `development/` tree is gitignored (`.gitignore:59`). The script is
- * tracked because it lives under `backend/scripts/` which IS tracked.
+ * machine with the persistent Chromium profile + cookies.
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import { resolve, join } from 'node:path';
@@ -41,9 +35,6 @@ import { dirname } from 'node:path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Resolve `development/ORACLE_DATA_MINE/data/` relative to the repo
-// root. `__dirname` is `<repo>/backend/scripts`; the data dir is two
-// levels up + into `development/…`.
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const DATA_DIR = join(REPO_ROOT, 'development', 'ORACLE_DATA_MINE', 'data');
 
@@ -85,7 +76,12 @@ function parseArgs(): CliArgs {
   };
 }
 
-function loadAssets(only: Set<string> | null): Array<{ filename: string; payload: unknown }> {
+interface LoadOutcome {
+  loaded: Array<{ filename: string; payload: unknown }>;
+  parseFailures: number;
+}
+
+function loadAssets(only: Set<string> | null): LoadOutcome {
   let entries: string[];
   try {
     entries = readdirSync(DATA_DIR);
@@ -103,7 +99,8 @@ function loadAssets(only: Set<string> | null): Array<{ filename: string; payload
     process.exit(1);
   }
 
-  const out: Array<{ filename: string; payload: unknown }> = [];
+  const loaded: Array<{ filename: string; payload: unknown }> = [];
+  let parseFailures = 0;
   for (const filename of jsonFiles) {
     const full = join(DATA_DIR, filename);
     let payload: unknown;
@@ -111,17 +108,19 @@ function loadAssets(only: Set<string> | null): Array<{ filename: string; payload
       payload = JSON.parse(readFileSync(full, 'utf8'));
     } catch (err) {
       console.error(`  ✗ ${filename} — failed to parse: ${err instanceof Error ? err.message : err}`);
+      parseFailures += 1;
       continue;
     }
     const ticker = extractTicker(payload);
     if (!ticker) {
       console.error(`  ✗ ${filename} — no ticker field; skipped`);
+      parseFailures += 1;
       continue;
     }
     if (only && !only.has(ticker)) continue;
-    out.push({ filename, payload });
+    loaded.push({ filename, payload });
   }
-  return out;
+  return { loaded, parseFailures };
 }
 
 function extractTicker(payload: unknown): string | undefined {
@@ -151,8 +150,8 @@ async function main(): Promise<void> {
   if (args.only) console.log(`[ingest-oracle] only     : ${[...args.only].join(', ')}`);
   if (args.dryRun) console.log('[ingest-oracle] dry-run mode — no POST');
 
-  const assets = loadAssets(args.only);
-  console.log(`[ingest-oracle] loaded ${assets.length} payload(s):`);
+  const { loaded: assets, parseFailures } = loadAssets(args.only);
+  console.log(`[ingest-oracle] loaded ${assets.length} payload(s)${parseFailures > 0 ? ` (${parseFailures} parse failure[s] — see above)` : ''}:`);
   for (const a of assets) {
     const ticker = extractTicker(a.payload);
     console.log(`  • ${ticker?.padEnd(10) ?? '???       '} (${a.filename})`);
@@ -164,21 +163,24 @@ async function main(): Promise<void> {
   }
 
   if (args.dryRun) {
+    if (parseFailures > 0) {
+      console.error(`[ingest-oracle] dry-run found ${parseFailures} unparseable file(s)`);
+      process.exit(1);
+    }
     console.log('[ingest-oracle] dry-run complete — exiting without POST');
     return;
   }
 
-  const endpoint = `${args.url.replace(/\/$/, '')}/api/v1/admin/oracle/ingest`;
+  const endpoint = `${args.url.replace(/\/$/, '')}/api/v1/oracle/ingest`;
 
   // POST one asset per request. The endpoint accepts up to 64 in a
   // single batch, but per-asset chunking keeps each request well under
   // typical 1MB body limits (USDY.json alone is ~900KB) and lets the
-  // operator see per-token progress on the dev machine. A single bad
-  // payload only takes its own request down. Re-runs are idempotent on
-  // metadata + timeseries; oracle_snapshots gains an extra row, which
-  // is acceptable.
+  // operator see per-token progress on the dev machine.
   const allResults: unknown[] = [];
-  let failures = 0;
+  let okCount = 0;
+  let skippedCount = 0;
+  let errorCount = 0;
   for (const { filename, payload } of assets) {
     const ticker = extractTicker(payload) ?? '???';
     const body = JSON.stringify({ assets: [payload] });
@@ -197,7 +199,7 @@ async function main(): Promise<void> {
       if (!res.ok) {
         console.log(`HTTP ${res.status}`);
         console.log(`    ${text.slice(0, 500)}`);
-        failures += 1;
+        errorCount += 1;
         allResults.push({ filename, ticker, http: res.status, body: text.slice(0, 500) });
         continue;
       }
@@ -206,30 +208,39 @@ async function main(): Promise<void> {
         parsed = JSON.parse(text);
       } catch {
         console.log('non-JSON response');
-        failures += 1;
+        errorCount += 1;
         allResults.push({ filename, ticker, http: 200, raw: text.slice(0, 500) });
         continue;
       }
-      // Backend returns `{ results: [...], summary: {...} }`. We only
-      // sent one asset so .results[0] is canonical.
       const summary = (parsed as { results?: Array<{ status?: string; timeseriesPointsUpserted?: number }> }).results?.[0];
       const status = summary?.status ?? 'unknown';
       const pts = summary?.timeseriesPointsUpserted ?? 0;
       console.log(`${status} (${pts} timeseries pts)`);
-      if (status !== 'ok') failures += 1;
+      if (status === 'ok') okCount += 1;
+      else if (status === 'skipped') skippedCount += 1;
+      else errorCount += 1;
       allResults.push({ filename, ticker, ...summary });
     } catch (err) {
       console.log(`fetch threw: ${err instanceof Error ? err.message : err}`);
-      failures += 1;
+      errorCount += 1;
       allResults.push({ filename, ticker, fetchError: String(err) });
     }
   }
 
   console.log('');
-  console.log(`[ingest-oracle] done — ${assets.length - failures}/${assets.length} OK, ${failures} failures`);
-  if (failures > 0) {
-    console.log('[ingest-oracle] details:');
-    console.log(JSON.stringify(allResults.filter((r) => (r as { status?: string }).status !== 'ok'), null, 2));
+  console.log(`[ingest-oracle] done — ok: ${okCount}, skipped: ${skippedCount}, error: ${errorCount}, parse-failures: ${parseFailures}`);
+  if (errorCount > 0 || parseFailures > 0) {
+    if (errorCount > 0) {
+      console.log('[ingest-oracle] error details:');
+      console.log(JSON.stringify(allResults.filter((r) => {
+        const status = (r as { status?: string }).status;
+        return status !== 'ok' && status !== 'skipped';
+      }), null, 2));
+    }
+    // Exit non-zero if anything went wrong — parse failures alone are
+    // already enough to fail the cron run, so the operator notices.
+    // `skipped` is a legitimate use-case outcome (e.g. payload with no
+    // marketData) and does NOT bump the exit code.
     process.exit(1);
   }
 }

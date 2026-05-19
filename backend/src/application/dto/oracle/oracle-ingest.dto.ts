@@ -4,36 +4,62 @@ import { z } from 'zod';
  * Wave 5 Q1 — RWA oracle ingest payload.
  *
  * Mirrors the JSON written by `development/ORACLE_DATA_MINE/scripts/
- * extract-asset.ts`. The schema is intentionally LOOSE — every numeric
- * field is `z.number()` (not int / not finite) because rwa.xyz mixes
- * percent decimals (0.0313), display percents (3.13), integer counts,
- * and dollar floats freely. We snapshot whatever they send and let the
- * frontend interpret per the documented `_units` block in the source
+ * extract-asset.ts`. Numeric leaf fields are `z.number()` (not int /
+ * not finite) because rwa.xyz mixes percent decimals (0.0313), display
+ * percents (3.13), integer counts, and dollar floats freely. The
+ * frontend interprets per the documented `_units` block in the source
  * payload.
  *
- * Unknown extra fields pass through `.passthrough()` so a rwa.xyz wire-
- * format addition does NOT cause the entire batch to reject. The
- * `rawPayload` blob captures the full input verbatim for forward-compat.
+ * Hardening from review pass 2 (2026-05-19):
+ *  - Identifier fields (`ticker`, `measure_slug`) carry strict regex so
+ *    they can't carry whitespace/newlines/quotes/`|` into PK semantics
+ *    or LLM context strings.
+ *  - Free-text display fields carry length caps so a poisoned scrape
+ *    can't blow up the row size or land a multi-KB prompt-injection
+ *    payload in `description` / `issuer_name` etc.
+ *  - Array fields carry sane upper bounds — a single 64-asset batch
+ *    with 4000 points × 50 groups × 50 measures would otherwise OOM
+ *    the in-memory `aggregated` Map in the use case.
+ *  - `.passthrough()` preserved on objects so unknown rwa.xyz fields
+ *    don't reject the batch; the raw payload is NOT stored verbatim
+ *    anymore (raw_payload column dropped — see review H3 / M2).
  */
 
-const numericPoint = z.tuple([z.string(), z.number()]);
+// Identifiers — alphanumeric + a small set of safe separators. Must
+// survive use as DB primary-key components AND as keys in LLM-visible
+// JSON instructions. rwa.xyz tickers seen: `USYC`, `BUIDL`, `USDY`,
+// `EUTBL`, `CETES`, `syrupUSDC`, `ONyc`, `STRCx`, `MUon`, `NVDAon`,
+// `TSLAx` — all match `[A-Za-z0-9_-]{1,32}`. Measure slugs are
+// snake_case: `apy_7_day`, `net_asset_value_dollar`,
+// `bridged_token_value_dollar`.
+const tickerSchema = z.string().regex(/^[A-Za-z0-9_-]{1,32}$/);
+const measureSlugSchema = z.string().regex(/^[a-z0-9_]{1,64}$/);
+
+// Free-text display caps — `description` is the longest legitimate
+// field on rwa.xyz, ~500 chars worst-case. 2000 gives runway without
+// inviting prompt-injection payloads.
+const shortText = z.string().max(256).nullable().optional();
+const longText = z.string().max(2000).nullable().optional();
+const isoDateText = z.string().max(64).nullable().optional();
+
+const numericPoint = z.tuple([z.string().max(64), z.number()]);
 
 const measureDescriptor = z
   .object({
     id: z.number().optional(),
-    slug: z.string(),
-    name: z.string().optional(),
-    unit: z.string().optional(),
+    slug: z.string().max(64).optional(),
+    name: z.string().max(256).optional(),
+    unit: z.string().max(32).optional(),
   })
   .passthrough();
 
 const timeseriesGroup = z
   .object({
-    id: z.union([z.number(), z.string()]).optional(),
-    type: z.string().optional(),
-    name: z.string().optional(),
-    color: z.string().optional(),
-    points: z.array(numericPoint),
+    id: z.union([z.number(), z.string().max(64)]).optional(),
+    type: z.string().max(64).optional(),
+    name: z.string().max(256).optional(),
+    color: z.string().max(32).optional(),
+    points: z.array(numericPoint).max(4000),
   })
   .passthrough();
 
@@ -41,39 +67,39 @@ const timeseriesMeasure = z
   .object({
     measure: measureDescriptor,
     aggregate: z.unknown().optional(),
-    groups: z.array(timeseriesGroup),
+    groups: z.array(timeseriesGroup).max(20),
   })
   .passthrough();
 
 const issuerSchema = z
   .object({
-    name: z.string().optional(),
-    legal_name: z.string().optional(),
-    lei: z.string().nullable().optional(),
-    legal_structure_country: z.string().nullable().optional(),
+    name: shortText,
+    legal_name: shortText,
+    lei: shortText,
+    legal_structure_country: shortText,
   })
   .passthrough();
 
 const managerSchema = z
   .object({
-    name: z.string().optional(),
+    name: shortText,
   })
   .passthrough();
 
 const assetClassSchema = z
   .object({
-    name: z.string().optional(),
-    slug: z.string().optional(),
+    name: shortText,
+    slug: z.string().max(64).optional(),
   })
   .passthrough();
 
 const jurisdictionSchema = z
   .object({
-    country: z.string().nullable().optional(),
-    regulatoryFramework: z.string().nullable().optional(),
-    governingBody: z.string().nullable().optional(),
-    legalStructure: z.string().nullable().optional(),
-    legalStructureCountry: z.string().nullable().optional(),
+    country: shortText,
+    regulatoryFramework: shortText,
+    governingBody: shortText,
+    legalStructure: shortText,
+    legalStructureCountry: shortText,
   })
   .passthrough();
 
@@ -81,52 +107,49 @@ const feesSchema = z
   .object({
     managementBps: z.number().nullable().optional(),
     performanceBps: z.number().nullable().optional(),
-    structureDescription: z.string().nullable().optional(),
-    otherDescription: z.string().nullable().optional(),
+    structureDescription: longText,
+    otherDescription: longText,
   })
   .passthrough();
 
 const primaryMarketSchema = z
   .object({
-    base_asset_ticker: z.string().nullable().optional(),
+    base_asset_ticker: shortText,
     kyc_is_required: z.boolean().nullable().optional(),
-    subscription_frequency: z.string().nullable().optional(),
+    subscription_frequency: shortText,
     subscription_minimum_amount: z.number().nullable().optional(),
-    redemption_frequency: z.string().nullable().optional(),
+    redemption_frequency: shortText,
   })
   .passthrough();
 
 const underlyingTokenSchema = z
   .object({
-    name: z.string().optional(),
-    network: z.string(),
+    name: z.string().max(256).optional(),
+    network: z.string().max(64),
     networkId: z.number().optional(),
-    address: z.string(),
+    address: z.string().max(128),
     decimals: z.number(),
-    standards: z.array(z.string()).optional(),
+    standards: z.array(z.string().max(32)).max(8).optional(),
   })
   .passthrough();
 
 const aggregateSchema = z
   .object({
-    label: z.string(),
-    type: z.string().optional(),
+    label: z.string().max(128),
+    type: z.string().max(32).optional(),
     value: z.number().nullable().optional(),
   })
   .passthrough();
 
 const sourceSchema = z
   .object({
-    url: z.string().optional(),
+    url: z.string().max(512).optional(),
     rwaxyzAssetId: z.number().optional(),
-    rwaxyzSlug: z.string().optional(),
-    rwaxyzUpdatedAt: z.string().optional(),
+    rwaxyzSlug: z.string().max(128).optional(),
+    rwaxyzUpdatedAt: z.string().max(64).optional(),
   })
   .passthrough();
 
-// A measure value-bundle (apy_7_day / net_asset_value_dollar / …) —
-// `val` is the current scalar, `val_7d/30d/90d` are lookback comparisons.
-// All optional because not every measure populates every interval.
 const measureValueSchema = z
   .object({
     val: z.number().nullable().optional(),
@@ -175,18 +198,22 @@ const marketDataSchema = z
   })
   .passthrough();
 
+const timeseriesRecordSchema = z
+  .record(measureSlugSchema, timeseriesMeasure)
+  .refine((r) => Object.keys(r).length <= 64, {
+    message: 'timeseries has more than 64 measures',
+  });
+
 export const OracleAssetPayloadSchema = z
   .object({
-    // Identity — `ticker` is the PK in `token_metadata`; case is
-    // preserved (rwa.xyz uses `syrupUSDC`, `MUon`, etc.).
-    slug: z.string().min(1).max(64).optional(),
-    ticker: z.string().min(1).max(32),
-    title: z.string().min(1).max(256).optional(),
-    description: z.string().nullable().optional(),
-    website: z.string().nullable().optional(),
-    iconUrl: z.string().nullable().optional(),
-    colorHex: z.string().nullable().optional(),
-    inceptionDate: z.string().nullable().optional(),
+    slug: z.string().max(64).optional(),
+    ticker: tickerSchema,
+    title: z.string().max(256).optional(),
+    description: longText,
+    website: z.string().max(512).nullable().optional(),
+    iconUrl: z.string().max(512).nullable().optional(),
+    colorHex: z.string().max(16).nullable().optional(),
+    inceptionDate: isoDateText,
 
     isYieldBearing: z.boolean(),
     isOpenEnded: z.boolean().optional(),
@@ -199,22 +226,19 @@ export const OracleAssetPayloadSchema = z
     jurisdiction: jurisdictionSchema.optional(),
     fees: feesSchema.optional(),
     primaryMarket: primaryMarketSchema.optional(),
-    tokens: z.array(underlyingTokenSchema).optional(),
+    tokens: z.array(underlyingTokenSchema).max(20).optional(),
 
-    aggregates: z.array(aggregateSchema).optional(),
+    aggregates: z.array(aggregateSchema).max(50).optional(),
     marketData: marketDataSchema.optional(),
-    timeseries: z.record(timeseriesMeasure).optional(),
+    timeseries: timeseriesRecordSchema.optional(),
 
     source: sourceSchema.optional(),
 
-    scrapedAt: z.string().optional(),
+    scrapedAt: z.string().max(64).optional(),
   })
   .passthrough();
 
 export const OracleIngestRequestSchema = z.object({
-  // Single-shot ingest accepts an array of full per-asset payloads. The
-  // operator script POSTs everything at once; the backend processes per
-  // asset and returns per-token status.
   assets: z.array(OracleAssetPayloadSchema).min(1).max(64),
 });
 

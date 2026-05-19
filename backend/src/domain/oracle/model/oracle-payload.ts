@@ -1,10 +1,12 @@
 /**
- * Wave 5 Q1 — RWA oracle payload shape (rwa.xyz scrape format).
+ * Wave 5 Q1 — RWA oracle ingest input shapes.
  *
- * Mirrors the JSON written by `development/ORACLE_DATA_MINE/scripts/
- * extract-asset.ts`. Only the fields the backend ingest path reads are
- * typed; the rest of the rwa.xyz payload is preserved in `rawPayload`
- * for forward-compat. The Zod schema lives at
+ * These are NOT domain entities — they're the typed write-payloads the
+ * ingest pipeline hands to the repo. Domain entity classes (read shapes
+ * for `TokenMetadata` / `OracleSnapshot` / `TimeseriesPoint`) land with
+ * Q4's chart-read endpoints; this file stays write-only until then.
+ *
+ * The Zod input schema lives at
  * `application/dto/oracle/oracle-ingest.dto.ts` — keep field names in
  * sync between the two.
  */
@@ -57,11 +59,9 @@ export interface OracleMetadataUpsert {
   pmRedemptionFrequency?: string;
   pmKycRequired?: boolean;
   underlyingTokens?: OracleUnderlyingToken[];
-  rawPayload?: unknown;
 }
 
 export interface OracleSnapshotUpsert {
-  id: string;
   ticker: string;
   snapshotAt: Date;
   source: string;
@@ -79,4 +79,19 @@ export interface OracleSnapshotUpsert {
   holdingAddressesCount?: number;
   top5HolderConcentration?: string;
   rwaxyzUpdatedAt?: Date;
+}
+
+/**
+ * Atomic per-asset write — the use case bundles all three derived
+ * shapes and the repo runs them inside a single Postgres transaction.
+ * Previously the repo exposed three independent methods and a mid-
+ * upsert failure on `upsertTimeseries` left metadata + snapshot
+ * partially committed (returned status `error` but the caller had no
+ * way to know what landed).
+ */
+export interface OracleAssetWrite {
+  metadata: OracleMetadataUpsert;
+  /** Null when the payload had no marketData / aggregates — metadata-only refresh. */
+  snapshot: OracleSnapshotUpsert | null;
+  timeseries: OracleTimeseriesPoint[];
 }
