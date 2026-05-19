@@ -201,6 +201,14 @@ const router = createRouter({
       component: () => import('@/views/MetricsPage.vue'),
       meta: { title: 'Public Metrics', layout: 'landing' },
     },
+    // Catch-all — anything that didn't match (incl. bad
+    // `/marketplace/<bad-ticker>` paths that fall through the route's
+    // regex constraint) bounces to landing rather than rendering a
+    // blank <router-view>. Must be LAST in the routes array.
+    {
+      path: '/:pathMatch(.*)*',
+      redirect: '/',
+    },
   ],
 })
 
@@ -234,6 +242,11 @@ const INVESTOR_ROUTES = new Set([
   '/redemptions',
   '/activity',
 ])
+// Wave 5 Q1 — `/marketplace/:ticker` (token detail) is also
+// investor-only. Without this prefix, an issuer pasting a token-detail
+// URL would bypass the role redirect and render an investor-only page.
+// Symmetric with `ISSUER_ROUTE_PREFIXES` above.
+const INVESTOR_ROUTE_PREFIXES = ['/marketplace/']
 
 // Phase 9.A · Expansion (F2) — onboarding gate. An issuer whose
 // `issuerStatus` is not `approved` (i.e. `unregistered` or `pending`)
@@ -286,7 +299,10 @@ router.beforeEach(async (to) => {
   if (role === 'investor' && matchesIssuerOnly) {
     return { path: '/portfolio' }
   }
-  if (role === 'issuer' && INVESTOR_ROUTES.has(to.path)) {
+  const matchesInvestorOnly =
+    INVESTOR_ROUTES.has(to.path)
+    || INVESTOR_ROUTE_PREFIXES.some((p) => to.path.startsWith(p))
+  if (role === 'issuer' && matchesInvestorOnly) {
     return { path: '/tokens' }
   }
 

@@ -104,9 +104,18 @@ export const useOracleTokensStore = defineStore('oracle-tokens', () => {
     const cached = metadataByTicker.value.get(ticker.toLowerCase())
     if (cached) return cached
     const data = await oracleApi.getMetadata(ticker)
-    // Cache under the canonical case AND the input case so subsequent
-    // case-variant lookups hit the cache without a server round-trip.
-    metadataByTicker.value.set(data.ticker.toLowerCase(), data)
+    // Cache by lowercase ticker so case-variant lookups hit without a
+    // server round-trip. The cached value carries the canonical
+    // case-preserved ticker from the response, not the input.
+    //
+    // Reactivity: Map.set on a `ref<Map>` mutates in place. Vue 3's
+    // collection proxy DOES track that, but only callers reading
+    // through the same store instance benefit; we reassign the Map
+    // ref explicitly to surface the new entry to any reactive
+    // observer just in case (cheap — 11-entry max in steady state).
+    const next = new Map(metadataByTicker.value)
+    next.set(data.ticker.toLowerCase(), data)
+    metadataByTicker.value = next
     return data
   }
 
@@ -114,7 +123,9 @@ export const useOracleTokensStore = defineStore('oracle-tokens', () => {
     const cached = snapshotByTicker.value.get(ticker.toLowerCase())
     if (cached) return cached
     const data = await oracleApi.getLatestSnapshot(ticker)
-    snapshotByTicker.value.set(data.ticker.toLowerCase(), data)
+    const next = new Map(snapshotByTicker.value)
+    next.set(data.ticker.toLowerCase(), data)
+    snapshotByTicker.value = next
     return data
   }
 

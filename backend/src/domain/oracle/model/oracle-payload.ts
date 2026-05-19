@@ -1,15 +1,23 @@
 /**
- * Wave 5 Q1 — RWA oracle ingest input shapes.
+ * Wave 5 Q1 — RWA oracle data shapes (write + read).
  *
- * These are NOT domain entities — they're the typed write-payloads the
- * ingest pipeline hands to the repo. Domain entity classes (read shapes
- * for `TokenMetadata` / `OracleSnapshot` / `TimeseriesPoint`) land with
- * Q4's chart-read endpoints; this file stays write-only until then.
+ * Two sections:
+ *  1. Write inputs — typed payloads the ingest pipeline hands to the
+ *     repo. Source-of-truth Zod schema lives at
+ *     `application/dto/oracle/oracle-ingest.dto.ts`.
+ *  2. Read projections — domain-shape returns from the repo (the use
+ *     cases then map them to snake_case DTOs at
+ *     `application/dto/oracle/oracle-read.dto.ts`).
  *
- * The Zod input schema lives at
- * `application/dto/oracle/oracle-ingest.dto.ts` — keep field names in
- * sync between the two.
+ * Not entity classes — the data is read-mostly catalogue + scalar
+ * snapshots with no invariants that warrant class wrapping. If a
+ * future slice grows behaviour onto these shapes, that's the moment
+ * to split into entity files.
+ *
+ * `OracleUnderlyingToken` is shared between both halves.
  */
+
+// ── Shared ───────────────────────────────────────────────────────────
 
 export interface OracleUnderlyingToken {
   network: string;
@@ -18,6 +26,8 @@ export interface OracleUnderlyingToken {
   decimals: number;
   standards?: string[];
 }
+
+// ── Write inputs ─────────────────────────────────────────────────────
 
 export interface OracleTimeseriesPoint {
   ticker: string;

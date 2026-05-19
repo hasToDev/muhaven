@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, useTemplateRef, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { useOracleTokensStore } from '@/stores/oracle-tokens'
 import {
-  oracleApi,
+  ApiError,
   type OracleTokenMetadataDto,
   type OracleSnapshotDto,
 } from '@/services/api'
@@ -11,57 +12,97 @@ import MButton from '@/components/ui/MButton.vue'
 import MPageLoader from '@/components/ui/MPageLoader.vue'
 import {
   ArrowLeft, Globe, ShieldCheck, TrendingUp, Sparkles,
-  Building2, FileText, Users, CircleDollarSign, ExternalLink,
+  Building2, FileText, Users, CircleDollarSign, ExternalLink, AlertCircle,
 } from 'lucide-vue-next'
 
 /**
- * Wave 5 Q1 — token detail page sourced from the oracle layer
- * (`/oracle/tokens/:ticker/metadata` + `/snapshot/latest`). Full
- * 30-field render branched by `is_yield_bearing`:
- *   - yield-bearing: APY hero + yield-rate breakdown
- *   - non-yield: capital-appreciation framing + total-supply hero
+ * Wave 5 Q1 — token detail page sourced from the oracle layer.
  *
- * No buy CTA — the 11 RWAs aren't on-chain yet. A "Coming Soon" badge
- * replaces it. Q4 chart components will land here later.
+ * Loading model:
+ *  - Metadata + snapshot fetched in parallel via the Pinia store
+ *    (deduplicates within a session; backend Cache-Control absorbs
+ *    cross-session reload).
+ *  - A snapshot 404 (legitimate "not ingested yet") is distinguished
+ *    from a network/5xx error — the latter surfaces a soft inline
+ *    warning while metadata still renders.
+ *  - Race-safe: every load() bumps a request token; stale awaits
+ *    silently discard their result so rapid /USYC → /BUIDL navigation
+ *    can't paint USYC fields under the BUIDL URL.
+ *
+ * a11y:
+ *  - H1 first (token name), then H2 sections — heading hierarchy
+ *    correct top-to-bottom.
+ *  - Focus moves to the "Back to marketplace" link on mount so
+ *    AT users land on meaningful navigation.
  */
 
 const props = defineProps<{ ticker: string }>()
 const router = useRouter()
+const oracle = useOracleTokensStore()
 
 const metadata = ref<OracleTokenMetadataDto | null>(null)
 const snapshot = ref<OracleSnapshotDto | null>(null)
 const loading = ref(true)
 const error = ref<string | null>(null)
+const snapshotError = ref<string | null>(null)
+const iconLoadFailed = ref(false)
+const backLink = useTemplateRef<HTMLAnchorElement>('backLink')
+
+// Monotonically-increasing request token — every load() captures the
+// current value and bails on any await whose token has been
+// superseded. Cheaper than AbortController for two parallel awaits and
+// survives the case where one promise resolves AFTER another in-flight
+// request has already swapped the URL.
+let _reqId = 0
 
 async function load() {
+  const myReq = ++_reqId
   loading.value = true
   error.value = null
+  snapshotError.value = null
   metadata.value = null
   snapshot.value = null
+  iconLoadFailed.value = false
   try {
-    // Fetch metadata + snapshot in parallel; tolerate the snapshot
-    // 404 (a fresh-ingest token may have metadata but no snapshot yet).
-    const [m, s] = await Promise.allSettled([
-      oracleApi.getMetadata(props.ticker),
-      oracleApi.getLatestSnapshot(props.ticker),
-    ])
-    if (m.status === 'rejected') {
-      throw m.reason
-    }
-    metadata.value = m.value
-    if (s.status === 'fulfilled') {
-      snapshot.value = s.value
+    // Metadata is the load-bearing fetch — if it fails, the whole
+    // page falls through to the error state. Snapshot is best-effort.
+    const meta = await oracle.loadMetadata(props.ticker)
+    if (myReq !== _reqId) return
+    metadata.value = meta
+
+    try {
+      const snap = await oracle.loadLatestSnapshot(props.ticker)
+      if (myReq !== _reqId) return
+      snapshot.value = snap
+    } catch (e) {
+      if (myReq !== _reqId) return
+      // Distinguish "no snapshot yet" (404 — legitimate empty state)
+      // from transient infrastructure failure. The page renders the
+      // metadata block + a soft inline banner instead of conflating
+      // them into a missing "Supply & Market" section.
+      if (e instanceof ApiError && e.status === 404) {
+        snapshot.value = null
+      } else {
+        snapshotError.value =
+          e instanceof Error ? e.message : 'Snapshot temporarily unavailable'
+      }
     }
   } catch (e) {
+    if (myReq !== _reqId) return
     error.value = e instanceof Error ? e.message : 'Failed to load token'
   } finally {
-    loading.value = false
+    if (myReq === _reqId) loading.value = false
   }
 }
 
-onMounted(load)
-// Re-fetch on ticker change so /marketplace/USYC → /marketplace/BUIDL
-// refreshes the page state without a full route reload.
+onMounted(async () => {
+  await load()
+  // Move focus to the back link so AT users land on meaningful nav
+  // rather than the document body. nextTick so the link is in the DOM.
+  await nextTick()
+  backLink.value?.focus()
+})
+
 watch(() => props.ticker, load)
 
 function formatDollarString(raw: string | null | undefined): string {
@@ -79,10 +120,13 @@ function formatPercent(raw: string | null | undefined, digits = 2): string {
 }
 
 function formatTokenSupply(raw: string | null | undefined): string {
+  // Note: parseFloat truncates to ~15 significant digits. The DB
+  // stores `numeric(36,18)` strings for precision in arithmetic; the
+  // render layer is intentionally lossy because supply abbreviated to
+  // "2.64B" doesn't reveal sub-cent drift anyway.
   if (raw === null || raw === undefined) return '—'
   const n = parseFloat(raw)
   if (!Number.isFinite(n)) return '—'
-  // Human-readable for marketplace UI — three significant abbreviations.
   if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2)}B`
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(2)}K`
@@ -128,18 +172,49 @@ const issuerLine = computed(() => {
     </div>
 
     <div v-else-if="metadata" class="relative z-10 max-w-6xl">
-      <!-- Back link -->
+      <!-- Back link — receives focus on mount for AT landing -->
       <RouterLink
+        ref="backLink"
         to="/marketplace"
+        tabindex="0"
         class="inline-flex items-center gap-2 mb-6 font-sans text-xs uppercase tracking-[0.18em] font-bold
-               text-cool hover:text-midnight dark:hover:text-white transition-colors"
+               text-cool hover:text-midnight dark:hover:text-white transition-colors
+               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/50 dark:focus-visible:ring-signal/40 rounded"
       >
         <ArrowLeft :size="14" :stroke-width="2" aria-hidden="true" />
         Back to marketplace
       </RouterLink>
 
+      <!-- Soft inline warning when snapshot fetch failed for a non-404 reason -->
+      <div
+        v-if="snapshotError"
+        role="status"
+        class="mb-6 flex items-start gap-3 p-3 rounded-lg
+               bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/40"
+      >
+        <AlertCircle :size="16" :stroke-width="2" class="text-amber-700 dark:text-amber-400 mt-0.5 flex-shrink-0" aria-hidden="true" />
+        <div class="flex-1">
+          <p class="font-sans text-sm text-amber-900 dark:text-amber-200">Snapshot temporarily unavailable</p>
+          <p class="font-sans text-xs text-amber-700 dark:text-amber-300/80 mt-0.5">Metadata is current; market data will refresh automatically. {{ snapshotError }}</p>
+        </div>
+      </div>
+
+      <!-- Snapshot-pending notice — metadata is here but no snapshot row yet -->
+      <div
+        v-else-if="!snapshot"
+        role="status"
+        class="mb-6 flex items-start gap-3 p-3 rounded-lg
+               bg-mist/60 dark:bg-white/5 border border-haze dark:border-white/10"
+      >
+        <AlertCircle :size="16" :stroke-width="2" class="text-cool mt-0.5 flex-shrink-0" aria-hidden="true" />
+        <div class="flex-1">
+          <p class="font-sans text-sm text-midnight dark:text-white">Live data pending</p>
+          <p class="font-sans text-xs text-cool mt-0.5">Snapshot will appear at the next 8-hour oracle refresh.</p>
+        </div>
+      </div>
+
       <!-- ═══════════════════════════════════════════════════════════
-           Hero — icon + name + ticker + issuer + chips + hero scalars
+           Hero — H1 first (correct heading hierarchy) + chips + scalars
            ═══════════════════════════════════════════════════════════ -->
       <section
         v-motion
@@ -149,11 +224,12 @@ const issuerLine = computed(() => {
       >
         <div class="flex items-start gap-5 mb-5 flex-wrap">
           <img
-            v-if="metadata.icon_url"
+            v-if="metadata.icon_url && !iconLoadFailed"
             :src="metadata.icon_url"
-            :alt="`${metadata.display_name} icon`"
+            alt=""
+            role="presentation"
             class="w-16 h-16 rounded-2xl bg-mist/60 dark:bg-white/5 border border-haze dark:border-white/5 object-contain"
-            @error="(e) => ((e.target as HTMLImageElement).style.display = 'none')"
+            @error="iconLoadFailed = true"
           />
           <div class="flex-1 min-w-0">
             <div class="flex items-center gap-2 mb-2 flex-wrap">
@@ -171,9 +247,9 @@ const issuerLine = computed(() => {
                 v-if="metadata.is_yield_bearing"
                 data-testid="detail-yield-pill"
                 class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md
-                       bg-compute/10 dark:bg-signal/10 border border-compute/25 dark:border-signal/25
+                       bg-compute/15 dark:bg-signal/15 border border-compute/30 dark:border-signal/30
                        text-[10px] font-sans font-bold uppercase tracking-wider
-                       text-compute dark:text-signal"
+                       text-amber-900 dark:text-signal"
               >
                 <TrendingUp :size="11" :stroke-width="2" aria-hidden="true" />
                 Yield Bearing
@@ -189,9 +265,9 @@ const issuerLine = computed(() => {
                 Capital Appreciation
               </span>
               <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md
-                           bg-gold/10 dark:bg-signal/10 border border-gold/25 dark:border-signal/25
+                           bg-gold/15 dark:bg-signal/15 border border-gold/30 dark:border-signal/30
                            text-[10px] font-sans font-bold uppercase tracking-wider
-                           text-compute dark:text-signal">
+                           text-amber-900 dark:text-signal">
                 <Sparkles :size="11" :stroke-width="2" aria-hidden="true" />
                 Coming Soon
               </span>
@@ -255,7 +331,7 @@ const issuerLine = computed(() => {
             </div>
           </template>
 
-          <!-- Non-yield hero: Price + TVL + Holders -->
+          <!-- Non-yield hero: Price + NAV + Supply -->
           <template v-else>
             <div>
               <p class="font-sans text-[10px] text-cool uppercase tracking-[0.15em] font-bold mb-2">
@@ -274,6 +350,16 @@ const issuerLine = computed(() => {
               </p>
               <span class="font-accent italic font-bold text-3xl text-midnight dark:text-white tabular-nums leading-none">
                 {{ formatDollarString(snapshot?.nav_dollar) }}
+              </span>
+            </div>
+            <!-- UX L2: surface total supply on non-yield hero —
+                 differentiator for capital-appreciation tokens. -->
+            <div>
+              <p class="font-sans text-[10px] text-cool uppercase tracking-[0.15em] font-bold mb-2">
+                Total Supply
+              </p>
+              <span class="font-accent italic font-bold text-3xl text-midnight dark:text-white tabular-nums leading-none">
+                {{ formatTokenSupply(snapshot?.total_supply_token) }}
               </span>
             </div>
           </template>
@@ -302,10 +388,12 @@ const issuerLine = computed(() => {
       </section>
 
       <!-- ═══════════════════════════════════════════════════════════
-           Two-column body: left = issuer + structure, right = market + fees + primary market
+           Two-column body: issuer + jurisdiction on the left;
+           yield detail (cond) + fees + primary market + supply on the right.
+           md:grid-cols-2 (not lg:) — halves vertical scroll on tablet.
            ═══════════════════════════════════════════════════════════ -->
-      <section class="grid grid-cols-1 lg:grid-cols-2 gap-10 lg:gap-16 py-12">
-        <!-- LEFT: issuer + jurisdiction -->
+      <section class="grid grid-cols-1 md:grid-cols-2 gap-10 lg:gap-16 py-12">
+        <!-- LEFT: issuer + jurisdiction + underlying tokens -->
         <div class="space-y-10">
           <div>
             <h2 class="flex items-center gap-2 font-sans text-xs uppercase tracking-[0.18em] font-bold text-cool mb-4">
@@ -401,7 +489,7 @@ const issuerLine = computed(() => {
           </div>
         </div>
 
-        <!-- RIGHT: fees + primary market + supply -->
+        <!-- RIGHT: yield detail (cond) + fees + primary market + supply -->
         <div class="space-y-10">
           <div v-if="metadata.is_yield_bearing">
             <h2 class="flex items-center gap-2 font-sans text-xs uppercase tracking-[0.18em] font-bold text-cool mb-4">

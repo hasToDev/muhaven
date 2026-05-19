@@ -195,13 +195,18 @@ export class PgOracleRepository implements IOracleRepository {
       `),
     ]);
 
-    const latestByTicker = new Map<string, TokenListItem['latestSnapshot']>();
+    const latestByLowerTicker = new Map<string, TokenListItem['latestSnapshot']>();
     // `db.execute` returns a `QueryResult` with rows on `.rows`. Column
     // names land snake_case verbatim (no Drizzle camelCase aliasing
     // on the raw-SQL path — see `pg-nav-history.repository.ts:73-85`
     // for the same pattern).
+    //
+    // Key on `lower(ticker)` so the merge survives any case drift
+    // between `oracle_snapshots.ticker` and `token_metadata.ticker`.
+    // The single-ticker reads already use case-insensitive lookups
+    // (see `findMetadata`); the list endpoint matches that contract.
     for (const r of latestRows.rows) {
-      latestByTicker.set(r.ticker, {
+      latestByLowerTicker.set(r.ticker.toLowerCase(), {
         snapshotAt:
           r.snapshot_at instanceof Date ? r.snapshot_at : new Date(r.snapshot_at),
         navDollar: r.nav_dollar,
@@ -210,6 +215,24 @@ export class PgOracleRepository implements IOracleRepository {
         totalAssetValueDollar: r.total_asset_value_dollar,
         holdingAddressesCount: r.holding_addresses_count,
       });
+    }
+
+    // Audit log for orphan snapshots — a snapshot row whose ticker has
+    // no matching metadata row. Silent in the response (the marketplace
+    // card needs `display_name`/`icon_url` from metadata to render),
+    // but a one-line warn surfaces the drift so the operator notices
+    // before the ratio gets ugly.
+    const metadataTickerSet = new Set(
+      metadataRows.map((m) => m.ticker.toLowerCase()),
+    );
+    const orphans: string[] = [];
+    for (const lower of latestByLowerTicker.keys()) {
+      if (!metadataTickerSet.has(lower)) orphans.push(lower);
+    }
+    if (orphans.length > 0) {
+      console.warn(
+        `[oracle.findMetadataList] dropped ${orphans.length} orphan snapshot(s) without metadata: ${orphans.join(', ')}`,
+      );
     }
 
     return metadataRows.map((m) => ({
@@ -228,7 +251,7 @@ export class PgOracleRepository implements IOracleRepository {
       pmSubscriptionFrequency: m.pmSubscriptionFrequency ?? null,
       inceptionDate: m.inceptionDate ?? null,
       lastRefreshedAt: m.lastRefreshedAt,
-      latestSnapshot: latestByTicker.get(m.ticker) ?? null,
+      latestSnapshot: latestByLowerTicker.get(m.ticker.toLowerCase()) ?? null,
     }));
   }
 
