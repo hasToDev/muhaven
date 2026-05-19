@@ -69,35 +69,46 @@ async function main(): Promise<void> {
   }
 
   // Single transaction so a mid-loop crash leaves no partial state.
-  // `.returning()` reports per-row whether a row actually changed, so
-  // a re-run shows operator-meaningful output (`noop` vs `updated`).
-  let updated = 0;
-  let noop = 0;
+  // We do a pre-SELECT inside the same tx to produce an operator-
+  // meaningful `unchanged / flipped / set` summary; the alternative
+  // (post-update `.returning`) reports post-write values which can't
+  // tell same-value re-runs apart from real flips.
+  let unchanged = 0;
+  let flipped = 0;
+  let set = 0;
+  let touched = 0;
   await db.transaction(async (tx) => {
     for (const { ticker, override } of YIELD_BEARING_OVERRIDES) {
+      const [before] = await tx
+        .select({ existing: tokenMetadata.isYieldBearingOverride })
+        .from(tokenMetadata)
+        .where(eq(tokenMetadata.ticker, ticker));
+      if (!before) {
+        console.log(`  WARN: no row for ${ticker} (raced past pre-flight?)`);
+        continue;
+      }
+      const prior = before.existing;
       const result = await tx
         .update(tokenMetadata)
         .set({ isYieldBearingOverride: override, updatedAt: new Date() })
         .where(eq(tokenMetadata.ticker, ticker))
-        .returning({
-          ticker: tokenMetadata.ticker,
-          before: tokenMetadata.isYieldBearingOverride,
-        });
-      // `.returning` runs AFTER the SET, so `before` here actually
-      // reflects the post-update value. We can't cheaply detect "no
-      // change" without a separate SELECT; treat any row touched by
-      // the UPDATE as `updated`. The output is still operator-clear.
-      if (result.length > 0) {
-        updated += 1;
-        console.log(`  set is_yield_bearing_override=${override} for ${ticker}`);
+        .returning({ ticker: tokenMetadata.ticker });
+      if (result.length === 0) continue;
+      touched += 1;
+      if (prior === null) {
+        set += 1;
+        console.log(`  ${ticker}: set is_yield_bearing_override=${override} (was null)`);
+      } else if (prior === override) {
+        unchanged += 1;
+        console.log(`  ${ticker}: unchanged (already ${override})`);
       } else {
-        noop += 1;
-        console.log(`  WARN: no row updated for ${ticker} (already missing from pre-flight?)`);
+        flipped += 1;
+        console.log(`  ${ticker}: flipped is_yield_bearing_override ${prior} → ${override}`);
       }
     }
   });
   console.log(
-    `[seed-yield-overrides] applied ${updated} update(s), ${noop} no-op(s)`,
+    `[seed-yield-overrides] touched ${touched}: ${set} set, ${flipped} flipped, ${unchanged} unchanged`,
   );
 }
 

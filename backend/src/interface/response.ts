@@ -13,11 +13,21 @@ function defaultHeaders(): Record<string, string> {
   };
 }
 
+export interface OkOptions {
+  /** Set `Cache-Control` on the response. Use `'no-store'` to opt out. */
+  cacheControl?: string;
+  /** Additional headers to merge on top of the JSON content type. */
+  headers?: Record<string, string>;
+}
+
 export const Response = {
-  ok(data: unknown): HttpResponse {
+  ok(data: unknown, opts: OkOptions = {}): HttpResponse {
+    const headers: Record<string, string> = { ...defaultHeaders() };
+    if (opts.cacheControl) headers['Cache-Control'] = opts.cacheControl;
+    if (opts.headers) Object.assign(headers, opts.headers);
     return {
       statusCode: 200,
-      headers: defaultHeaders(),
+      headers,
       body: JSON.stringify(data),
     };
   },
@@ -70,6 +80,22 @@ export const Response = {
         'Retry-After': String(retryAfterSeconds),
       },
       body: JSON.stringify(ErrorResponseDtoFactory.create(429, title, detail)),
+    };
+  },
+
+  /**
+   * RFC 7231 §6.5.5 — server MUST send `Allow` header listing supported
+   * methods. Use this when a known resource was hit with the wrong
+   * verb; `badRequest('Method not allowed')` is technically a category
+   * error and trips strict API gateways.
+   */
+  methodNotAllowed(allow: string): HttpResponse {
+    return {
+      statusCode: 405,
+      headers: { ...defaultHeaders(), Allow: allow },
+      body: JSON.stringify(
+        ErrorResponseDtoFactory.create(405, 'Method Not Allowed', `Allowed: ${allow}`),
+      ),
     };
   },
 

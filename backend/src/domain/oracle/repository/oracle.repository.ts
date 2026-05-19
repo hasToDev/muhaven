@@ -35,15 +35,11 @@ export interface IOracleRepository {
    * `isYieldBearing` field is the EFFECTIVE value
    * (`is_yield_bearing_override ?? is_yield_bearing`); the raw
    * rwa.xyz flag is also returned for transparency UIs.
+   *
+   * Case-insensitive lookup — `usyc` and `USYC` both match the
+   * canonical row keyed by the case-preserved storage value.
    */
   findMetadata(ticker: string): Promise<TokenMetadataRead | null>;
-
-  /**
-   * Cheap existence probe — used by `GET /timeseries` to distinguish
-   * "unknown ticker → 404" from "known ticker with no points in range
-   * → 200 with empty array". Returns true iff a metadata row exists.
-   */
-  hasTicker(ticker: string): Promise<boolean>;
 
   /**
    * Returns `null` when no snapshot has been ingested for the

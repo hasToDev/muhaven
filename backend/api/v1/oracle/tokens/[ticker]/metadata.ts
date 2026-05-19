@@ -3,24 +3,23 @@ import { GetTokenMetadataUseCase } from '../../../../../src/application/use-case
 import { container } from '../../../../../src/infrastructure/container.js';
 import { createGetHandler, sendResponse } from '../../../../../src/interface/handler-factory.js';
 import { withCors } from '../../../../../src/interface/middleware/with-cors.js';
-import { okWithCache, validateTicker } from '../../../../../src/interface/oracle/ticker-validator.js';
+import {
+  ORACLE_READ_CACHE_CONTROL,
+  validateTicker,
+} from '../../../../../src/interface/oracle/ticker-validator.js';
 import { Response } from '../../../../../src/interface/response.js';
 
 /**
  * GET /api/v1/oracle/tokens/:ticker/metadata
  *
  * Public read — marketplace cards + token detail page consume this for
- * display strings (issuer / asset class / fees / regulatory framework
- * / primary-market terms). The returned `is_yield_bearing` is the
- * EFFECTIVE flag (`override ?? rwaxyz_flag`); the raw rwa.xyz value is
- * exposed alongside as `is_yield_bearing_rwaxyz` for transparency.
+ * display strings. The returned `is_yield_bearing` is the EFFECTIVE
+ * flag (`override ?? rwaxyz_flag`); the raw rwa.xyz value is exposed
+ * alongside as `is_yield_bearing_rwaxyz` for transparency.
  *
  * No auth — same posture as `GET /api/v1/tokens` (marketplace catalog).
- * No PII; the data is rwa.xyz's public scrape.
- *
- * Ticker is validated against the same regex the ingest DTO enforces
- * at write time, so malformed input is rejected with 400 before it
- * reaches the DB.
+ * Ticker is validated + matched case-insensitively against the
+ * `token_metadata.ticker` PK.
  */
 
 let _useCase: GetTokenMetadataUseCase | null = null;
@@ -37,13 +36,17 @@ const handler = createGetHandler({
     const tickerResult = validateTicker(req.query.ticker);
     if (!tickerResult.ok) return tickerResult.response;
     const result = await getUseCase().execute(tickerResult.value);
-    return okWithCache(result);
+    return Response.ok(result, { cacheControl: ORACLE_READ_CACHE_CONTROL });
   },
 });
 
 export default withCors(async (req: VercelRequest, res: VercelResponse): Promise<void> => {
-  if (req.method !== 'GET') {
-    sendResponse(res, Response.badRequest('Method not allowed'));
+  // HEAD ↔ GET — clients (health checkers, link probes, CDN warmers)
+  // routinely HEAD before GET; RFC 7231 §4.3.2 requires HEAD-supports
+  // wherever GET is supported. The body is suppressed by the
+  // underlying Node http server because it sees `req.method === 'HEAD'`.
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    sendResponse(res, Response.methodNotAllowed('GET, HEAD, OPTIONS'));
     return;
   }
   return handler(req, res);

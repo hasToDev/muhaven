@@ -62,8 +62,13 @@ export class PgOracleRepository implements IOracleRepository {
   }
 
   async findMetadata(ticker: string): Promise<TokenMetadataRead | null> {
+    // Case-insensitive at the repo boundary — rwa.xyz tickers are
+    // mixed-case (`syrupUSDC`, `MUon`), but consumers shouldn't have
+    // to remember the canonical case. Mirrors the same pattern used
+    // for addresses (see `feedback_address_case_at_repo_boundary`).
+    // Cost is negligible at 11 rows + PK-bounded scan.
     const row = await this.db.query.tokenMetadata.findFirst({
-      where: eq(tokenMetadata.ticker, ticker),
+      where: sql`lower(${tokenMetadata.ticker}) = lower(${ticker})`,
     });
     if (!row) return null;
     // Effective yield-bearing flag — `override ?? raw`. Drizzle types
@@ -111,7 +116,7 @@ export class PgOracleRepository implements IOracleRepository {
 
   async findLatestSnapshot(ticker: string): Promise<OracleSnapshotRead | null> {
     const row = await this.db.query.oracleSnapshots.findFirst({
-      where: eq(oracleSnapshots.ticker, ticker),
+      where: sql`lower(${oracleSnapshots.ticker}) = lower(${ticker})`,
       orderBy: [desc(oracleSnapshots.snapshotAt)],
     });
     if (!row) return null;
@@ -136,20 +141,11 @@ export class PgOracleRepository implements IOracleRepository {
     };
   }
 
-  async hasTicker(ticker: string): Promise<boolean> {
-    const row = await this.db
-      .select({ ticker: tokenMetadata.ticker })
-      .from(tokenMetadata)
-      .where(eq(tokenMetadata.ticker, ticker))
-      .limit(1);
-    return row.length > 0;
-  }
-
   async findTimeseries(
     query: OracleTimeseriesQuery,
   ): Promise<OracleTimeseriesReadPoint[]> {
     const conditions = [
-      eq(oracleTimeseries.ticker, query.ticker),
+      sql`lower(${oracleTimeseries.ticker}) = lower(${query.ticker})`,
       eq(oracleTimeseries.measureSlug, query.measureSlug),
     ];
     // `date` is a Postgres `date` column; Drizzle accepts `YYYY-MM-DD`
@@ -183,15 +179,19 @@ class PgOracleTxRepository {
   constructor(private readonly tx: Db) {}
 
   async upsertMetadata(input: OracleMetadataUpsert): Promise<void> {
-    // Note: `is_yield_bearing_override` is intentionally NOT in this
-    // shape. The ingest pipeline carries rwa.xyz's raw flag only;
-    // the override is MuHaven's editorial decision set independently
-    // (via `backend/scripts/seed-yield-bearing-overrides.ts`). Drizzle's
-    // ON CONFLICT DO UPDATE only SETs the columns named in `set`, so
-    // the override column survives every subsequent ingest — exactly
-    // the semantic we want.
+    // INVARIANT (load-bearing): `is_yield_bearing_override` MUST NOT
+    // appear in `rwaxyzFields` below. The ingest pipeline carries
+    // rwa.xyz's raw classification; the override is MuHaven's editorial
+    // decision set independently by
+    // `backend/scripts/seed-yield-bearing-overrides.ts`. Drizzle's
+    // ON CONFLICT DO UPDATE only SETs the columns named in `set` —
+    // omitting the override column here is what keeps the seed alive
+    // across every subsequent refresh. The interface type
+    // `OracleMetadataUpsert` (domain/oracle/model/oracle-payload.ts)
+    // also doesn't carry the field, so adding `input.isYieldBearingOverride`
+    // would be a TS error — defense in depth.
     const now = new Date();
-    const fields = {
+    const rwaxyzFields = {
       ticker: input.ticker,
       rwaxyzAssetId: input.rwaxyzAssetId,
       rwaxyzSlug: input.rwaxyzSlug,
@@ -228,7 +228,7 @@ class PgOracleTxRepository {
     await this.tx
       .insert(tokenMetadata)
       .values({
-        ...fields,
+        ...rwaxyzFields,
         lastRefreshedAt: now,
         createdAt: now,
         updatedAt: now,
@@ -237,8 +237,10 @@ class PgOracleTxRepository {
         target: tokenMetadata.ticker,
         // Re-stamp every display field + bump refresh markers. `created_at`
         // intentionally NOT in the set — first-seen survives rewrites.
+        // `is_yield_bearing_override` intentionally NOT in `rwaxyzFields`
+        // — see the INVARIANT note above.
         set: {
-          ...fields,
+          ...rwaxyzFields,
           lastRefreshedAt: now,
           updatedAt: now,
         },

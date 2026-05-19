@@ -3,7 +3,10 @@ import { GetLatestSnapshotUseCase } from '../../../../../../src/application/use-
 import { container } from '../../../../../../src/infrastructure/container.js';
 import { createGetHandler, sendResponse } from '../../../../../../src/interface/handler-factory.js';
 import { withCors } from '../../../../../../src/interface/middleware/with-cors.js';
-import { okWithCache, validateTicker } from '../../../../../../src/interface/oracle/ticker-validator.js';
+import {
+  ORACLE_READ_CACHE_CONTROL,
+  validateTicker,
+} from '../../../../../../src/interface/oracle/ticker-validator.js';
 import { Response } from '../../../../../../src/interface/response.js';
 
 /**
@@ -15,7 +18,6 @@ import { Response } from '../../../../../../src/interface/response.js';
  * Numeric fields are returned as strings to preserve the
  * `numeric(N,M)` precision that the DB enforces (JSON's number type
  * is IEEE-754, which would lose precision on 18-decimal supply values).
- * Consumers parse client-side at display time.
  */
 
 let _useCase: GetLatestSnapshotUseCase | null = null;
@@ -32,13 +34,13 @@ const handler = createGetHandler({
     const tickerResult = validateTicker(req.query.ticker);
     if (!tickerResult.ok) return tickerResult.response;
     const result = await getUseCase().execute(tickerResult.value);
-    return okWithCache(result);
+    return Response.ok(result, { cacheControl: ORACLE_READ_CACHE_CONTROL });
   },
 });
 
 export default withCors(async (req: VercelRequest, res: VercelResponse): Promise<void> => {
-  if (req.method !== 'GET') {
-    sendResponse(res, Response.badRequest('Method not allowed'));
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    sendResponse(res, Response.methodNotAllowed('GET, HEAD, OPTIONS'));
     return;
   }
   return handler(req, res);

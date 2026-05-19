@@ -948,12 +948,17 @@ export const tokenMetadata = pgTable(
   },
   (t) => [
     index('token_metadata_rwaxyz_asset_id_idx').on(t.rwaxyzAssetId),
-    // Partial index — marketplace queries are dominated by
-    // "yield-bearing only" filtering. The predicate matches the
-    // effective-yield-bearing semantic (`override ?? is_yield_bearing`)
-    // so the planner can use it whether MuHaven has overridden the
-    // rwa.xyz flag or accepted it.
-    index('token_metadata_is_yield_bearing_idx')
+    // Partial index — marketplace "yield-bearing only" filter. Predicate
+    // matches the effective-yield-bearing semantic
+    // (`override ?? is_yield_bearing`) so the planner uses it whether
+    // MuHaven has overridden the rwa.xyz flag or accepted it.
+    //
+    // NAME suffixed `_v2` so drizzle-kit push detects it as a
+    // rename-and-recreate. drizzle-kit DOES NOT detect predicate-only
+    // changes on existing indexes (observed 2026-05-19, stage db:push
+    // silently kept the old predicate). Re-naming the index when the
+    // predicate changes forces a clean DROP + CREATE every time.
+    index('token_metadata_is_yield_bearing_idx_v2')
       .on(t.ticker)
       .where(sql`COALESCE(is_yield_bearing_override, is_yield_bearing) = true`),
   ],
