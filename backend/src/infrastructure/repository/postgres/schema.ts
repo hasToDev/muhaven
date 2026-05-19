@@ -11,6 +11,7 @@ import {
   index,
   uniqueIndex,
   primaryKey,
+  foreignKey,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
@@ -847,12 +848,8 @@ export const checkoutWebhookDeliveries = pgTable(
   'checkout_webhook_deliveries',
   {
     deliveryId: text('delivery_id').primaryKey(),
-    endpointId: text('endpoint_id')
-      .references(() => checkoutWebhookEndpoints.endpointId)
-      .notNull(),
-    sessionId: text('session_id')
-      .references(() => checkoutSessions.sessionId)
-      .notNull(),
+    endpointId: text('endpoint_id').notNull(),
+    sessionId: text('session_id').notNull(),
     eventType: text('event_type').notNull(),
     status: checkoutWebhookDeliveryStatusEnum('status').notNull().default('pending'),
     responseStatus: integer('response_status'),
@@ -861,7 +858,24 @@ export const checkoutWebhookDeliveries = pgTable(
     attemptedAt: timestamp('attempted_at').notNull().defaultNow(),
     completedAt: timestamp('completed_at'),
   },
+  // FKs are declared at the table level (not inline `.references()`) so we
+  // can pin explicit names UNDER Postgres' 63-char identifier limit. The
+  // auto-generated drizzle names (`<table>_<col>_<fktable>_<fkcol>_fk`)
+  // exceed 63 chars here and get truncated by Postgres on CREATE, which
+  // causes drizzle-kit push to propose the same cosmetic DROP+ADD on
+  // every push forever (observed 2026-05-19 cutover; see STATUS.md
+  // "Post-cutover operator follow-ups").
   (t) => [
+    foreignKey({
+      columns: [t.endpointId],
+      foreignColumns: [checkoutWebhookEndpoints.endpointId],
+      name: 'checkout_webhook_deliveries_endpoint_fk',
+    }),
+    foreignKey({
+      columns: [t.sessionId],
+      foreignColumns: [checkoutSessions.sessionId],
+      name: 'checkout_webhook_deliveries_session_fk',
+    }),
     index('checkout_webhook_deliveries_endpoint_idx').on(t.endpointId, t.attemptedAt),
     index('checkout_webhook_deliveries_session_idx').on(t.sessionId, t.attemptedAt),
   ],
