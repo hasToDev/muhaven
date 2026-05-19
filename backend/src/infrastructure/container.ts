@@ -29,6 +29,7 @@ import {
   PgYieldRecordRepository,
   PgRwaTokenRepository,
   PgNavHistoryRepository,
+  PgOracleRepository,
   PgTaxEventRepository,
   PgIssuerTokenDeployRepository,
   PgAgentStateRepository,
@@ -70,6 +71,7 @@ import type { IPortfolioRepository } from '../domain/portfolio/repository/portfo
 import type { IYieldRecordRepository } from '../domain/yield-history/repository/yield-record.repository.js';
 import type { IRwaTokenRepository } from '../domain/token-registry/repository/rwa-token.repository.js';
 import type { INavHistoryRepository } from '../domain/nav-history/repository/nav-history.repository.js';
+import type { IOracleRepository } from '../domain/oracle/repository/oracle.repository.js';
 import type { ITaxEventRepository } from '../domain/tax-event/repository/tax-event.repository.js';
 import type { IIssuerTokenDeployRepository } from '../domain/issuer-onboarding/repository/issuer-token-deploy.repository.js';
 import type { IAgentStateRepository } from '../domain/agent/repository/agent-state.repository.js';
@@ -169,6 +171,7 @@ interface MuHavenRepositories {
   navHistoryRepo: INavHistoryRepository;
   taxEventRepo: ITaxEventRepository;
   issuerTokenDeployRepo: IIssuerTokenDeployRepository;
+  oracleRepo: IOracleRepository;
 }
 
 interface AgentRepositories {
@@ -221,6 +224,7 @@ function createMuHavenRepos(): MuHavenRepositories {
     navHistoryRepo: new PgNavHistoryRepository(db),
     taxEventRepo: new PgTaxEventRepository(db),
     issuerTokenDeployRepo: new PgIssuerTokenDeployRepository(db),
+    oracleRepo: new PgOracleRepository(db),
   };
 }
 
@@ -877,6 +881,9 @@ export const container = {
   },
   get issuerTokenDeployRepo() {
     return getMuHavenRepos().issuerTokenDeployRepo;
+  },
+  get oracleRepo() {
+    return getMuHavenRepos().oracleRepo;
   },
   get agentStateRepo() {
     return getAgentRepos().agentStateRepo;

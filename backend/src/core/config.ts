@@ -246,6 +246,14 @@ const EnvSchema = z.object({
   // of 2026-05-09; `gemini-2.0-flash` was retired for new users). Smaller
   // / cheaper than `pro`, fast enough for the ~6-min onboarding budget.
   GEMINI_MODEL: z.string().default('gemini-2.5-flash'),
+
+  // ── Wave 5 Q1 — RWA oracle ingest (rwa.xyz scrape) ─────────────────
+  // Shared secret presented by the operator script on
+  // `POST /api/v1/admin/oracle/ingest`. Mirrors the
+  // TELEGRAM_BOT_SERVICE_SECRET pattern: empty → endpoint returns 503,
+  // wrong → 401. Operator runs the ingest from a dev machine; this is
+  // NOT a user-facing auth path.
+  ORACLE_INGEST_SERVICE_SECRET: z.string().optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

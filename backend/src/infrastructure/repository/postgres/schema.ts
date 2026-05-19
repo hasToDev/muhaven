@@ -865,3 +865,141 @@ export const checkoutWebhookDeliveries = pgTable(
     index('checkout_webhook_deliveries_session_idx').on(t.sessionId, t.attemptedAt),
   ],
 );
+
+// ── Wave 5 Q1 — RWA oracle ingest (rwa.xyz data harvest) ───────────────
+//
+// Three tables back the off-chain reference data for the 11 curated RWAs
+// scraped from `app.rwa.xyz` via `development/ORACLE_DATA_MINE/`. The
+// on-chain `rwa_tokens` row stays the authoritative catalog (address,
+// symbol, asset class enum, on-chain `nav` via `token_nav_history`); these
+// tables enrich it with the display strings + scalar snapshots + chart
+// time-series the marketplace + token-detail + portfolio pages need.
+//
+// Ticker is the canonical join key (case-preserved — rwa.xyz uses mixed
+// case like `syrupUSDC` / `MUon`). Foreign-key-less by design: oracle
+// data ships BEFORE the matching `rwa_tokens` row exists during demo prep,
+// and a deprecated on-chain token can still keep its historical metadata.
+
+export const tokenMetadata = pgTable(
+  'token_metadata',
+  {
+    ticker: text('ticker').primaryKey(),
+    // Source identity — `rwaxyzAssetId` is the numeric id rwa.xyz uses
+    // internally; `rwaxyzSlug` is the URL-form slug ("circle-usyc"). Both
+    // are used by the refresh pipeline for targeted re-fetches.
+    rwaxyzAssetId: integer('rwaxyz_asset_id'),
+    rwaxyzSlug: text('rwaxyz_slug'),
+    sourceUrl: text('source_url'),
+    // Branding + classification
+    displayName: text('display_name').notNull(),
+    description: text('description'),
+    iconUrl: text('icon_url'),
+    colorHex: text('color_hex'),
+    website: text('website'),
+    // The boolean that branches the marketplace card variant + the daily
+    // yield-distribution cron (Q3). Yield-bearing → APY card + cron;
+    // non-yield (stocks) → "Monthly Volume" alt card + cron skip.
+    isYieldBearing: boolean('is_yield_bearing').notNull().default(false),
+    distributesIncome: boolean('distributes_income'),
+    // Asset class — slug form ("us-treasury-debt") + display name. Distinct
+    // from the on-chain `rwa_tokens.asset_class` enum because the rwa.xyz
+    // taxonomy has finer-grained categories than our 5-value pgEnum.
+    assetClassSlug: text('asset_class_slug'),
+    assetClassName: text('asset_class_name'),
+    // Issuer / manager / jurisdiction — all display strings
+    issuerName: text('issuer_name'),
+    issuerLegalName: text('issuer_legal_name'),
+    issuerLei: text('issuer_lei'),
+    issuerCountry: text('issuer_country'),
+    managerName: text('manager_name'),
+    jurisdictionCountry: text('jurisdiction_country'),
+    regulatoryFramework: text('regulatory_framework'),
+    governingBody: text('governing_body'),
+    legalStructure: text('legal_structure'),
+    inceptionDate: text('inception_date'),
+    // Fees (basis points)
+    feeManagementBps: integer('fee_management_bps'),
+    feePerformanceBps: integer('fee_performance_bps'),
+    feeStructureDescription: text('fee_structure_description'),
+    // Primary market terms
+    pmSubscriptionFrequency: text('pm_subscription_frequency'),
+    pmSubscriptionMinimumDollar: numeric('pm_subscription_minimum_dollar'),
+    pmRedemptionFrequency: text('pm_redemption_frequency'),
+    pmKycRequired: boolean('pm_kyc_required'),
+    // Per-chain underlying token list — `[{ network, networkId, address,
+    // decimals, standards[] }, ...]`. Stored as JSON because the array
+    // length + per-row shape are per-asset variant (USYC has 3 chains,
+    // EUTBL has 1, etc.) — a separate table would be over-normalized for
+    // a display-only field.
+    underlyingTokens: jsonb('underlying_tokens'),
+    // Free-form raw payload kept for forward-compat: when the ingest
+    // endpoint validates against a new field that's not yet in this
+    // schema, the raw blob is still here for backfill.
+    rawPayload: jsonb('raw_payload'),
+    lastRefreshedAt: timestamp('last_refreshed_at').notNull().defaultNow(),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('token_metadata_rwaxyz_asset_id_idx').on(t.rwaxyzAssetId),
+    index('token_metadata_is_yield_bearing_idx').on(t.isYieldBearing),
+  ],
+);
+
+export const oracleSnapshots = pgTable(
+  'oracle_snapshots',
+  {
+    id: text('id').primaryKey(),
+    ticker: text('ticker').notNull(),
+    snapshotAt: timestamp('snapshot_at').notNull().defaultNow(),
+    // Source provenance — match `nav_source_type` semantics: every Q1/Q2
+    // ingest writes `rwaxyz_scrape`; future live-oracle wiring (Dinari)
+    // would write its own source string.
+    source: text('source').notNull().default('rwaxyz_scrape'),
+    // Scalars — all nullable because field availability varies per asset
+    // (stocks have no APY; some treasuries hide concentration metrics).
+    navDollar: numeric('nav_dollar'),
+    priceDollar: numeric('price_dollar'),
+    apy7Day: numeric('apy_7_day'),
+    apy30Day: numeric('apy_30_day'),
+    dailyYieldRate: numeric('daily_yield_rate'),
+    yieldToMaturityPercent: numeric('yield_to_maturity_percent'),
+    dailyYieldDistributedDollar: numeric('daily_yield_distributed_dollar'),
+    hypothetical10kPerformance: numeric('hypothetical_10k_performance'),
+    totalSupplyToken: numeric('total_supply_token'),
+    totalAssetValueDollar: numeric('total_asset_value_dollar'),
+    marketValueDollar: numeric('market_value_dollar'),
+    holdingAddressesCount: integer('holding_addresses_count'),
+    top5HolderConcentration: numeric('top_5_holder_concentration'),
+    rwaxyzUpdatedAt: timestamp('rwaxyz_updated_at'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('oracle_snapshots_ticker_at_idx').on(t.ticker, t.snapshotAt),
+    index('oracle_snapshots_at_idx').on(t.snapshotAt),
+  ],
+);
+
+export const oracleTimeseries = pgTable(
+  'oracle_timeseries',
+  {
+    ticker: text('ticker').notNull(),
+    measureSlug: text('measure_slug').notNull(),
+    // Stored as YYYY-MM-DD string — matches rwa.xyz's wire format
+    // (`["2023-10-19", 6035174.27]`) and avoids tz drift on day
+    // boundaries. The composite PK forces idempotent upsert so re-running
+    // the daily refresh either rewrites stale historical values (rwa.xyz
+    // occasionally back-corrects) or appends new days.
+    date: text('date').notNull(),
+    value: numeric('value').notNull(),
+    // Optional unit metadata pulled from the measure descriptor — kept
+    // here so a chart consumer can render "$1.23" vs "3.14%" vs "44
+    // holders" without round-tripping to `token_metadata`.
+    unit: text('unit'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.ticker, t.measureSlug, t.date] }),
+    index('oracle_timeseries_ticker_measure_idx').on(t.ticker, t.measureSlug),
+  ],
+);
