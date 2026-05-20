@@ -29,6 +29,14 @@ export interface TelegramBotConfig {
    *  grant-submission window (see PROGRESS.md §"P4 operator tasks").
    *  When unset the broadcast endpoint logs + drops. */
   issuerChannelId?: string | undefined;
+  /** Wave 5 Q3 — chat id the `/operator/alert` endpoint is allowed to
+   *  forward to. Pinned server-side per round-1 Security H-3: if the
+   *  shared `TELEGRAM_BOT_SERVICE_SECRET` leaks, an attacker with the
+   *  secret can still only post alerts into THIS chat — not arbitrary
+   *  chats the bot has joined. Backend `OPERATOR_TELEGRAM_CHAT_ID`
+   *  must equal this value. When unset, the endpoint logs + drops
+   *  (operator setup deferred, same posture as `issuerChannelId`). */
+  operatorChatId?: string | undefined;
 }
 
 const DEFAULT_BACKEND_URL = 'http://backend:3000';
@@ -85,6 +93,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): TelegramBotCon
       `[telegram-bot] TELEGRAM_ISSUER_CHANNEL_ID must be a Telegram chat-id integer (e.g. -1001234567890). Got "${issuerChannelId}".`,
     );
   }
+  // Wave 5 Q3 — operator-alert chat pin (Security H-3 + Round-2 API
+  // H-1). Reject leading zeros so the constant-time lexical compare at
+  // request time matches Telegram's numeric identity of the chat
+  // ('00012345' === 12345 numerically; with the looser regex an
+  // operator who pasted leading zeros into one var but not the other
+  // would silently 403 every alert).
+  const operatorChatId = env.OPERATOR_TELEGRAM_CHAT_ID?.trim() || undefined;
+  if (operatorChatId !== undefined && !/^-?(?:0|[1-9]\d{0,31})$/.test(operatorChatId)) {
+    throw new Error(
+      `[telegram-bot] OPERATOR_TELEGRAM_CHAT_ID must be a Telegram chat-id integer with no leading zeros (e.g. 12345 or -1001234567890). Got "${operatorChatId}".`,
+    );
+  }
   return {
     botToken,
     botUsername,
@@ -96,5 +116,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): TelegramBotCon
     dashboardUrl,
     port,
     issuerChannelId,
+    operatorChatId,
   };
 }

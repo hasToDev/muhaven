@@ -82,4 +82,48 @@ describe('loadConfig', () => {
     });
     expect(config.webhookUrl).toBe('https://tg.muhaven.app/webhook');
   });
+
+  it('accepts a valid OPERATOR_TELEGRAM_CHAT_ID', () => {
+    const config = loadConfig({
+      TELEGRAM_BOT_TOKEN: VALID_TOKEN,
+      TELEGRAM_BOT_USERNAME: 'muhaven_bot',
+      TELEGRAM_BOT_SERVICE_SECRET: VALID_SERVICE_SECRET,
+      TELEGRAM_WEBHOOK_SECRET_TOKEN: VALID_WEBHOOK_SECRET,
+      OPERATOR_TELEGRAM_CHAT_ID: '12345',
+    });
+    expect(config.operatorChatId).toBe('12345');
+  });
+
+  it('accepts a negative OPERATOR_TELEGRAM_CHAT_ID (supergroups)', () => {
+    const config = loadConfig({
+      TELEGRAM_BOT_TOKEN: VALID_TOKEN,
+      TELEGRAM_BOT_USERNAME: 'muhaven_bot',
+      TELEGRAM_BOT_SERVICE_SECRET: VALID_SERVICE_SECRET,
+      TELEGRAM_WEBHOOK_SECRET_TOKEN: VALID_WEBHOOK_SECRET,
+      OPERATOR_TELEGRAM_CHAT_ID: '-1001234567890',
+    });
+    expect(config.operatorChatId).toBe('-1001234567890');
+  });
+
+  it('treats unset OPERATOR_TELEGRAM_CHAT_ID as undefined', () => {
+    const config = loadConfig({
+      TELEGRAM_BOT_TOKEN: VALID_TOKEN,
+      TELEGRAM_BOT_USERNAME: 'muhaven_bot',
+      TELEGRAM_BOT_SERVICE_SECRET: VALID_SERVICE_SECRET,
+      TELEGRAM_WEBHOOK_SECRET_TOKEN: VALID_WEBHOOK_SECRET,
+    });
+    expect(config.operatorChatId).toBeUndefined();
+  });
+
+  it('refuses to start when OPERATOR_TELEGRAM_CHAT_ID has the wrong shape', () => {
+    expect(() =>
+      loadConfig({
+        TELEGRAM_BOT_TOKEN: VALID_TOKEN,
+        TELEGRAM_BOT_USERNAME: 'muhaven_bot',
+        TELEGRAM_BOT_SERVICE_SECRET: VALID_SERVICE_SECRET,
+        TELEGRAM_WEBHOOK_SECRET_TOKEN: VALID_WEBHOOK_SECRET,
+        OPERATOR_TELEGRAM_CHAT_ID: 'not-a-number',
+      }),
+    ).toThrow(/OPERATOR_TELEGRAM_CHAT_ID/);
+  });
 });

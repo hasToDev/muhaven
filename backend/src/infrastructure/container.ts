@@ -145,6 +145,12 @@ import {
   MintAndDeliverOpenClawIntentUseCase,
   type IBotIntentTransport,
 } from '../application/use-case/agent/openclaw/notify-intent-to-bot.use-case.js';
+import {
+  HttpOperatorAlertTransport,
+  LoggingOperatorAlertTransport,
+  type IOperatorAlertTransport,
+} from './operator/operator-alert-transport.js';
+import { NotifyYieldCronFailureUseCase } from '../application/use-case/operator/notify-yield-cron-failure.use-case.js';
 import { CreateOpenClawIntentUseCase } from '../application/use-case/agent/openclaw/create-intent.use-case.js';
 import { IssueTelegramLinkCodeUseCase } from '../application/use-case/agent/openclaw/telegram-link.use-case.js';
 import {
@@ -834,6 +840,42 @@ function getCommitCreateCheckout(): CommitCreateCheckoutUseCase {
   return _commitCreateCheckout;
 }
 
+// ── Wave 5 Q3 (step 3) — backend → telegram-bot operator-alert push ──
+//
+// Three env vars must all be set for the HTTP transport to activate:
+// `TELEGRAM_BOT_WORKER_URL` + `TELEGRAM_BOT_SERVICE_SECRET` +
+// `OPERATOR_TELEGRAM_CHAT_ID`. Any unset → LoggingOperatorAlertTransport
+// (alerts log + drop). The `NotifyYieldCronFailureUseCase` is callable
+// in either configuration so the future YieldDistributionCron's catch
+// path doesn't have to feature-detect.
+let _operatorAlertTransport: IOperatorAlertTransport | null = null;
+function getOperatorAlertTransport(): IOperatorAlertTransport {
+  if (_operatorAlertTransport) return _operatorAlertTransport;
+  const env = getEnv();
+  const workerUrl = env.TELEGRAM_BOT_WORKER_URL;
+  const secret = env.TELEGRAM_BOT_SERVICE_SECRET;
+  const chatId = env.OPERATOR_TELEGRAM_CHAT_ID;
+  if (workerUrl && secret && chatId) {
+    _operatorAlertTransport = new HttpOperatorAlertTransport({
+      botWorkerUrl: workerUrl,
+      serviceSecret: secret,
+      chatId,
+    });
+  } else {
+    _operatorAlertTransport = new LoggingOperatorAlertTransport();
+  }
+  return _operatorAlertTransport;
+}
+
+let _notifyYieldCronFailure: NotifyYieldCronFailureUseCase | null = null;
+function getNotifyYieldCronFailure(): NotifyYieldCronFailureUseCase {
+  if (_notifyYieldCronFailure) return _notifyYieldCronFailure;
+  _notifyYieldCronFailure = new NotifyYieldCronFailureUseCase(
+    getOperatorAlertTransport(),
+  );
+  return _notifyYieldCronFailure;
+}
+
 let _commitToolAction: CommitToolActionUseCase | null = null;
 function getCommitToolAction(): CommitToolActionUseCase {
   if (_commitToolAction) return _commitToolAction;
@@ -964,5 +1006,22 @@ export const container = {
   // makes the cache TTL meaningful).
   get publicMetricsUseCase() {
     return getPublicMetricsUseCase();
+  },
+  // Wave 5 Q3 (step 3) — operator-alert use case, single entry for
+  // the future YieldDistributionCron's catch path AND the
+  // `/api/v1/operator/alert-test` boot-time sanity endpoint.
+  get notifyYieldCronFailure() {
+    return getNotifyYieldCronFailure();
+  },
+  // Round-2 API-Tester L-3 — operator visibility on which transport
+  // the alert-test route just exercised. `'http'` = the HTTP transport
+  // POSTs to the bot worker; `'logging'` = the operator hasn't wired
+  // all three env vars and alerts log + drop locally. Returned in the
+  // alert-test JSON response so the operator can tell from the curl
+  // output whether to expect a Telegram message.
+  get operatorAlertTransportKind(): 'http' | 'logging' {
+    return getOperatorAlertTransport() instanceof HttpOperatorAlertTransport
+      ? 'http'
+      : 'logging';
   },
 };

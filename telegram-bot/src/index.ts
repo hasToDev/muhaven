@@ -26,6 +26,11 @@ import {
   validateIntentNotificationBody,
   type IntentNotificationBody,
 } from './intent-notify.js';
+import {
+  renderOperatorAlert,
+  validateOperatorAlertBody,
+  type OperatorAlertBody,
+} from './operator-alert.js';
 
 const ALLOWED_UPDATES = ['message', 'callback_query'] as const;
 
@@ -63,6 +68,18 @@ async function main(): Promise<void> {
 
   const app = express();
   app.use(express.json({ limit: '256kb' }));
+  // Round-2 API-Tester M-1 — Express's default body-parser error for
+  // oversize bodies returns an HTML 413 page; every other 4xx on this
+  // worker returns `{error: '...'}`. Normalise here so the
+  // backend transport's `!res.ok` log path stays JSON-parseable and
+  // so cURL output is consistent for the operator.
+  app.use((err: Error & { type?: string }, req: Request, res: Response, next: (err?: unknown) => void) => {
+    if (err && err.type === 'entity.too.large') {
+      res.status(413).json({ error: 'body too large' });
+      return;
+    }
+    next(err);
+  });
 
   app.get('/health', (_req: Request, res: Response) => {
     res.json({ status: 'ok', mode: config.webhookUrl ? 'webhook' : 'long-poll' });
@@ -119,6 +136,79 @@ async function main(): Promise<void> {
       // eslint-disable-next-line no-console
       console.error('[telegram-bot] issuer-channel send failed:', err);
       // 200 — failures here MUST NOT block the agent's commit path.
+      res.status(200).json({ status: 'send-failed' });
+    }
+  });
+
+  // Wave 5 Q3 step 3 — backend → bot operator-alert push. The backend's
+  // YieldDistributionCron (and any future operator-alert producer) posts
+  // a `{chatId, severity, message}` payload here when an unattended
+  // pipeline trips an alertable condition. Authenticated by the same
+  // `TELEGRAM_BOT_SERVICE_SECRET` shared with the other service-secret
+  // endpoints above. The renderer escapes MarkdownV2 + prepends a
+  // severity emoji; failures are 200 (operator alerts are
+  // best-effort — a worker outage MUST NOT crash-loop the producer).
+  app.post('/operator/alert', async (req: Request, res: Response) => {
+    const supplied = req.header('x-muhaven-service-secret') ?? '';
+    if (
+      supplied.length !== config.backendServiceSecret.length ||
+      !constantTimeEqual(supplied, config.backendServiceSecret)
+    ) {
+      res.status(401).json({ error: 'invalid service secret' });
+      return;
+    }
+    const validation = validateOperatorAlertBody(req.body as OperatorAlertBody | null);
+    if (!validation.ok) {
+      res.status(400).json({ error: validation.error });
+      return;
+    }
+    const alert = validation.value;
+    // Round-1 Security H-3 — chat-id pin. If the operator has wired
+    // `OPERATOR_TELEGRAM_CHAT_ID` on the bot side, refuse to forward to
+    // any other chat even when the service-secret check passes. This
+    // blunts a service-secret leak so an attacker cannot spam alerts
+    // into arbitrary chats the bot has joined (operator harassment,
+    // social-engineering primitive). Constant-time compare matches the
+    // posture on the secret check above.
+    if (config.operatorChatId) {
+      if (
+        alert.chatId.length !== config.operatorChatId.length ||
+        !constantTimeEqual(alert.chatId, config.operatorChatId)
+      ) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[telegram-bot] operator-alert refused: chatId="${alert.chatId}" does not match configured OPERATOR_TELEGRAM_CHAT_ID`,
+        );
+        res.status(403).json({ error: 'chat-id not allowed' });
+        return;
+      }
+    } else {
+      // No operator chat configured — log + 202 (matches
+      // `/issuer-channel/broadcast` posture for unset `issuerChannelId`).
+      // eslint-disable-next-line no-console
+      console.info(
+        `[telegram-bot] operator-alert received but OPERATOR_TELEGRAM_CHAT_ID is unset — event dropped (severity=${alert.severity})`,
+      );
+      res.status(202).json({ status: 'logged', dispatched: false });
+      return;
+    }
+    const text = renderOperatorAlert(alert);
+    try {
+      await api.sendMessage({
+        chat_id: alert.chatId,
+        text,
+        parse_mode: 'MarkdownV2',
+        disable_web_page_preview: true,
+      });
+      res.status(200).json({ status: 'sent' });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[telegram-bot] operator-alert send failed:', err);
+      // 200 — same posture as `/intent/notify` and
+      // `/issuer-channel/broadcast`. Operator alerts are advisory; a
+      // bot-side bug MUST NOT block whatever upstream producer
+      // triggered the alert (the cron's tick handler swallows transport
+      // errors and continues).
       res.status(200).json({ status: 'send-failed' });
     }
   });

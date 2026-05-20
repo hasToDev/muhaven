@@ -254,6 +254,46 @@ const EnvSchema = z.object({
   // wrong → 401. Operator runs the ingest from a dev machine; this is
   // NOT a user-facing auth path.
   ORACLE_INGEST_SERVICE_SECRET: z.string().optional(),
+
+  // ── Wave 5 Q3 (step 3) — operator-alert surface ────────────────────
+  // Single recipient chat-id the `NotifyYieldCronFailureUseCase`
+  // forwards alerts to via the telegram-bot worker. Unset → the
+  // container falls back to LoggingOperatorAlertTransport (alerts log
+  // + drop). Set together with `TELEGRAM_BOT_WORKER_URL` +
+  // `TELEGRAM_BOT_SERVICE_SECRET` to activate the HTTP transport.
+  // The bot worker ALSO pins its own `OPERATOR_TELEGRAM_CHAT_ID` and
+  // refuses to forward alerts to any other chat (Security H-3) — both
+  // env vars must agree.
+  OPERATOR_TELEGRAM_CHAT_ID: z.string().optional(),
+  // Dedicated bearer secret for `POST /api/v1/operator/alert-test` —
+  // NOT reused with `ORACLE_INGEST_SERVICE_SECRET`. A leak on either
+  // surface MUST NOT compromise the other (v3.1 plan A1). Min 16 chars
+  // matches `withServiceSecret` middleware's floor; we generate 32
+  // random bytes hex-encoded per deploy. Round-1 Security M-5: schema
+  // floor catches typo'd 8-char secrets at boot rather than letting
+  // them surface as a silent 503 in prod.
+  OPERATOR_ALERT_TEST_SECRET: z.string().min(16).optional(),
+}).superRefine((env, ctx) => {
+  // Round-1 Security L-3 — refuse boot when the two operator-scoped
+  // service secrets are identical. Operators occasionally paste the
+  // same secret into multiple slots; if `ORACLE_INGEST_SERVICE_SECRET`
+  // and `OPERATOR_ALERT_TEST_SECRET` ever match, a leak on one surface
+  // (ingest is the more-exposed one — the operator runs it from a dev
+  // laptop) would silently grant access to the other (which fires
+  // Telegram messages to the operator's phone via the live transport).
+  // Loud-fail beats silent-wrong.
+  if (
+    env.OPERATOR_ALERT_TEST_SECRET &&
+    env.ORACLE_INGEST_SERVICE_SECRET &&
+    env.OPERATOR_ALERT_TEST_SECRET === env.ORACLE_INGEST_SERVICE_SECRET
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['OPERATOR_ALERT_TEST_SECRET'],
+      message:
+        'OPERATOR_ALERT_TEST_SECRET must differ from ORACLE_INGEST_SERVICE_SECRET (blast-radius separation per Wave 5 Q3 plan A1)',
+    });
+  }
 });
 
 export type Env = z.infer<typeof EnvSchema>;
