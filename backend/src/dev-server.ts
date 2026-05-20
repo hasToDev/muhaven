@@ -9,7 +9,9 @@ import {
   CheckoutSettlementIndexer,
   NavWriterCron,
   TaxEventIndexer,
+  YieldDistributionCron,
 } from './infrastructure/blockchain/index.js';
+import { getDb, getPool } from './infrastructure/repository/postgres/db.js';
 import { SettleFromEventUseCase } from './application/use-case/checkout/settle-from-event.use-case.js';
 import { TokenRegistryHandler } from './infrastructure/blockchain/token-registry-handler.js';
 import { ProcessEscrowEventUseCase } from './application/use-case/webhook/process-escrow-event.use-case.js';
@@ -289,6 +291,79 @@ async function main() {
       cron.start(env.NAV_CRON_INTERVAL_MS);
       backgroundShutdown.push(() => cron.stop());
       console.log(`[nav-cron] Started (interval: ${env.NAV_CRON_INTERVAL_MS}ms)`);
+    }
+  }
+
+  // Wave 5 Q3 (step 4) — daily yield-distribution cron. Opt-in
+  // (default `YIELD_CRON_ENABLED=false`). Requires:
+  //   - RPC_URL                             (chain calls)
+  //   - YIELD_CRON_PRIVATE_KEY              (issuer EOA, mhUSDC float)
+  //   - YIELD_SNAPSHOT_ADDRESS              (fallback proxy)
+  //   - INVESTOR_REGISTRY_V35_ADDRESS       (holder enumeration)
+  //   - STABLE_ADDRESS                      (mhUSDC float pre-flight)
+  //   - DB_PROVIDER=postgres                (advisory locks + audit)
+  // Any missing → log + skip. Step 5 of the rollout flips DRY_RUN=true
+  // for a 24h smoke before going live.
+  if (env.YIELD_CRON_ENABLED) {
+    const missing: string[] = [];
+    if (!env.RPC_URL) missing.push('RPC_URL');
+    if (!env.YIELD_CRON_PRIVATE_KEY) missing.push('YIELD_CRON_PRIVATE_KEY');
+    if (
+      env.YIELD_CRON_PRIVATE_KEY &&
+      !/^0x[0-9a-fA-F]{64}$/.test(env.YIELD_CRON_PRIVATE_KEY)
+    ) {
+      missing.push('YIELD_CRON_PRIVATE_KEY (set but not a 0x-prefixed 32-byte hex)');
+    }
+    if (!env.YIELD_SNAPSHOT_ADDRESS) missing.push('YIELD_SNAPSHOT_ADDRESS');
+    if (!env.INVESTOR_REGISTRY_V35_ADDRESS) missing.push('INVESTOR_REGISTRY_V35_ADDRESS');
+    if (!env.STABLE_ADDRESS) missing.push('STABLE_ADDRESS');
+    if (env.DB_PROVIDER !== 'postgres')
+      missing.push('DB_PROVIDER=postgres (yield cron requires the Postgres audit writer + advisory locks)');
+    if (missing.length > 0) {
+      console.warn(`[yield-cron] enabled but missing ${missing.join(', ')} — skipping`);
+    } else {
+      try {
+        const cron = new YieldDistributionCron(
+          {
+            pool: getPool(),
+            db: getDb(),
+            rwaTokenRepo: container.rwaTokenRepo,
+            oracleRepo: container.oracleRepo,
+            notifyYieldCronFailure: container.notifyYieldCronFailure,
+          },
+          {
+            rpcUrl: env.RPC_URL!,
+            chainId: env.CHAIN_ID,
+            privateKey: env.YIELD_CRON_PRIVATE_KEY! as `0x${string}`,
+            defaultYieldSnapshotAddress: env.YIELD_SNAPSHOT_ADDRESS! as Address,
+            investorRegistryAddress: env.INVESTOR_REGISTRY_V35_ADDRESS! as Address,
+            stableAddress: env.STABLE_ADDRESS! as Address,
+            maxSupplyCap: env.YIELD_CRON_MAX_SUPPLY_CAP,
+            staleNavHaltDays: env.STALE_NAV_HALT_DAYS,
+            cronExpr: env.YIELD_CRON_CRON_EXPR,
+            dryRun: env.YIELD_CRON_DRY_RUN,
+          },
+        );
+        await cron.start();
+        backgroundShutdown.push(() => cron.stop());
+        console.log(
+          `[yield-cron] Started (expr: "${env.YIELD_CRON_CRON_EXPR}", dryRun: ${env.YIELD_CRON_DRY_RUN}, maxSupplyCap: ${env.YIELD_CRON_MAX_SUPPLY_CAP})`,
+        );
+      } catch (err) {
+        // Round-1 Security H-2 (2026-05-21): scrub private-key-shape
+        // patterns from the boot-error log. `new Wallet(badKey, ...)`
+        // can produce viem stack traces that quote the key value
+        // depending on the failure mode; the rest of the cron's
+        // alert path uses the sanitiser, so the boot-fail path
+        // should too. We can't import the operator-alert sanitiser
+        // here (it's an application-layer use-case + would import
+        // pino + DB ahead of init), so inline a minimal redactor.
+        const redacted =
+          err instanceof Error
+            ? `${err.name}: ${err.message.replace(/0x[0-9a-fA-F]{64}/g, '0x…redacted')}`
+            : 'unknown';
+        console.warn('[yield-cron] start threw — staying idle:', redacted);
+      }
     }
   }
 

@@ -273,6 +273,73 @@ const EnvSchema = z.object({
   // floor catches typo'd 8-char secrets at boot rather than letting
   // them surface as a silent 503 in prod.
   OPERATOR_ALERT_TEST_SECRET: z.string().min(16).optional(),
+
+  // ── Wave 5 Q3 (step 4) — daily yield-distribution cron ─────────────
+  // Master toggle — default false so the cron is opt-in. Operator
+  // flips this to true AFTER setting YIELD_CRON_PRIVATE_KEY +
+  // YIELD_CRON_DRY_RUN=true for the 24h smoke (step 5).
+  YIELD_CRON_ENABLED: z.coerce.boolean().default(false),
+  // Issuer EOA private key — has `MINTER_ROLE` on the relevant
+  // contracts AND a pre-wrapped mhUSDC float (Q3_PLAN.md A.5; operator
+  // runs `scripts/wrap-pusdc-only.ts` to seed the buffer). Often the
+  // SAME EOA as `NAV_CRON_PRIVATE_KEY` on prod, but kept as a
+  // separate var so the two can rotate independently if needed.
+  //
+  // Round-1 Security H-3 (2026-05-21): regex-validated at the schema
+  // boundary so any future entry point that constructs
+  // `YieldDistributionCron` (test harness, ops script) gets the
+  // shape check uniformly — the dev-server-only regex in step 4
+  // wasn't reachable from those callers. Placeholder strings like
+  // `<<FILL_ME>>` boot-fail loud instead of silently producing a
+  // misconfigured Wallet inside viem.
+  YIELD_CRON_PRIVATE_KEY: z
+    .string()
+    .regex(/^0x[0-9a-fA-F]{64}$/, 'YIELD_CRON_PRIVATE_KEY must be a 0x-prefixed 32-byte hex')
+    .optional(),
+  // Skip on-chain side effects + DB audit writes. The cron still
+  // ticks + iterates tokens (so logs reflect what would have
+  // happened) + fires a 6h-debounced Telegram alert so operators
+  // notice they're in dry-run mode before flipping to live.
+  YIELD_CRON_DRY_RUN: z.coerce.boolean().default(false),
+  // Override the default '0 0 * * *' UTC schedule for testing /
+  // staging. The cron validates the expression via `cron.validate()`
+  // at start; invalid input logs a warn + falls back to the default.
+  //
+  // Round-1 Security H-4 (2026-05-21): semantic-shape guard. We
+  // refuse expressions where the minute or hour field is anything
+  // other than a single literal integer (0-59 / 0-23). That bans
+  // every-minute (`* * * * *`), every-hour (`0 * * * *`), and step
+  // forms (`*/5 * * * *`) — all of which would turn the cron into a
+  // Postgres-connection storm + boot-alert spam under contention,
+  // since the 23h DB guard only blocks the actual `fundEpoch` write
+  // path, not the per-minute pool.connect() + advisory-lock attempts.
+  // Daily / multi-hour fixed-time schedules pass; anything sub-
+  // hourly rejects.
+  YIELD_CRON_CRON_EXPR: z
+    .string()
+    .regex(
+      /^(?:[0-9]|[1-5][0-9])\s+(?:[0-9]|1[0-9]|2[0-3])\s+\S+\s+\S+\s+\S+$/,
+      'YIELD_CRON_CRON_EXPR must have a literal-integer minute (0-59) and hour (0-23) field; sub-hourly schedules rejected to avoid pool contention.',
+    )
+    .default('0 0 * * *'),
+  // Global per-token effective overage cap, shares. The cron computes
+  // `encTotalYield = effectiveCap × ratePerShare / RATE_SCALE`. This
+  // is the issuer's deliberate overfunding budget per token-day —
+  // excess mhUSDC stays in the YieldSnapshot proxy after `claimExpiry`
+  // (overage reclaim is filed as future "Q3.1"; safe on testnet).
+  //
+  // Per-token override via `rwa_tokens.max_supply_cap_override` (DB
+  // operator-set; see Q3_PLAN.md D.1.b). Bounded at parse time per
+  // v3.1 A2 — config-parse-time floor + ceiling reject env override
+  // sabotage (a typo'd `1e15` cap would silent-fail the uint64
+  // narrowing in the runner; a typo'd `0` cap would short-circuit
+  // every distribution to zero).
+  YIELD_CRON_MAX_SUPPLY_CAP: z.coerce.bigint().min(1n).max(10_000_000_000n).default(10_000_000n),
+  // Hard ceiling on oracle snapshot staleness — beyond this many days
+  // the cron skips the token + fires WARN alert (v3.1 A5). Default 7d
+  // matches the plan; lower it on prod once nav-worker reliability is
+  // established to catch nav-worker outages faster.
+  STALE_NAV_HALT_DAYS: z.coerce.number().int().min(1).max(30).default(7),
 }).superRefine((env, ctx) => {
   // Round-1 Security L-3 — refuse boot when the two operator-scoped
   // service secrets are identical. Operators occasionally paste the

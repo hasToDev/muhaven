@@ -33,6 +33,7 @@
     "@openzeppelin/contracts": "^5",
     "drizzle-orm": "^0.40",
     "jose": "^6",
+    "node-cron": "^3.0.3",
     "pg": "^8",
     "pino": "^9",
     "siwe": "^2",
@@ -43,6 +44,7 @@
   },
   "devDependencies": {
     "@types/node": "^22",
+    "@types/node-cron": "^3.0.11",
     "@types/pg": "^8",
     "drizzle-kit": "^0.30",
     "tsup": "^8",
