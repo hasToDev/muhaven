@@ -95,6 +95,103 @@ const MARKETING: Record<string, MarketingEntry> = {
     kycTier: 0,
     minInvestment: '1',
   },
+  // ── Wave 5 Q1 — 11 real RWAs sourced from rwa.xyz ────────────────────
+  //
+  // APY values are apy_7_day snapshots from `oracle_snapshots` at the
+  // 2026-05-19 cutover ingest. They'll drift; the long-term plan is for
+  // the frontend to read APY directly from `oracle_snapshots.apy_7_day`
+  // and let MARKETING.apy fall away. Until that lands, these are
+  // operator-refreshed editorial values — bump quarterly or after a
+  // major rate move. `seed-yield-bearing-overrides.ts` owns the
+  // is_yield_bearing classification (separate concern); MARKETING here
+  // is for the legacy `rwa_tokens` display surface.
+  //
+  // assetClass enum has 5 values (treasury, money_market, private_credit,
+  // real_estate, other). Reinsurance + equities have no fit → `'other'`;
+  // enum widening is deferred to 1B/1C when the marketplace UI actually
+  // varies by asset class.
+  //
+  // Symbol keys MUST match the on-chain `symbol()` exactly (case-sensitive
+  // lookup). The mixed-case tickers (syrupUSDC, ONyc, STRCx, MUon,
+  // NVDAon, TSLAx) preserve the rwa.xyz canonical form.
+  USYC: {
+    assetClass: 'money_market',
+    apy: '3.13',
+    yieldSchedule: 'monthly',
+    kycTier: 0,
+    minInvestment: '1',
+  },
+  BUIDL: {
+    assetClass: 'money_market',
+    apy: '3.55',
+    yieldSchedule: 'monthly',
+    kycTier: 0,
+    minInvestment: '1',
+  },
+  USDY: {
+    assetClass: 'money_market',
+    apy: '3.55',
+    yieldSchedule: 'monthly',
+    kycTier: 0,
+    minInvestment: '1',
+  },
+  EUTBL: {
+    assetClass: 'money_market',
+    apy: '1.75',
+    yieldSchedule: 'monthly',
+    kycTier: 0,
+    minInvestment: '1',
+  },
+  CETES: {
+    assetClass: 'treasury',
+    apy: '5.04',
+    yieldSchedule: 'monthly',
+    kycTier: 0,
+    minInvestment: '1',
+  },
+  syrupUSDC: {
+    assetClass: 'private_credit',
+    apy: '4.32',
+    yieldSchedule: 'monthly',
+    kycTier: 0,
+    minInvestment: '1',
+  },
+  ONyc: {
+    assetClass: 'other',        // Reinsurance — no enum fit
+    apy: '11.29',
+    yieldSchedule: 'quarterly', // Reinsurance distributions less frequent
+    kycTier: 0,
+    minInvestment: '1',
+  },
+  // Tokenized equities — no APY, no scheduled yield
+  STRCx: {
+    assetClass: 'other',
+    apy: undefined,
+    yieldSchedule: undefined,
+    kycTier: 0,
+    minInvestment: '1',
+  },
+  MUon: {
+    assetClass: 'other',
+    apy: undefined,
+    yieldSchedule: undefined,
+    kycTier: 0,
+    minInvestment: '1',
+  },
+  NVDAon: {
+    assetClass: 'other',
+    apy: undefined,
+    yieldSchedule: undefined,
+    kycTier: 0,
+    minInvestment: '1',
+  },
+  TSLAx: {
+    assetClass: 'other',
+    apy: undefined,
+    yieldSchedule: undefined,
+    kycTier: 0,
+    minInvestment: '1',
+  },
 };
 
 const FALLBACK_MARKETING: MarketingEntry = {
