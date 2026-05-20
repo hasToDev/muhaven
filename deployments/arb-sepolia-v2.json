@@ -1,7 +1,7 @@
 {
   "network": "arb-sepolia",
   "env": "prod",
-  "timestamp": "2026-05-04T07:03:56.236Z",
+  "timestamp": "2026-05-20T02:07:14.934Z",
   "deployer": "0xe11E83398C33A37CaC02C01c43F14A7f95876986",
   "external": {
     "legacyPusdc": "0x6b6e6479b8b3237933c3ab9d8be969862d4ed89f",
@@ -104,6 +104,270 @@
         }
       },
       "registeredAt": "2026-05-04T07:03:56.234Z"
+    },
+    "USYC": {
+      "symbol": "USYC",
+      "name": "Circle USYC",
+      "issuer": "0xe11E83398C33A37CaC02C01c43F14A7f95876986",
+      "oracleKind": "issuer",
+      "registeredOracle": "0xD30069114dFC83C714B04d6036dEfa64d2E9d583",
+      "initialNav": "1125179",
+      "treasurySeed": "0",
+      "contracts": {
+        "MuHavenToken": {
+          "proxy": "0x1d6C140204F21835F1AF2A0615826A333827d946",
+          "implementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
+        },
+        "RedemptionQueue": {
+          "proxy": "0x15d751e6F429146Dff62acE65E745B106A71052e",
+          "implementation": "0xce2Dc759159d22Aa112F5DcEDBE19a8aa52303CE"
+        },
+        "MuHavenTreasury": {
+          "proxy": "0xA7962c0826681c090e96836fE593D2f890B0ef81",
+          "implementation": "0x4decB7D835f84959C118A03bB7D037fF300fF5A6"
+        }
+      },
+      "registeredAt": "2026-05-20T01:01:23.675Z"
+    },
+    "BUIDL": {
+      "symbol": "BUIDL",
+      "name": "BlackRock USD Liquidity Fund",
+      "issuer": "0xe11E83398C33A37CaC02C01c43F14A7f95876986",
+      "oracleKind": "issuer",
+      "registeredOracle": "0xD30069114dFC83C714B04d6036dEfa64d2E9d583",
+      "initialNav": "1000000",
+      "treasurySeed": "0",
+      "contracts": {
+        "MuHavenToken": {
+          "proxy": "0xD43c1eB475616c8659346d6dEbE34fcb7A331F24",
+          "implementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
+        },
+        "RedemptionQueue": {
+          "proxy": "0xF73482f44c5B6B428544D5f7085FFc26fc8D88a0",
+          "implementation": "0xce2Dc759159d22Aa112F5DcEDBE19a8aa52303CE"
+        },
+        "MuHavenTreasury": {
+          "proxy": "0x4242B7B88F7f81c9b7cD75C14dDc00074d28a089",
+          "implementation": "0x4decB7D835f84959C118A03bB7D037fF300fF5A6"
+        }
+      },
+      "registeredAt": "2026-05-20T01:58:49.699Z"
+    },
+    "CETES": {
+      "symbol": "CETES",
+      "name": "Etherfuse CETES",
+      "issuer": "0xe11E83398C33A37CaC02C01c43F14A7f95876986",
+      "oracleKind": "issuer",
+      "registeredOracle": "0xD30069114dFC83C714B04d6036dEfa64d2E9d583",
+      "initialNav": "66985",
+      "treasurySeed": "0",
+      "contracts": {
+        "MuHavenToken": {
+          "proxy": "0xF3945c52DB79eBc6BFEA1dc460Ead77D70858B43",
+          "implementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
+        },
+        "RedemptionQueue": {
+          "proxy": "0x3f8D8350EEE036f6FbEA64B68886cEd11cF28ddC",
+          "implementation": "0xce2Dc759159d22Aa112F5DcEDBE19a8aa52303CE"
+        },
+        "MuHavenTreasury": {
+          "proxy": "0xEd596e61A22f3099a21dFD2C07BEEDbcbd3a7c74",
+          "implementation": "0x4decB7D835f84959C118A03bB7D037fF300fF5A6"
+        }
+      },
+      "registeredAt": "2026-05-20T01:59:48.989Z"
+    },
+    "EUTBL": {
+      "symbol": "EUTBL",
+      "name": "Spiko EU T-Bills MMF",
+      "issuer": "0xe11E83398C33A37CaC02C01c43F14A7f95876986",
+      "oracleKind": "issuer",
+      "registeredOracle": "0xD30069114dFC83C714B04d6036dEfa64d2E9d583",
+      "initialNav": "1221408",
+      "treasurySeed": "0",
+      "contracts": {
+        "MuHavenToken": {
+          "proxy": "0xd6da55d273b174f102911c7389102eB05f7963A0",
+          "implementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
+        },
+        "RedemptionQueue": {
+          "proxy": "0x165BBfa7f1569c56835Fab8ef995A12f6f399a4d",
+          "implementation": "0xce2Dc759159d22Aa112F5DcEDBE19a8aa52303CE"
+        },
+        "MuHavenTreasury": {
+          "proxy": "0x9bB7fEb8d8FC28bFBC8F50da17904087330Db2a7",
+          "implementation": "0x4decB7D835f84959C118A03bB7D037fF300fF5A6"
+        }
+      },
+      "registeredAt": "2026-05-20T02:00:30.502Z"
+    },
+    "syrupUSDC": {
+      "symbol": "syrupUSDC",
+      "name": "Syrup USDC",
+      "issuer": "0xe11E83398C33A37CaC02C01c43F14A7f95876986",
+      "oracleKind": "issuer",
+      "registeredOracle": "0xD30069114dFC83C714B04d6036dEfa64d2E9d583",
+      "initialNav": "1164327",
+      "treasurySeed": "0",
+      "contracts": {
+        "MuHavenToken": {
+          "proxy": "0x4a4dEeEA9fF30015899C8821e2ebc49C418fbc38",
+          "implementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
+        },
+        "RedemptionQueue": {
+          "proxy": "0xe28e82D663D812bB5b3ba504aC0170E0646B8CD8",
+          "implementation": "0xce2Dc759159d22Aa112F5DcEDBE19a8aa52303CE"
+        },
+        "MuHavenTreasury": {
+          "proxy": "0x4BaA74dc998a46c8C5259134a86818AfC54867BA",
+          "implementation": "0x4decB7D835f84959C118A03bB7D037fF300fF5A6"
+        }
+      },
+      "registeredAt": "2026-05-20T02:01:27.147Z"
+    },
+    "USDY": {
+      "symbol": "USDY",
+      "name": "Ondo U.S. Dollar Yield",
+      "issuer": "0xe11E83398C33A37CaC02C01c43F14A7f95876986",
+      "oracleKind": "issuer",
+      "registeredOracle": "0xD30069114dFC83C714B04d6036dEfa64d2E9d583",
+      "initialNav": "1133206",
+      "treasurySeed": "0",
+      "contracts": {
+        "MuHavenToken": {
+          "proxy": "0x631FB36a4311566395B236ad9BE4701b5256f35F",
+          "implementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
+        },
+        "RedemptionQueue": {
+          "proxy": "0xE3652EA092beDD8F84C8129ddB97cB9c1BB1B9a9",
+          "implementation": "0xce2Dc759159d22Aa112F5DcEDBE19a8aa52303CE"
+        },
+        "MuHavenTreasury": {
+          "proxy": "0x5dBf1ffd41eB1E7A714457F609A0Ba952e952eC0",
+          "implementation": "0x4decB7D835f84959C118A03bB7D037fF300fF5A6"
+        }
+      },
+      "registeredAt": "2026-05-20T02:02:24.247Z"
+    },
+    "ONyc": {
+      "symbol": "ONyc",
+      "name": "OnRe Tokenized Reinsurance",
+      "issuer": "0xe11E83398C33A37CaC02C01c43F14A7f95876986",
+      "oracleKind": "issuer",
+      "registeredOracle": "0xD30069114dFC83C714B04d6036dEfa64d2E9d583",
+      "initialNav": "1103931",
+      "treasurySeed": "0",
+      "contracts": {
+        "MuHavenToken": {
+          "proxy": "0x66Ec340237bBb069e59d7a38bD9973228facF7E8",
+          "implementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
+        },
+        "RedemptionQueue": {
+          "proxy": "0x4E7204D433d6049FadAc7c88Af6c02924C661F14",
+          "implementation": "0xce2Dc759159d22Aa112F5DcEDBE19a8aa52303CE"
+        },
+        "MuHavenTreasury": {
+          "proxy": "0x70C5913004DE5A9d6aBBfA34022380c790886591",
+          "implementation": "0x4decB7D835f84959C118A03bB7D037fF300fF5A6"
+        }
+      },
+      "registeredAt": "2026-05-20T02:04:00.927Z"
+    },
+    "MUon": {
+      "symbol": "MUon",
+      "name": "Micron Technology (Tokenized)",
+      "issuer": "0xe11E83398C33A37CaC02C01c43F14A7f95876986",
+      "oracleKind": "issuer",
+      "registeredOracle": "0xD30069114dFC83C714B04d6036dEfa64d2E9d583",
+      "initialNav": "716654950",
+      "treasurySeed": "0",
+      "contracts": {
+        "MuHavenToken": {
+          "proxy": "0x06C50E3a710Dc8C2801e38d4942898c7af8b02CB",
+          "implementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
+        },
+        "RedemptionQueue": {
+          "proxy": "0x041937E005c22D04766BA3826D901409149bA136",
+          "implementation": "0xce2Dc759159d22Aa112F5DcEDBE19a8aa52303CE"
+        },
+        "MuHavenTreasury": {
+          "proxy": "0x114d0d194e3C4d3E7eD1eEeD46453fb02aCa87Df",
+          "implementation": "0x4decB7D835f84959C118A03bB7D037fF300fF5A6"
+        }
+      },
+      "registeredAt": "2026-05-20T02:05:00.755Z"
+    },
+    "NVDAon": {
+      "symbol": "NVDAon",
+      "name": "NVIDIA (Tokenized)",
+      "issuer": "0xe11E83398C33A37CaC02C01c43F14A7f95876986",
+      "oracleKind": "issuer",
+      "registeredOracle": "0xD30069114dFC83C714B04d6036dEfa64d2E9d583",
+      "initialNav": "224466248",
+      "treasurySeed": "0",
+      "contracts": {
+        "MuHavenToken": {
+          "proxy": "0x9D37fF9747F0fe864eC899B04a641EDe309d1764",
+          "implementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
+        },
+        "RedemptionQueue": {
+          "proxy": "0x92EC5b2C818f42a4510073E97A09ffB728c73Efe",
+          "implementation": "0xce2Dc759159d22Aa112F5DcEDBE19a8aa52303CE"
+        },
+        "MuHavenTreasury": {
+          "proxy": "0x8f7553Bb7EBb8A8DD214a25DaF7f4E630382157e",
+          "implementation": "0x4decB7D835f84959C118A03bB7D037fF300fF5A6"
+        }
+      },
+      "registeredAt": "2026-05-20T02:05:44.214Z"
+    },
+    "STRCx": {
+      "symbol": "STRCx",
+      "name": "Strategy Variable xStock",
+      "issuer": "0xe11E83398C33A37CaC02C01c43F14A7f95876986",
+      "oracleKind": "issuer",
+      "registeredOracle": "0xD30069114dFC83C714B04d6036dEfa64d2E9d583",
+      "initialNav": "99190000",
+      "treasurySeed": "0",
+      "contracts": {
+        "MuHavenToken": {
+          "proxy": "0xf5f30Fcdc7808AC4e0a5b713637Fd59C3A1B8487",
+          "implementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
+        },
+        "RedemptionQueue": {
+          "proxy": "0x96Ae826269eaf8a870191ea0F8fAC70795044Dc1",
+          "implementation": "0xce2Dc759159d22Aa112F5DcEDBE19a8aa52303CE"
+        },
+        "MuHavenTreasury": {
+          "proxy": "0x1CA9D485812d061F2091C97DdAB7E698882d90E3",
+          "implementation": "0x4decB7D835f84959C118A03bB7D037fF300fF5A6"
+        }
+      },
+      "registeredAt": "2026-05-20T02:06:33.014Z"
+    },
+    "TSLAx": {
+      "symbol": "TSLAx",
+      "name": "Tesla xStock",
+      "issuer": "0xe11E83398C33A37CaC02C01c43F14A7f95876986",
+      "oracleKind": "issuer",
+      "registeredOracle": "0xD30069114dFC83C714B04d6036dEfa64d2E9d583",
+      "initialNav": "422240000",
+      "treasurySeed": "0",
+      "contracts": {
+        "MuHavenToken": {
+          "proxy": "0x797b9a2ec6F752B791DcE2f721Ad51Da68074Ed3",
+          "implementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
+        },
+        "RedemptionQueue": {
+          "proxy": "0xd5832da72863b4F544b4b659aaCC5eAF6739643B",
+          "implementation": "0xce2Dc759159d22Aa112F5DcEDBE19a8aa52303CE"
+        },
+        "MuHavenTreasury": {
+          "proxy": "0xA5a749759Cc760EfA5763407681F2C4d1Ed6375b",
+          "implementation": "0x4decB7D835f84959C118A03bB7D037fF300fF5A6"
+        }
+      },
+      "registeredAt": "2026-05-20T02:07:14.933Z"
     }
   }
 }
