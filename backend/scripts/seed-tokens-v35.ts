@@ -200,6 +200,36 @@ const FALLBACK_MARKETING: MarketingEntry = {
   minInvestment: '1',
 };
 
+// Zombie skiplist — symbols that exist on-chain in TokenRegistry from
+// prior testnet experiments but should NEVER land in `rwa_tokens`. The
+// on-chain registry has no de-register path, so these will keep showing
+// up in `getRegisteredTokens()` forever. Without this skip, every
+// post-`cleanup-obsolete-tokens.ts` run of this script silently re-
+// resurrects the same 5 catalog rows (observed 2026-05-19 during the
+// Wave 5 USYC canary deploy — the seed run flipped TBILL1/GOLD1 back
+// to `active` AND re-seeded these five).
+//
+// Operator: extend this set if you ever run `cleanup-obsolete-tokens.ts`
+// against new symbols and don't want them to come back.
+const OBSOLETE_SYMBOLS = new Set([
+  'NOVUS',
+  'OCEAN',
+  'ASTRAT',
+  'TESTRUN2',
+  'SUMMIT',
+]);
+
+// Lifecycle states that are operator-managed (not on-chain mirrored).
+// The seed script MUST NOT bounce these based on on-chain `paused`.
+// Without this guard, a re-seed after `retire-legacy-tokens.ts` would
+// silently flip TBILL1 / GOLD1 from `winding_down` back to `active`
+// because `cfg.paused === false` (observed 2026-05-19 USYC canary).
+//
+// 'active' and 'paused' are the ONLY states the on-chain registry's
+// `paused` flag should drive. `winding_down` and `archived` are set
+// via `retire-legacy-tokens.ts` and stay set until explicitly reset.
+const ON_CHAIN_MIRRORED_STATUSES = new Set(['active', 'paused']);
+
 async function discoverTokens(
   client: PublicClient,
   registry: Address,
@@ -274,6 +304,12 @@ async function main() {
       }),
     ]);
 
+    if (OBSOLETE_SYMBOLS.has(symbol)) {
+      console.log(`[skip] obsolete symbol — not catalog-eligible: ${symbol} (${tokenAddr})`);
+      skipped += 1;
+      continue;
+    }
+
     const meta = MARKETING[symbol] ?? FALLBACK_MARKETING;
     if (!MARKETING[symbol]) {
       console.log(`[warn] no MARKETING entry for "${symbol}" — using 'other' defaults`);
@@ -289,8 +325,16 @@ async function main() {
       // — re-seeding is for catching missed events, not for clobbering
       // operator overrides. Both repo methods are idempotent (no-op
       // when the column already matches).
+      //
+      // Lifecycle guard: only flip status when the existing row is in an
+      // on-chain-mirrored state (active/paused). winding_down and
+      // archived are operator-managed lifecycle terminals — see
+      // ON_CHAIN_MIRRORED_STATUSES above for rationale.
       let didUpdate = false;
-      if (existing.status !== expectedStatus) {
+      if (
+        ON_CHAIN_MIRRORED_STATUSES.has(existing.status) &&
+        existing.status !== expectedStatus
+      ) {
         await repo.updatePausedStatus(tokenAddr, cfg.paused);
         didUpdate = true;
       }
