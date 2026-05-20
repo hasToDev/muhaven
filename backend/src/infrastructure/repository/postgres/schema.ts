@@ -12,6 +12,7 @@ import {
   uniqueIndex,
   primaryKey,
   foreignKey,
+  check,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
@@ -75,6 +76,18 @@ export const escrowEventTypeEnum = pgEnum('escrow_event_type', [
   'EscrowCreated',
   'EscrowSettled',
   'EscrowRedeemed',
+]);
+
+// Wave 5 Q3 — YieldDistributionCron audit lifecycle. The runner writes
+// `in_progress` BEFORE `openEpoch` so a crash between openEpoch and the
+// post-fund DB write leaves a row that resume logic keys off — see
+// `yield-epoch-runner.ts` step transitions. Terminal: `success` | `failure`.
+export const yieldDistributionStatusEnum = pgEnum('yield_distribution_status', [
+  'in_progress',
+  'snapshot_done',
+  'funded_no_audit',
+  'success',
+  'failure',
 ]);
 
 export const users = pgTable(
@@ -278,6 +291,13 @@ export const rwaTokens = pgTable(
     // the frontend's `VITE_YIELD_SNAPSHOT_ADDRESS` env-var on
     // `getYieldSnapshot()` miss.
     yieldSnapshotAddress: text('yield_snapshot_address'),
+    // Wave 5 Q3 (v3.1 A2) — per-token override of the global
+    // `YIELD_CRON_MAX_SUPPLY_CAP` env. Nullable: null means "use global
+    // default." Set per-token when supply patterns warrant a tighter
+    // overage cap — protects against the silent-fail correctness footgun
+    // the day actual MuHaven supply crosses the blanket 10M cap. uint128
+    // base units (39 digits = uint128.max).
+    maxSupplyCapOverride: numeric('max_supply_cap_override', { precision: 39, scale: 0 }),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow(),
     pausedAt: timestamp('paused_at'),
@@ -1061,3 +1081,116 @@ export const oracleTimeseries = pgTable(
     ),
   ],
 );
+
+// ── Wave 5 Q3 — Daily yield-distribution cron audit + tick state ────
+//
+// `yield_distributions` is the per-(token, epoch) audit row written by
+// `runYieldEpoch`. The row lands BEFORE `openEpoch` with `status =
+// 'in_progress'`, transitions through `snapshot_done` → `funded_no_audit`
+// → `success` (or `failure`). On boot, the cron resumes any non-terminal
+// row by re-using its stored `rate_per_share` + `enc_total_yield_usd6`
+// rather than recomputing from the latest oracle snapshot — this is the
+// load-bearing idempotency guarantee for the Q3 plan A.3 step 3.
+//
+// Token addresses are lower-cased at the write boundary per
+// `feedback_address_case_at_repo_boundary`; the unique-constraint on
+// (token_address, epoch_id) depends on that contract.
+export const yieldDistributions = pgTable(
+  'yield_distributions',
+  {
+    id: text('id').primaryKey(),
+    tokenAddress: text('token_address').notNull(),
+    // On-chain `epochId` is `uint256` (`YieldSnapshot._currentEpoch` is
+    // uint256). `numeric(20, 0)` covered uint64 comfortably but an
+    // operator/integration test that calls `openEpoch` directly could
+    // push the counter to a uint256-range value and our insert would
+    // fail with `numeric field overflow`. Widened to uint256 (78
+    // digits) — variable-width numeric storage costs zero at the
+    // realistic daily-cron rate (Database Optimizer M-3, 2026-05-20).
+    epochId: numeric('epoch_id', { precision: 78, scale: 0 }).notNull(),
+    // v3.1 S3 — uint128.max ≈ 3.4e38 is 39 digits; `numeric(36, 0)` was
+    // three digits short. Width also covers the safety bounds enforced in
+    // `yield-epoch-runner.ts` (B.3).
+    ratePerShare: numeric('rate_per_share', { precision: 39, scale: 0 }).notNull(),
+    // Plaintext yield-cap committed to `YieldSnapshot.fundEpoch`, in mhUSDC
+    // base units (USD * 1e6, integer). v3.1 S9 trust posture: the value
+    // is already public-derivable from `apy_7_day × nav_dollar / 365 ×
+    // effectiveCap` — no new privacy surface. The confidentiality
+    // boundary is the per-investor claim share, not the aggregate epoch
+    // yield. Stored as `numeric(39, 0)` (uint128 base units, integer-
+    // valued by contract); the prior `numeric(20, 8)` widened storage by
+    // 2 decimals beyond mhUSDC's 6, which combined with `apy_at_time` +
+    // `nav_at_time` would have leaked the exact `effectiveCap` (Security
+    // review M-1, 2026-05-20). Now bit-identical to the on-chain uint128
+    // shape — no inversion possible from the trio of stored columns.
+    encTotalYieldUsd6: numeric('enc_total_yield_usd6', { precision: 39, scale: 0 }).notNull(),
+    // Snapshot of the oracle inputs at the moment the rate was computed,
+    // for post-hoc reconcile / chart overlays. `numeric(20, 8)` matches
+    // `oracle_snapshots.nav_dollar`; `numeric(10, 6)` matches
+    // `oracle_snapshots.apy_7_day`.
+    navAtTimeUsd: numeric('nav_at_time_usd', { precision: 20, scale: 8 }).notNull(),
+    apyAtTimePercent: numeric('apy_at_time_percent', { precision: 10, scale: 6 }).notNull(),
+    status: yieldDistributionStatusEnum('status').notNull(),
+    fundEpochTxHash: text('fund_epoch_tx_hash'),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    lastResumedAt: timestamp('last_resumed_at', { withTimezone: true }),
+    errorClass: text('error_class'),
+    errorMessage: text('error_message'),
+  },
+  (t) => [
+    index('yld_dist_token_started_idx').on(t.tokenAddress, t.startedAt),
+    uniqueIndex('yld_dist_token_epoch_uniq').on(t.tokenAddress, t.epochId),
+    // `findLatestUnresolved` queries via `lower(token_address) AND status
+    // NOT IN ('success', 'failure')` — partial index keeps the working
+    // set to a handful of rows during normal operation (DB review M-1,
+    // 2026-05-20). The functional `lower()` half honors the address-
+    // case-at-boundary contract (`feedback_address_case_at_repo_boundary`)
+    // which the unique btree on `(tokenAddress, epochId)` does NOT cover
+    // (`feedback_lower_defeats_pk_sargable`).
+    //
+    // Name suffix `_v1` is load-bearing per
+    // `feedback_drizzle_predicate_change_index_rename` — drizzle-kit
+    // push compares index NAMES, not predicates. If the WHERE clause
+    // ever changes, bump to `_v2` to force DROP+CREATE.
+    index('yld_dist_lower_token_unresolved_v1_idx')
+      .on(sql`lower(${t.tokenAddress})`, t.startedAt)
+      .where(sql`status NOT IN ('success', 'failure')`),
+    // Address-case-at-boundary is convention today; this CHECK promotes
+    // it to a schema invariant. Future writer that forgets `.toLowerCase()`
+    // gets rejected at insert time instead of silently bypassing the
+    // unique constraint (DB review H-2, 2026-05-20).
+    check(
+      'yld_dist_token_address_lowercase',
+      sql`${t.tokenAddress} = lower(${t.tokenAddress})`,
+    ),
+  ],
+);
+
+// `cron_state` is the single-flight tick guard for any backend cron that
+// needs idempotency across container restarts. Q3 keys two rows on this
+// table: `yield-distribution` (the 23h-floor tick guard per A.1) and
+// `yield-cron-boot-alert` (the 6h-debounce for dry-run boot Telegram
+// alerts per A.6 / v3.1 S5). Future crons add more rows; the table is
+// not Q3-specific. `defaultNow()` on `lastFiredAt` lets the
+// `INSERT … ON CONFLICT DO NOTHING` seed pattern omit the column.
+//
+// LOAD-BEARING INVARIANT (DB review H-1, 2026-05-20): the tick guard
+// MUST be a single-statement conditional UPDATE — NEVER a SELECT-then-
+// UPDATE. The atomic form:
+//
+//   UPDATE cron_state SET last_fired_at = NOW()
+//     WHERE cron_name = $1 AND last_fired_at < NOW() - INTERVAL '23 hours'
+//     RETURNING 1;
+//
+// is race-safe under Postgres' row-level lock — concurrent ticks
+// serialize on the row, the loser sees the winner's `last_fired_at`
+// after commit, predicate fails, RETURNING is empty. Refactoring to
+// SELECT-then-UPDATE for telemetry would silently reintroduce a TOCTOU
+// race that double-fires the cron under restart-induced contention.
+export const cronState = pgTable('cron_state', {
+  cronName: text('cron_name').primaryKey(),
+  lastFiredAt: timestamp('last_fired_at', { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
