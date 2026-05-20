@@ -69,6 +69,19 @@ export const useMarketplaceStore = defineStore('marketplace', () => {
     return tokens.value.find(t => t.address.toLowerCase() === address.toLowerCase())
   }
 
+  /**
+   * Unfiltered — case-insensitive symbol match. Caller gates on `.status`.
+   * Wave 5 1B bridge from the oracle catalog (keyed by ticker) to the
+   * on-chain rwa_tokens row (keyed by address). Returns undefined when
+   * the store isn't loaded yet OR no row matches — never falls back to
+   * a default token, mirroring `resolveTokenIdentifier` in lib/prefill.ts.
+   */
+  function getByTicker(ticker: string): TokenResponseDto | undefined {
+    if (!ticker) return undefined
+    const lower = ticker.toLowerCase()
+    return tokens.value.find(t => t.symbol.toLowerCase() === lower)
+  }
+
   function reset() {
     tokens.value = []
     searchQuery.value = ''
@@ -91,6 +104,7 @@ export const useMarketplaceStore = defineStore('marketplace', () => {
     assetClasses,
     load,
     getByAddress,
+    getByTicker,
     reset,
   }
 })

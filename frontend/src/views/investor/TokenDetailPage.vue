@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, ref, useTemplateRef, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useOracleTokensStore } from '@/stores/oracle-tokens'
+import { useMarketplaceStore } from '@/stores/marketplace'
 import {
   ApiError,
   type OracleTokenMetadataDto,
@@ -12,9 +13,9 @@ import MButton from '@/components/ui/MButton.vue'
 import MPageLoader from '@/components/ui/MPageLoader.vue'
 import OracleTimeseriesChart from '@/components/charts/OracleTimeseriesChart.vue'
 import {
-  ArrowLeft, Globe, ShieldCheck, TrendingUp, Sparkles,
+  ArrowLeft, Globe, ShieldCheck, TrendingUp,
   Building2, FileText, Users, CircleDollarSign, ExternalLink, AlertCircle,
-  LineChart,
+  LineChart, ArrowRight,
 } from 'lucide-vue-next'
 
 /**
@@ -41,6 +42,11 @@ import {
 const props = defineProps<{ ticker: string }>()
 const router = useRouter()
 const oracle = useOracleTokensStore()
+// Wave 5 1B: marketplace store bridges oracle ticker → on-chain rwa_tokens
+// row so the Buy CTA can resolve a deep-link target + status gate.
+// Loaded best-effort alongside metadata; render falls back to a
+// no-on-chain-match disabled state when the bridge fails.
+const marketplace = useMarketplaceStore()
 
 const metadata = ref<OracleTokenMetadataDto | null>(null)
 const snapshot = ref<OracleSnapshotDto | null>(null)
@@ -98,7 +104,17 @@ async function load() {
 }
 
 onMounted(async () => {
-  await load()
+  // Wave 5 1B: marketplace load is best-effort and parallel — a failure
+  // here doesn't block the read-only detail render; the Buy CTA falls
+  // back to a "Not yet listed on-chain" state. `loaded` guard avoids a
+  // re-fetch when the user navigated here from /marketplace where the
+  // store is already populated.
+  const marketplaceTask = marketplace.loaded
+    ? Promise.resolve()
+    : marketplace.load().catch((e) => {
+        console.warn('[TokenDetailPage] marketplace.load failed:', e)
+      })
+  await Promise.allSettled([load(), marketplaceTask])
   // Move focus to the back link so AT users land on meaningful nav
   // rather than the document body. nextTick so the link is in the DOM.
   await nextTick()
@@ -148,6 +164,51 @@ const issuerLine = computed(() => {
   if (m.issuer_country) parts.push(m.issuer_country)
   return parts.join(' · ')
 })
+
+// ── Wave 5 1B — Buy CTA gating ──────────────────────────────────────────
+//
+// The on-chain row drives the action-row state. Branch precedence inside
+// the template's `<template v-if="actionRowReady">`:
+//
+//   marketplaceUnavailable → neutral "Marketplace unavailable" pill.
+//                            Keeps us from claiming "Not yet listed"
+//                            when the real cause is a transient backend
+//                            outage (Code Reviewer round-2 #2).
+//   isBuyable              → gold-sweep CTA → /trade?token=<ticker>
+//   isRetired              → "Winding down — view only" badge (mirrors
+//                            TradePage.vue:112-122 retirement vocab)
+//   else                   → disabled "Not yet listed on-chain" button
+//
+// Marketplace can still be loading on first paint; `actionRowReady` gates
+// the row's CTA slot so the reserved space stays empty rather than
+// flashing a definitive state during the brief in-flight window.
+const onChainToken = computed(() =>
+  metadata.value ? marketplace.getByTicker(metadata.value.ticker) : undefined,
+)
+
+// Treat the row as "ready to paint a CTA state" once we have either
+// authoritative data (loaded) or a confirmed failure (error). The
+// error branch resolves to a NEUTRAL state, never to "not yet listed".
+const actionRowReady = computed(() => marketplace.loaded || !!marketplace.error)
+
+// True only when the marketplace load failed AND we have no usable data
+// to fall back on. If a previous successful load populated `tokens`, we
+// keep serving that result even if the most recent refresh errored.
+const marketplaceUnavailable = computed(
+  () => !!marketplace.error && !marketplace.loaded,
+)
+
+const isBuyable = computed(() => onChainToken.value?.status === 'active')
+
+const retirementLabel = computed(() => {
+  const s = onChainToken.value?.status
+  if (s === 'winding_down') return 'Winding down'
+  if (s === 'paused') return 'Paused'
+  if (s === 'archived') return 'Archived'
+  return ''
+})
+
+const isRetired = computed(() => retirementLabel.value !== '')
 </script>
 
 <template>
@@ -174,18 +235,106 @@ const issuerLine = computed(() => {
     </div>
 
     <div v-else-if="metadata" class="relative z-10 max-w-6xl">
-      <!-- Back link — receives focus on mount for AT landing -->
-      <RouterLink
-        ref="backLink"
-        to="/marketplace"
-        tabindex="0"
-        class="inline-flex items-center gap-2 mb-6 font-sans text-xs uppercase tracking-[0.18em] font-bold
-               text-cool hover:text-midnight dark:hover:text-white transition-colors
-               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/50 dark:focus-visible:ring-signal/40 rounded"
-      >
-        <ArrowLeft :size="14" :stroke-width="2" aria-hidden="true" />
-        Back to marketplace
-      </RouterLink>
+      <!-- ═══════════════════════════════════════════════════════════
+           Action row (Wave 5 1B) — back link on the left, primary Buy
+           CTA on the right. `min-h-[6rem] sm:min-h-[3rem]` reserves
+           vertical space so the row doesn't reflow when the async
+           marketplace load resolves the on-chain status. The 6rem
+           mobile reservation covers the stacked-flex case (back link
+           ~16px + gap-3 12px + CTA ~48px ≈ 76px); the 3rem desktop
+           reservation covers the side-by-side row (~48px tall).
+           Right slot stays empty during the load instead of flashing
+           a definitive state. Primary CTA gets full tap width on
+           mobile (≥44px target for WCAG 2.5.5/2.5.8).
+           ═══════════════════════════════════════════════════════════ -->
+      <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-4 mb-6 min-h-[6rem] sm:min-h-[3rem]">
+        <RouterLink
+          ref="backLink"
+          to="/marketplace"
+          tabindex="0"
+          class="inline-flex items-center gap-2 font-sans text-xs uppercase tracking-[0.18em] font-bold
+                 text-cool hover:text-midnight dark:hover:text-white transition-colors
+                 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/50 dark:focus-visible:ring-signal/40 rounded
+                 self-start sm:self-auto"
+        >
+          <ArrowLeft :size="14" :stroke-width="2" aria-hidden="true" />
+          Back to marketplace
+        </RouterLink>
+
+        <!-- Right slot: marketplace-down / enabled buy / retired badge /
+             not-yet-listed disabled button / empty during load. Branch
+             precedence keeps a transient marketplace failure from
+             surfacing a definitive "Not yet listed" claim. -->
+        <template v-if="actionRowReady">
+          <div
+            v-if="marketplaceUnavailable"
+            data-testid="detail-buy-unavailable-infra"
+            role="status"
+            class="inline-flex items-center gap-2 px-4 py-2 rounded-lg
+                   bg-mist/60 dark:bg-white/5 border border-haze dark:border-white/10
+                   font-sans text-[11px] font-bold uppercase tracking-wider text-slate dark:text-body-dark/80"
+          >
+            <AlertCircle :size="13" :stroke-width="2" aria-hidden="true" />
+            Marketplace unavailable
+          </div>
+
+          <RouterLink
+            v-else-if="isBuyable"
+            :to="`/trade?token=${metadata.ticker}`"
+            data-testid="detail-buy-cta"
+            :aria-label="`Buy ${metadata.display_name} (${metadata.ticker})`"
+            class="btn-gold-sweep inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-sans font-extrabold text-sm tracking-wide cursor-pointer
+                   transition-all duration-300 hover:-translate-y-0.5 active:scale-[0.99] motion-reduce:transition-none motion-reduce:hover:translate-y-0
+                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/60 dark:focus-visible:ring-signal/50
+                   w-full sm:w-auto"
+          >
+            Buy {{ metadata.ticker }}
+            <ArrowRight :size="14" :stroke-width="2.5" aria-hidden="true" />
+          </RouterLink>
+
+          <div
+            v-else-if="isRetired"
+            data-testid="detail-buy-retired"
+            class="inline-flex flex-col items-start sm:items-end gap-1"
+          >
+            <span
+              class="inline-flex items-center gap-2 px-4 py-2 rounded-lg
+                     bg-mist/60 dark:bg-white/5 border border-haze dark:border-white/10
+                     text-[11px] font-sans font-bold uppercase tracking-wider text-slate dark:text-body-dark/80"
+            >
+              {{ retirementLabel }} — view only
+            </span>
+            <span class="font-sans text-[11px] text-slate dark:text-body-dark/80">
+              Existing holders can redeem from
+              <RouterLink
+                to="/portfolio"
+                aria-label="Portfolio — view existing holdings"
+                class="underline hover:text-midnight dark:hover:text-white"
+              >Portfolio</RouterLink>.
+            </span>
+          </div>
+
+          <button
+            v-else
+            type="button"
+            disabled
+            data-testid="detail-buy-unavailable"
+            :aria-describedby="`buy-unavailable-${metadata.ticker}`"
+            class="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-sans font-bold text-sm tracking-wide cursor-not-allowed
+                   border border-haze dark:border-white/10 bg-mist/40 dark:bg-white/[0.02]
+                   text-slate dark:text-body-dark/80 w-full sm:w-auto"
+          >
+            Not yet listed on-chain
+          </button>
+          <span
+            v-if="!marketplaceUnavailable && !isBuyable && !isRetired"
+            :id="`buy-unavailable-${metadata.ticker}`"
+            class="sr-only"
+          >
+            This token is indexed by the oracle catalog but is not yet deployed to MuHaven. Buy will become available once trading opens.
+          </span>
+        </template>
+      </div>
 
       <!-- Soft inline warning when snapshot fetch failed for a non-404 reason -->
       <div
@@ -270,8 +419,8 @@ const issuerLine = computed(() => {
                            bg-gold/15 dark:bg-signal/15 border border-gold/30 dark:border-signal/30
                            text-[10px] font-sans font-bold uppercase tracking-wider
                            text-amber-900 dark:text-signal">
-                <Sparkles :size="11" :stroke-width="2" aria-hidden="true" />
-                Coming Soon
+                <ShieldCheck :size="11" :stroke-width="2" aria-hidden="true" />
+                Live on Arbitrum Sepolia
               </span>
             </div>
             <h1 class="font-accent italic text-3xl lg:text-4xl text-midnight dark:text-white mb-1 leading-tight">

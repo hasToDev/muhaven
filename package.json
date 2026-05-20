@@ -41,7 +41,8 @@
 		"setup:e2e": "hardhat run scripts/setup-e2e.ts --network arb-sepolia",
 		"bench:cofhe-latency": "hardhat run scripts/bench/cofhe-decrypt-latency.ts --network arb-sepolia",
 		"lint:trifecta": "tsx scripts/lethal-trifecta-lint.ts",
-		"lint:trifecta:strict": "tsx scripts/lethal-trifecta-lint.ts --strict"
+		"lint:trifecta:strict": "tsx scripts/lethal-trifecta-lint.ts --strict",
+		"verify:env-per-token-maps": "tsx scripts/verify-env-per-token-maps.ts"
 	},
 	"author": "hasToDev",
 	"license": "MIT",

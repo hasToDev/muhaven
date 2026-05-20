@@ -6,7 +6,7 @@ import MButton from '@/components/ui/MButton.vue'
 import MPageLoader from '@/components/ui/MPageLoader.vue'
 import OracleSparkline from '@/components/charts/OracleSparkline.vue'
 import {
-  Search, ShieldCheck, Inbox, EyeOff, Sparkles,
+  Search, ShieldCheck, Inbox, EyeOff,
 } from 'lucide-vue-next'
 import type { OracleTokenListItemDto } from '@/services/api'
 
@@ -25,8 +25,11 @@ import type { OracleTokenListItemDto } from '@/services/api'
  *  - The featured token (first row, post-filter) gets a "View
  *    {ticker}" hero CTA above the grid. The hero is editorial copy
  *    plus an explicit gateway — not a synchronized preview.
- *  - Buy CTAs replaced with "Coming Soon" pill — these tokens aren't
- *    on-chain yet.
+ *  - The Buy CTA lives on the token-detail page (TokenDetailPage), not
+ *    on each card. Cards stay single-affordance; the detail page is
+ *    where investors review fees / jurisdiction / KYC before signing a
+ *    securities purchase. Hero status pill ("Live on Arbitrum Sepolia")
+ *    signals on-chain readiness instead of the old "Coming Soon" copy.
  *
  * Filter order: asset class → yield-bearing toggle → search.
  * Asset class is the primary investor-facing taxonomy.
@@ -135,8 +138,8 @@ function formatApy(raw: string | null | undefined): string {
                        bg-gold/15 dark:bg-signal/15 border border-gold/30 dark:border-signal/30
                        text-[10px] font-sans font-bold uppercase tracking-wider
                        text-amber-900 dark:text-signal">
-            <Sparkles :size="11" :stroke-width="2" aria-hidden="true" />
-            Coming Soon
+            <ShieldCheck :size="11" :stroke-width="2" aria-hidden="true" />
+            Live on Arbitrum Sepolia
           </span>
         </div>
       </section>
