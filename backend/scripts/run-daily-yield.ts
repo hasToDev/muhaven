@@ -23,37 +23,49 @@
  *     because the cron's lifecycle (node-cron schedule, 23h DB
  *     guard, boot alert, per-tick `running` flag) doesn't apply to
  *     a one-shot script run.
+ *   - Reads ALL on-chain addresses + the issuer key from
+ *     `process.env` (same vars the cron consumes). No filesystem
+ *     dependency on `deployments/*.json` — that file isn't in the
+ *     backend Docker image, so the prior JSON-reading approach
+ *     could ONLY run from the operator dev machine. Reading from
+ *     env makes the script work uniformly from BOTH a dev-machine
+ *     shell (with backend/.env loaded by tsx) AND inside the
+ *     container (`docker compose exec backend pnpm tsx scripts/
+ *     run-daily-yield.ts ...`). The which-environment selection is
+ *     implicit in which backend container's env you're using.
  *
- * Usage (inside backend/ — note backend is NOT a pnpm workspace
- * member, so commands run from `cd backend &&`):
+ * Usage:
  *
- *   # Dry-run, all active tokens, prod
- *   cd backend && pnpm tsx scripts/run-daily-yield.ts --dry-run --env=prod
+ *   # Inside the prod backend container (env auto-loaded):
+ *   ssh -i ~/.ssh/id_muhaven_vm muhaven@192.168.1.52 \
+ *     'cd /home/muhaven/Project/Fhenix/MuHaven && \
+ *      docker compose -f docker-compose.yml -p muhaven exec backend \
+ *        pnpm tsx scripts/run-daily-yield.ts --dry-run --token=USYC'
  *
- *   # Live run, single token, staging
- *   cd backend && pnpm tsx scripts/run-daily-yield.ts --token=USYC --env=staging
+ *   # From operator dev machine (relies on backend/.env values —
+ *   # DATABASE_URL must reach the homelab Postgres via SSH tunnel
+ *   # or direct VPN, since the homelab Pg only binds 127.0.0.1):
+ *   cd backend && pnpm tsx scripts/run-daily-yield.ts --dry-run
  *
- *   # Live sweep all active tokens on prod (THE pre-launch smoke)
- *   cd backend && pnpm tsx scripts/run-daily-yield.ts --env=prod
- *
- * Required env (read from backend/.env via tsx auto-loading or
- * already-exported shell env):
- *   DATABASE_URL              postgres connection (matches deploy-homelab)
- *   DB_PROVIDER=postgres      audit writer / advisory locks need real Pg
- *   RPC_URL                   Arb Sepolia RPC endpoint
- *   YIELD_CRON_PRIVATE_KEY    issuer EOA (mhUSDC float holder)
- *   YIELD_CRON_MAX_SUPPLY_CAP global cap (bigint, default 10_000_000)
- *   STALE_NAV_HALT_DAYS       NAV staleness ceiling (default 7)
+ * Required env (read directly from `process.env`; the backend
+ * container's env-file or your local backend/.env populates these):
+ *   DATABASE_URL                       postgres connection
+ *   DB_PROVIDER=postgres               audit writer + advisory locks need real Pg
+ *   RPC_URL                            Arb Sepolia RPC endpoint
+ *   CHAIN_ID                           421614 (default)
+ *   YIELD_CRON_PRIVATE_KEY             issuer EOA (mhUSDC float holder)
+ *   STABLE_ADDRESS                     MuHavenStable proxy
+ *   YIELD_SNAPSHOT_ADDRESS             YieldSnapshot proxy (default fallback)
+ *   INVESTOR_REGISTRY_V35_ADDRESS      InvestorRegistry proxy
+ *   YIELD_CRON_MAX_SUPPLY_CAP          global cap (bigint, default 10_000_000)
+ *   STALE_NAV_HALT_DAYS                NAV staleness ceiling (default 7)
  *
  * Exit codes:
  *   0  every attempted token succeeded or was skipped (no failures)
  *   1  one or more tokens failed (incl. uint64 overflow, float short,
  *      runner throw, fetch / decrypt failures)
- *   2  config / env error (missing env, bad deployment path, etc.)
+ *   2  config / env error (missing env, bad shape, etc.)
  */
-import { readFileSync, existsSync } from 'node:fs';
-import { resolve, join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   JsonRpcProvider,
   Wallet,
@@ -72,10 +84,6 @@ import { runYieldEpoch, type RunEpochInput } from '../src/infrastructure/blockch
 import { createNodeCofheClient } from '../src/infrastructure/blockchain/node-cofhe-client.js';
 import { PgRwaTokenRepository } from '../src/infrastructure/repository/postgres/pg-rwa-token.repository.js';
 import { PgOracleRepository } from '../src/infrastructure/repository/postgres/pg-oracle.repository.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const REPO_ROOT = resolve(__dirname, '..', '..');
 
 // Mirror the cron's constants so the math is byte-identical (any
 // divergence between cron-tick yields + script-one-off yields is a
@@ -96,60 +104,47 @@ const UINT128_MAX = 2n ** 128n - 1n;
 interface CliArgs {
   dryRun: boolean;
   token: string | null;
-  env: 'prod' | 'staging';
 }
 
 function parseArgs(argv: string[]): CliArgs {
   let dryRun = false;
   let token: string | null = null;
-  let env: 'prod' | 'staging' = 'prod';
   for (const a of argv) {
     if (a === '--dry-run') dryRun = true;
     else if (a.startsWith('--token=')) token = a.slice('--token='.length).toUpperCase();
-    else if (a === '--env=prod') env = 'prod';
-    else if (a === '--env=staging') env = 'staging';
     else if (a === '--help' || a === '-h') {
       printHelp();
       process.exit(0);
+    } else if (a === '--env=prod' || a === '--env=staging') {
+      // Accept-but-no-op for backward compat with the Q3_PLAN.md
+      // halt-before-prod checklist invocation. Environment is now
+      // determined by which backend container's env-file is loaded.
+      console.warn(
+        `[warn] --env=… is no longer load-bearing — environment is implicit in the loaded backend env-file. Ignoring.`,
+      );
     } else {
       console.error(`Unknown argument: ${a}`);
       printHelp();
       process.exit(2);
     }
   }
-  return { dryRun, token, env };
+  return { dryRun, token };
 }
 
 function printHelp(): void {
   console.log(`Wave 5 Q3 — daily yield-distribution one-shot.
 
 Usage:
-  pnpm tsx scripts/run-daily-yield.ts [--dry-run] [--token=SYMBOL] [--env=prod|staging]
+  pnpm tsx scripts/run-daily-yield.ts [--dry-run] [--token=SYMBOL]
 
 Options:
   --dry-run            Skip on-chain side effects + DB audit writes
   --token=SYMBOL       Process only this RWA symbol (default: every active token)
-  --env=prod|staging   Which deployments/*.json to read (default: prod)
   --help, -h           Show this help and exit
+
+Environment is determined by which backend env-file is loaded — run
+inside the prod container for prod, the stage container for stage.
 `);
-}
-
-interface DeploymentJson {
-  contracts: {
-    MuHavenStable: { proxy: string };
-    InvestorRegistry: { proxy: string };
-    YieldSnapshot: { proxy: string };
-  };
-}
-
-function loadDeployment(env: 'prod' | 'staging'): DeploymentJson {
-  const suffix = env === 'staging' ? '.staging' : '';
-  const path = join(REPO_ROOT, 'deployments', `arb-sepolia-v2${suffix}.json`);
-  if (!existsSync(path)) {
-    console.error(`[fatal] deployment file not found: ${path}`);
-    process.exit(2);
-  }
-  return JSON.parse(readFileSync(path, 'utf-8')) as DeploymentJson;
 }
 
 function envOrDie(name: string): string {
@@ -159,6 +154,19 @@ function envOrDie(name: string): string {
     process.exit(2);
   }
   return v;
+}
+
+/** Validate + lower-case a 0x-prefixed 40-hex address from env. Exits
+ *  loud on bad shape — the runner's downstream checks (e.g.
+ *  `YieldSnapshot.pusdc()` match assertion) would also catch it, but a
+ *  config-time loud-fail is the right boundary. */
+function envAddressOrDie(name: string): Address {
+  const v = envOrDie(name);
+  if (!/^0x[0-9a-fA-F]{40}$/.test(v)) {
+    console.error(`[fatal] env var ${name} must be a 0x-prefixed 20-byte hex address; got "${v}"`);
+    process.exit(2);
+  }
+  return v as Address;
 }
 
 interface TokenWork {
@@ -209,12 +217,18 @@ async function readMaxSupplyCapOverride(tokenAddrLower: string): Promise<bigint 
   return BigInt(v);
 }
 
+interface SweepAddresses {
+  stable: Address;
+  yieldSnapshot: Address;
+  investorRegistry: Address;
+}
+
 interface SweepCtx {
   floatRemaining: bigint | null;
   signer: Wallet;
   cofheClient: Awaited<ReturnType<typeof createNodeCofheClient>>;
   provider: Provider;
-  deployment: DeploymentJson;
+  addresses: SweepAddresses;
   maxSupplyCap: bigint;
   staleNavHaltDays: number;
   dryRun: boolean;
@@ -226,7 +240,7 @@ async function readMhUsdcFloat(ctx: SweepCtx): Promise<bigint | null> {
   const FLOAT_READ_TIMEOUT_MS = 60_000;
   try {
     const stable = new Contract(
-      ctx.deployment.contracts.MuHavenStable.proxy,
+      ctx.addresses.stable,
       ['function confidentialBalanceOf(address holder) view returns (uint256)'],
       ctx.signer,
     );
@@ -351,8 +365,7 @@ async function processToken(
   }
 
   // Resolve YieldSnapshot proxy
-  const snapshotAddr = (token.yieldSnapshotAddress ??
-    ctx.deployment.contracts.YieldSnapshot.proxy) as Address;
+  const snapshotAddr = (token.yieldSnapshotAddress ?? ctx.addresses.yieldSnapshot) as Address;
   if (!snapshotAddr || snapshotAddr === '0x0000000000000000000000000000000000000000') {
     console.error(`[${token.symbol}] yield snapshot address unresolved — FAILED`);
     return 'failed';
@@ -374,8 +387,8 @@ async function processToken(
       navAtTimeUsd: snapshot.navDollar,
       apyAtTimePercent: snapshot.apy7Day,
       snapshotAddr,
-      investorRegistryAddr: ctx.deployment.contracts.InvestorRegistry.proxy as Address,
-      pusdcAddr: ctx.deployment.contracts.MuHavenStable.proxy as Address,
+      investorRegistryAddr: ctx.addresses.investorRegistry,
+      pusdcAddr: ctx.addresses.stable,
       signer: ctx.signer,
       cofheClient: ctx.cofheClient,
       // Script-mode operator grant: same 2-day tighter blast radius as
@@ -429,7 +442,7 @@ async function processToken(
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   console.log(
-    `[run-daily-yield] dryRun=${args.dryRun} env=${args.env} token=${args.token ?? '<all active>'}`,
+    `[run-daily-yield] dryRun=${args.dryRun} token=${args.token ?? '<all active>'}`,
   );
 
   // Required env
@@ -439,6 +452,7 @@ async function main(): Promise<void> {
     process.exit(2);
   }
   const rpcUrl = envOrDie('RPC_URL');
+  const chainId = Number(process.env.CHAIN_ID ?? '421614');
   const privateKey = envOrDie('YIELD_CRON_PRIVATE_KEY');
   if (!/^0x[0-9a-fA-F]{64}$/.test(privateKey)) {
     console.error('[fatal] YIELD_CRON_PRIVATE_KEY must be 0x-prefixed 32-byte hex');
@@ -451,11 +465,17 @@ async function main(): Promise<void> {
   }
   const staleNavHaltDays = Number(process.env.STALE_NAV_HALT_DAYS ?? '7');
 
-  const deployment = loadDeployment(args.env);
+  // Addresses — env-driven (matches cron's wiring; works inside the
+  // backend Docker container without bundling deployments JSON).
+  const addresses: SweepAddresses = {
+    stable: envAddressOrDie('STABLE_ADDRESS'),
+    yieldSnapshot: envAddressOrDie('YIELD_SNAPSHOT_ADDRESS'),
+    investorRegistry: envAddressOrDie('INVESTOR_REGISTRY_V35_ADDRESS'),
+  };
   console.log(
-    `[deployment] MuHavenStable=${deployment.contracts.MuHavenStable.proxy} ` +
-      `InvestorRegistry=${deployment.contracts.InvestorRegistry.proxy} ` +
-      `YieldSnapshot=${deployment.contracts.YieldSnapshot.proxy}`,
+    `[addresses] STABLE=${addresses.stable} ` +
+      `INVESTOR_REGISTRY=${addresses.investorRegistry} ` +
+      `YIELD_SNAPSHOT=${addresses.yieldSnapshot}`,
   );
 
   // Connect ethers + cofhe client (matches cron's wiring)
@@ -464,7 +484,7 @@ async function main(): Promise<void> {
   console.log(`[signer] address=${signer.address}`);
   const cofheClient = await createNodeCofheClient({
     rpcUrl,
-    chainId: 421614,
+    chainId,
     privateKey: privateKey as `0x${string}`,
   });
 
@@ -475,7 +495,7 @@ async function main(): Promise<void> {
     signer,
     cofheClient,
     provider,
-    deployment,
+    addresses,
     maxSupplyCap,
     staleNavHaltDays,
     dryRun: args.dryRun,
