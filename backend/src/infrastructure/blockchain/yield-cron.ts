@@ -182,6 +182,18 @@ export class MissingYieldSnapshotAddressError extends Error {
   }
 }
 
+/** Boot/lifecycle alert payload — named so the operator's Telegram
+ *  reads `Error: YieldCronBootAlert` instead of the generic
+ *  `Error: Error` of a raw `new Error(...)`. Not thrown anywhere; only
+ *  constructed in `maybeFireBootAlert` to give the sanitiser a
+ *  meaningful `err.name`. */
+export class YieldCronBootAlert extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'YieldCronBootAlert';
+  }
+}
+
 const STABLE_BALANCE_ABI = [
   'function confidentialBalanceOf(address holder) view returns (uint256)',
 ];
@@ -1008,13 +1020,24 @@ export class YieldDistributionCron {
         this.logger.debug('boot alert debounced (< 6h since last)');
         return;
       }
+      // Pass signer address as `tokenAddress` so the sanitiser
+      // preserves it in the body instead of redacting to `0x…addr`
+      // (Round-1 Security M-5 sentinel-preservation path). The
+      // boot-alert symbol is sentinel-only; the address ISN'T a
+      // token's, but the sanitiser's known-address preservation
+      // logic keys on tokenAddress regardless of whether it's a
+      // token or any other operator-relevant EOA. Lower-cased for
+      // case-insensitive match against the body's address text.
       await this.deps.notifyYieldCronFailure.execute({
-        err: new Error(
+        err: new YieldCronBootAlert(
           `YieldDistributionCron booted in DRY-RUN mode. No on-chain ` +
             `side effects will fire until YIELD_CRON_DRY_RUN=false. ` +
             `Cron expression: ${this.config.cronExpr}; issuer: ${this.signer?.address ?? 'unknown'}.`,
         ),
         tokenSymbol: 'YIELD_CRON_BOOT',
+        ...(this.signer?.address
+          ? { tokenAddress: this.signer.address.toLowerCase() }
+          : {}),
         severity: 'info',
       });
     } catch (err) {

@@ -9,6 +9,7 @@ export {
   InsufficientMhusdcFloatError,
   StaleNavError,
   MissingYieldSnapshotAddressError,
+  YieldCronBootAlert,
 } from './yield-cron.js';
 export { TaxEventIndexer, type TaxEventIndexerConfig } from './tax-event-indexer.js';
 export { TokenRegistryHandler } from './token-registry-handler.js';
