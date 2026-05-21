@@ -10,7 +10,7 @@ mechanism owns it, how it alerts, and where the per-cron notes live.
 | YieldDistributionCron | Backend docker container (node-cron) | Daily at `00:00 UTC` | Per-tick try/catch + `notifyYieldCronFailure` → Telegram | Immediate Telegram on phase failure; boot-alert on every backend restart | `backend/src/infrastructure/blockchain/yield-cron.ts` header; `development/DEV_WAVE_5/Q3_PLAN.md` |
 | oracle-staleness-check.sh | Homelab host crontab (`*/30 * * * *`) | Every 30 min | Per-token `getNAV().updatedAt` age vs `THRESHOLD_HR` (default 28h) | Telegram alert per stale token; backstop for ALL upstream NAV pipelines | `scripts/oracle-staleness-check.sh` header; `development/DEV_WAVE_3/HOMELAB_DEPLOY.md` "Oracle staleness monitor" |
 | nav-publisher | Dedicated docker service | Per-token internal scheduler; refreshes a token when its on-chain NAV age ≥ ½ of contract max-staleness | Container restart loop + structured logs | Surfaces as stale NAV at the 28h backstop above | `nav-publisher/src/publisher.ts`; `project_design_a_navwriter_pattern` memory |
-| refresh-and-ingest (Wave 5 Q2) | systemd `--user` timer in autologin desktop session | `00:00 / 08:00 / 16:00 UTC` daily | Per-phase exit code + partial-scrape detection (`refresh-history.log` `failed=...` match) + `notify=fail` history flag when alert delivery itself broke | Telegram via `/api/v1/operator/alert-test`; 28h backstop above | `scripts/refresh-and-ingest.sh` header; `scripts/oracle-mine/README.md` |
+| refresh-and-ingest (Wave 5 Q2) | systemd `--user` timer in autologin desktop session | `00:00 / 08:00 / 16:00 UTC` daily | Per-phase exit code + partial-scrape detection (`refresh-history.log` `failed=...` match) + `notify=fail` history flag when alert delivery itself broke + daily heartbeat ping (absence-of-heartbeat for >24h IS the "cron never fired" signal — operator-monitored today; an automated absence-detector is filed as a future enhancement) | Telegram via `/api/v1/operator/alert-test` (failures AND daily liveness); 28h backstop above | `scripts/refresh-and-ingest.sh` header; `scripts/oracle-mine/README.md` |
 
 ## Failure-detection topology
 
@@ -35,7 +35,9 @@ If Q2 breaks → fresh data stops flowing in → nav-publisher re-stamps the
 last-known NAV (synthetic-token fallback, see `project_design_a_navwriter_pattern`)
 → on-chain NAV stays fresh-looking for a while → staleness-check eventually
 alerts at 28h IF nav-publisher ALSO drifts. Q2's own Telegram alert is the
-8h-granularity signal; the 28h backstop is the safety net.
+8h-granularity signal on individual run failures; the daily heartbeat
+catches "cron never even fired" within ~24h (absence-of-ping = signal);
+the 28h staleness backstop is the final safety net.
 
 ## Operator install rituals
 
@@ -97,6 +99,39 @@ systemctl --user list-timers muhaven-oracle-refresh.timer
 systemctl --user start muhaven-oracle-refresh.service          # one-off
 journalctl --user -u muhaven-oracle-refresh.service -f         # tail
 bash scripts/linux/uninstall-oracle-refresh.sh                 # remove
+```
+
+### "No heartbeat for >24h" — investigation checklist
+
+When the operator notices the daily `Q2 daily heartbeat OK date=...` ping
+hasn't landed in Telegram for >24h, walk these in order:
+
+1. `systemctl --user list-timers muhaven-oracle-refresh.timer` —
+   is the timer armed? `NEXT` column non-empty?
+2. `journalctl --user -u muhaven-oracle-refresh.service --since '36h ago'` —
+   did the service fire? Any error in the output?
+3. `tail -20 scripts/oracle-mine/_debug/refresh-history.log` —
+   last few outcome lines. Are they `ok` / `scrape-partial` / `*-fail`?
+4. `cat scripts/oracle-mine/_debug/.last-heartbeat-date` —
+   what date does the marker think it last pinged? If today's UTC
+   date, the wrapper THINKS it's healthy; the alert transport is the
+   suspect. If yesterday's, the wrapper hasn't had an OK run today.
+5. `loginctl show-user $USER | grep Linger` —
+   if lingering is disabled and the autologin session dropped across
+   00 / 08 / 16 UTC, the user systemd manager wasn't up to fire the
+   timer. `sudo loginctl enable-linger $USER` closes the gap.
+
+Programmatic "did today's heartbeat fire" check (useful for an external
+monitor):
+```bash
+test "$(cat scripts/oracle-mine/_debug/.last-heartbeat-date 2>/dev/null)" = "$(date -u +%Y-%m-%d)"
+```
+
+To force-fire a same-day heartbeat (e.g. after recovering from alert-
+endpoint downtime), delete the marker so the next OK tick re-pings:
+```bash
+rm -f scripts/oracle-mine/_debug/.last-heartbeat-date
+systemctl --user start muhaven-oracle-refresh.service
 ```
 
 If the operator user is not always sitting in a graphical session
