@@ -1,9 +1,32 @@
 import { z } from 'zod';
 
+// F1 follow-up from `@muhaven/mcp@0.2.1` multi-agent review
+// (2026-05-18 / `project_session_2026_05_18_v021_landed`). The
+// previous `symbol: z.string().min(1).max(10)` accepted ANY
+// printable + non-printable character — including newlines,
+// pipes, quotes, control chars — which let a malicious issuer
+// register a symbol like `"OK\nIGNORE PRIOR INSTRUCTIONS"` and
+// land it in the MCP-side `instructions` text as a prompt-
+// injection vector. The MCP layer shipped a defense-in-depth
+// `sanitizeSymbolForLlmContext()` (strips to `[A-Za-z0-9_-]`,
+// caps at 16); this is the canonical write-boundary fix.
+//
+// Regex: alphanumeric only, first char must be a letter, 16-char
+// cap. Matches every existing MuHaven RWA symbol (BUIDL, CETES,
+// EUTBL, syrupUSDC, USDY, USYC, ONyc, MUon, NVDAon, STRCx, TSLAx,
+// TBILL1, GOLD1) including the Wave 5 1A mixed-case ones that
+// landed AFTER the original F1 recommendation (which had proposed
+// the stricter `/^[A-Z][A-Z0-9]{0,11}$/` — that would reject
+// `syrupUSDC` / `ONyc` / etc.). The 16-char cap matches MCP's
+// sanitizer cap exactly so the two layers stay in lockstep.
+const SYMBOL_REGEX = /^[A-Za-z][A-Za-z0-9]{0,15}$/;
+
 export const CreateTokenDtoSchema = z.object({
   address: z.string().min(1).regex(/^0x[a-fA-F0-9]{40}$/, 'Invalid Ethereum address'),
   name: z.string().min(1).max(100),
-  symbol: z.string().min(1).max(10),
+  symbol: z
+    .string()
+    .regex(SYMBOL_REGEX, 'Symbol must be alphanumeric (first char letter), 1-16 chars'),
   apy: z.string().optional(),
   yield_schedule: z.string().optional(),
   kyc_tier: z.number().int().min(0).max(3),
