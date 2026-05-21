@@ -15,6 +15,14 @@ deployment.json
 .monitor.env
 .monitor.env.local
 
+# Wave 5 Q2 oracle refresh cron (scripts/refresh-and-ingest.sh) —
+# carries ORACLE_INGEST_SERVICE_SECRET + OPERATOR_ALERT_TEST_SECRET. The
+# `.example` variant in scripts/ stays tracked. Glob to defence-in-depth
+# against `.env.local`, `.env.bak`, etc. accidentally landing in git.
+scripts/refresh-and-ingest.env
+scripts/refresh-and-ingest.env.*
+!scripts/refresh-and-ingest.env.example
+
 # Dependencies
 node_modules/
 bun.lockb
