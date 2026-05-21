@@ -1,20 +1,20 @@
 /**
  * Wave 5 Q1 — RWA oracle ingest operator script.
  *
- * Reads every `development/ORACLE_DATA_MINE/data/*.json` payload (the
- * per-asset output of `extract-asset.ts`) and POSTs each one to
+ * Reads every `scripts/oracle-mine/data/*.json` payload (the per-asset
+ * output of `extract-asset.ts`) and POSTs each one to
  * `POST /api/v1/oracle/ingest` on the configured backend.
  *
  * USAGE (operator dev machine):
  *
  *   # Default: localhost backend
  *   export ORACLE_INGEST_SERVICE_SECRET=<same value as backend env>
- *   pnpm --filter @muhaven/backend exec tsx scripts/ingest-oracle.ts
+ *   tsx scripts/ingest-oracle.ts
  *
  *   # Or against a remote backend
  *   ORACLE_INGEST_URL=https://api.muhaven.app \
  *     ORACLE_INGEST_SERVICE_SECRET=<…> \
- *     pnpm --filter @muhaven/backend exec tsx scripts/ingest-oracle.ts
+ *     tsx scripts/ingest-oracle.ts
  *
  *   # Filter to specific tickers
  *   tsx scripts/ingest-oracle.ts --only=USYC,BUIDL
@@ -22,10 +22,19 @@
  *   # Dry-run: validate the JSON files but don't POST
  *   tsx scripts/ingest-oracle.ts --dry-run
  *
- * Why a script, not a route handler that scans the filesystem itself:
- * the backend container does NOT mount `development/ORACLE_DATA_MINE/`,
- * and that's intentional — the rwa.xyz scrape lives on the operator
- * machine with the persistent Chromium profile + cookies.
+ *   # Override data dir (used by the homelab cron via docker compose exec):
+ *   ORACLE_DATA_DIR=/oracle-mine-data tsx scripts/ingest-oracle.ts
+ *
+ * Data-dir resolution:
+ *   - `process.env.ORACLE_DATA_DIR` takes precedence (set by the homelab
+ *     wrapper to point at the volume-mounted `/oracle-mine-data` inside
+ *     the backend container).
+ *   - Default: `<repo>/scripts/oracle-mine/data` (the dev-box layout).
+ *
+ * Wave 5 Q2b (2026-05-21) moved the scrape pipeline from the gitignored
+ * `development/ORACLE_DATA_MINE/` to the committed `scripts/oracle-mine/`
+ * so it could ride `pnpm run deploy:homelab` and be co-located with the
+ * other operator-machine crons. See docs/OPERATOR_CRONS.md.
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import { resolve, join } from 'node:path';
@@ -36,7 +45,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
-const DATA_DIR = join(REPO_ROOT, 'development', 'ORACLE_DATA_MINE', 'data');
+// Default path: dev-box layout (run from repo root, scripts/oracle-mine
+// is committed). Override via ORACLE_DATA_DIR for the homelab flow where
+// the wrapper invokes this script inside the backend docker container
+// with /oracle-mine-data mounted from the host scripts/oracle-mine/data.
+const DATA_DIR = process.env.ORACLE_DATA_DIR
+  ?? join(REPO_ROOT, 'scripts', 'oracle-mine', 'data');
 
 interface CliArgs {
   url: string;

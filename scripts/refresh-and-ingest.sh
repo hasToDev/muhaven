@@ -403,13 +403,35 @@ log "Phase 1 OK"
 
 log "=== Phase 2: ingest-oracle.ts (${REPO_ROOT}/backend) ==="
 ingest_rc=0
-# Inline-prefix the env vars so they're scoped to this subprocess only --
-# no `export` reaches the parent shell or any subsequent commands.
-(cd "${REPO_ROOT}/backend" && \
-   ORACLE_INGEST_URL="${ORACLE_INGEST_URL}" \
-   ORACLE_INGEST_SERVICE_SECRET="${ORACLE_INGEST_SERVICE_SECRET}" \
-   ./node_modules/.bin/tsx scripts/ingest-oracle.ts) \
-  >> "${LOG_FILE}" 2>&1 || ingest_rc=$?
+# Two execution modes -- chosen by whether the backend's npm deps live
+# on this host:
+#   - Dev box (Windows / standalone Linux dev env): operator ran
+#     `pnpm install` in backend/ so tsx is on disk. Run directly with
+#     the data dir at scripts/oracle-mine/data.
+#   - Homelab: backend runs inside docker; node_modules lives only
+#     inside the container image. Run via `docker compose exec` with
+#     ORACLE_DATA_DIR pointing at /oracle-mine-data (volume mount in
+#     docker-compose.yml, host side scripts/oracle-mine/data).
+# Inline-prefix env vars (dev) / -e flags (docker) so they're scoped
+# to the subprocess only -- no `export` reaches subsequent commands.
+if [ -x "${REPO_ROOT}/backend/node_modules/.bin/tsx" ]; then
+  log "  (running ingest locally: backend/node_modules/.bin/tsx)"
+  (cd "${REPO_ROOT}/backend" && \
+     ORACLE_INGEST_URL="${ORACLE_INGEST_URL}" \
+     ORACLE_INGEST_SERVICE_SECRET="${ORACLE_INGEST_SERVICE_SECRET}" \
+     ORACLE_DATA_DIR="${ORACLE_DIR}/data" \
+     ./node_modules/.bin/tsx scripts/ingest-oracle.ts) \
+    >> "${LOG_FILE}" 2>&1 || ingest_rc=$?
+else
+  log "  (running ingest via docker compose exec backend)"
+  (cd "${REPO_ROOT}" && \
+     docker compose -f docker-compose.yml -p muhaven exec -T \
+       -e ORACLE_INGEST_URL="${ORACLE_INGEST_URL}" \
+       -e ORACLE_INGEST_SERVICE_SECRET="${ORACLE_INGEST_SERVICE_SECRET}" \
+       -e ORACLE_DATA_DIR=/oracle-mine-data \
+       backend node_modules/.bin/tsx scripts/ingest-oracle.ts) \
+    >> "${LOG_FILE}" 2>&1 || ingest_rc=$?
+fi
 
 # Defence-in-depth: the ingest secret is no longer needed in this shell.
 # Drop it from the environment so any subsequent process spawned by the

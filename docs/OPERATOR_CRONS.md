@@ -49,7 +49,11 @@ to an invisible session 0.
 Bootstrap is operator-driven (one-time); after that, cron updates ride
 the operator's `scripts/deploy-homelab.sh` step 5e — which rsyncs
 `scripts/oracle-mine/`, the wrapper, the env template, and the Linux
-installer.
+installer. The `pnpm run deploy:homelab` step also handles the backend
+container restart, which is required after `docker-compose.yml` volume
+changes (the backend has a `./scripts/oracle-mine/data:/oracle-mine-data:ro`
+read-only mount so the wrapper's `docker compose exec backend tsx
+scripts/ingest-oracle.ts` flow can see the freshly scraped JSON).
 
 > **Note:** `scripts/deploy-homelab.sh` is gitignored (operator-specific
 > hostnames + SSH key paths). The step 5e block must include the Q2
