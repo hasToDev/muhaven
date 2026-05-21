@@ -200,6 +200,55 @@ All three secret files live on the homelab now (Q2 moved off the dev box
 hand. A `scripts/verify-secrets-sync.sh` probe is filed as a future
 enhancement.
 
+## Q2 deferred follow-ups (non-blocking, priority order)
+
+These were filed across the Q2 → Q2b → Q2c → Q2d review rounds; none
+block the live cron. Pick in order of payoff:
+
+1. **`/api/v1/operator/cron-failure` route rename** (~1.5h backend +
+   wrapper switch). `/api/v1/operator/alert-test` is repurposed from
+   manual smoke endpoint → automated alarm channel + daily-heartbeat
+   carrier. Severity hardcoded to `'info'` at
+   `backend/api/v1/operator/alert-test.ts:82`. Introduce a new route
+   that accepts `{severity, source, note}` in the DTO; keep `alert-test`
+   as a thin synonym for one release for backward-compat. Surfaced by
+   Round-1 Security M-1 + Round-2 Software Architect MED.
+2. **`scripts/verify-secrets-sync.sh`** (~30 min). Read-only probe of
+   all 3 secret-holding files (`backend/.env`, `.monitor.env`,
+   `scripts/refresh-and-ingest.env`). Reports drift between
+   `ORACLE_INGEST_SERVICE_SECRET` / `OPERATOR_ALERT_TEST_SECRET` /
+   `TELEGRAM_*` values without exposing them in the output. Run before
+   any secret rotation.
+3. **`flock` against manual + scheduled race** (~30 min).
+   `MultipleInstances=IgnoreNew` (Linux systemd) + `IgnoreNew` (Win Task
+   Scheduler) only protect scheduled-vs-scheduled. A manual
+   `systemctl start muhaven-oracle-refresh.service` while a scheduled
+   tick is mid-scrape would deadlock on the Chromium SingletonLock. Add
+   `flock` at the top of `scripts/refresh-and-ingest.sh` against
+   `${ORACLE_DIR}/_debug/.wrapper.lock`. Round-1 Code Reviewer M-2.
+4. **npm supply-chain pinning for `scripts/oracle-mine/`** (~1h).
+   Currently `npm install` runs lifecycle scripts including
+   `postinstall: playwright install chromium`. Switch the operator
+   bootstrap to `npm ci --ignore-scripts` + commit `package-lock.json`
+   + extend `scripts/refresh-and-ingest.sh`'s preflight to verify the
+   lockfile checksum hasn't changed since install. Round-1 Security H-4.
+5. **Automated absence-of-heartbeat detector** (~1h). Today the Q2d
+   daily heartbeat is OPERATOR-monitored (operator notices missing
+   daily Telegram ping). Options for automation:
+   - External Healthchecks.io probe (adds third-party dep + a new
+     secret).
+   - In-backend `cron_state` table tracks `last-heartbeat-at` per
+     cron; a separate poller alerts if the gap exceeds a threshold.
+     Bigger lift but aligns with Q3's existing `cron_state` pattern.
+   Round-2 DevOps INFO + Round-3 DevOps L-2.
+6. **`scripts/deploy-homelab.sh` ungitignore** (~1h). Currently
+   gitignored (operator-specific hostnames + SSH key paths). Local
+   edits don't propagate; future operators rebuilding from scratch
+   lose the step 5e Q2-sync block. Either parameterise the
+   operator-specific bits via env vars and ungitignore, or commit the
+   canonical step 5e block to a tracked sibling script that gets
+   sourced by the gitignored wrapper. Surfaced when Q2b landed.
+
 ## When the operator outgrows this layout
 
 Migration triggers (from the Wave 5 Q2 architecture review):
