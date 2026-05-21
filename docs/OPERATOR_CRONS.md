@@ -248,6 +248,25 @@ block the live cron. Pick in order of payoff:
    operator-specific bits via env vars and ungitignore, or commit the
    canonical step 5e block to a tracked sibling script that gets
    sourced by the gitignored wrapper. Surfaced when Q2b landed.
+7. **RPC provider redundancy via viem `fallback` transport** (~2h).
+   Single-RPC-provider topology surfaced 2026-05-21 02:23 UTC: a
+   transient `getaddrinfo EAI_AGAIN
+   arbitrum-sepolia.api.onfinality.io` froze both `TaxEventIndexer`
+   and `BlockchainEventPoller` until DNS resolution self-recovered
+   later that day. No data loss (in-memory cursor; zero on-chain
+   events during the window), but a longer outage on the same single
+   endpoint would block indexing indefinitely. Switch the viem client
+   in `backend/src/infrastructure/blockchain/index.ts` from `http(URL)`
+   to `fallback([http(onfinality), http(alchemy), http(arbitrumPublic)])`;
+   add `BACKUP_RPC_URL_1` / `BACKUP_RPC_URL_2` to `backend/.env.example`
+   + the deploy playbook. **Escalation trigger:** the 2026-05-21
+   incident is the recurrence-clock-start. If the same `EAI_AGAIN` on
+   the same hostname recurs before **2026-06-04** (~2 weeks), promote
+   this from deferred → active and ship in the same PR as
+   root-cause closure. A second incident inside the resolver-flap
+   cache window is the signal that a single-provider topology is the
+   load-bearing problem. Full incident close-out in
+   `memory/project_taxeventindexer_dns_fix.md` (operator-local).
 
 ## When the operator outgrows this layout
 
