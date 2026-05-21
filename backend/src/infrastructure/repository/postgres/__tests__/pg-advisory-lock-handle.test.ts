@@ -44,9 +44,11 @@ describe('acquireAdvisoryLock', () => {
 
     const handle = await acquireAdvisoryLock(pool, 'ns', 'k');
     expect(handle).toBeInstanceOf(PgAdvisoryLockHandle);
+    // hashtextextended takes (text, bigint_seed). We concat the
+    // namespace+key into one text arg with `|` separator + seed=0.
     expect(queryMock).toHaveBeenCalledWith(
-      expect.stringContaining('pg_try_advisory_lock(hashtextextended($1, $2))'),
-      ['ns', 'k'],
+      expect.stringContaining('pg_try_advisory_lock(hashtextextended($1, 0))'),
+      ['ns|k'],
     );
   });
 
@@ -87,9 +89,12 @@ describe('PgAdvisoryLockHandle.release', () => {
     const handle = new PgAdvisoryLockHandle({ client, namespace: 'ns', key: 'k' });
 
     await handle.release();
+    // Unlock MUST use the same hash input shape as acquire — same
+    // concatenated key + same seed — or pg_advisory_unlock returns
+    // false (silent leak until session end).
     expect(queryMock).toHaveBeenCalledWith(
-      expect.stringContaining('pg_advisory_unlock(hashtextextended($1, $2))'),
-      ['ns', 'k'],
+      expect.stringContaining('pg_advisory_unlock(hashtextextended($1, 0))'),
+      ['ns|k'],
     );
     expect(releaseMock).toHaveBeenCalledOnce();
   });
@@ -137,15 +142,14 @@ describe('PgAdvisoryLockHandle.release', () => {
 });
 
 describe('namespace helpers', () => {
-  it('acquireTickLock uses the fixed tick namespace + key', async () => {
+  it('acquireTickLock uses the fixed tick namespace + key concatenated', async () => {
     const { client, queryMock } = makeMockClient();
     queryMock.mockResolvedValueOnce({ rows: [{ pg_try_advisory_lock: true }] });
     const { pool } = makeMockPool(client);
 
     await acquireTickLock(pool);
     expect(queryMock).toHaveBeenCalledWith(expect.any(String), [
-      ADVISORY_LOCK_NAMESPACE.yieldCronTick,
-      YIELD_CRON_TICK_KEY,
+      `${ADVISORY_LOCK_NAMESPACE.yieldCronTick}|${YIELD_CRON_TICK_KEY}`,
     ]);
   });
 
@@ -156,8 +160,7 @@ describe('namespace helpers', () => {
 
     await acquireTokenLock(pool, '0xAbCdEf0000000000000000000000000000000001');
     expect(queryMock).toHaveBeenCalledWith(expect.any(String), [
-      ADVISORY_LOCK_NAMESPACE.yieldTokenEpoch,
-      '0xabcdef0000000000000000000000000000000001',
+      `${ADVISORY_LOCK_NAMESPACE.yieldTokenEpoch}|0xabcdef0000000000000000000000000000000001`,
     ]);
   });
 });

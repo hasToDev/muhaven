@@ -15,11 +15,18 @@
  *      call. This module bypasses drizzle and holds the `PoolClient`
  *      itself.
  *
- *   2. **Two-arg `hashtextextended`.** v3.1 S2: the single-arg
- *      `hashtext(text)` returns int4 (32-bit), creating a 0.0023%
- *      collision risk against sibling crons that share namespace
- *      hashes. The two-arg form returns bigint (64-bit) and lets us
- *      keep the namespace string explicit + readable in queries.
+ *   2. **`hashtextextended` for bigint keyspace.** v3.1 S2: the
+ *      single-arg `hashtext(text)` returns int4 (32-bit), creating a
+ *      0.0023% collision risk per pair across sibling crons. The
+ *      `hashtextextended(text, bigint)` form returns int8 (64-bit) —
+ *      negligible collision risk. We pass the namespace|key pair as
+ *      ONE concatenated text arg (separator `|` is not in any
+ *      namespace string or in 0-9a-f hex addresses) and a fixed
+ *      `seed=0` as the bigint. An earlier draft passed the namespace
+ *      + key as `(text, text)` thinking the second arg was a key —
+ *      it's a SEED, and Postgres coerced our address strings to
+ *      bigint at the wire boundary and crashed with `value "0x..."
+ *      is out of range for type bigint` on the first real call.
  *
  *   3. **Always return the client.** Whether acquire succeeds or fails,
  *      the `PoolClient` MUST go back to the pool. A leaked client
@@ -78,9 +85,20 @@ export const ADVISORY_LOCK_NAMESPACE = {
 } as const;
 
 /** The single fixed key used with the tick-level namespace. The
- *  namespace + key pair is what `hashtextextended` hashes; we keep
- *  the key inline to make the intent obvious at call sites. */
+ *  namespace + key pair is concatenated into one text input for
+ *  `hashtextextended`; we keep the key inline to make the intent
+ *  obvious at call sites. */
 export const YIELD_CRON_TICK_KEY = 'yield_cron_tick';
+
+/** Separator between namespace and key when concatenating for
+ *  `hashtextextended`. `|` is not present in any of our namespace
+ *  strings or in lowercase hex address keys (which use only `[0-9a-f]`),
+ *  so concatenation is collision-free across the current call sites. */
+const NAMESPACED_KEY_SEPARATOR = '|';
+
+function buildNamespacedKey(namespace: string, key: string): string {
+  return `${namespace}${NAMESPACED_KEY_SEPARATOR}${key}`;
+}
 
 interface PgAdvisoryLockHandleOpts {
   client: PoolClient;
@@ -118,11 +136,12 @@ export class PgAdvisoryLockHandle implements AdvisoryLockHandle {
     if (this.released) return;
     this.released = true;
     try {
-      // Two-arg hashtextextended is what acquire called with — must
-      // match exactly for the unlock to find the lock entry.
+      // Concatenated namespaced key + seed=0 — MUST match the exact
+      // form `acquireAdvisoryLock` used or the unlock won't find the
+      // lock entry.
       const res = await this.client.query<{ pg_advisory_unlock: boolean }>(
-        'SELECT pg_advisory_unlock(hashtextextended($1, $2)) AS pg_advisory_unlock',
-        [this.namespace, this.key],
+        'SELECT pg_advisory_unlock(hashtextextended($1, 0)) AS pg_advisory_unlock',
+        [buildNamespacedKey(this.namespace, this.key)],
       );
       const unlocked = res.rows[0]?.pg_advisory_unlock ?? false;
       if (!unlocked) {
@@ -163,10 +182,13 @@ export class PgAdvisoryLockHandle implements AdvisoryLockHandle {
  * already held by another session (caller proceeds with a skip
  * branch — never blocks).
  *
- * v3.1 S2 — uses the two-arg `hashtextextended(text, text) → bigint`
- * form. Postgres' single-arg `hashtext(text) → int4` namespace would
- * collide with sibling crons (0.0023% per pair) and the int4
- * keyspace has zero protection against deliberate-collision attacks.
+ * v3.1 S2 — uses `hashtextextended(text, bigint) → bigint` (vs the
+ * single-arg `hashtext(text) → int4` which would collide). The
+ * (namespace, key) pair is concatenated into one text arg with the
+ * `|` separator; seed=0. See the file header for the rationale
+ * (an earlier draft passed `(namespace, key)` thinking the second
+ * arg was a key — it's a SEED, and the address-string keys crashed
+ * with `value "0x…" is out of range for type bigint`).
  *
  * On any error during acquire, the `PoolClient` is released back to
  * the pool before the throw propagates — never leaks a slot.
@@ -179,8 +201,8 @@ export async function acquireAdvisoryLock(
   const client = await pool.connect();
   try {
     const res = await client.query<{ pg_try_advisory_lock: boolean }>(
-      'SELECT pg_try_advisory_lock(hashtextextended($1, $2)) AS pg_try_advisory_lock',
-      [namespace, key],
+      'SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS pg_try_advisory_lock',
+      [buildNamespacedKey(namespace, key)],
     );
     const acquired = res.rows[0]?.pg_try_advisory_lock ?? false;
     if (!acquired) {
