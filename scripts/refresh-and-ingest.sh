@@ -38,8 +38,16 @@
 #
 # Paths assumed:
 #   $REPO_ROOT/scripts/refresh-and-ingest.sh           (this script)
-#   $REPO_ROOT/development/ORACLE_DATA_MINE/           (scrape pipeline; gitignored)
+#   $REPO_ROOT/scripts/oracle-mine/                    (scrape pipeline; committed
+#                                                      scripts, gitignored
+#                                                      .chrome-profile/ data/
+#                                                      _debug/ node_modules/)
 #   $REPO_ROOT/backend/scripts/ingest-oracle.ts        (ingest client)
+#
+# Cron host: the homelab (GUI Ubuntu 24.04 with autologin). Install via
+# scripts/linux/install-oracle-refresh.sh (systemd --user timer).
+# scripts/windows/install-oracle-refresh-task.ps1 is a fallback for the
+# operator dev box; the homelab is the canonical host.
 #
 # Exit codes:
 #   0   -- both phases succeeded (possibly with partial scrape; check history)
@@ -56,14 +64,31 @@ umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-ORACLE_DIR="${REPO_ROOT}/development/ORACLE_DATA_MINE"
+ORACLE_DIR="${SCRIPT_DIR}/oracle-mine"
 ENV_FILE="${MUHAVEN_Q2_ENV_FILE:-${SCRIPT_DIR}/refresh-and-ingest.env}"
 
 if [ ! -d "${ORACLE_DIR}" ]; then
-  # ORACLE_DIR is gitignored -- only present on the operator's dev box
-  # where the rwa.xyz scraper was checked out separately.
   printf 'ERROR: ORACLE_DIR not found at %s\n' "${ORACLE_DIR}" >&2
-  printf '       (development/ is gitignored; the scraper must be present locally)\n' >&2
+  printf '       (scripts/oracle-mine/ is committed; if absent, repo is incomplete)\n' >&2
+  exit 78
+fi
+
+if [ ! -d "${ORACLE_DIR}/node_modules" ]; then
+  # The scraper deps (playwright + tsx + chromium binary) are NOT committed
+  # and NOT shipped by deploy-homelab.sh -- the operator must `npm install`
+  # once after the first sync to fetch ~150MB of Chromium.
+  printf 'ERROR: %s/node_modules not found\n' "${ORACLE_DIR}" >&2
+  printf '       Run: cd %s && npm install\n' "${ORACLE_DIR}" >&2
+  printf '       (one-off bootstrap; downloads playwright + Chromium ~150MB)\n' >&2
+  exit 78
+fi
+
+if [ ! -d "${ORACLE_DIR}/.chrome-profile" ]; then
+  # The persistent Chromium profile holds the rwa.xyz session cookie. No
+  # profile = no auth = the sanity probe will 401 every scrape.
+  printf 'ERROR: %s/.chrome-profile not found\n' "${ORACLE_DIR}" >&2
+  printf '       Run (with a display): DISPLAY=:0 npx tsx %s/scripts/scrape-asset.ts --slug=USYC\n' "${ORACLE_DIR}" >&2
+  printf '       Log into rwa.xyz in the browser window, then press Enter to save the profile.\n' >&2
   exit 78
 fi
 

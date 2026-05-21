@@ -27,7 +27,8 @@
   Windows user under whose session the task runs. Default: `$env:USERNAME`.
 
 .EXAMPLE
-  pwsh scripts\windows\install-oracle-refresh-task.ps1
+  # Win11 Pro stock has Windows PowerShell 5.1 (powershell.exe), not pwsh.
+  powershell.exe -ExecutionPolicy Bypass -File scripts\windows\install-oracle-refresh-task.ps1
 
 .EXAMPLE
   # Verify after install
@@ -160,4 +161,4 @@ Write-Host "Manual one-off run (also useful for first-time smoke):"
 Write-Host "  Start-ScheduledTask -TaskName '$TaskName'"
 Write-Host ""
 Write-Host "Uninstall:"
-Write-Host "  pwsh $ScriptDir\uninstall-oracle-refresh-task.ps1"
+Write-Host "  powershell.exe -ExecutionPolicy Bypass -File $ScriptDir\uninstall-oracle-refresh-task.ps1"

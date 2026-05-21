@@ -23,6 +23,18 @@ scripts/refresh-and-ingest.env
 scripts/refresh-and-ingest.env.*
 !scripts/refresh-and-ingest.env.example
 
+# Q2 scrape pipeline (scripts/oracle-mine/). Committed:
+#   package.json, assets.json, scripts/, README.md
+# Operator-local only (never commit):
+#   node_modules/ -- regenerate via `npm install`; ~150MB Chromium
+#   .chrome-profile/ -- persistent rwa.xyz session cookie (a secret)
+#   data/ -- ~4.4MB scraped JSON; the cron regenerates each tick
+#   _debug/ -- per-run logs, HTML snapshots, screenshots
+scripts/oracle-mine/node_modules/
+scripts/oracle-mine/.chrome-profile/
+scripts/oracle-mine/data/
+scripts/oracle-mine/_debug/
+
 # Dependencies
 node_modules/
 bun.lockb

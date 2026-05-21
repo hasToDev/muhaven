@@ -1,0 +1,61 @@
+{
+  "$schema": "./assets.schema.json",
+  "_comment": "Curated rwa.xyz asset list for MuHaven oracle data. Slug = rwa.xyz path segment (case-sensitive). Category drives the timeseries slug profile used by fetch-timeseries.ts.",
+  "categories": {
+    "us-treasury": {
+      "displayName": "US Treasury Debt",
+      "isYieldBearing": true,
+      "timeseriesSlugs": [
+        "apy_7_day",
+        "apy_30_day",
+        "daily_yield_rate",
+        "net_asset_value_dollar",
+        "price_dollar"
+      ]
+    },
+    "non-us-government": {
+      "displayName": "Non-US Government Debt",
+      "isYieldBearing": true,
+      "timeseriesSlugs": [
+        "apy_7_day",
+        "apy_30_day",
+        "daily_yield_rate",
+        "net_asset_value_dollar",
+        "price_dollar"
+      ]
+    },
+    "credit": {
+      "displayName": "Credit",
+      "isYieldBearing": true,
+      "timeseriesSlugs": [
+        "apy_7_day",
+        "apy_30_day",
+        "daily_yield_rate",
+        "net_asset_value_dollar",
+        "price_dollar"
+      ]
+    },
+    "stock": {
+      "displayName": "Stock",
+      "isYieldBearing": false,
+      "timeseriesSlugs": [
+        "price_dollar",
+        "net_asset_value_dollar",
+        "hypothetical_10_000_performance"
+      ]
+    }
+  },
+  "assets": [
+    { "slug": "USYC",       "category": "us-treasury" },
+    { "slug": "BUIDL",      "category": "us-treasury" },
+    { "slug": "USDY",       "category": "us-treasury" },
+    { "slug": "EUTBL",      "category": "non-us-government" },
+    { "slug": "CETES",      "category": "non-us-government" },
+    { "slug": "syrupUSDC",  "category": "credit" },
+    { "slug": "ONyc",       "category": "credit" },
+    { "slug": "STRCx",      "category": "stock" },
+    { "slug": "MUon",       "category": "stock" },
+    { "slug": "NVDAon",     "category": "stock" },
+    { "slug": "TSLAx",      "category": "stock" }
+  ]
+}
