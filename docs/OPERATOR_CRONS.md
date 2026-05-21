@@ -205,14 +205,39 @@ enhancement.
 These were filed across the Q2 → Q2b → Q2c → Q2d review rounds; none
 block the live cron. Pick in order of payoff:
 
-1. **`/api/v1/operator/cron-failure` route rename** (~1.5h backend +
-   wrapper switch). `/api/v1/operator/alert-test` is repurposed from
-   manual smoke endpoint → automated alarm channel + daily-heartbeat
-   carrier. Severity hardcoded to `'info'` at
+1. **`/api/v1/operator/cron-failure` route rename + Telegram template
+   fix** (~1.5h backend + wrapper switch).
+   `/api/v1/operator/alert-test` is repurposed from manual smoke
+   endpoint → automated alarm channel + daily-heartbeat carrier.
+   Severity hardcoded to `'info'` at
    `backend/api/v1/operator/alert-test.ts:82`. Introduce a new route
    that accepts `{severity, source, note}` in the DTO; keep `alert-test`
    as a thin synonym for one release for backward-compat. Surfaced by
    Round-1 Security M-1 + Round-2 Software Architect MED.
+
+   **Operator-confirmed misread risk (2026-05-21).** First Q2d daily
+   heartbeat arrived as:
+
+   ```
+   ℹ️ Token: CONFIG_TEST
+   Error: AlertTestPing
+
+   Q2 daily heartbeat OK date=2026-05-21 host=muhaven-VMware
+   ```
+
+   Both `Token: CONFIG_TEST` and the `Error: AlertTestPing` label
+   are template hardcodes that misrepresent the payload —
+   `CONFIG_TEST` is the legacy smoke-test source name, and `Error:`
+   prefixes every payload regardless of severity. Operator's first
+   read was "something failed"; a future real failure could be
+   dismissed the same way ("oh, another smoke ping"). Fix scope when
+   picking this up: (a) DTO accepts `severity` + `source`; (b)
+   template renders `severity` (with non-error severities using
+   `ℹ️ Info:` / `⚠️ Warn:` instead of `Error:`); (c) `Token:` field
+   renders the `source` (`q2-heartbeat` / `q3-yield-cron` / etc.)
+   not the legacy hardcode; (d) wrapper at
+   `scripts/refresh-and-ingest.sh` is updated to pass
+   `{severity: 'info', source: 'q2-heartbeat'}` to the new route.
 2. **`scripts/verify-secrets-sync.sh`** (~30 min). Read-only probe of
    all 3 secret-holding files (`backend/.env`, `.monitor.env`,
    `scripts/refresh-and-ingest.env`). Reports drift between
