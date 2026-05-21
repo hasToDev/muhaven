@@ -28,6 +28,16 @@ export class MemoryAgentStateRepository implements IAgentStateRepository {
     return out;
   }
 
+  async findByTiers(tiers: readonly Tier[]): Promise<AgentUserState[]> {
+    if (tiers.length === 0) return [];
+    const set = new Set<Tier>(tiers);
+    const out: AgentUserState[] = [];
+    for (const v of this.store.values()) {
+      if (set.has(v.tier)) out.push(v);
+    }
+    return out;
+  }
+
   async upsert(state: AgentUserState): Promise<void> {
     this.store.set(key(state.userId, state.surface), state);
   }

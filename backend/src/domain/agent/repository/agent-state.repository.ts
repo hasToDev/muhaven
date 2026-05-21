@@ -22,6 +22,13 @@ export interface IAgentStateRepository {
    */
   findByTier(tier: Tier): Promise<AgentUserState[]>;
 
+  /**
+   * Same as `findByTier` but accepts multiple tiers — the cron sweeps
+   * every tier that issues silent-spend capability (PolicyBound + Scoped,
+   * Wave 5 Path D). Empty array returns empty.
+   */
+  findByTiers(tiers: readonly Tier[]): Promise<AgentUserState[]>;
+
   /** Idempotent upsert. Caller passes the new entity; we replace the row. */
   upsert(state: AgentUserState): Promise<void>;
 }

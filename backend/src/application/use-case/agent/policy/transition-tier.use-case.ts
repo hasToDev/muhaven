@@ -47,11 +47,14 @@ export class RequestTierTransitionUseCase {
       throw mapRejectionToHttp(result.code, result.message);
     }
 
-    // Auto-confirm the cheapest transition (Advisory ⇆ ConfirmPerAction
-    // *only* when stepping down). Any step into ConfirmPerAction or
-    // PolicyBound requires a passkey-bound confirmation token because the
-    // user is broadening agent capability.
+    // Auto-confirm step-downs. Any step UP requires a passkey-bound
+    // confirmation token because the user is broadening agent capability.
+    // Scoped (Wave 5 Path D) sits above PolicyBound — Scoped → * is always
+    // a step-down; * → Scoped is a step-up (handled below).
     const isStepDown =
+      (current.tier === Tier.Scoped && input.targetTier === Tier.PolicyBound) ||
+      (current.tier === Tier.Scoped && input.targetTier === Tier.ConfirmPerAction) ||
+      (current.tier === Tier.Scoped && input.targetTier === Tier.Advisory) ||
       (current.tier === Tier.PolicyBound && input.targetTier === Tier.ConfirmPerAction) ||
       (current.tier === Tier.PolicyBound && input.targetTier === Tier.Advisory) ||
       (current.tier === Tier.ConfirmPerAction && input.targetTier === Tier.Advisory);

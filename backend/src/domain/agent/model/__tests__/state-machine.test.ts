@@ -66,6 +66,38 @@ describe('state-machine — allowed transitions', () => {
     const r = requestUserTierChange(s, Tier.Advisory, { now: NOW });
     expect(r.ok).toBe(true);
   });
+
+  // Wave 5 Path D — Scoped tier transitions (RD-2 in PATH_D_PLAN.md).
+
+  it('PolicyBound → Scoped is allowed with ≥5 confirms + risk Q&A', () => {
+    const s = freshState({
+      tier: Tier.PolicyBound,
+      confirmedActionCount: MIN_CONFIRMS_FOR_POLICY_BOUND,
+      riskQuestionnaireComplete: true,
+    });
+    const r = requestUserTierChange(s, Tier.Scoped, { now: NOW });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.state.tier).toBe(Tier.Scoped);
+  });
+
+  it('Scoped → PolicyBound is allowed (step-down)', () => {
+    const s = freshState({ tier: Tier.Scoped });
+    const r = requestUserTierChange(s, Tier.PolicyBound, { now: NOW });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.state.tier).toBe(Tier.PolicyBound);
+  });
+
+  it('Scoped → ConfirmPerAction is allowed (step-down)', () => {
+    const s = freshState({ tier: Tier.Scoped });
+    const r = requestUserTierChange(s, Tier.ConfirmPerAction, { now: NOW });
+    expect(r.ok).toBe(true);
+  });
+
+  it('Scoped → Advisory is allowed (step-down)', () => {
+    const s = freshState({ tier: Tier.Scoped });
+    const r = requestUserTierChange(s, Tier.Advisory, { now: NOW });
+    expect(r.ok).toBe(true);
+  });
 });
 
 describe('state-machine — forbidden transitions (ADR-0)', () => {
@@ -116,6 +148,48 @@ describe('state-machine — forbidden transitions (ADR-0)', () => {
     const r = requestUserTierChange(s, Tier.Advisory, { now: NOW });
     expect(r.ok).toBe(false);
   });
+
+  // Wave 5 Path D — Scoped tier rejections (no skip the ladder).
+
+  it('Advisory → Scoped is forbidden (must traverse confirm-per-action + policy-bound)', () => {
+    const s = freshState({ tier: Tier.Advisory });
+    const r = requestUserTierChange(s, Tier.Scoped, { now: NOW });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('forbidden_transition');
+  });
+
+  it('ConfirmPerAction → Scoped is forbidden (must traverse policy-bound)', () => {
+    const s = freshState({
+      tier: Tier.ConfirmPerAction,
+      confirmedActionCount: MIN_CONFIRMS_FOR_POLICY_BOUND,
+      riskQuestionnaireComplete: true,
+    });
+    const r = requestUserTierChange(s, Tier.Scoped, { now: NOW });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('forbidden_transition');
+  });
+
+  it('PolicyBound → Scoped without ≥5 confirms is rejected', () => {
+    const s = freshState({
+      tier: Tier.PolicyBound,
+      confirmedActionCount: 4,
+      riskQuestionnaireComplete: true,
+    });
+    const r = requestUserTierChange(s, Tier.Scoped, { now: NOW });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('gate_failed_confirms');
+  });
+
+  it('PolicyBound → Scoped without risk Q&A is rejected', () => {
+    const s = freshState({
+      tier: Tier.PolicyBound,
+      confirmedActionCount: MIN_CONFIRMS_FOR_POLICY_BOUND,
+      riskQuestionnaireComplete: false,
+    });
+    const r = requestUserTierChange(s, Tier.Scoped, { now: NOW });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('gate_failed_questionnaire');
+  });
 });
 
 describe('state-machine — pause/resume', () => {
@@ -152,5 +226,28 @@ describe('state-machine — pause/resume', () => {
     const r = resumeAfterPause(s, { now: NOW });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe('forbidden_transition');
+  });
+
+  // Wave 5 Path D — resume MUST reset gate counters so the post-pause
+  // re-traversal is semantically meaningful, not just structural. Without
+  // this, a Scoped user paused by drawdown/oracle/KYC could speed-run
+  // back to Scoped on the stale counters.
+  it('resumeAfterPause resets gate counters so re-traversal re-seasons the user', () => {
+    const s = freshState({
+      tier: Tier.Paused,
+      pausedAt: NOW,
+      pauseTrigger: Trigger.DrawdownBreach,
+      confirmedActionCount: 8,
+      riskQuestionnaireComplete: true,
+      validatorAddress: '0xvalidator',
+    });
+    const r = resumeAfterPause(s, { now: NOW });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.state.tier).toBe(Tier.Advisory);
+      expect(r.state.confirmedActionCount).toBe(0);
+      expect(r.state.riskQuestionnaireComplete).toBe(false);
+      expect(r.state.validatorAddress).toBeNull();
+    }
   });
 });

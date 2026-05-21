@@ -51,13 +51,21 @@ function nowOf(ctx?: TransitionContext): Date {
 
 /**
  * User-initiated tier change (no security trigger). Validates allowed
- * transitions per ADR-0 §"Allowed transitions and required gates".
+ * transitions per ADR-0 §"Allowed transitions and required gates" + the
+ * Wave 5 Path D extension for the Scoped tier (RD-2 in
+ * `development/DEV_WAVE_5/PATH_D_PLAN.md`).
  *
  * - Advisory → ConfirmPerAction: always allowed (after the user has
  *   accepted the Wealthfront-style limits — that gate is an upstream
  *   responsibility of the route handler).
  * - ConfirmPerAction → PolicyBound: requires `confirmedActionCount ≥ 5`
  *   AND `riskQuestionnaireComplete`.
+ * - PolicyBound → Scoped: requires same gates as Confirm → PolicyBound
+ *   (≥5 confirmed + risk Q). No skip-the-ladder from lower tiers — user
+ *   must reach PolicyBound first so the on-surface confirms gate is
+ *   exercised before adding broker-side maxAmount silent-spending on top.
+ * - All step-downs auto-commit (Scoped → PolicyBound → ConfirmPerAction
+ *   → Advisory).
  * - All other transitions in this function are forbidden — pause/resume
  *   has its own entry points. ADR-0 explicitly forbids any
  *   `Advisory → PolicyBound` skip and any
@@ -105,6 +113,13 @@ export function requestUserTierChange(
         message: 'advisory → policy-bound is forbidden in Wave 4 (must traverse confirm-per-action)',
       };
     }
+    if (target === Tier.Scoped) {
+      return {
+        ok: false,
+        code: 'forbidden_transition',
+        message: 'advisory → scoped is forbidden (must traverse confirm-per-action + policy-bound)',
+      };
+    }
   }
 
   if (current.tier === Tier.ConfirmPerAction) {
@@ -128,14 +143,49 @@ export function requestUserTierChange(
       }
       return accept(current, target, null, now);
     }
+    if (target === Tier.Scoped) {
+      return {
+        ok: false,
+        code: 'forbidden_transition',
+        message: 'confirm-per-action → scoped is forbidden (must traverse policy-bound)',
+      };
+    }
   }
 
-  if (current.tier === Tier.PolicyBound && target === Tier.ConfirmPerAction) {
-    return accept(current, target, null, now);
+  if (current.tier === Tier.PolicyBound) {
+    if (target === Tier.ConfirmPerAction) {
+      return accept(current, target, null, now);
+    }
+    if (target === Tier.Advisory) {
+      return accept(current, target, null, now);
+    }
+    if (target === Tier.Scoped) {
+      if (current.confirmedActionCount < MIN_CONFIRMS_FOR_POLICY_BOUND) {
+        return {
+          ok: false,
+          code: 'gate_failed_confirms',
+          message: `scoped requires ≥${MIN_CONFIRMS_FOR_POLICY_BOUND} confirmed actions; have ${current.confirmedActionCount}`,
+        };
+      }
+      if (!current.riskQuestionnaireComplete) {
+        return {
+          ok: false,
+          code: 'gate_failed_questionnaire',
+          message: 'scoped requires the risk questionnaire to be completed first',
+        };
+      }
+      return accept(current, target, null, now);
+    }
   }
 
-  if (current.tier === Tier.PolicyBound && target === Tier.Advisory) {
-    return accept(current, target, null, now);
+  if (current.tier === Tier.Scoped) {
+    if (
+      target === Tier.PolicyBound ||
+      target === Tier.ConfirmPerAction ||
+      target === Tier.Advisory
+    ) {
+      return accept(current, target, null, now);
+    }
   }
 
   return {
@@ -178,9 +228,17 @@ export function triggerPause(
 /**
  * Resume from paused. Per ADR-0 §"Allowed transitions" the post-pause
  * landing is always `advisory` — the user must re-traverse
- * Confirm → PolicyBound to regain autonomy. This is a hard structural
- * defense for R-1 (forces every breach to season behaviour through the
- * confirm tier before scope re-expands).
+ * Confirm → PolicyBound (→ Scoped, Wave 5 Path D) to regain autonomy.
+ * This is a hard structural defense for R-1: every breach forces a
+ * re-seasoning through the confirm tier before scope re-expands.
+ *
+ * Wave 5 Path D — the structural re-traversal is preserved AND the gate
+ * counters (`confirmedActionCount` + `riskQuestionnaireComplete`) are
+ * cleared. Without that reset, a user paused by a security trigger could
+ * speed-run back through Confirm → PolicyBound → Scoped without any
+ * fresh evidence that the pause root cause has cleared: the gates would
+ * pass instantly off the stale counters. Resetting them makes the
+ * structural re-traversal semantically meaningful.
  */
 export function resumeAfterPause(
   current: AgentUserState,
@@ -201,6 +259,8 @@ export function resumeAfterPause(
     pauseMetadata: null,
     enteredAt: now,
     validatorAddress: null,
+    confirmedActionCount: 0,
+    riskQuestionnaireComplete: false,
     updatedAt: now,
   });
   return {

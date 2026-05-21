@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import type { IAgentStateRepository } from '../../../domain/agent/repository/agent-state.repository.js';
 import { AgentUserState } from '../../../domain/agent/model/agent-user-state.js';
 import type { Surface } from '../../../domain/agent/model/surface.enum.js';
@@ -27,6 +27,14 @@ export class PgAgentStateRepository implements IAgentStateRepository {
   async findByTier(tier: Tier): Promise<AgentUserState[]> {
     const rows = await this.db.query.agentUserState.findMany({
       where: eq(agentUserState.tier, tier),
+    });
+    return rows.map((r) => this.toDomain(r));
+  }
+
+  async findByTiers(tiers: readonly Tier[]): Promise<AgentUserState[]> {
+    if (tiers.length === 0) return [];
+    const rows = await this.db.query.agentUserState.findMany({
+      where: inArray(agentUserState.tier, tiers as Tier[]),
     });
     return rows.map((r) => this.toDomain(r));
   }

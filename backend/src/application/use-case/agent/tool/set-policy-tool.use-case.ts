@@ -71,6 +71,29 @@ export class SetPolicyToolUseCase {
         `Confirm-per-action → Policy-bound requires ≥5 confirmed actions (have ${current.confirmedActionCount}) and a complete risk Q&A (${current.riskQuestionnaireComplete ? 'done' : 'not done'}).`,
       );
     }
+    // Wave 5 Path D — no skip-the-ladder into Scoped. The state machine
+    // rejects these at commit time; mirroring here avoids minting a
+    // doomed confirm token and leaving a misleading ConfirmTokenIssued
+    // audit row.
+    if (
+      (current.tier === Tier.Advisory || current.tier === Tier.ConfirmPerAction)
+      && input.targetTier === Tier.Scoped
+    ) {
+      throw new ApplicationHttpError(
+        409,
+        `${current.tier} → Scoped is forbidden. Step through Policy-bound first.`,
+      );
+    }
+    if (
+      current.tier === Tier.PolicyBound
+      && input.targetTier === Tier.Scoped
+      && (current.confirmedActionCount < 5 || !current.riskQuestionnaireComplete)
+    ) {
+      throw new ApplicationHttpError(
+        409,
+        `Policy-bound → Scoped requires ≥5 confirmed actions (have ${current.confirmedActionCount}) and a complete risk Q&A (${current.riskQuestionnaireComplete ? 'done' : 'not done'}).`,
+      );
+    }
 
     const actionPayload = {
       action: 'set_policy',

@@ -72,10 +72,18 @@ export class PolicyEngineTickUseCase {
     let lastError: string | null = null;
 
     try {
-      const policyBound = await this.stateRepo.findByTier(Tier.PolicyBound);
-      result.attempted = policyBound.length;
+      // Wave 5 Path D — sweep both silent-spend tiers. PolicyBound enforces
+      // the call-allowlist; Scoped adds the broker-side maxAmount snapshot
+      // (Slice 2). The safety-gradient must NOT invert: more-autonomous
+      // tiers MUST get at least as defensive a cron sweep as less-autonomous
+      // ones. Single query, in() filter — same evaluation per row.
+      const silentSpendTiers = await this.stateRepo.findByTiers([
+        Tier.PolicyBound,
+        Tier.Scoped,
+      ]);
+      result.attempted = silentSpendTiers.length;
 
-      for (const state of policyBound) {
+      for (const state of silentSpendTiers) {
         try {
           const breached = await this.evaluateUser(state.userId, state.surface, now);
           if (breached === 'paused') {

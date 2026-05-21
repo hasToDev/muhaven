@@ -471,6 +471,7 @@ export const agentTierEnum = pgEnum('agent_tier', [
   'advisory',
   'confirm-per-action',
   'policy-bound',
+  'scoped',
   'paused',
 ]);
 
@@ -559,6 +560,12 @@ export const agentAuditEvents = pgTable(
     index('agent_audit_events_user_created_idx').on(t.userId, t.createdAt),
     index('agent_audit_events_surface_created_idx').on(t.surface, t.createdAt),
     index('agent_audit_events_event_type_idx').on(t.eventType),
+    // Wave 5 Path D — operator forensic query "when did anyone enter Scoped"
+    // is cheap via this partial index without proliferating a dedicated
+    // audit event type. Tier transitions are sparse; partial index stays small.
+    index('agent_audit_events_tier_after_scoped_idx')
+      .on(t.createdAt)
+      .where(sql`tier_after = 'scoped'`),
   ],
 );
 
