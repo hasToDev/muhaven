@@ -36,6 +36,7 @@ import {
 } from './protocol.js';
 import { MissingSessionKeyError, NullSigner, ViemSigner, type ISigner } from './signer.js';
 import { openKeystore, type IKeystore } from './keystore.js';
+import { checkPolicy, FilePolicyStore, PolicyStoreError, type IPolicyStore } from './policy-snapshot.js';
 
 export { BROKER_PROTOCOL_VERSION };
 
@@ -44,6 +45,14 @@ export interface BrokerDaemonOptions {
   signer?: ISigner;
   /** Inject a keystore for tests; default opens the configured backend. */
   keystore?: IKeystore;
+  /**
+   * Inject a policy store for tests; defaults to a `FilePolicyStore` rooted
+   * at `~/.muhaven/policy-snapshots/`. The store is consulted by
+   * `sign_userop` (validate before signing) and exposed via the
+   * `store_policy_snapshot` / `get_policy_snapshot` / `clear_policy_snapshot`
+   * verbs added in Wave 5 Path D Slice 1 (protocol 0.4.0).
+   */
+  policyStore?: IPolicyStore;
   /** Override for the connection-handler logger; defaults to silent. */
   logger?: (event: BrokerLogEvent) => void;
 }
@@ -96,6 +105,7 @@ export async function handleBrokerRequest(
   keystore: IKeystore,
   nowSec: () => number = () => Math.floor(Date.now() / 1000),
   options: HandleBrokerRequestOptions = {},
+  policyStore?: IPolicyStore,
 ): Promise<BrokerResponse> {
   switch (req.type) {
     case 'hello': {
@@ -170,6 +180,124 @@ export async function handleBrokerRequest(
         );
       }
     }
+    case 'sign_userop': {
+      // Wave 5 Path D Slice 1 — policy-gated UserOp signature.
+      if (!policyStore) {
+        return errorResponse(
+          'internal',
+          'broker daemon is not configured with a policy store',
+        );
+      }
+      // Read clock once; reuse for store TTL filter + checkPolicy expiry
+      // check so the two never disagree about "now" (Code Reviewer LOW-2).
+      const now = nowSec();
+      let snapshot;
+      try {
+        snapshot = await policyStore.get(req.sessionId, now);
+      } catch (err) {
+        return errorResponse(
+          'internal',
+          err instanceof Error ? err.message : 'policy store read failed',
+        );
+      }
+      if (!snapshot) {
+        return errorResponse(
+          'no_active_snapshot',
+          `no active snapshot for session ${req.sessionId}`,
+        );
+      }
+      const check = checkPolicy({
+        snapshot,
+        innerCall: req.innerCall,
+        activeSigner: signer.address,
+        nowSec: now,
+      });
+      if (!check.ok) {
+        return errorResponse(check.code, check.message);
+      }
+      try {
+        const signature = await signer.signHash(req.userOpHash);
+        return {
+          type: 'sign_userop',
+          signature,
+          signerAddress: signer.address,
+          sessionId: req.sessionId,
+        };
+      } catch (err) {
+        if (err instanceof MissingSessionKeyError) {
+          return errorResponse('session_key_unavailable', err.message);
+        }
+        throw err;
+      }
+    }
+    case 'store_policy_snapshot': {
+      if (!policyStore) {
+        return errorResponse(
+          'internal',
+          'broker daemon is not configured with a policy store',
+        );
+      }
+      try {
+        await policyStore.put(req.snapshot);
+        return {
+          type: 'store_policy_snapshot',
+          stored: true,
+          sessionId: req.snapshot.sessionId,
+        };
+      } catch (err) {
+        if (err instanceof PolicyStoreError) {
+          return errorResponse('internal', err.message);
+        }
+        return errorResponse(
+          'internal',
+          err instanceof Error ? err.message : 'policy store write failed',
+        );
+      }
+    }
+    case 'get_policy_snapshot': {
+      if (!policyStore) {
+        return errorResponse(
+          'internal',
+          'broker daemon is not configured with a policy store',
+        );
+      }
+      try {
+        const snapshot = await policyStore.get(req.sessionId, nowSec());
+        return { type: 'get_policy_snapshot', snapshot };
+      } catch (err) {
+        if (err instanceof PolicyStoreError) {
+          return errorResponse('internal', err.message);
+        }
+        return errorResponse(
+          'internal',
+          err instanceof Error ? err.message : 'policy store read failed',
+        );
+      }
+    }
+    case 'clear_policy_snapshot': {
+      if (!policyStore) {
+        return errorResponse(
+          'internal',
+          'broker daemon is not configured with a policy store',
+        );
+      }
+      try {
+        await policyStore.delete(req.sessionId);
+        return {
+          type: 'clear_policy_snapshot',
+          cleared: true,
+          sessionId: req.sessionId,
+        };
+      } catch (err) {
+        if (err instanceof PolicyStoreError) {
+          return errorResponse('internal', err.message);
+        }
+        return errorResponse(
+          'internal',
+          err instanceof Error ? err.message : 'policy store clear failed',
+        );
+      }
+    }
   }
 }
 
@@ -212,6 +340,7 @@ export class BrokerDaemon {
   private readonly log: (e: BrokerLogEvent) => void;
   private readonly config: BrokerRuntimeConfig;
   private keystore: IKeystore | null;
+  private readonly policyStore: IPolicyStore;
 
   /**
    * Whether a session-key private half is actually loaded. `false` =
@@ -238,6 +367,12 @@ export class BrokerDaemon {
       this.hasSessionKey = false;
     }
     this.keystore = options.keystore ?? null;
+    // Policy store is constructed eagerly because the Slice 1 file-backed
+    // impl has no async setup (dir is created lazily on first put). Slice 5
+    // spend-ledger will add an async `init()` to seed the SHA-256 chain;
+    // start() awaits the optional init so the asymmetry stays paper-thin
+    // (Backend Architect M-1). Tests pass a memory impl via options.policyStore.
+    this.policyStore = options.policyStore ?? new FilePolicyStore(FilePolicyStore.defaultDir());
     this.log = options.logger ?? noopLogger;
     this.server = createServer((socket) => this.onConnection(socket));
   }
@@ -254,6 +389,9 @@ export class BrokerDaemon {
         });
       }
     }
+    // Optional one-shot async setup for the policy store (no-op for the
+    // file-backed Slice 1 impl; seeds the chain for Slice 5 spend-ledger).
+    if (this.policyStore.init) await this.policyStore.init();
     await prepareEndpoint(this.config.endpoint);
     await new Promise<void>((resolve, reject) => {
       const onError = (err: Error): void => {
@@ -389,6 +527,7 @@ export class BrokerDaemon {
           },
           pid: process.pid,
         },
+        this.policyStore,
       );
       socket.end(serializeResponse(res));
     } catch (err) {
