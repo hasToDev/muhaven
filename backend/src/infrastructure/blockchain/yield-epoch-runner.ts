@@ -101,8 +101,16 @@
  */
 import { Contract, Interface, ZeroAddress, type ContractRunner } from 'ethers';
 import { Encryptable } from '@cofhe/sdk';
-import { RATE_SCALE } from '@muhaven/sdk';
 import type { Address } from 'viem';
+
+/** Inlined from `@muhaven/sdk` (1e6, mirrors `YieldSnapshot.RATE_SCALE`).
+ *  The runner intentionally avoids the workspace-package import: the
+ *  backend Dockerfile builds in isolation (no monorepo hoisting), and
+ *  `packages/sdk/` is not in `pnpm-workspace.yaml`'s import scope, so
+ *  resolving `@muhaven/sdk` from inside the container fails. The
+ *  constant is a single bigint — inlining is the lowest-friction
+ *  alternative to vendoring the whole sdk into backend deps. */
+const RATE_SCALE = 1_000_000n;
 
 /** Lower-cased EVM address. The runner enforces lower-casing at the
  *  audit-write boundary so `tax_events` / `yield_distributions` joins

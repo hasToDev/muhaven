@@ -103,9 +103,14 @@ import cron, { type ScheduledTask } from 'node-cron';
 import { eq, sql } from 'drizzle-orm';
 import { JsonRpcProvider, Wallet, Contract, type Provider } from 'ethers';
 import { FheTypes } from '@cofhe/sdk';
-import { RATE_SCALE } from '@muhaven/sdk';
 import type { Pool } from 'pg';
 import type { Address } from 'viem';
+
+/** Inlined from `@muhaven/sdk` — see yield-epoch-runner.ts header for
+ *  rationale (backend Dockerfile builds in isolation; workspace
+ *  package not reachable). MUST match the runner's constant exactly
+ *  or the cron's pre-flight math diverges from the runner's. */
+const RATE_SCALE = 1_000_000n;
 
 import { runYieldEpoch, type RunEpochInput } from './yield-epoch-runner.js';
 import { createNodeCofheClient } from './node-cofhe-client.js';

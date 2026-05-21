@@ -61,7 +61,6 @@ import {
   type Provider,
 } from 'ethers';
 import { FheTypes } from '@cofhe/sdk';
-import { RATE_SCALE } from '@muhaven/sdk';
 import { eq, sql } from 'drizzle-orm';
 import type { Address } from 'viem';
 
@@ -83,6 +82,12 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 // reconciliation nightmare). The cron's own file is the source of
 // truth; this duplication is small + the testing constraints
 // (avoiding cron-lifecycle deps) make sharing painful.
+//
+// `RATE_SCALE` is inlined (NOT imported from `@muhaven/sdk`) for the
+// same reason — backend Dockerfile builds in isolation; the workspace
+// package isn't reachable from inside the container. See
+// yield-epoch-runner.ts header for the full rationale.
+const RATE_SCALE = 1_000_000n;
 const NAV_USD6_SCALE = 1_000_000n;
 const DAYS_PER_YEAR = 365n;
 const UINT64_MAX = 2n ** 64n - 1n;
