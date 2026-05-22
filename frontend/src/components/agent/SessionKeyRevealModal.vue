@@ -38,6 +38,19 @@ import { formatAddress } from '@/lib/utils'
 
 const walletStore = useWalletStore()
 
+/**
+ * `preMinted` (Wave 5 Path D Pickup A) lets the caller surface a key
+ * that's ALREADY been minted out-of-band (e.g. via
+ * `walletStore.installScopedSessionKey` during the Scoped tier transition
+ * commit) instead of triggering the legacy in-tab mint inside the modal.
+ * When set, `mintAndReveal` short-circuits to the supplied key; the
+ * privacy contract is identical (privateKey lives only in the parent's
+ * reactive ref until acknowledge/close → no localStorage write).
+ */
+const props = defineProps<{
+  preMinted?: ExportedSessionKey | null
+}>()
+
 const emit = defineEmits<{ close: [] }>()
 
 const loading = ref(true)
@@ -46,6 +59,12 @@ const exported = ref<ExportedSessionKey | null>(null)
 const revealed = ref(false)
 const copied = ref(false)
 const acknowledged = ref(false)
+/** R2 A11y H-2 — the Scoped post-commit path auto-mounts this modal
+ *  from a network round-trip, so without an explicit focus transfer the
+ *  keyboard user is stranded on the now-disabled Submit button. The X
+ *  button is the always-dismissible escape hatch; landing focus on it
+ *  also triggers the SR announcement of the modal label + role. */
+const xButtonRef = ref<HTMLButtonElement | null>(null)
 let copyResetHandle: ReturnType<typeof setTimeout> | null = null
 let clipboardWipeHandle: ReturnType<typeof setTimeout> | null = null
 const CLIPBOARD_WIPE_MS = 60_000
@@ -79,6 +98,15 @@ async function mintAndReveal(): Promise<void> {
   loading.value = true
   error.value = null
   revealed.value = false
+  // Wave 5 Path D Pickup A — if the parent supplied a pre-minted key
+  // (Scoped tier transition path), surface it directly. Skips the legacy
+  // exportSessionKey path so the Scoped EOA the caller minted doesn't
+  // get replaced by the in-tab session-key.
+  if (props.preMinted) {
+    exported.value = props.preMinted
+    loading.value = false
+    return
+  }
   // Defence in depth — the page-side gate already short-circuits when
   // walletStore.connected is false, but a future call site (deep-link,
   // direct mount) could land here without a kernel. Surface a clean
@@ -166,6 +194,13 @@ function onKeydown(e: KeyboardEvent): void {
 onMounted(() => {
   void mintAndReveal()
   window.addEventListener('keydown', onKeydown)
+  // R2 A11y H-2 — focus the X button so keyboard users land inside the
+  // dialog instead of orphaned on the post-commit Submit button. Tab
+  // from here moves through the modal's interactive elements (Reveal
+  // toggle, Copy, ack checkbox, Close).
+  void Promise.resolve().then(() => {
+    xButtonRef.value?.focus()
+  })
 })
 
 onBeforeUnmount(() => {
@@ -200,6 +235,7 @@ onBeforeUnmount(() => {
            user. The deliberate "I've copied" path is the big Close
            button below + ack checkbox. -->
       <button
+        ref="xButtonRef"
         type="button"
         data-testid="reveal-key-x"
         class="absolute top-3 right-3 p-2 rounded-lg

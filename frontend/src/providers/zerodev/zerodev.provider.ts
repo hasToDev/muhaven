@@ -1,4 +1,12 @@
-import type { IWalletProvider, Call, ViemClients, ExportedSessionKey } from '../wallet-provider.interface';
+import type {
+  IWalletProvider,
+  Call,
+  ViemClients,
+  ExportedSessionKey,
+  InstallScopedSessionInput,
+  ScopedSessionInstallResult,
+} from '../wallet-provider.interface';
+import { privateKeyToAccount } from 'viem/accounts';
 import { toWebAuthnKey, WebAuthnMode, type WebAuthnKey } from '@zerodev/webauthn-key';
 import { toPasskeyValidator, PasskeyValidatorContractVersion } from '@zerodev/passkey-validator';
 import {
@@ -570,6 +578,101 @@ export class ZeroDevProvider implements IWalletProvider {
       privateKey: this.sessionRecord.privateKey,
       smartAccountAddress: this.sessionRecord.smartAccountAddress,
       expiresAtSec: this.sessionRecord.expiresAt,
+    };
+  }
+
+  /**
+   * Wave 5 Path D Slice 1 Pickup A — mint a Scoped session-key + construct
+   * the matching PermissionValidator + compute `permissionId` locally.
+   *
+   * **Architectural notes** (load-bearing, do not re-litigate without
+   * reading `development/DEV_WAVE_5/PATH_D_PLAN.md` RD-3 + RD-5 + RD-6):
+   *
+   *  - The ephemeral EOA's private half is returned to the caller so the
+   *    Reveal modal can surface it for paste into the operator's
+   *    `MUHAVEN_BROKER_SESSION_KEY` env var. The dashboard cannot reach
+   *    the broker's Unix socket / named pipe directly; the
+   *    backend-mirror POST + MCP auto-sync (Commit 2.B) bridges the
+   *    transport gap on the next position.buy.
+   *  - `permissionValidator.getIdentifier()` is a PURE function over
+   *    `policyAndSignerData` (per `@zerodev/permissions/toPermissionValidator`).
+   *    It returns the canonical 4-byte `permissionId` even though no
+   *    `installPlugin` UserOp has hit the chain yet. The actual on-chain
+   *    validator install is deferred to Pickup B / Slice 4 (kernel SDK
+   *    enableSig pattern bakes it lazily into the first signed UserOp).
+   *  - **Does NOT touch `this.sessionKernelClient` / `this.sessionRecord`.**
+   *    The legacy in-tab session-key continues to back covered-selector
+   *    silent flows; Scoped mints a SEPARATE ephemeral EOA + validator
+   *    so both can coexist on-chain (Kernel v3.1 supports multiple
+   *    installed validators routed by the nonce-key composite).
+   *  - On-chain `CallPolicy` enforces only `(target, selector, value)`
+   *    today — the `@zerodev/permissions` codebase here does not expose
+   *    a per-arg cap surface. The `maxSharesHint` cap lives broker-side
+   *    in the policy snapshot per RD-5's documented Slice 1 trade-off.
+   *    Slice 4 wildcard graduation MUST re-anchor with canonical
+   *    `userOpHash` reconstruction.
+   */
+  async installScopedSessionKey(
+    opts: InstallScopedSessionInput,
+  ): Promise<ScopedSessionInstallResult | null> {
+    if (!this.kernelClient?.account) return null;
+    if (opts.ttlSec <= 0) {
+      throw new Error('installScopedSessionKey: ttlSec must be a positive integer');
+    }
+    if (opts.maxSharesPerOp <= 0n) {
+      throw new Error('installScopedSessionKey: maxSharesPerOp must be > 0');
+    }
+    if (opts.maxPerOpUsd6 <= 0n) {
+      throw new Error('installScopedSessionKey: maxPerOpUsd6 must be > 0');
+    }
+
+    const smartAccountAddress = this.kernelClient.account.address;
+    const { record } = generateSessionRecord(smartAccountAddress, opts.ttlSec);
+    const signer = privateKeyToAccount(record.privateKey);
+
+    const publicClient = buildPublicClient();
+    const sessionSigner = await toECDSASigner({ signer });
+
+    // Narrow Scoped-tier policy: `subscription.purchase` only. `valueLimit:
+    // 0n` mirrors the legacy session-key wiring — UserOps through this
+    // validator are non-payable. Per-arg `maxSharesHint` cap is enforced
+    // broker-side (RD-5); on-chain CallPolicy only gates target+selector.
+    const scopedCallPolicy = toCallPolicy({
+      policyVersion: CallPolicyVersion.V0_0_4,
+      permissions: [
+        {
+          target: v35Addresses.subscription,
+          functionName: 'purchase',
+          abi: muhavenSubscriptionAbi,
+          valueLimit: 0n,
+        },
+      ] as any,
+    });
+
+    const scopedTimestampPolicy = toTimestampPolicy({
+      validAfter: 0,
+      validUntil: record.expiresAt,
+    });
+
+    const permissionValidator = await toPermissionValidator(publicClient, {
+      signer: sessionSigner,
+      policies: [scopedCallPolicy, scopedTimestampPolicy],
+      kernelVersion: KERNEL_VERSION,
+      entryPoint: ENTRY_POINT,
+    });
+
+    // `getIdentifier()` returns the 4-byte permissionId via a pure
+    // `keccak256(policyAndSignerData).slice(0,4)`. No on-chain state
+    // required — see `@zerodev/permissions/toPermissionValidator.ts:71-89`.
+    const permissionId = permissionValidator.getIdentifier() as `0x${string}`;
+
+    return {
+      signerAddress: signer.address as `0x${string}`,
+      signerPrivateKey: record.privateKey,
+      permissionId,
+      mintedAtSec: Math.floor(Date.now() / 1000),
+      validUntilSec: record.expiresAt,
+      smartAccountAddress: smartAccountAddress as `0x${string}`,
     };
   }
 

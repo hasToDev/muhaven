@@ -62,15 +62,28 @@ function nowSec(): number {
   return Math.floor(Date.now() / 1000)
 }
 
+/**
+ * Generate an in-memory session-key record + signer.
+ *
+ * `ttlSecOverride` is the Wave 5 Path D Pickup A carrier: Scoped tier mints
+ * supply a user-set TTL up to 24h, while the legacy in-tab path passes
+ * `undefined` and falls back to `VITE_SESSION_KEY_DURATION_SEC` (default 1h).
+ * The override flows through to `record.expiresAt`, which the caller passes
+ * into `toTimestampPolicy({validUntil})` on the PermissionValidator.
+ */
 export function generateSessionRecord(
   smartAccountAddress: `0x${string}`,
+  ttlSecOverride?: number,
 ): { record: SessionKeyRecord; signer: PrivateKeyAccount } {
   const privateKey = generatePrivateKey()
   const signer = privateKeyToAccount(privateKey)
+  const ttl = ttlSecOverride !== undefined && ttlSecOverride > 0
+    ? ttlSecOverride
+    : readDurationSec()
   const record: SessionKeyRecord = {
     privateKey,
     smartAccountAddress,
-    expiresAt: nowSec() + readDurationSec(),
+    expiresAt: nowSec() + ttl,
   }
   return { record, signer }
 }

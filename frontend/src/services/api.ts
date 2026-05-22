@@ -1017,7 +1017,7 @@ export const agentApi = {
 // returns a long-lived SSE response that the `useAgentChat` composable
 // consumes via fetch + ReadableStream (NOT EventSource — POST + stream).
 
-export type Tier = 'advisory' | 'confirm-per-action' | 'policy-bound' | 'paused'
+export type Tier = 'advisory' | 'confirm-per-action' | 'policy-bound' | 'paused' | 'scoped'
 export type Surface = 'havenbot' | 'mcp' | 'openclaw' | 'checkout'
 
 export interface ActionDescriptor {
@@ -1352,6 +1352,103 @@ export const agentPolicyApi = {
       auth: true,
     })
   },
+
+  /**
+   * Wave 5 Path D Slice 1 Pickup A — POST a Scoped policy snapshot to the
+   * backend mirror (`agent_scoped_sessions` table). Mirrors
+   * `MintScopedSessionDtoSchema` in `backend/src/application/dto/agent/
+   * policy.dto.ts` byte-for-byte:
+   *   - `snapshot.consentActionHash` MUST be 0x-prefixed (Zod
+   *     `HEX_32_BYTE_RE`). Frontend derives it by prepending `0x` to the
+   *     Phase-1 ConfirmToken's bare-hex `actionHash`.
+   *   - `selectorCaps[i].maxAmount` is in SHARES (selector-native unit
+   *     for subscription.purchase per RD-6), NOT mhUSDC base-6.
+   *   - `maxPerOpUsd6` is the user-intent mhUSDC base-6 ceiling — distinct
+   *     from `selectorCaps[i].maxAmount`.
+   *   - `permissionId` is intentionally OMITTED in Pickup A so the MCP
+   *     auto-sync surfaces `no_permission_id_in_snapshot` per the
+   *     anticipated smoke checkpoint; Pickup B adds it.
+   *   - `surface: 'mcp'` is the operator-confirmed lock — surface is the
+   *     autonomy SCOPE (broker / MCP), not the configuration UI.
+   *
+   * Backend pre-conditions enforced (per `MintScopedSessionUseCase`):
+   *   1. user must currently be at tier='scoped' for this surface (commit
+   *      `transition` first; this endpoint inherits its confirmation gate);
+   *   2. no existing active row for `(userId, surface)`;
+   *   3. `validUntilSec > now`;
+   *   4. `mintedAtSec` within ±5 min of server now.
+   */
+  mintScopedSession(args: MintScopedSessionRequest): Promise<MintScopedSessionResponse> {
+    return request('/agent/policy/scoped-session', {
+      method: 'POST',
+      body: args,
+      auth: true,
+    })
+  },
+}
+
+// ── Wave 5 Path D Slice 1 — Scoped session mint shapes ─────────────
+
+export interface ScopedSelectorCap {
+  /** 0x-prefixed 4-byte hex (lowercased on backend). */
+  selector: `0x${string}`
+  /** 0-based word index after the 4-byte selector. */
+  capArgIndex: number | null
+  /** uint256 decimal string. Null iff capArgIndex is null. Selector-native
+   *  unit (SHARES for subscription.purchase, NOT mhUSDC base-6). */
+  maxAmount: string | null
+}
+
+export interface PolicySnapshotMintBody {
+  sessionId: string
+  mode: 'scoped'
+  signerAddress: `0x${string}`
+  targetContracts: readonly `0x${string}`[]
+  selectorCaps: readonly ScopedSelectorCap[]
+  /** Epoch seconds — must be > server now. */
+  validUntilSec: number
+  /** Epoch seconds — must be within ±5min of server now. */
+  mintedAtSec: number
+  /** 0x-prefixed 32-byte hex; derived client-side from the consumed
+   *  ConfirmToken's bare-hex `actionHash` (see
+   *  `confirm-token.service.ts:101-104`). */
+  consentActionHash?: `0x${string}`
+  /** Slice 4 wildcard carrier — optional in Slice 1. */
+  consentTextSha256?: `0x${string}`
+  /** Pickup B carrier — intentionally omitted in Pickup A. */
+  permissionId?: `0x${string}`
+}
+
+export interface MintScopedSessionRequest {
+  snapshot: PolicySnapshotMintBody
+  /** uint256 decimal string. mhUSDC base-6 ceiling. */
+  maxPerOpUsd6: string
+  surface: Surface
+}
+
+export interface ScopedSessionResponseDto {
+  sessionId: string
+  mode: 'scoped'
+  userId: string | null
+  surface: Surface
+  status: 'active' | 'revoked' | 'expired'
+  signerAddress: `0x${string}`
+  permissionId: `0x${string}` | null
+  targetContracts: readonly `0x${string}`[]
+  selectorCaps: readonly ScopedSelectorCap[]
+  maxPerOpUsd6: string
+  totalSpentUsd6: string
+  validUntilSec: number
+  mintedAtSec: number
+  consentActionHash: `0x${string}` | null
+  consentTextSha256: `0x${string}` | null
+  mintedAt: string
+  revokedAt: string | null
+  expiredAt: string | null
+}
+
+export interface MintScopedSessionResponse {
+  session: ScopedSessionResponseDto
 }
 
 // ── Wave 4 §5 Path D + C — hosted-checkout dashboard ──────────────

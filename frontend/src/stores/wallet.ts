@@ -6,6 +6,8 @@ import type {
   Call,
   ViemClients,
   ExportedSessionKey,
+  InstallScopedSessionInput,
+  ScopedSessionInstallResult,
 } from '@/providers/wallet-provider.interface'
 
 const STORAGE_KEY = 'muhaven-wallet'
@@ -145,6 +147,29 @@ export const useWalletStore = defineStore('wallet', () => {
     }
   }
 
+  /**
+   * Wave 5 Path D Slice 1 Pickup A — mint a Scoped session key.
+   *
+   * Returns the freshly-minted ephemeral EOA's private half + the
+   * locally-computed `permissionId` so the caller can:
+   *   1. POST the snapshot to `/api/v1/agent/policy/scoped-session`, and
+   *   2. surface the privateKey via SessionKeyRevealModal for out-of-band
+   *      paste into the broker's `MUHAVEN_BROKER_SESSION_KEY` env.
+   *
+   * Independent from `installSessionKey()` (legacy in-tab path) —
+   * `sessionKeyActive` / `sessionExpirySec` track only the in-tab key
+   * (Scoped lives on a separate signer EOA the broker owns).
+   */
+  async function installScopedSessionKey(
+    opts: InstallScopedSessionInput,
+  ): Promise<ScopedSessionInstallResult | null> {
+    await ensureConnected()
+    if (!provider || typeof provider.installScopedSessionKey !== 'function') {
+      throw new Error('Scoped session keys not supported by this provider')
+    }
+    return provider.installScopedSessionKey(opts)
+  }
+
   let reconnectPromise: Promise<void> | null = null
 
   async function ensureConnected(): Promise<void> {
@@ -220,6 +245,7 @@ export const useWalletStore = defineStore('wallet', () => {
     sendUserOperation,
     installSessionKey,
     exportSessionKey,
+    installScopedSessionKey,
     getViemClients,
     restoreAddress,
     tryReconnect,

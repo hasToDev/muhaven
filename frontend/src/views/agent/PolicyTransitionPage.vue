@@ -43,6 +43,7 @@ import {
   agentPolicyApi,
   ApiError,
   type AgentUserStateDto,
+  type MintScopedSessionRequest,
   type Surface,
   type Tier,
   type TierTransitionConfirmation,
@@ -52,6 +53,21 @@ import { useWalletStore } from '@/stores/wallet'
 import MButton from '@/components/ui/MButton.vue'
 import MPageLoader from '@/components/ui/MPageLoader.vue'
 import SessionKeyRevealModal from '@/components/agent/SessionKeyRevealModal.vue'
+import type { ScopedSessionInstallResult } from '@/providers/wallet-provider.interface'
+import { v35Addresses } from '@/contracts/addresses'
+import {
+  SCOPED_MIN_TTL_SEC,
+  SCOPED_MAX_TTL_SEC,
+  SCOPED_DEFAULT_TTL_SEC,
+  SCOPED_TTL_CHOICES,
+  parseMhUsdcBase6,
+  prefixConsentActionHash,
+  newScopedSessionId,
+  buildScopedMintBody,
+  formatPendingMhUsdc,
+  formatTier,
+  formatTtlLabel,
+} from './policy-scoped.helpers'
 
 const router = useRouter()
 const route = useRoute()
@@ -60,13 +76,14 @@ const walletStore = useWalletStore()
 
 /** Type guards for the deep-link query params from `set_policy` redirect. */
 const SURFACE_SET: ReadonlyArray<Surface> = ['havenbot', 'mcp', 'openclaw', 'checkout']
-const PICKABLE_TIER_SET: ReadonlyArray<Tier> = ['advisory', 'confirm-per-action', 'policy-bound']
+const PICKABLE_TIER_SET: ReadonlyArray<Tier> = ['advisory', 'confirm-per-action', 'policy-bound', 'scoped']
 function isSurface(v: unknown): v is Surface {
   return typeof v === 'string' && (SURFACE_SET as readonly string[]).includes(v)
 }
 function isPickableTier(v: unknown): v is Tier {
   return typeof v === 'string' && (PICKABLE_TIER_SET as readonly string[]).includes(v)
 }
+
 
 // ── Tier surface — the page operates on a single surface at a time.
 // Defaulting to MCP because that's the surface the broker daemon binds
@@ -104,6 +121,12 @@ const TIER_OPTIONS: ReadonlyArray<{
     blurb: 'Agent can write within the call-allowlist + spend caps you configured. Subject to risk-engine pauses.',
     icon: Sparkles,
   },
+  {
+    value: 'scoped',
+    title: 'Scoped autonomy',
+    blurb: 'Autonomous buys within a per-op mhUSDC ceiling, time-bounded by TTL. The agent signs without prompting up to the ceiling.',
+    icon: KeyRound,
+  },
 ]
 
 // ── Local state ────────────────────────────────────────────────────
@@ -131,6 +154,39 @@ const lastCommittedAt = ref<string | null>(null)
 // (it's only resumable-from-paused per ADR-0).
 const resuming = ref(false)
 
+// Wave 5 Path D Slice 1 Pickup A — Scoped tier inputs. `maxPerOpUsd6Input`
+// is the user-facing whole-mhUSDC string (decimal, up to 6 dp); the commit
+// step parses it to a base-6 BigInt for the POST. `ttlSecInput` is a
+// curated segmented control (R1 UX H-2: free-text seconds was wrong
+// cognitive load for a consent-critical autonomy decision).
+const maxPerOpUsd6Input = ref<string>('100')
+const ttlSecInput = ref<number>(SCOPED_DEFAULT_TTL_SEC)
+
+// Reveal flow for the Scoped session-key surfaced AFTER the tier transition
+// commit + the policy-snapshot POST land. Distinct from the legacy
+// `showRevealModal` ceremony (in-tab session-key for HavenBot copy-paste):
+// the Scoped reveal carries a freshly-minted ephemeral EOA's private half
+// for paste into the broker daemon's `MUHAVEN_BROKER_SESSION_KEY`.
+const scopedReveal = ref<ScopedSessionInstallResult | null>(null)
+
+/** R1 UX H-3 — post-commit error-recovery state. When set, the inline
+ *  failure-recovery strip surfaces "Retry mint" + "Step down to
+ *  Policy-bound" CTAs so the user isn't stranded with an orphaned
+ *  tier=scoped server-state + no functional session key.
+ *  R2 RC LOW-1 — only `'retry-mint'` is actually emitted today; the
+ *  prior `| 'step-down'` literal was dead-code. Narrowed to keep the
+ *  union honest. */
+const scopedRecoveryNeeded = ref<'retry-mint' | null>(null)
+/** Captured consentActionHash from the consumed ConfirmToken — preserved
+ *  across a retry so the audit-chain stable-key JOIN remains correlated
+ *  to the originally-confirmed tier transition. */
+const scopedRecoveryConsentHash = ref<`0x${string}` | null>(null)
+/** Snapshot of the maxPerOpUsd6 + ttlSec the user authorized at Phase 1
+ *  issue time. R1 UX H-4: live-editing the form after issue must not
+ *  silently shift what the second tap confirms. Cleared on token /
+ *  picker reset. */
+const pendingScopedParams = ref<{ maxPerOpUsd6: bigint; ttlSec: number } | null>(null)
+
 // F3 — Live countdown to the confirmation token's expiry so the user
 // notices when their token is about to go stale. The 1s ticker only
 // runs while a token is pending; cleared on commit / cancel / unmount.
@@ -151,6 +207,10 @@ const canSubmit = computed<boolean>(() => {
   // Step-up disabled when policy-bound gates fail (mirror backend rejection
   // shape so the user sees the unmet gate inline, not as a 409 surprise).
   if (stepUpGateFailure.value) return false
+  // Scoped tier — additionally require the mhUSDC + TTL form to be valid
+  // BEFORE any network hop. The backend Zod schema would bounce anyway,
+  // but surfacing the violation inline avoids a confusing 400.
+  if (scopedFormFailure.value) return false
   // F3 — a pending-but-expired token would 410 on commit; block the
   // explicit commit and force the user to re-request fresh. The
   // pendingExpired branch's "Start over" CTA handles this case.
@@ -160,6 +220,12 @@ const canSubmit = computed<boolean>(() => {
 
 const stepUpGateFailure = computed<string | null>(() => {
   if (!targetTier.value || !currentState.value) return null
+  // R1 Code Reviewer LOW-2 — short-circuit when the user re-picked the
+  // tier they're already at. `canSubmit` already blocks via the
+  // `targetTier === currentTier` rule, but the gate-hint sub-banner
+  // would otherwise render a misleading "you need to climb to…" message
+  // for someone who's ALREADY at Scoped re-clicking the same card.
+  if (targetTier.value === currentTier.value) return null
   if (
     targetTier.value === 'policy-bound'
     && currentTier.value === 'advisory'
@@ -178,6 +244,51 @@ const stepUpGateFailure = computed<string | null>(() => {
       return 'Policy-bound requires the risk questionnaire to be completed first.'
     }
   }
+  // Wave 5 Path D RD-2 — Scoped sits ABOVE PolicyBound. No skip-the-ladder.
+  if (targetTier.value === 'scoped') {
+    if (currentTier.value !== 'policy-bound') {
+      // R1 UX M-3 — re-frame from "rules-lawyer" to "why + actionable".
+      // The "why" is the operational semantic — PolicyBound's gates need
+      // to exercise before silent-spending unlocks. Surface the prereqs
+      // so the user sees the full path at once.
+      return 'To enable Scoped autonomy, first reach Policy-bound — we need to see at least 5 confirm-per-action approvals + a completed risk questionnaire on this surface before unlocking silent spending.'
+    }
+    // Mirror the PolicyBound gates server-side state-machine re-checks at
+    // step-up time (`requestUserTierChange` in
+    // `backend/src/domain/agent/model/state-machine.ts:163-176`).
+    const c = currentState.value.confirmedActionCount
+    if (c < 5) {
+      return `Scoped requires ≥5 confirmed actions on this surface; you have ${c}.`
+    }
+    if (!currentState.value.riskQuestionnaireComplete) {
+      return 'Scoped requires the risk questionnaire to be completed first.'
+    }
+  }
+  return null
+})
+
+const scopedMaxPerOpUsd6 = computed<bigint | null>(() =>
+  parseMhUsdcBase6(maxPerOpUsd6Input.value),
+)
+
+const scopedFormFailure = computed<string | null>(() => {
+  if (targetTier.value !== 'scoped') return null
+  if (scopedMaxPerOpUsd6.value === null) {
+    return 'Enter a mhUSDC ceiling (e.g. 100 or 100.5).'
+  }
+  if (scopedMaxPerOpUsd6.value < 1_000_000n) {
+    // < $1 mhUSDC base-6 — would round to 0 shares at $1 NAV, defeating
+    // the cap. Block in UI rather than landing a structurally-inoperative
+    // snapshot on the mirror.
+    return 'mhUSDC ceiling must be at least $1.'
+  }
+  if (
+    !Number.isFinite(ttlSecInput.value)
+    || ttlSecInput.value < SCOPED_MIN_TTL_SEC
+    || ttlSecInput.value > SCOPED_MAX_TTL_SEC
+  ) {
+    return `TTL must be between ${SCOPED_MIN_TTL_SEC}s (5 min) and ${SCOPED_MAX_TTL_SEC}s (24h).`
+  }
   return null
 })
 
@@ -187,6 +298,10 @@ const isStepUp = computed<boolean>(() => {
   if (currentTier.value === 'advisory' && targetTier.value === 'confirm-per-action') return true
   if (currentTier.value === 'confirm-per-action' && targetTier.value === 'policy-bound') return true
   if (currentTier.value === 'advisory' && targetTier.value === 'policy-bound') return true
+  // Wave 5 Path D RD-2 — Scoped sits above PolicyBound; ascending into it
+  // is always a step-up (confirmation-gated). The `stepUpGateFailure`
+  // computed already short-circuits skip-the-ladder attempts.
+  if (targetTier.value === 'scoped' && currentTier.value !== 'scoped') return true
   return false
 })
 
@@ -281,6 +396,9 @@ function onSelectSurface(next: Surface): void {
   selectedSurface.value = next
   targetTier.value = null
   pendingConfirmation.value = null
+  pendingScopedParams.value = null
+  scopedRecoveryNeeded.value = null
+  scopedRecoveryConsentHash.value = null
   transitionError.value = null
 }
 
@@ -290,7 +408,35 @@ function onPickTier(next: Tier): void {
   // Picking a different tier invalidates any in-flight confirmation
   // token — the actionHash would no longer match the new payload.
   pendingConfirmation.value = null
+  pendingScopedParams.value = null
+  // Clear any post-commit recovery state too: switching to a different
+  // tier means the user's intent moved on; the orphan-tier recovery
+  // CTAs no longer apply.
+  scopedRecoveryNeeded.value = null
+  scopedRecoveryConsentHash.value = null
   transitionError.value = null
+  // R1 UX M-1 — when the user picks Scoped, focus the maxPerOpUsd6 input
+  // so the form section is announced + scrolled into view. nextTick
+  // ensures the v-if-mounted element exists before querySelector runs.
+  // R2 A11y L-1 — honour `prefers-reduced-motion`; the existing CSS
+  // reduced-motion overrides in global.css don't catch imperative
+  // `scrollIntoView({behavior:'smooth'})`.
+  if (next === 'scoped') {
+    void Promise.resolve().then(() => {
+      const el = document.querySelector<HTMLInputElement>(
+        '[data-testid="policy-scoped-max-usd"]',
+      )
+      el?.focus()
+      const reducedMotion =
+        typeof window !== 'undefined'
+        && typeof window.matchMedia === 'function'
+        && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      el?.scrollIntoView({
+        behavior: reducedMotion ? 'auto' : 'smooth',
+        block: 'center',
+      })
+    })
+  }
 }
 
 async function onSubmit(): Promise<void> {
@@ -300,13 +446,36 @@ async function onSubmit(): Promise<void> {
 
   try {
     if (pendingConfirmation.value) {
+      // Capture the actionHash BEFORE commit consumes the token — the
+      // Scoped post-commit flow needs to anchor the snapshot's
+      // `consentActionHash` to the consumed token per Compliance H-1.
+      // Phase 1 returns bare-hex (no 0x prefix) per
+      // `confirm-token.service.ts:101-104`; the snapshot field requires
+      // `0x`-prefixed hex per `MintScopedSessionDtoSchema:HEX_32_BYTE_RE`
+      // so we prefix at the populate boundary (matches the backend's
+      // own `toChainAnchorHash` normalization in
+      // `transition-tier.use-case.ts:44`).
+      const consumedActionHash = prefixConsentActionHash(pendingConfirmation.value.actionHash)
       // Phase 2 — re-post with the token to commit.
       const res = await agentPolicyApi.commitTransition({
         surface: selectedSurface.value,
         targetTier: targetTier.value,
         confirmationToken: pendingConfirmation.value.token,
       })
-      onTransitionApplied(res.state, 'committed')
+      const landedTier = res.state.tier
+      // R1 Code Reviewer MED-3 — silence the tier-transition toast when
+      // the next step is the Scoped mint; the mint emits its own success
+      // toast so a failed mint doesn't trail a misleading "Transition
+      // confirmed" success message.
+      onTransitionApplied(res.state, 'committed', {
+        silent: landedTier === 'scoped',
+      })
+      // Wave 5 Path D Slice 1 Pickup A — Scoped post-commit ceremony.
+      // Fires ONLY after the tier landed at `scoped` server-side so a
+      // failed transition doesn't leave a snapshot orphan on the mirror.
+      if (landedTier === 'scoped') {
+        await mintScopedSession(consumedActionHash)
+      }
     } else {
       // Phase 1 — issue the request.
       const res = await agentPolicyApi.requestTransition({
@@ -315,6 +484,16 @@ async function onSubmit(): Promise<void> {
       })
       if (res.requiresConfirmation) {
         pendingConfirmation.value = res.confirmation
+        // R1 UX H-4 — snapshot the Scoped params NOW so live-editing the
+        // form between issue and commit doesn't silently change what the
+        // second tap authorizes. The pending-confirmation hint reads
+        // from this snapshot, not the live ref.
+        if (targetTier.value === 'scoped' && scopedMaxPerOpUsd6.value !== null) {
+          pendingScopedParams.value = {
+            maxPerOpUsd6: scopedMaxPerOpUsd6.value,
+            ttlSec: ttlSecInput.value,
+          }
+        }
         // For Wave 4, the dashboard's JWT session is already passkey-derived;
         // the confirmation token is bearer-bound to userId + actionHash so a
         // second click is the user's explicit confirmation step.
@@ -338,11 +517,26 @@ async function onSubmit(): Promise<void> {
   }
 }
 
-function onTransitionApplied(next: AgentUserStateDto, kind: 'committed' | 'step-down'): void {
+function onTransitionApplied(
+  next: AgentUserStateDto,
+  kind: 'committed' | 'step-down',
+  opts?: { silent?: boolean },
+): void {
   statesBySurface.value = { ...statesBySurface.value, [next.surface]: next }
   pendingConfirmation.value = null
   targetTier.value = null
   lastCommittedAt.value = next.updatedAt
+  // R2 fresh-CR M-1 — any successful transition invalidates the
+  // post-failed-mint recovery banner. Without these clears, a paused
+  // → Advisory resume on a surface that had a stale recovery flag
+  // would leave the banner visible against the new (irrelevant) tier.
+  scopedRecoveryNeeded.value = null
+  scopedRecoveryConsentHash.value = null
+  // R1 Code Reviewer MED-3 — Scoped post-commit ceremony fires its own
+  // success toast AFTER the mint + POST land; defer the tier-transition
+  // toast in that case so a failed mint doesn't surface "success" above
+  // a "Tier landed at Scoped, but session-key mint failed" red ribbon.
+  if (opts?.silent) return
   toast.success(
     kind === 'step-down'
       ? `Tier set to ${formatTier(next.tier)}`
@@ -358,8 +552,240 @@ function openReveal(): void {
     })
     return
   }
+  // R1 Frontend M-3 — block legacy reveal while a Scoped reveal is on
+  // screen; otherwise two modals stack at `z-[60]` and the user might
+  // confuse two distinct session keys (legacy in-tab vs Scoped EOA).
+  if (scopedReveal.value !== null) {
+    toast('Dismiss the Scoped reveal first', {
+      description: 'A freshly-minted Scoped session key is still on screen.',
+    })
+    return
+  }
   showRevealModal.value = true
 }
+
+/**
+ * Wave 5 Path D Slice 1 Pickup A — Scoped session-key mint ceremony.
+ * Runs AFTER `commitTransition` lands `tier === 'scoped'` server-side.
+ *
+ * Three steps:
+ *   1. Mint a fresh ephemeral EOA + Scoped PermissionValidator locally
+ *      via `walletStore.installScopedSessionKey`. Captures
+ *      `permissionId` for Pickup B (intentionally NOT propagated to the
+ *      mint DTO this commit so the smoke checkpoint surfaces
+ *      `no_permission_id_in_snapshot`).
+ *   2. POST the snapshot to the backend mirror
+ *      (`/api/v1/agent/policy/scoped-session`). The MCP auto-sync
+ *      (Commit 2.B) pulls from this mirror on the next position.buy
+ *      and installs into the broker via IPC — bridging the dashboard's
+ *      browser-sandbox / Unix-socket transport gap.
+ *   3. Open SessionKeyRevealModal pre-seeded with the freshly-minted
+ *      key so the operator can paste it into `MUHAVEN_BROKER_SESSION_KEY`
+ *      on the broker machine + restart the daemon.
+ *
+ * **Failure handling**: if the mint or POST throws, the tier already
+ * landed at 'scoped' server-side (Phase 2 already committed). Surface a
+ * `transitionError` so the operator sees the failure inline. The user
+ * has two recoveries: (a) revoke the orphaned tier via step-down then
+ * retry, or (b) re-attempt the snapshot POST (idempotent on sessionId).
+ * Mirroring the orphan-tier risk explicitly here closes the gap that an
+ * R1 fresh CR would flag.
+ */
+async function mintScopedSession(consentActionHash: `0x${string}`): Promise<void> {
+  // R1 UX H-4 — pull from `pendingScopedParams` (captured at Phase 1
+  // issue) rather than the live form refs, so a user who edits the
+  // input AFTER issuing the ConfirmToken still commits the value they
+  // originally authorized. If pendingScopedParams is null we're being
+  // called from a retry-recovery path that pre-validated the bounds;
+  // fall back to the live refs in that case.
+  const cap = pendingScopedParams.value?.maxPerOpUsd6 ?? scopedMaxPerOpUsd6.value
+  const ttl = pendingScopedParams.value?.ttlSec ?? ttlSecInput.value
+  if (!cap) {
+    transitionError.value = 'Internal: mhUSDC ceiling parsed to null after canSubmit gate — refresh and retry.'
+    // R2 Reality Check MED-2 — every early-return AFTER the tier
+    // already landed at Scoped server-side MUST seed the recovery
+    // state so the user has a retry / step-down CTA. Without these,
+    // an internal-state failure would strand the user with an orphan
+    // tier and no in-page recovery.
+    scopedRecoveryConsentHash.value = consentActionHash
+    scopedRecoveryNeeded.value = 'retry-mint'
+    return
+  }
+  // NAV-1:1 conversion (mhUSDC base-6 → whole shares). Correct for TBILL1
+  // (NAV $1) which is the Pickup A smoke target. Other tokens (NAV ≠ $1)
+  // will land a structurally-correct snapshot whose `selectorCaps[0]
+  // .maxAmount` cap differs from the user-intent `maxPerOpUsd6`; Pickup B
+  // (real per-token NAV math) refines. Slice 4 wildcard's cumulative-spend
+  // ledger uses `maxPerOpUsd6` directly so the dollar ceiling stays
+  // honest regardless of per-token NAV skew.
+  const maxSharesPerOp = cap / 1_000_000n
+  // R1 SecEng MED-1 — defense-in-depth against integer-truncation defeat
+  // of the cap. The form's $1 floor (`scopedFormFailure`) already enforces
+  // `cap >= 1_000_000n` at the UI gate, so `maxSharesPerOp` MUST be ≥ 1.
+  // This block surfaces a clean error if a future refactor relaxes the
+  // form floor without revisiting the shares math.
+  if (maxSharesPerOp <= 0n) {
+    transitionError.value =
+      'Internal: max-shares-per-op rounded to zero. The mhUSDC ceiling must be at least $1 mhUSDC.'
+    // R2 Reality Check MED-2 — same orphan-tier risk as above; seed
+    // recovery state so the user can retry or step down.
+    scopedRecoveryConsentHash.value = consentActionHash
+    scopedRecoveryNeeded.value = 'retry-mint'
+    return
+  }
+  // R1 Frontend M-1 — defensive against a build where
+  // `VITE_SUBSCRIPTION_ADDRESS` is unset; `addresses.ts` falls back to
+  // the zero address. The backend Zod schema accepts any 20-byte hex
+  // and would land a structurally-correct but operationally-useless
+  // snapshot that authorizes nothing real. Fail loud here.
+  if (
+    v35Addresses.subscription
+    === '0x0000000000000000000000000000000000000000'
+  ) {
+    transitionError.value =
+      'Subscription contract address is not configured for this environment. Cannot mint a Scoped session.'
+    scopedRecoveryConsentHash.value = consentActionHash
+    scopedRecoveryNeeded.value = 'retry-mint'
+    return
+  }
+
+  let installed: ScopedSessionInstallResult | null
+  try {
+    installed = await walletStore.installScopedSessionKey({
+      maxPerOpUsd6: cap,
+      maxSharesPerOp,
+      ttlSec: ttl,
+    })
+  } catch (e) {
+    transitionError.value = humaniseError(
+      e,
+      'Tier landed at Scoped, but session-key mint failed',
+    )
+    // R1 UX H-3 — surface recovery CTAs. Preserve the consent hash so a
+    // retry re-uses the originally-confirmed token's audit-chain anchor.
+    scopedRecoveryConsentHash.value = consentActionHash
+    scopedRecoveryNeeded.value = 'retry-mint'
+    return
+  }
+  if (!installed) {
+    transitionError.value =
+      'Tier landed at Scoped, but the wallet provider returned no session-key. Reconnect your wallet and retry the mint.'
+    scopedRecoveryConsentHash.value = consentActionHash
+    scopedRecoveryNeeded.value = 'retry-mint'
+    return
+  }
+
+  const sessionId = newScopedSessionId()
+  // R1 Code Reviewer LOW-3 — viem `privateKeyToAccount.address` returns
+  // EIP-55 checksummed; backend lowercases on persist + the broker
+  // compares case-insensitively. Lowercase here so the POST round-trips
+  // byte-equal with the persisted row and any future raw-SQL audit JOIN
+  // doesn't break on case mismatch.
+  // R2 Reality Check MED-1 — surface HARD-LOCKED to `'mcp'` per the
+  // operator-confirmed Pickup A design decision. The MCP auto-sync
+  // (Commit 2.B) only pulls mirror rows with `surface='mcp'`; a Scoped
+  // session POSTed under any other surface would silently never reach
+  // the broker. Even though `selectedSurface` might be HavenBot /
+  // OpenClaw / Checkout when the user is just configuring policy for
+  // those surfaces, the Scoped tier ITSELF is an MCP-broker autonomy
+  // scope. Backend mirror's `(user_id, surface)` partial UNIQUE lets a
+  // Telegram-surface Scoped session co-exist later without conflict.
+  const body: MintScopedSessionRequest = buildScopedMintBody({
+    sessionId,
+    signerAddress: installed.signerAddress.toLowerCase() as `0x${string}`,
+    subscriptionAddress: v35Addresses.subscription.toLowerCase() as `0x${string}`,
+    maxPerOpUsd6: cap,
+    maxSharesPerOp,
+    mintedAtSec: installed.mintedAtSec,
+    validUntilSec: installed.validUntilSec,
+    consentActionHash,
+    surface: 'mcp',
+  })
+
+  try {
+    await agentPolicyApi.mintScopedSession(body)
+  } catch (e) {
+    transitionError.value = humaniseError(
+      e,
+      'Tier landed at Scoped, but the policy-snapshot POST failed',
+    )
+    scopedRecoveryConsentHash.value = consentActionHash
+    scopedRecoveryNeeded.value = 'retry-mint'
+    return
+  }
+
+  // Success — surface the privateKey for paste into the broker. The
+  // reveal modal closes the gap that broker IPC isn't reachable from
+  // the browser: the user copies + pastes + restarts daemon, then the
+  // MCP auto-sync (Commit 2.B) bridges the snapshot on next position.buy.
+  scopedReveal.value = installed
+  scopedRecoveryNeeded.value = null
+  scopedRecoveryConsentHash.value = null
+  pendingScopedParams.value = null
+  toast.success('Scoped session minted', {
+    description: 'Copy the broker session key and paste it into MUHAVEN_BROKER_SESSION_KEY.',
+  })
+}
+
+/**
+ * R1 UX H-3 — retry the Scoped mint after a post-commit failure left
+ * the user with an orphaned tier=scoped server-state. Re-uses the
+ * originally-confirmed `scopedRecoveryConsentHash` so the audit-chain
+ * stable-key JOIN stays anchored to the confirmed token (no fresh
+ * Phase 1 needed — the tier already landed).
+ */
+async function onScopedRetryMint(): Promise<void> {
+  if (!scopedRecoveryConsentHash.value) {
+    transitionError.value = 'Internal: missing consent anchor on retry. Step down to Policy-bound and re-do the transition.'
+    return
+  }
+  if (submitting.value) return
+  submitting.value = true
+  transitionError.value = null
+  try {
+    await mintScopedSession(scopedRecoveryConsentHash.value)
+  } finally {
+    submitting.value = false
+  }
+}
+
+/**
+ * R1 UX H-3 — step down from the orphaned tier=scoped back to
+ * Policy-bound so the user can re-attempt cleanly. Step-downs commit
+ * without a Phase-2 confirmation (the state-machine auto-applies per
+ * `requestUserTierChange`); we just call requestTransition + apply.
+ */
+async function onScopedStepDownRecover(): Promise<void> {
+  if (submitting.value) return
+  submitting.value = true
+  transitionError.value = null
+  try {
+    const res = await agentPolicyApi.requestTransition({
+      surface: selectedSurface.value,
+      targetTier: 'policy-bound',
+    })
+    if (res.requiresConfirmation) {
+      // Defensive — Scoped → PolicyBound is a step-down per
+      // `state-machine.ts:181-189`. If this branch ever fires the
+      // assumption changed; surface a clean error instead of silently
+      // leaving the user in a half-broken state.
+      transitionError.value =
+        'Step-down unexpectedly required confirmation. Re-pick Policy-bound from the tier card to complete.'
+      return
+    }
+    onTransitionApplied(res.state, 'step-down')
+    scopedRecoveryNeeded.value = null
+    scopedRecoveryConsentHash.value = null
+    // R1 Frontend H-1 — symmetric cleanup so a subsequent picker
+    // selection doesn't inherit stale Phase-1 snapshot state.
+    pendingScopedParams.value = null
+  } catch (e) {
+    transitionError.value = humaniseError(e, 'Step-down recovery rejected')
+  } finally {
+    submitting.value = false
+  }
+}
+
 
 /**
  * F2 — Resume CTA when the current surface is paused. Backend's
@@ -392,18 +818,18 @@ async function onResume(): Promise<void> {
  */
 function onRestartConfirmation(): void {
   pendingConfirmation.value = null
+  // R1 Frontend H-1 — clear the issue-time snapshot too so a future
+  // caller that reads `pendingScopedParams` outside the v-if gate
+  // doesn't see the prior tap's authorization.
+  pendingScopedParams.value = null
   transitionError.value = null
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
 
-function formatTier(t: Tier | null | undefined): string {
-  if (!t) return '—'
-  if (t === 'confirm-per-action') return 'Confirm per action'
-  if (t === 'policy-bound') return 'Policy-bound'
-  if (t === 'paused') return 'Paused'
-  return 'Advisory'
-}
+// `formatTier` + `formatTtlLabel` live in `policy-scoped.helpers.ts` so
+// the unit tests can guard the `'scoped'` branch + unknown-literal
+// fallthrough without mounting the Vue component (R2 fresh-CR H-1).
 
 function formatSurface(s: Surface): string {
   return SURFACE_OPTIONS.find((opt) => opt.value === s)?.label ?? s
@@ -490,6 +916,7 @@ function humaniseError(e: unknown, fallback: string): string {
             v-for="opt in SURFACE_OPTIONS"
             :key="opt.value"
             type="button"
+            :aria-pressed="selectedSurface === opt.value"
             :data-testid="`policy-surface-${opt.value}`"
             :class="[
               'text-left rounded-xl border px-4 py-3 transition-all duration-150 cursor-pointer',
@@ -610,12 +1037,19 @@ function humaniseError(e: unknown, fallback: string): string {
         >
           Target tier
         </p>
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <!-- 2×2 grid at md+ — UX-Architect H-1: `lg:grid-cols-4` inside
+             `max-w-3xl` cramped each card to ~178px on standard laptops,
+             forcing 5-6 line blurb wraps with uneven card heights. 2×2
+             at every desktop breakpoint reads cleanly + gives the new
+             Scoped blurb room to breathe. -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
           <button
             v-for="opt in TIER_OPTIONS"
             :key="opt.value"
             type="button"
             :disabled="currentTier === 'paused'"
+            :aria-pressed="targetTier === opt.value"
+            :aria-label="opt.title + (currentTier === opt.value ? ' (current tier)' : '')"
             :data-testid="`policy-tier-${opt.value}`"
             :class="[
               'text-left rounded-xl border px-4 py-4 transition-all duration-150',
@@ -646,6 +1080,118 @@ function humaniseError(e: unknown, fallback: string): string {
         </div>
       </section>
 
+      <!-- Wave 5 Path D Slice 1 Pickup A — Scoped autonomy parameters.
+           Shown ONLY when the user has picked the Scoped tier so the
+           legacy three-tier UX stays unchanged. `maxPerOpUsd6Input` is
+           a free-text decimal with up to 6 dp; the commit step parses
+           it to a base-6 BigInt for the POST. `ttlSecInput` is bound to
+           a curated segmented control (R1 UX H-2: seconds free-text
+           was wrong cognitive load for a consent-critical decision).
+           R2 A11y M-1: aria-live moved off this section (the labels
+           are static), routed to the inline form-error `<p>` as
+           `role="alert"` instead. -->
+      <section
+        v-if="targetTier === 'scoped'"
+        data-testid="policy-scoped-form"
+        class="rounded-2xl border border-haze dark:border-white/5
+               bg-white/40 dark:bg-[#1c1b1b]/40 backdrop-blur-md p-5 md:p-6 space-y-4"
+      >
+        <p
+          class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool font-semibold"
+        >
+          Scoped autonomy parameters
+        </p>
+        <!-- R2 Reality Check MED-1 — the Scoped snapshot POSTs under
+             `surface: 'mcp'` regardless of the surface picker above.
+             Slice 1 only authorizes MCP broker autonomy; per-surface
+             Scoped sessions land in Slice 4 once the wildcard rails are
+             in place. Surface this so a user editing HavenBot policy
+             doesn't expect the Scoped tier to silently enable a Telegram
+             agent. -->
+        <p
+          v-if="selectedSurface !== 'mcp'"
+          data-testid="policy-scoped-mcp-notice"
+          class="px-3 py-2 rounded-lg border border-haze dark:border-white/10
+                 bg-mist/40 dark:bg-[#0d0e10]/60
+                 text-[11px] text-cool leading-relaxed"
+        >
+          Scoped autonomy authorizes the <span class="font-mono">MCP / Broker</span>
+          surface regardless of the surface picker above. Per-surface scoped
+          sessions land in Slice 4.
+        </p>
+        <label class="flex flex-col gap-1.5">
+          <span class="font-sans text-[12px] font-semibold text-midnight dark:text-white">
+            Max mhUSDC per autonomous buy
+          </span>
+          <input
+            v-model="maxPerOpUsd6Input"
+            type="text"
+            inputmode="decimal"
+            placeholder="100"
+            data-testid="policy-scoped-max-usd"
+            :disabled="pendingConfirmation !== null || submitting"
+            class="rounded-lg border border-haze dark:border-white/10
+                   bg-mist/40 dark:bg-[#0d0e10]/60
+                   px-3 py-2 font-mono text-sm text-midnight dark:text-white
+                   focus:outline-none focus:ring-2 focus:ring-gold/40
+                   disabled:opacity-60 disabled:cursor-not-allowed"
+          />
+          <span class="font-sans text-[11px] text-cool leading-relaxed">
+            The agent signs autonomous buys up to this mhUSDC value per call.
+            A cumulative spend ledger is on the roadmap.
+          </span>
+        </label>
+        <div class="flex flex-col gap-1.5">
+          <span id="policy-scoped-ttl-label" class="font-sans text-[12px] font-semibold text-midnight dark:text-white">
+            Session length
+          </span>
+          <!-- R2 A11y H-1: dropped `role="radiogroup"` + `role="radio"` —
+               the original markup made a false WAI-ARIA promise (arrow
+               keys to traverse, single tabstop), but no key handlers
+               were wired. Use the toggle-button pattern (`aria-pressed`)
+               where Tab-through each option matches actual behavior. -->
+          <div
+            role="group"
+            aria-labelledby="policy-scoped-ttl-label"
+            data-testid="policy-scoped-ttl"
+            class="grid grid-cols-3 sm:grid-cols-5 gap-1.5"
+          >
+            <button
+              v-for="opt in SCOPED_TTL_CHOICES"
+              :key="opt.sec"
+              type="button"
+              :aria-pressed="ttlSecInput === opt.sec"
+              :disabled="pendingConfirmation !== null || submitting"
+              :data-testid="`policy-scoped-ttl-${opt.sec}`"
+              :class="[
+                'rounded-lg border px-2 py-2 text-[12px] font-mono transition-colors duration-150',
+                ttlSecInput === opt.sec
+                  ? 'border-gold/50 dark:border-signal/50 bg-gold/10 dark:bg-signal/8 ring-1 ring-gold/30 dark:ring-signal/30 text-compute dark:text-signal'
+                  : 'border-haze dark:border-white/10 text-midnight dark:text-white hover:bg-mist/60 dark:hover:bg-white/5',
+                pendingConfirmation !== null || submitting ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer',
+              ]"
+              @click="ttlSecInput = opt.sec"
+            >
+              {{ opt.label }}
+            </button>
+          </div>
+          <span class="font-sans text-[11px] text-cool leading-relaxed">
+            The session auto-expires on-chain via a TimestampPolicy; you can
+            revoke earlier from the dashboard.
+          </span>
+        </div>
+        <p
+          v-if="scopedFormFailure"
+          data-testid="policy-scoped-form-error"
+          role="alert"
+          class="px-3 py-2 rounded-lg border border-gold/40 bg-gold/8
+                 text-[12px] text-compute dark:text-body-dark leading-relaxed"
+        >
+          <AlertTriangle :size="11" class="inline -mt-0.5 mr-1 text-gold" />
+          {{ scopedFormFailure }}
+        </p>
+      </section>
+
       <!-- Gate-failure hint -->
       <p
         v-if="stepUpGateFailure"
@@ -661,6 +1207,7 @@ function humaniseError(e: unknown, fallback: string): string {
       <p
         v-if="transitionError"
         data-testid="policy-transition-error"
+        role="alert"
         class="px-4 py-3 rounded-xl border border-negative/40 bg-negative/5
                text-[13px] text-negative"
       >
@@ -668,13 +1215,61 @@ function humaniseError(e: unknown, fallback: string): string {
         {{ transitionError }}
       </p>
 
+      <!-- R1 UX H-3 — post-commit recovery strip. When the tier already
+           landed at 'scoped' server-side but the mint or POST failed,
+           surface "Retry mint" + "Step down to Policy-bound" CTAs so
+           the user isn't stranded with an orphaned tier + no session key. -->
+      <div
+        v-if="scopedRecoveryNeeded === 'retry-mint'"
+        data-testid="policy-scoped-recovery"
+        role="alert"
+        class="px-4 py-3 rounded-xl border border-gold/40 bg-gold/8 space-y-2"
+      >
+        <p class="text-[13px] font-semibold text-compute dark:text-signal">
+          Tier landed at Scoped, session-key mint did not complete
+        </p>
+        <p class="text-[12px] text-compute dark:text-body-dark leading-relaxed">
+          The Scoped tier was committed server-side but the local key mint or
+          policy-snapshot POST failed. Retry the mint to re-use the same
+          consent token, or step down to Policy-bound to reset cleanly.
+        </p>
+        <div class="flex flex-wrap gap-2 pt-1">
+          <MButton
+            variant="primary"
+            :disabled="submitting"
+            data-testid="policy-scoped-recovery-retry"
+            @click="onScopedRetryMint"
+          >
+            <Loader2 v-if="submitting" :size="14" class="animate-spin" />
+            <KeyRound v-else :size="14" />
+            Retry mint
+          </MButton>
+          <MButton
+            variant="outline"
+            :disabled="submitting"
+            data-testid="policy-scoped-recovery-stepdown"
+            @click="onScopedStepDownRecover"
+          >
+            Step down to Policy-bound
+          </MButton>
+        </div>
+      </div>
+
       <!-- Pending-confirmation hint (step-up) — countdown live-updates
            the remaining seconds so the user sees the 5-min token TTL
            winding down. When expired, the inline "Start over" CTA
-           clears the dead token without disturbing the picker. -->
+           clears the dead token without disturbing the picker.
+           R2 A11y M-2: role="status" + aria-live="polite" + aria-atomic
+           so SR users hear the Scoped consent-params block when the
+           Phase 1 hint mounts (without spamming on each countdown tick;
+           the badge's polite-live is on the parent, but content updates
+           inside it are read-once on mount, not on every second). -->
       <div
         v-if="pendingConfirmation"
         data-testid="policy-pending-confirmation"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
         :class="[
           'p-4 rounded-xl border space-y-2',
           pendingExpired ? 'border-negative/40 bg-negative/5' : 'border-gold/40 bg-gold/8',
@@ -716,6 +1311,27 @@ function humaniseError(e: unknown, fallback: string): string {
             fresh token.
           </template>
         </p>
+        <!-- R1 UX H-4 — when the user is confirming a Scoped step-up,
+             show the EXACT parameters they're authorizing. Sourced from
+             the issue-time snapshot in `pendingScopedParams` so editing
+             the form between Phase 1 + Phase 2 doesn't silently change
+             what the second tap commits. -->
+        <ul
+          v-if="targetTier === 'scoped' && pendingScopedParams"
+          data-testid="policy-pending-scoped-params"
+          class="text-[12px] text-compute dark:text-body-dark leading-relaxed
+                 pl-4 list-disc space-y-0.5"
+        >
+          <li>
+            Max per autonomous buy:
+            <span class="font-mono">{{ formatPendingMhUsdc(pendingScopedParams.maxPerOpUsd6) }}</span>
+            mhUSDC
+          </li>
+          <li>
+            Session length:
+            <span class="font-mono">{{ formatTtlLabel(pendingScopedParams.ttlSec) }}</span>
+          </li>
+        </ul>
         <button
           v-if="pendingExpired"
           type="button"
@@ -786,6 +1402,26 @@ function humaniseError(e: unknown, fallback: string): string {
     <SessionKeyRevealModal
       v-if="showRevealModal"
       @close="showRevealModal = false"
+    />
+
+    <!-- Wave 5 Path D Slice 1 Pickup A — Scoped session-key reveal.
+         Distinct mount from the legacy in-tab `showRevealModal`: this
+         one's `preMinted` carries the FRESHLY-minted ephemeral EOA from
+         the Scoped tier transition commit step. The `smartAccountAddress`
+         field stays bound to the user's kernel (not the EOA) so the
+         modal's "Smart account" label remains accurate. The privateKey
+         decodes to the broker's session signer EOA (`signerAddress`);
+         the operator verifies via `muhaven-broker doctor` after paste.
+         Closing the modal clears the in-memory `scopedReveal` ref so
+         the privateKey is dropped (the parent never persists it). -->
+    <SessionKeyRevealModal
+      v-if="scopedReveal"
+      :pre-minted="{
+        privateKey: scopedReveal.signerPrivateKey,
+        smartAccountAddress: scopedReveal.smartAccountAddress,
+        expiresAtSec: scopedReveal.validUntilSec,
+      }"
+      @close="scopedReveal = null"
     />
   </div>
 </template>

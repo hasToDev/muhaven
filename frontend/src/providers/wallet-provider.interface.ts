@@ -37,6 +37,23 @@ export interface IWalletProvider {
    * Returns `null` for providers without session support.
    */
   exportSessionKeyPrivateHalf?(): Promise<ExportedSessionKey | null>;
+  /**
+   * Wave 5 Path D Slice 1 Pickup A — mint a Scoped session key with a
+   * per-op mhUSDC ceiling + user-set TTL. Independent from the in-tab
+   * `installSessionKey()` path: generates a fresh ephemeral EOA, builds
+   * a `subscription.purchase`-scoped PermissionValidator carrying the
+   * `maxSharesHint` cap, and computes `permissionId` locally via the
+   * validator's `getIdentifier()` (pure keccak over policy+signer bytes;
+   * no on-chain state needed).
+   *
+   * **Does NOT force an on-chain install at mint time.** The validator
+   * is constructed locally so the snapshot can be POSTed to the backend
+   * mirror; the actual on-chain `installPlugin` UserOp lands lazily on
+   * the first Path D send (Pickup B / Slice 4 carrier).
+   *
+   * Returns `null` for providers without session support.
+   */
+  installScopedSessionKey?(opts: InstallScopedSessionInput): Promise<ScopedSessionInstallResult | null>;
 }
 
 export interface ExportedSessionKey {
@@ -46,4 +63,46 @@ export interface ExportedSessionKey {
   smartAccountAddress: `0x${string}`;
   /** Unix seconds — when this session key expires (currently 1h default). */
   expiresAtSec: number;
+}
+
+export interface InstallScopedSessionInput {
+  /** mhUSDC base-6 ceiling — user-intent ceiling per op (display + Slice 5 spend ledger). */
+  maxPerOpUsd6: bigint;
+  /** Per-selector cap on `maxSharesHint` for subscription.purchase, in WHOLE SHARES
+   *  (selector-native unit per PolicySnapshotWire RD-6). Caller converts mhUSDC →
+   *  shares via NAV at mint time. */
+  maxSharesPerOp: bigint;
+  /** TTL in seconds. Caller enforces UI bounds; provider passes through to the
+   *  PermissionValidator's TimestampPolicy `validUntil`. */
+  ttlSec: number;
+}
+
+export interface ScopedSessionInstallResult {
+  /** 0x-prefixed 20-byte hex address derived from the ephemeral EOA private key.
+   *  Matches the value the operator pastes into `MUHAVEN_BROKER_SESSION_KEY` so
+   *  the broker's loaded signer matches `snapshot.signerAddress` per RD-3. */
+  signerAddress: `0x${string}`;
+  /** 0x-prefixed 32-byte hex secp256k1 private key. SURFACED ONCE for out-of-band
+   *  paste; never persisted to localStorage. The caller's modal holds it in a
+   *  reactive ref until the operator copies + acknowledges. */
+  signerPrivateKey: `0x${string}`;
+  /** 0x-prefixed 4-byte hex — `keccak256(policyAndSignerData).slice(0,4)` per
+   *  `@zerodev/permissions/toPermissionValidator.ts:71-89`. Captured at mint
+   *  time from `permissionValidator.getIdentifier()` (pure derivation, no
+   *  on-chain state required).
+   *
+   *  Carried on the install RESULT so the caller can later populate it on
+   *  the broker IPC / mirror POST. **Pickup A's `buildScopedMintBody`
+   *  intentionally OMITS this field from the mint DTO** so the smoke
+   *  checkpoint surfaces `no_permission_id_in_snapshot`; Pickup B propagates
+   *  it through so the Kernel v3.1 24-byte nonce-key composite resolves. */
+  permissionId: `0x${string}`;
+  /** Unix seconds when the snapshot was minted (= `Math.floor(Date.now()/1000)`). */
+  mintedAtSec: number;
+  /** Unix seconds when the snapshot expires (= `mintedAtSec + ttlSec`). */
+  validUntilSec: number;
+  /** 0x-prefixed 20-byte hex smart-account address — the kernel that will host
+   *  the PermissionValidator. Same as the user's existing kernel. Surfaced so
+   *  the modal can render it next to the signerAddress without re-deriving. */
+  smartAccountAddress: `0x${string}`;
 }
