@@ -10,6 +10,7 @@ export { MemoryAgentAuditRepository } from './memory-agent-audit.repository.js';
 export { MemoryAgentCronStateRepository } from './memory-agent-cron-state.repository.js';
 export { MemoryAgentConfirmTokenRepository } from './memory-agent-confirm-token.repository.js';
 export { MemoryAgentDeviceCodeRepository } from './memory-agent-device-code.repository.js';
+export { MemoryScopedSessionRepository } from './memory-scoped-session.repository.js';
 export { MemoryOpenClawIntentRepository } from './memory-openclaw-intent.repository.js';
 export {
   MemoryTelegramLinkCodeRepository,

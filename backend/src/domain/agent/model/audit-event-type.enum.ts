@@ -30,6 +30,15 @@ export const AuditEventType = {
   KycRevocationReceived: 'kyc_revocation_received',
   /** Risk Q&A complete — gate for ConfirmPerAction → PolicyBound */
   RiskQuestionnaireComplete: 'risk_questionnaire_complete',
+  /** Wave 5 Path D Slice 2 — scoped-session row inserted (mirror of
+   *  the broker keystore's per-session JSON). Enum value lands in
+   *  Commit 2.A; emission from MintScopedSessionUseCase wires in
+   *  Commit 2.B alongside the MCP auto-sync. */
+  ScopedSessionMinted: 'scoped_session_minted',
+  /** User-initiated revocation via DELETE /policy/scoped-session/:id. */
+  ScopedSessionRevoked: 'scoped_session_revoked',
+  /** Lazy expiry sweep (cron, future Slice) flips a past-valid-until row. */
+  ScopedSessionExpired: 'scoped_session_expired',
 } as const;
 
 export type AuditEventType = (typeof AuditEventType)[keyof typeof AuditEventType];
@@ -47,4 +56,7 @@ export const AUDIT_EVENT_TYPE_VALUES: readonly AuditEventType[] = [
   AuditEventType.ValidatorUninstalled,
   AuditEventType.KycRevocationReceived,
   AuditEventType.RiskQuestionnaireComplete,
+  AuditEventType.ScopedSessionMinted,
+  AuditEventType.ScopedSessionRevoked,
+  AuditEventType.ScopedSessionExpired,
 ] as const;

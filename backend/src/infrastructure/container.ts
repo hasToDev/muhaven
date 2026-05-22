@@ -11,6 +11,7 @@ import {
   MemoryAgentCronStateRepository,
   MemoryAgentConfirmTokenRepository,
   MemoryAgentDeviceCodeRepository,
+  MemoryScopedSessionRepository,
   MemoryOpenClawIntentRepository,
   MemoryTelegramLinkCodeRepository,
   MemoryTelegramLinkRepository,
@@ -37,6 +38,7 @@ import {
   PgAgentCronStateRepository,
   PgAgentConfirmTokenRepository,
   PgAgentDeviceCodeRepository,
+  PgScopedSessionRepository,
   PgOpenClawIntentRepository,
   PgTelegramLinkCodeRepository,
   PgTelegramLinkRepository,
@@ -80,6 +82,7 @@ import type { IAgentAuditRepository } from '../domain/agent/repository/agent-aud
 import type { IAgentCronStateRepository } from '../domain/agent/repository/agent-cron-state.repository.js';
 import type { IAgentConfirmTokenRepository } from '../domain/agent/repository/agent-confirm-token.repository.js';
 import type { IAgentDeviceCodeRepository } from '../domain/auth/repository/agent-device-code.repository.js';
+import type { IScopedSessionRepository } from '../domain/agent/repository/scoped-session.repository.js';
 import type { IOpenClawIntentRepository } from '../domain/agent/repository/openclaw-intent.repository.js';
 import type {
   ITelegramLinkCodeRepository,
@@ -190,6 +193,9 @@ interface AgentRepositories {
   agentCronStateRepo: IAgentCronStateRepository;
   agentConfirmTokenRepo: IAgentConfirmTokenRepository;
   agentDeviceCodeRepo: IAgentDeviceCodeRepository;
+  /** Wave 5 Path D Slice 2 Commit 2.A — backend mirror of broker
+   *  keystore policy snapshots. RD-3 read-only invariant. */
+  scopedSessionRepo: IScopedSessionRepository;
   openclawIntentRepo: IOpenClawIntentRepository;
   telegramLinkCodeRepo: ITelegramLinkCodeRepository;
   telegramLinkRepo: ITelegramLinkRepository;
@@ -245,6 +251,7 @@ function createMemoryAgentRepos(): AgentRepositories {
     agentCronStateRepo: new MemoryAgentCronStateRepository(),
     agentConfirmTokenRepo: new MemoryAgentConfirmTokenRepository(),
     agentDeviceCodeRepo: new MemoryAgentDeviceCodeRepository(),
+    scopedSessionRepo: new MemoryScopedSessionRepository(),
     openclawIntentRepo: new MemoryOpenClawIntentRepository(),
     telegramLinkCodeRepo: new MemoryTelegramLinkCodeRepository(),
     telegramLinkRepo: new MemoryTelegramLinkRepository(),
@@ -259,6 +266,7 @@ function createPostgresAgentRepos(): AgentRepositories {
     agentCronStateRepo: new PgAgentCronStateRepository(db),
     agentConfirmTokenRepo: new PgAgentConfirmTokenRepository(db),
     agentDeviceCodeRepo: new PgAgentDeviceCodeRepository(db),
+    scopedSessionRepo: new PgScopedSessionRepository(db),
     openclawIntentRepo: new PgOpenClawIntentRepository(db),
     telegramLinkCodeRepo: new PgTelegramLinkCodeRepository(db),
     telegramLinkRepo: new PgTelegramLinkRepository(db),
@@ -949,6 +957,12 @@ export const container = {
   },
   get agentDeviceCodeRepo() {
     return getAgentRepos().agentDeviceCodeRepo;
+  },
+  // Wave 5 Path D Slice 2 Commit 2.A — read-only mirror of broker keystore
+  // policy snapshots (RD-3). Consumed by the
+  // POST/GET/DELETE /policy/scoped-session endpoint use-cases.
+  get scopedSessionRepo() {
+    return getAgentRepos().scopedSessionRepo;
   },
   get openclawIntentRepo() {
     return getAgentRepos().openclawIntentRepo;

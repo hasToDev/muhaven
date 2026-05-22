@@ -6,6 +6,11 @@ import type { ActionId } from '../../../domain/agent/model/action-id.enum.js';
 import { AUDIT_EVENT_TYPE_VALUES, type AuditEventType } from '../../../domain/agent/model/audit-event-type.enum.js';
 import type { AgentUserState } from '../../../domain/agent/model/agent-user-state.js';
 import type { AgentAuditEvent } from '../../../domain/agent/model/agent-audit-event.js';
+import type {
+  ScopedSession,
+  ScopedSelectorCap,
+} from '../../../domain/agent/model/scoped-session.js';
+import type { ScopedSessionStatus } from '../../../domain/agent/model/scoped-session-status.enum.js';
 
 const tierSchema = z.enum(TIER_VALUES as readonly [Tier, ...Tier[]]);
 const surfaceSchema = z.enum(SURFACE_VALUES as readonly [Surface, ...Surface[]]);
@@ -159,4 +164,205 @@ export interface PauseResponseDto {
 export interface AuditQueryResponseDto {
   items: AgentAuditEventDto[];
   cursor?: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Wave 5 Path D Slice 2 Commit 2.A — scoped-session mirror DTO + Zod wire
+// validators. Mirrors the broker's `PolicySnapshotWire` shape in
+// `packages/mcp/src/broker/protocol.ts` so the data round-trips
+// frontend → backend mirror → MCP server → broker keystore without
+// reshape. Re-validation here is defense-in-depth — the broker's wire
+// parser also enforces these constraints, but the backend cannot trust
+// any field a malicious frontend POST might set.
+// ─────────────────────────────────────────────────────────────────────────
+
+const HEX_4_BYTE_RE = /^0x[0-9a-fA-F]{8}$/;
+const HEX_20_BYTE_RE = /^0x[0-9a-fA-F]{40}$/;
+const HEX_32_BYTE_RE = /^0x[0-9a-fA-F]{64}$/;
+const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+/** uint256 decimal — 0 alone OR a non-zero leading digit followed by ≤77 digits. */
+const UINT256_DEC_RE = /^(0|[1-9][0-9]{0,77})$/;
+const UINT256_MAX = (1n << 256n) - 1n;
+
+const uint256DecString = z
+  .string()
+  .regex(UINT256_DEC_RE, 'must be a uint256 decimal string')
+  .refine((s) => BigInt(s) <= UINT256_MAX, 'exceeds uint256 max (2^256-1)');
+
+/**
+ * Static-arg encoding caveat (Slice 1 invariant): the broker's
+ * `decodeUint256ArgAt` decoder reads the 32-byte word at the cap offset
+ * directly. For dynamic-typed args (`bytes`, `string`, dynamic struct
+ * head), the slot at that offset is an OFFSET to the dynamic tail, not
+ * the value — so a cap on such an arg trivially passes against the
+ * small offset value. Slice 1 only ships `subscription.purchase`
+ * (static at slot 2); future selectors with dynamic args at-or-before
+ * the cap index MUST add an ABI-aware decoder, or reject at mint.
+ */
+export const ScopedSelectorCapSchema = z
+  .object({
+    selector: z
+      .string()
+      .regex(HEX_4_BYTE_RE, 'selector must be a 0x-prefixed 4-byte hex'),
+    capArgIndex: z.union([z.number().int().min(0).max(31), z.null()]),
+    maxAmount: z.union([uint256DecString, z.null()]),
+  })
+  .strict()
+  .refine(
+    (c) => (c.capArgIndex === null) === (c.maxAmount === null),
+    'capArgIndex and maxAmount must both be null or both non-null',
+  );
+
+/**
+ * The body shape the dashboard POSTs to `POST /policy/scoped-session`.
+ * Carries the broker's wire-shape verbatim AS `snapshot` so the mirror
+ * → broker auto-sync (Commit 2.B) is a pass-through, plus the
+ * user-intent `maxPerOpUsd6` (mhUSDC base-6 ceiling, distinct from
+ * `selectorCaps[i].maxAmount` which is in selector-native unit).
+ *
+ * Defense-in-depth: every regex / range constraint mirrors the broker's
+ * own parser. The mint use-case re-checks `signerAddress` shape +
+ * `targetContracts.includes(subscription)` etc; defense-in-depth here
+ * makes invalid input bounce before any DB write.
+ */
+export const MintScopedSessionDtoSchema = z
+  .object({
+    snapshot: z
+      .object({
+        sessionId: z.string().regex(SESSION_ID_RE),
+        mode: z.literal('scoped'),
+        signerAddress: z
+          .string()
+          .regex(HEX_20_BYTE_RE, 'signerAddress must be a 0x-prefixed 20-byte hex'),
+        targetContracts: z
+          .array(z.string().regex(HEX_20_BYTE_RE, 'invalid target contract'))
+          .min(1)
+          .max(32),
+        selectorCaps: z.array(ScopedSelectorCapSchema).min(1).max(32),
+        // Epoch seconds. Capped at `Number.MAX_SAFE_INTEGER` (≈ year
+        // 287_396_259) so a malicious frontend POSTing `1e18` (within
+        // int8 range but past JS's safe-integer range) gets rejected at
+        // the wire instead of round-tripping through the Pg `bigint`
+        // with IEEE 754 precision loss. The bound is well past any
+        // plausible TTL ceiling.
+        validUntilSec: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+        mintedAtSec: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+        consentActionHash: z.string().regex(HEX_32_BYTE_RE).optional(),
+        consentTextSha256: z.string().regex(HEX_32_BYTE_RE).optional(),
+        /** 4-byte permissionId optional in Slice 1; MUST be populated by
+         *  Pickup B / Slice 2 frontend so the MCP server can compose the
+         *  Kernel v3.1 24-byte nonce-key composite. Without it the Path D
+         *  probe chain returns `no_permission_id_in_snapshot`. */
+        permissionId: z.string().regex(HEX_4_BYTE_RE).optional(),
+      })
+      .strict(),
+    /** User-intent USDC ceiling in 6-decimal base. Distinct from the
+     *  per-selector `maxAmount` (which is in selector-native unit, e.g.
+     *  shares for `subscription.purchase`). The dashboard banner
+     *  displays this; Slice 5 spend ledger references it as the
+     *  cumulative cap. */
+    maxPerOpUsd6: uint256DecString,
+    surface: surfaceSchema,
+  })
+  .strict()
+  .refine(
+    (input) => {
+      // `selectorCaps[i].selector` MUST be unique within the array —
+      // mirrors `parsePolicySnapshot::seenSelectors` in the broker.
+      const seen = new Set<string>();
+      for (const cap of input.snapshot.selectorCaps) {
+        const lower = cap.selector.toLowerCase();
+        if (seen.has(lower)) return false;
+        seen.add(lower);
+      }
+      return true;
+    },
+    { message: 'selectorCaps contains duplicate selectors' },
+  );
+
+export type MintScopedSessionDto = z.infer<typeof MintScopedSessionDtoSchema>;
+
+export const RevokeScopedSessionParamsSchema = z
+  .object({
+    sessionId: z.string().regex(SESSION_ID_RE),
+  })
+  .strict();
+
+export type RevokeScopedSessionParams = z.infer<typeof RevokeScopedSessionParamsSchema>;
+
+export const GetScopedSessionQuerySchema = z
+  .object({
+    surface: surfaceSchema,
+  })
+  .strict();
+
+export type GetScopedSessionQuery = z.infer<typeof GetScopedSessionQuerySchema>;
+
+export interface ScopedSelectorCapDto {
+  selector: string;
+  capArgIndex: number | null;
+  /** uint256 decimal string — preserves bigint precision across JSON. */
+  maxAmount: string | null;
+}
+
+export interface ScopedSessionDto {
+  sessionId: string;
+  /**
+   * Discriminator field for Slice 4 wildcard preparation. Today only
+   * `'scoped'` is emitted; the field exists so Commit 2.B's MCP auto-sync
+   * can construct a `PolicySnapshotWire` (which requires `mode`) by pure
+   * DTO pass-through without injecting the constant in MCP-side code.
+   * Slice 4 widens the literal union to `'scoped' | 'wildcard'`.
+   */
+  mode: 'scoped';
+  /** Null when the user has been deleted (FK CASCADE SET NULL); the row
+   *  is preserved for audit-replay but loses the user binding. */
+  userId: string | null;
+  surface: Surface;
+  status: ScopedSessionStatus;
+  signerAddress: string;
+  permissionId: string | null;
+  targetContracts: readonly string[];
+  selectorCaps: readonly ScopedSelectorCapDto[];
+  /** uint256 decimal string. */
+  maxPerOpUsd6: string;
+  totalSpentUsd6: string;
+  validUntilSec: number;
+  mintedAtSec: number;
+  consentActionHash: string | null;
+  consentTextSha256: string | null;
+  mintedAt: string;
+  revokedAt: string | null;
+  expiredAt: string | null;
+}
+
+export function toScopedSelectorCapDto(c: ScopedSelectorCap): ScopedSelectorCapDto {
+  return {
+    selector: c.selector,
+    capArgIndex: c.capArgIndex,
+    maxAmount: c.maxAmount,
+  };
+}
+
+export function toScopedSessionDto(session: ScopedSession): ScopedSessionDto {
+  return {
+    sessionId: session.sessionId,
+    mode: 'scoped',
+    userId: session.userId,
+    surface: session.surface,
+    status: session.status,
+    signerAddress: session.signerAddress,
+    permissionId: session.permissionId,
+    targetContracts: session.targetContracts,
+    selectorCaps: session.selectorCaps.map(toScopedSelectorCapDto),
+    maxPerOpUsd6: session.maxPerOpUsd6.toString(),
+    totalSpentUsd6: session.totalSpentUsd6.toString(),
+    validUntilSec: session.validUntilSec,
+    mintedAtSec: session.mintedAtSec,
+    consentActionHash: session.consentActionHash,
+    consentTextSha256: session.consentTextSha256,
+    mintedAt: session.mintedAt.toISOString(),
+    revokedAt: session.revokedAt?.toISOString() ?? null,
+    expiredAt: session.expiredAt?.toISOString() ?? null,
+  };
 }

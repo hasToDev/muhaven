@@ -4,6 +4,7 @@ import {
   text,
   timestamp,
   integer,
+  bigint,
   numeric,
   jsonb,
   boolean,
@@ -505,6 +506,15 @@ export const agentAuditEventTypeEnum = pgEnum('agent_audit_event_type', [
   'validator_uninstalled',
   'kyc_revocation_received',
   'risk_questionnaire_complete',
+  // Wave 5 Path D Slice 2 (Commit 2.A) — scoped-session lifecycle audit.
+  // Enum values landed in the foundation commit so the migration is a
+  // single ALTER TYPE...ADD VALUE round; emission from MintScopedSession /
+  // RevokeScopedSession use-cases is wired in Commit 2.B alongside the MCP
+  // auto-sync. Adding unused enum values is harmless — Postgres enums
+  // append-only by value via Drizzle declarative push.
+  'scoped_session_minted',
+  'scoped_session_revoked',
+  'scoped_session_expired',
 ]);
 
 export const agentUserState = pgTable(
@@ -600,6 +610,222 @@ export const agentConfirmTokens = pgTable(
   (t) => [
     index('agent_confirm_tokens_user_expires_idx').on(t.userId, t.expiresAt),
     index('agent_confirm_tokens_action_hash_idx').on(t.actionHash, t.userId),
+  ],
+);
+
+// ────────────────────────────────────────────────────────────────────────
+// Scoped-session mirror (Wave 5 Path D Slice 2 Commit 2.A · RD-3)
+//
+// Per RD-3 in `development/DEV_WAVE_5/PATH_D_PLAN.md`, the broker keystore
+// (`~/.muhaven/policy-snapshots/<sessionId>.json` per `policy-snapshot.ts`)
+// holds the AUTHORITATIVE policy snapshot — the daemon decides whether to
+// sign UserOps against that file. This Postgres table is a READ-ONLY
+// MIRROR of the same data so the dashboard can render an "active session"
+// banner, audit-replay tools can answer "what cap was in force at tx
+// time?", and the MCP server can fetch the snapshot to install into a
+// freshly-restarted broker (the snapshot transport gap Slice 1 surfaced
+// pre-commit).
+//
+// **Privacy invariant**: this table never stores cleartext FHE values
+// (mhUSDC balances, share counts). `max_per_op_usd6` is the operator-
+// chosen ceiling in mhUSDC base-6, NOT a real spend. `selector_caps`
+// carries selector-denominated arg caps in the on-chain unit (shares for
+// `subscription.purchase`). Pre-publish review must re-verify no
+// decrypt-result lands here.
+//
+// **Column types**:
+//  - `session_id` matches the broker's regex (`^[A-Za-z0-9_-]{1,128}$`)
+//    so the mirror PK is the same string both surfaces use to refer to
+//    the snapshot.
+//  - `signer_address` is the lowercased 0x-hex of the address derived
+//    from the session-key private half. Broker compares against its
+//    loaded signer at sign time; mismatch rejects (policy_violation in
+//    the broker; signer_mismatch fallback in handlers.ts attemptPathD).
+//  - `permission_id` is the 4-byte `@zerodev/permissions::getPermissionId()`
+//    output; NULL until the frontend mint flow populates it (Pickup B).
+//    The optional `0x[0-9a-f]{8}` CHECK constraint mirrors the wire
+//    validator in `packages/mcp/src/broker/protocol.ts::isOptionalPermissionId`.
+//  - `target_contracts` + `selector_caps` round-trip the JSON exactly as
+//    the broker stores it on disk, so the mirror → broker auto-sync in
+//    Commit 2.B is a pass-through (no re-validation reshape).
+//  - `max_per_op_usd6` + `total_spent_usd6` are uint256-decimal-string-
+//    compatible (precision 78). Slice 5 spend ledger increments
+//    `total_spent_usd6`; Slice 1 leaves it at 0.
+//  - `minted_at_sec` mirrors the snapshot's wire `mintedAtSec` (epoch
+//    seconds the FRONTEND timestamped at mint). `minted_at` is the DB
+//    receipt time (server clock). The two can drift by clock skew —
+//    queries that need "when did the user actually mint" should use
+//    `minted_at_sec`; queries that need "when did the row land in our
+//    storage" should use `minted_at`. Slice 4 wildcard requires their
+//    delta to be ≤ 30s as a freshness gate; Slice 1 doesn't enforce.
+//  - `consent_action_hash` + `consent_text_sha256` are the forensic-
+//    chain breadcrumbs per Security M-2 + Slice 4 gate item #5. Both
+//    optional in Slice 1, mandatory at Slice 4 wildcard.
+//
+// **Indexes**: the hot path is "is there an active scoped session for
+// (user, surface)?" — both the dashboard banner read AND the MCP auto-
+// sync hit this. Partial index `WHERE status='active'` keeps the
+// in-RAM working set narrow (revoked + expired rows stay on disk but
+// don't bloat the index). Defensive secondary index on `signer_address`
+// for forensic queries like "did this address ever hold scope?".
+
+export const agentScopedSessionStatusEnum = pgEnum(
+  'agent_scoped_session_status',
+  ['active', 'revoked', 'expired'],
+);
+
+export const agentScopedSessions = pgTable(
+  'agent_scoped_sessions',
+  {
+    sessionId: text('session_id').primaryKey(),
+    /**
+     * Audit-replay survives user deletion: drop `notNull()` and set
+     * `onDelete: 'set null'` so a future GDPR-style user-deletion path
+     * preserves the scoped-session row (forensic value: "what cap was in
+     * force when tx X mined?") without a CASCADE that would erase the
+     * audit chain. Mirrors `agentDeviceCodes.userId` precedent. Without
+     * this, the FK default is NO ACTION → user deletion blocks forever.
+     */
+    userId: text('user_id').references(() => users.id, { onDelete: 'set null' }),
+    surface: agentSurfaceEnum('surface').notNull(),
+    status: agentScopedSessionStatusEnum('status').notNull().default('active'),
+    /** 0x-prefixed 20-byte hex, lowercased. ECDSA address derived from
+     *  the session-key private half the frontend minted. */
+    signerAddress: text('signer_address').notNull(),
+    /** 0x-prefixed 4-byte hex from `@zerodev/permissions::getPermissionId()`.
+     *  NULL until Pickup B's frontend wires it; Path D probe chain returns
+     *  `no_permission_id_in_snapshot` until populated. */
+    permissionId: text('permission_id'),
+    /** Lowercased 0x-addresses the broker will accept as innerCall.target.
+     *  JSON array of strings; matches the broker's
+     *  `PolicySnapshotWire.targetContracts` shape exactly. */
+    targetContracts: jsonb('target_contracts').notNull(),
+    /** Per-selector enforcement rules. JSON array of
+     *  `{ selector: '0x' + 8 hex, capArgIndex: number|null, maxAmount: string|null }`.
+     *  Round-trips broker's `PolicySnapshotWire.selectorCaps` verbatim. */
+    selectorCaps: jsonb('selector_caps').notNull(),
+    /** User-intent USDC ceiling in 6-decimal base. Distinct from
+     *  per-selector caps (which are in on-chain units, e.g. shares for
+     *  subscription.purchase). Used by the dashboard banner; Slice 5
+     *  spend ledger references this as the cumulative cap. */
+    maxPerOpUsd6: numeric('max_per_op_usd6', { precision: 78, scale: 0 }).notNull(),
+    /** Cumulative spend tracker. Slice 5 spend ledger increments this on
+     *  each `userop_submitted` audit; Slice 1/2 leave it at 0. */
+    totalSpentUsd6: numeric('total_spent_usd6', { precision: 78, scale: 0 })
+      .notNull()
+      .default('0'),
+    /**
+     * Snapshot expiry — epoch seconds. Broker rejects sign_userop after
+     * this time; `findLatestActive` filters server-side. `bigint` (int8)
+     * not `numeric` so `Number(...)` at the repo→domain boundary never
+     * truncates: JS `Number.MAX_SAFE_INTEGER` (2^53 ≈ year 287_396_259) is
+     * far past any plausible TTL ceiling, and Pg int8 → JS number via
+     * Drizzle's `mode: 'number'` is fixed-width + register-comparable.
+     */
+    validUntilSec: bigint('valid_until_sec', { mode: 'number' }).notNull(),
+    /** Frontend's claimed mint time (snapshot `mintedAtSec` from the wire
+     *  shape). Allowed clock skew vs `mintedAt` is operator policy;
+     *  Slice 4 wildcard enforces ≤30s. See `validUntilSec` JSDoc for the
+     *  `bigint` rationale. */
+    mintedAtSec: bigint('minted_at_sec', { mode: 'number' }).notNull(),
+    /** Optional Security M-2 / Slice 4 gate item #5 forensic chain. */
+    consentActionHash: text('consent_action_hash'),
+    consentTextSha256: text('consent_text_sha256'),
+    /** DB receipt time. */
+    mintedAt: timestamp('minted_at').notNull().defaultNow(),
+    revokedAt: timestamp('revoked_at'),
+    expiredAt: timestamp('expired_at'),
+  },
+  (t) => [
+    /**
+     * **Uniqueness invariant** — "at most one active session per
+     * `(user_id, surface)`". Partial UNIQUE keyed on EXACTLY those two
+     * columns (under the `WHERE status='active'` predicate) so two
+     * concurrent mints with distinct sessionIds (and distinct
+     * timestamps) CANNOT both land: the second insert fails Pg `23505`
+     * and the application layer maps it to a 409 Conflict. Adding more
+     * columns to the unique key would defeat the invariant — fresh-CR
+     * round-2 HIGH-1 codified this: putting `valid_until_sec` or
+     * `minted_at` in the unique tuple makes the 4-tuple miss across two
+     * racing requests (different `now()` ms-precision), so both rows
+     * land and the broker keystore can momentarily mirror two snapshots.
+     *
+     * Name suffix `_uq_v2` per memory
+     * `feedback_drizzle_predicate_change_index_rename`: Drizzle
+     * declarative push compares index NAMES not predicates. The `_v1`
+     * shape (4-tuple) shipped briefly to the working tree; `_v2`
+     * forces a clean DROP+CREATE on next `db:push`.
+     */
+    uniqueIndex('agent_scoped_sessions_user_surface_active_uq_v2')
+      .on(t.userId, t.surface)
+      .where(sql`status = 'active'`),
+    /**
+     * **Hot-path lookup** — separate non-unique partial index keyed on
+     * `(user_id, surface, valid_until_sec, minted_at DESC)`. Backs:
+     *   - Dashboard `ActiveSessionBanner.vue` poll (Commit 2.C)
+     *   - MCP server auto-sync on `position.*` tool calls (Commit 2.B)
+     *   - Use-case active-dedup pre-check (mint-scoped-session.use-case.ts)
+     *
+     * The leading equality columns (`user_id, surface`) make the index
+     * sargable for `findLatestActive`; the trailing `valid_until_sec`
+     * makes the `> nowSec` inequality index-scannable. The
+     * `minted_at DESC` trailing column does NOT generally eliminate a
+     * sort step (after a range scan on `valid_until_sec`, the rows
+     * are ordered by `(valid_until_sec, minted_at DESC)`, not by
+     * `minted_at DESC` alone — Pg still has to sort across the range).
+     * It's a tiebreak column: in the typical 0-or-1-row case (per the
+     * sibling UNIQUE invariant), the trailing column is decorative.
+     *
+     * Splitting the UNIQUE invariant from the lookup-shape index is
+     * deliberate: the UNIQUE column set must EXACTLY match the
+     * invariant (`user_id, surface`) so concurrent-race protection
+     * works; the lookup index can carry extra trailing columns for
+     * sargability without affecting uniqueness. Both partials share
+     * the `WHERE status='active'` predicate so the planner can prefer
+     * either based on cardinality.
+     */
+    index('agent_scoped_sessions_lookup_active_v1')
+      .on(t.userId, t.surface, t.validUntilSec, t.mintedAt.desc())
+      .where(sql`status = 'active'`),
+    // Forensic lookups — "did this session-key address ever mint a
+    // snapshot?". Useful for incident response.
+    index('agent_scoped_sessions_signer_idx').on(t.signerAddress),
+    // CHECK constraints mirror the broker's wire-shape validators in
+    // `packages/mcp/src/broker/protocol.ts` so a hand-INSERT or an
+    // operator-CLI write can't slip a malformed value past the gate
+    // that the use-case layer normally enforces. Hex regexes match
+    // exactly: 20-byte address (40 lower-hex chars), optional 4-byte
+    // permissionId (8 lower-hex), optional 32-byte 64-hex consent hashes.
+    check(
+      'agent_scoped_sessions_session_id_chk',
+      sql`session_id ~ '^[A-Za-z0-9_-]{1,128}$'`,
+    ),
+    check(
+      'agent_scoped_sessions_signer_address_chk',
+      sql`signer_address ~ '^0x[0-9a-f]{40}$'`,
+    ),
+    check(
+      'agent_scoped_sessions_permission_id_chk',
+      sql`permission_id IS NULL OR permission_id ~ '^0x[0-9a-f]{8}$'`,
+    ),
+    check(
+      'agent_scoped_sessions_consent_action_hash_chk',
+      sql`consent_action_hash IS NULL OR consent_action_hash ~ '^0x[0-9a-f]{64}$'`,
+    ),
+    check(
+      'agent_scoped_sessions_consent_text_sha256_chk',
+      sql`consent_text_sha256 IS NULL OR consent_text_sha256 ~ '^0x[0-9a-f]{64}$'`,
+    ),
+    check(
+      'agent_scoped_sessions_max_per_op_usd6_chk',
+      sql`max_per_op_usd6 >= 0`,
+    ),
+    check(
+      'agent_scoped_sessions_total_spent_usd6_chk',
+      sql`total_spent_usd6 >= 0`,
+    ),
+    check('agent_scoped_sessions_valid_until_sec_chk', sql`valid_until_sec > 0`),
+    check('agent_scoped_sessions_minted_at_sec_chk', sql`minted_at_sec > 0`),
   ],
 );
 
