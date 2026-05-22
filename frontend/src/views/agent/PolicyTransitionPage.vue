@@ -571,9 +571,9 @@ function openReveal(): void {
  * Three steps:
  *   1. Mint a fresh ephemeral EOA + Scoped PermissionValidator locally
  *      via `walletStore.installScopedSessionKey`. Captures
- *      `permissionId` for Pickup B (intentionally NOT propagated to the
- *      mint DTO this commit so the smoke checkpoint surfaces
- *      `no_permission_id_in_snapshot`).
+ *      `permissionId` and threads it through `buildScopedMintBody`
+ *      (Pickup B) so the broker can compose the Kernel v3.1 24-byte
+ *      nonce-key composite at sign time.
  *   2. POST the snapshot to the backend mirror
  *      (`/api/v1/agent/policy/scoped-session`). The MCP auto-sync
  *      (Commit 2.B) pulls from this mirror on the next position.buy
@@ -700,6 +700,13 @@ async function mintScopedSession(consentActionHash: `0x${string}`): Promise<void
     validUntilSec: installed.validUntilSec,
     consentActionHash,
     surface: 'mcp',
+    // Pickup B — thread the PermissionValidator's identifier into the
+    // snapshot so the MCP server can compose the Kernel v3.1 24-byte
+    // nonce-key composite. Without this, every Path D send falls back
+    // at `no_permission_id_in_snapshot`. The helper internally
+    // lowercases + shape-asserts (`^0x[0-9a-f]{8}$`) so we don't need
+    // to normalize here. R1 multi-agent review M-3 absorbed.
+    permissionId: installed.permissionId,
   })
 
   try {

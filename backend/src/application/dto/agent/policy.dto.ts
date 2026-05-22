@@ -142,15 +142,24 @@ export function toAuditEventDto(event: AgentAuditEvent): AgentAuditEventDto {
 
 export interface PolicyStateResponseDto {
   /**
-   * The authenticated user's smart-account address (= JWT subject).
-   * Surfaced at the top level (not just on `surfaces[n].userId`) so MCP
-   * clients can resolve the kernel address without ordering / non-empty
-   * assumptions about the surfaces array.
+   * The authenticated user's on-chain kernel smart-account address
+   * (0x-prefixed 20-byte hex; sourced from the SIWE-verified
+   * `authPayload.walletAddress`, NOT from the JWT subject which is a
+   * UUID). Surfaced at the top level (not just on `surfaces[n].userId`)
+   * so MCP clients can resolve the kernel address without ordering /
+   * non-empty assumptions about the surfaces array.
    *
    * Wave 5 Path D Slice 1 (Commit 3) — added so the MCP server can
    * resolve the kernel address before building a Path D UserOp. Slice 2
    * will extend further with an `activeScopedSession` block carrying
    * the in-force snapshot summary (RD-3).
+   *
+   * Pickup A follow-up — earlier doc claimed "= JWT subject"; the
+   * implementation matched the wrong doc and emitted the UUID. The
+   * MCP server's `attemptPathD` validates `^0x[0-9a-fA-F]{40}$` on
+   * this field and a UUID can never match → forced
+   * `no_validator_registered` for every user, every call. Both the
+   * doc and the impl rotated to walletAddress in the same diff.
    */
   accountAddress: string;
   surfaces: AgentUserStateDto[];

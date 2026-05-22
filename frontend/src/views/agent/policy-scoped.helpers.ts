@@ -218,6 +218,20 @@ export interface BuildScopedMintBodyInput {
   /** 0x-prefixed 32-byte hex from `prefixConsentActionHash`. */
   consentActionHash: `0x${string}`
   surface: 'havenbot' | 'mcp' | 'openclaw' | 'checkout'
+  /**
+   * Pickup B — `getPermissionId()` for the installed
+   * `@zerodev/permissions` PermissionValidator. 4-byte hex
+   * (`keccak256(policyAndSignerData).slice(0, 4)`). The MCP server
+   * needs this to compose the Kernel v3.1 24-byte nonce-key composite
+   * — without it, the bundler reads the SUDO-validator nonce slot and
+   * the UserOp is routed through the wrong validator → AA24
+   * InvalidSigner on submit. Slice 1 Pickup A intentionally OMITTED
+   * this to land at `no_permission_id_in_snapshot` as the smoke
+   * checkpoint; Pickup B threads it through so the smoke advances to
+   * `ok:true, path:'D'`. Validated server-side against
+   * `^0x[0-9a-f]{8}$` (lowercased + 4-byte).
+   */
+  permissionId: `0x${string}`
 }
 
 /**
@@ -266,11 +280,21 @@ export interface ScopedMintBodyShape {
  *   - `maxPerOpUsd6` serialized as decimal string (uint256 base-6).
  *   - `consentActionHash` is `0x`-prefixed (caller responsibility — the
  *     helper does NOT prefix; verify shape with `prefixConsentActionHash`).
- *   - `permissionId` intentionally OMITTED — Pickup A locks the smoke
- *     checkpoint at `no_permission_id_in_snapshot` per RD-5 / Slice 1
- *     anticipated progression. Pickup B adds it.
+ *   - `permissionId` PRESENT (Pickup B). The helper lowercases the
+ *     value internally + validates against `^0x[0-9a-f]{8}$` so a
+ *     future call site that forgets to pre-normalize doesn't land a
+ *     mixed-case row that fails server-side Zod. Throws on shape
+ *     violation rather than silently truncating — fail fast at the
+ *     populate boundary. R1 multi-agent review M-3 (Security Engineer +
+ *     Frontend Developer) absorbed.
  */
 export function buildScopedMintBody(input: BuildScopedMintBodyInput): ScopedMintBodyShape {
+  const permissionIdLower = input.permissionId.toLowerCase() as `0x${string}`
+  if (!/^0x[0-9a-f]{8}$/.test(permissionIdLower)) {
+    throw new Error(
+      `buildScopedMintBody: permissionId must be 0x-prefixed 4-byte hex; got ${input.permissionId.length} chars`,
+    )
+  }
   return {
     snapshot: {
       sessionId: input.sessionId,
@@ -287,7 +311,7 @@ export function buildScopedMintBody(input: BuildScopedMintBodyInput): ScopedMint
       validUntilSec: input.validUntilSec,
       mintedAtSec: input.mintedAtSec,
       consentActionHash: input.consentActionHash,
-      // permissionId intentionally omitted — Pickup A invariant.
+      permissionId: permissionIdLower,
     },
     maxPerOpUsd6: input.maxPerOpUsd6.toString(),
     surface: input.surface,

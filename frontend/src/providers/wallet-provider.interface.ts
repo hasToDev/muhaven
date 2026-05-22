@@ -91,11 +91,13 @@ export interface ScopedSessionInstallResult {
    *  time from `permissionValidator.getIdentifier()` (pure derivation, no
    *  on-chain state required).
    *
-   *  Carried on the install RESULT so the caller can later populate it on
-   *  the broker IPC / mirror POST. **Pickup A's `buildScopedMintBody`
-   *  intentionally OMITS this field from the mint DTO** so the smoke
-   *  checkpoint surfaces `no_permission_id_in_snapshot`; Pickup B propagates
-   *  it through so the Kernel v3.1 24-byte nonce-key composite resolves. */
+   *  Carried on the install RESULT so the caller populates it on the
+   *  broker IPC / mirror POST. **Pickup B (`buildScopedMintBody`) now
+   *  REQUIRES this field on the mint DTO** so the Kernel v3.1 24-byte
+   *  nonce-key composite resolves at the broker. Without it the
+   *  bundler reads the SUDO-validator nonce slot → AA24 InvalidSigner.
+   *  History: Pickup A intentionally omitted it as the smoke checkpoint
+   *  (`no_permission_id_in_snapshot`); Pickup B closes the gate. */
   permissionId: `0x${string}`;
   /** Unix seconds when the snapshot was minted (= `Math.floor(Date.now()/1000)`). */
   mintedAtSec: number;

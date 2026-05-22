@@ -168,6 +168,48 @@ describe('MintScopedSessionUseCase', () => {
     });
   });
 
+  it('allows re-mint when an existing active row has expired by time (Pickup A follow-up bug #10)', async () => {
+    // Repro for the dedup-vs-expiry trap: the partial UNIQUE
+    // `agent_scoped_sessions_user_surface_active_uq_v2` filters on
+    // `status='active'` ONLY (no `valid_until_sec` predicate). Without
+    // the opportunistic markExpired sweep at use-case step 2a, an
+    // already-time-expired row would slip past `findLatestActive`
+    // (which DOES filter on time) and then trip the DB unique
+    // constraint at `scopedRepo.create` (23505). The operator hit
+    // this on the Pickup A re-smoke 2026-05-22; the only recovery
+    // was a manual `UPDATE` on prod DB.
+    await seedTier(Tier.Scoped);
+
+    // Seed an expired-but-status=active row directly into the repo
+    // (mimics the on-disk state where the expiry-sweep cron hasn't
+    // flipped status yet). Use the future-time clock to insert, then
+    // jump forward past validUntilSec.
+    const EARLY = new Date('2026-05-22T11:00:00.000Z');
+    const EARLY_SEC = Math.floor(EARLY.getTime() / 1000);
+    await useCase.execute({
+      userId: 'u1',
+      dto: makeDto({
+        sessionId: 'expired-but-active',
+        validUntilSec: EARLY_SEC + 300, // expires 5min after EARLY
+        mintedAtSec: EARLY_SEC,
+      }),
+      now: EARLY,
+    });
+
+    // Now we're at NOW which is 1h past EARLY (= 55min past validUntilSec).
+    const result = await useCase.execute({
+      userId: 'u1',
+      dto: makeDto({ sessionId: 'fresh-session', mintedAtSec: NOW_SEC }),
+      now: NOW,
+    });
+    expect(result.session.sessionId).toBe('fresh-session');
+
+    // The expired row should now be marked status='expired'.
+    const expired = await scopedRepo.findById('expired-but-active');
+    expect(expired?.status).toBe('expired');
+    expect(expired?.expiredAt).toEqual(NOW);
+  });
+
   it('rejects with 422 when validUntilSec is not in the future', async () => {
     await seedTier(Tier.Scoped);
     await expect(

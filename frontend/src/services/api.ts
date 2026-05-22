@@ -1365,9 +1365,11 @@ export const agentPolicyApi = {
    *     for subscription.purchase per RD-6), NOT mhUSDC base-6.
    *   - `maxPerOpUsd6` is the user-intent mhUSDC base-6 ceiling — distinct
    *     from `selectorCaps[i].maxAmount`.
-   *   - `permissionId` is intentionally OMITTED in Pickup A so the MCP
-   *     auto-sync surfaces `no_permission_id_in_snapshot` per the
-   *     anticipated smoke checkpoint; Pickup B adds it.
+   *   - `permissionId` is REQUIRED — 4-byte 0x-prefixed lowercase hex
+   *     (backend Zod gate `^0x[0-9a-f]{8}$`). Pickup B threads it so
+   *     the broker can compose the Kernel v3.1 24-byte nonce-key
+   *     composite. History: Pickup A omitted as smoke checkpoint
+   *     (`no_permission_id_in_snapshot`); Pickup B closes the gate.
    *   - `surface: 'mcp'` is the operator-confirmed lock — surface is the
    *     autonomy SCOPE (broker / MCP), not the configuration UI.
    *

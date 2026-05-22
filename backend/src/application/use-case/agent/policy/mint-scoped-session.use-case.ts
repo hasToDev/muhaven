@@ -148,11 +148,42 @@ export class MintScopedSessionUseCase {
       );
     }
 
-    // 2. Active-dedup. A user wanting to rotate a session must DELETE
-    //    the old row first (operator-confirmed Slice 2 design). The DB
-    //    PK on sessionId also catches a same-id retry, but a different
-    //    sessionId for the same (user, surface) would slip past PK
-    //    without this guard.
+    // 2a. Opportunistic expiry sweep (Pickup A follow-up — bug #10 in
+    //    PICKUP_A_OPEN_INVESTIGATIONS.md). The DB unique constraint
+    //    `agent_scoped_sessions_user_surface_active_uq_v2` is partial on
+    //    `status='active'` ONLY — it does NOT consider `valid_until_sec`.
+    //    Without this sweep, the use-case's app-level dedup at step 2b
+    //    correctly returns null for a time-expired row (its predicate
+    //    filters `valid_until_sec > nowSec`), but the subsequent INSERT
+    //    at step 5 hits the DB constraint → 23505. Result: a user whose
+    //    last session expired by time but never had `status` transitioned
+    //    to `expired` cannot re-mint a fresh session — they're stuck.
+    //    Bit the operator tonight 2026-05-22 on the Pickup A re-smoke;
+    //    the only recovery was a manual `UPDATE` on prod DB.
+    //
+    //    **Scope of this sweep is intentionally BULK** (no per-user
+    //    predicate). Today the active-and-expired pool is bounded by
+    //    the partial active-index, so per-mint write cost is small.
+    //    Slice 5+ ships the expiry-sweep cron; at that point this
+    //    per-mint sweep can be narrowed to `eq(userId)` to eliminate
+    //    cross-user write amplification (Code Reviewer MED-1 +
+    //    Security Engineer MED-1 round 1 — explicitly deferred until
+    //    the cron lands so the operator doesn't lose the safety net
+    //    in the meantime).
+    //
+    //    The DB-constraint catch at step 5 (see below) closes the race
+    //    where two concurrent mints for the same (user, surface) both
+    //    pass dedup but the loser hits 23505 — Security Engineer H-1
+    //    round 1.
+    await this.scopedRepo.markExpired(nowSec, now);
+
+    // 2b. Active-dedup. A user wanting to rotate a still-valid session
+    //    must DELETE the old row first (operator-confirmed Slice 2
+    //    design). The DB PK on sessionId also catches a same-id retry,
+    //    but a different sessionId for the same (user, surface) would
+    //    slip past PK without this guard. The 2a sweep above ensures
+    //    "expired by time but status=active" rows don't false-positive
+    //    this gate.
     const existing = await this.scopedRepo.findLatestActive(input.userId, surface, nowSec);
     if (existing) {
       throw new MintScopedSessionConflictError(existing.sessionId, surface);
@@ -215,7 +246,33 @@ export class MintScopedSessionUseCase {
       expiredAt: null,
     });
 
-    await this.scopedRepo.create(session);
+    // 5b. Race-safe create. The 2a sweep + 2b dedup are best-effort —
+    //    two concurrent mints for the SAME (user, surface) where both
+    //    pass dedup (because the previous row was just freshly expired
+    //    by 2a in race A, and B's 2b reads after A's sweep but before
+    //    A's create) would both attempt INSERT. The partial UNIQUE
+    //    `agent_scoped_sessions_user_surface_active_uq_v2` rejects the
+    //    loser with 23505. Without this catch the loser would surface as
+    //    a generic 500 to the user; with it, the loser sees the same
+    //    409 + existingSessionId payload the optimistic dedup gate
+    //    emits. The DB constraint is the load-bearing gate; this catch
+    //    just maps it to the user-friendly response shape.
+    //    Security Engineer H-1 round 1.
+    try {
+      await this.scopedRepo.create(session);
+    } catch (err) {
+      const code = (err as { code?: string } | null)?.code;
+      if (code === '23505') {
+        // Re-query to surface the actual existing row's sessionId. The
+        // race winner's row landed between our dedup check and our
+        // create, so a fresh lookup gets the authoritative answer.
+        const winner = await this.scopedRepo.findLatestActive(input.userId, surface, nowSec);
+        if (winner) {
+          throw new MintScopedSessionConflictError(winner.sessionId, surface);
+        }
+      }
+      throw err;
+    }
 
     // Forensic-chain anchor — Security M-2 (RD-3). Stored as cleartext
     // structural fields + optional `consentActionHash`; no decrypted FHE

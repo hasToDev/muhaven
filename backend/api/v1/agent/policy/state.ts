@@ -24,6 +24,17 @@ const getHandler = createGetHandler({
   operationName: 'GetAgentPolicyState',
   execute: async (req, authPayload) => {
     const userId = authPayload!.userId;
+    // Wave 5 Path D Pickup A follow-up — accountAddress MUST be the
+    // on-chain kernel smart-account address (0x-prefixed 20-byte hex),
+    // NOT the JWT subject (which is a UUID). The MCP server's Path D
+    // probe at `handlers.ts::attemptPathD` enforces
+    // `^0x[0-9a-fA-F]{40}$` on this field and a UUID can never match
+    // → `no_validator_registered` for every user, every call. The
+    // walletAddress claim on the auth payload IS the kernel address
+    // (per `verify-wallet.use-case.ts` SIWE flow). Original code
+    // surfaced the documentation gap (DTO comment said "= JWT subject"
+    // which was wrong); fixed in the same diff.
+    const accountAddress = authPayload!.walletAddress;
     const surfaceQuery = (req.query as Record<string, string | string[] | undefined>).surface;
     const surfaceValue = Array.isArray(surfaceQuery) ? surfaceQuery[0] : surfaceQuery;
     const parsed = surfaceQuerySchema.parse(surfaceValue);
@@ -31,14 +42,14 @@ const getHandler = createGetHandler({
     if (parsed) {
       const state = await getUseCase.forSurface(userId, parsed);
       const dto: PolicyStateResponseDto = {
-        accountAddress: userId,
+        accountAddress,
         surfaces: [toUserStateDto(state)],
       };
       return Response.ok(dto);
     }
     const states = await getUseCase.forAllSurfaces(userId);
     const dto: PolicyStateResponseDto = {
-      accountAddress: userId,
+      accountAddress,
       surfaces: states.map(toUserStateDto),
     };
     return Response.ok(dto);

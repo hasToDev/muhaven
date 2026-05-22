@@ -265,6 +265,7 @@ describe('policy-scoped.helpers — buildScopedMintBody', () => {
     validUntilSec: 1_700_014_400,
     consentActionHash: `0x${'a'.repeat(64)}` as `0x${string}`,
     surface: 'mcp' as const,
+    permissionId: '0xdeadbeef' as `0x${string}`,
   }
 
   it('builds a snapshot with mode=scoped + matching signer + sessionId', () => {
@@ -300,14 +301,44 @@ describe('policy-scoped.helpers — buildScopedMintBody', () => {
     expect(BigInt(body.maxPerOpUsd6)).toBe(1n << 200n)
   })
 
-  it('OMITS permissionId from the snapshot (Pickup A locks no_permission_id_in_snapshot)', () => {
-    // The smoke checkpoint per `development/STATUS.md` Slice 1 progression
-    // requires Pickup A's mint POST to NOT carry `permissionId` so the
-    // MCP server's Path D probe falls back at exactly the
-    // `no_permission_id_in_snapshot` gate. Pickup B adds it. A regression
-    // that auto-populates here would silently flip the smoke result.
+  it('THREADS permissionId from input into the snapshot (Pickup B advances smoke past no_permission_id_in_snapshot)', () => {
+    // Pickup B flips the Slice 1 acceptance state: with the field
+    // present, the MCP server's Path D probe gets past the
+    // `no_permission_id_in_snapshot` gate and proceeds to compose the
+    // Kernel v3.1 24-byte nonce-key composite. Without it the bundler
+    // reads the SUDO-validator nonce slot and AA24's every UserOp.
     const body = buildScopedMintBody(baseInput)
-    expect(Object.prototype.hasOwnProperty.call(body.snapshot, 'permissionId')).toBe(false)
+    expect(body.snapshot.permissionId).toBe(baseInput.permissionId)
+    expect(body.snapshot.permissionId).toMatch(/^0x[0-9a-f]{8}$/)
+  })
+
+  it('lowercases a mixed-case permissionId so the wire round-trips byte-equal with the backend Zod gate', () => {
+    // R1 multi-agent review M-3 absorbed — the helper now internally
+    // lowercases + shape-asserts, narrowing the call-site contract.
+    // Any future call site that constructs BuildScopedMintBodyInput
+    // from a different source (e2e, test fixture, future provider)
+    // can pass mixed-case safely without needing to remember the
+    // wire convention. Backend Zod gate is `^0x[0-9a-f]{8}$` lower.
+    const body = buildScopedMintBody({
+      ...baseInput,
+      permissionId: '0xDeAdBeEf' as `0x${string}`,
+    })
+    expect(body.snapshot.permissionId).toBe('0xdeadbeef')
+  })
+
+  it('throws on a malformed permissionId (wrong length / non-hex / missing 0x)', () => {
+    const cases: string[] = [
+      '0xdead',                    // too short
+      '0xdeadbeef00',              // too long
+      'deadbeef',                  // missing 0x
+      '0xDEADBEEG',                // non-hex
+      '',                          // empty
+    ]
+    for (const bad of cases) {
+      expect(() =>
+        buildScopedMintBody({ ...baseInput, permissionId: bad as `0x${string}` }),
+      ).toThrow(/permissionId must be 0x-prefixed 4-byte hex/)
+    }
   })
 
   it('OMITS consentTextSha256 by design (Slice 4 wildcard graduation)', () => {
