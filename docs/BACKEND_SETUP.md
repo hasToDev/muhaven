@@ -102,6 +102,7 @@ Generated from `backend/.env.example`. Key variables:
 | Var | Example | Notes |
 |-----|---------|-------|
 | `FHE_WORKER_URL` | `http://fhe-worker:3001` | Docker DNS inside compose; `http://localhost:3001` outside |
+| `FHE_WORKER_SHARED_SECRET` | *(random hex, ≥32 chars)* | Wave 5 Path D Slice 1 Commit 3.5 — when set, backend forwards as `X-FHE-Worker-Secret` header to fhe-worker's new `/api/v1/encrypt/for-account` endpoint; worker rejects 401 on mismatch. When unset on either side, the gate is open (back-compat for ops who haven't rotated env). Generate with `openssl rand -hex 32`. |
 
 **Block poller** (optional)
 
@@ -124,6 +125,12 @@ Generated from `backend/.env.example`. Key variables:
 | `PORT` | `3001` | — |
 | `RPC_URL` | `https://sepolia-rollup.arbitrum.io/rpc` | Same as backend |
 | `FHE_WORKER_PRIVATE_KEY` | *(64 hex chars, 0x-prefixed)* | Dedicated wallet for server-side encryption permits. **Must not be the deployer key.** If empty, `/health` still passes but encryption calls return 503. |
+| `FHE_WORKER_SHARED_SECRET` | *(must match backend value)* | Wave 5 Path D Slice 1 Commit 3.5 — gates `POST /api/v1/encrypt/for-account` only. Legacy `/api/v1/encrypt/batch` is unaffected (Wave 3 escrow back-compat). When unset, the gate is open. Set on both sides for production. |
+
+**Worker routes:**
+- `POST /api/v1/encrypt/batch` — legacy: encrypt without `setAccount` binding. Used by Wave 3 escrow flow (works by accident because msg.sender == fhe-worker EOA).
+- `POST /api/v1/encrypt/for-account` — Wave 5 Path D: encrypt with hard `setAccount(userAddress)` binding so verifier signature matches the on-chain msg.sender. Gated by `X-FHE-Worker-Secret` header when `FHE_WORKER_SHARED_SECRET` is set on both sides. Includes per-account serialization queue + input cap (50 items) + zero-address reject + per-item type whitelist.
+- `POST /api/v1/decrypt/for-tx` — TN-signed decrypt for breach-detection async flow.
 
 ### `nav-worker/.env`
 
