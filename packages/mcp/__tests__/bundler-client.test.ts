@@ -17,6 +17,8 @@ import { describe, it, expect } from 'vitest';
 import {
   BundlerClient,
   BundlerClientError,
+  ENTRY_POINT_07_ADDRESS,
+  type PartialUserOpForSponsorship,
   type UserOperationV07Wire,
 } from '../src/clients/bundler-client.js';
 
@@ -392,5 +394,246 @@ describe('BundlerClient.assertChainId', () => {
       fetchImpl,
     });
     await expect(client.assertChainId()).rejects.toMatchObject({ code: 'invalid_response' });
+  });
+});
+
+// ── Wave 5 Path D Slice 1 Commit 3.5 — new sponsor / estimate / nonce / fee surface ──
+
+function partialUserOpFixture(): PartialUserOpForSponsorship {
+  return {
+    sender: ('0x' + 'a'.repeat(40)) as `0x${string}`,
+    nonce: '0x1',
+    callData: '0xdeadbeef',
+    maxFeePerGas: '0x59682f00',
+    maxPriorityFeePerGas: '0x59682f00',
+    signature: ('0x' + 'fe'.repeat(86)) as `0x${string}`,
+  };
+}
+
+function sponsoredFixture(): Record<string, string> {
+  return {
+    paymaster: '0x' + '99'.repeat(20),
+    paymasterVerificationGasLimit: '0x0186a0',
+    paymasterPostOpGasLimit: '0x0186a0',
+    paymasterData: '0xabcd',
+    callGasLimit: '0x030d40',
+    verificationGasLimit: '0x030d40',
+    preVerificationGas: '0x5208',
+  };
+}
+
+describe('BundlerClient.sponsorUserOp', () => {
+  it('returns the sponsored fields on success', async () => {
+    const fetchImpl = makeMockFetch(async (req) => {
+      const body = (await req.json()) as { method: string; params: unknown[] };
+      expect(body.method).toBe('pm_sponsorUserOperation');
+      expect(body.params[1]).toBe(ENTRY_POINT_07_ADDRESS);
+      return jsonResponse({ jsonrpc: '2.0', id: 1, result: sponsoredFixture() });
+    });
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      fetchImpl,
+    });
+    const out = await client.sponsorUserOp(partialUserOpFixture(), ENTRY_POINT_07_ADDRESS);
+    expect(out.paymaster).toBe('0x' + '99'.repeat(20));
+    expect(out.callGasLimit).toBe('0x030d40');
+  });
+
+  it('rejects a sponsored response missing a required field', async () => {
+    const fetchImpl = makeMockFetch(async () => {
+      const fields = sponsoredFixture();
+      delete (fields as Record<string, unknown>).paymasterData;
+      return jsonResponse({ jsonrpc: '2.0', id: 1, result: fields });
+    });
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      fetchImpl,
+    });
+    await expect(
+      client.sponsorUserOp(partialUserOpFixture(), ENTRY_POINT_07_ADDRESS),
+    ).rejects.toMatchObject({ code: 'invalid_response' });
+  });
+
+  it('accepts paymasterData = "0x" (paymasters with no per-op data return empty)', async () => {
+    // CR round-2 M-6 — symmetric test that the assertHex-vs-
+    // assertHexNonZero split is correctly applied. paymasterData uses
+    // assertHex (lax: empty 0x is fine), the gas fields use
+    // assertHexNonZero (strict: must be non-empty + non-zero).
+    const fetchImpl = makeMockFetch(async () => {
+      const fields = { ...sponsoredFixture(), paymasterData: '0x' };
+      return jsonResponse({ jsonrpc: '2.0', id: 1, result: fields });
+    });
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      fetchImpl,
+    });
+    const out = await client.sponsorUserOp(partialUserOpFixture(), ENTRY_POINT_07_ADDRESS);
+    expect(out.paymasterData).toBe('0x');
+  });
+
+  it('refuses a sponsored response whose callGasLimit exceeds the plausibility ceiling', async () => {
+    // SecEng round-2 MED-3 — a malicious / buggy bundler can return a
+    // gas limit beyond reasonable per-buy headroom. Refuse before
+    // signing the hash that includes those fields.
+    const fetchImpl = makeMockFetch(async () => {
+      const fields = {
+        ...sponsoredFixture(),
+        callGasLimit: ('0x' + (50_000_000n).toString(16).padStart(2, '0')) as `0x${string}`,
+      };
+      return jsonResponse({ jsonrpc: '2.0', id: 1, result: fields });
+    });
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      fetchImpl,
+    });
+    await expect(
+      client.sponsorUserOp(partialUserOpFixture(), ENTRY_POINT_07_ADDRESS),
+    ).rejects.toMatchObject({ code: 'invalid_response' });
+  });
+
+  it('surfaces upstream pm_sponsorUserOperation rpc errors as rpc_error with the code preserved', async () => {
+    const fetchImpl = makeMockFetch(async () =>
+      jsonResponse({
+        jsonrpc: '2.0',
+        id: 1,
+        error: { code: -32500, message: 'project rate-limited', data: null },
+      }),
+    );
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      fetchImpl,
+    });
+    try {
+      await client.sponsorUserOp(partialUserOpFixture(), ENTRY_POINT_07_ADDRESS);
+      expect.fail('expected throw');
+    } catch (err) {
+      const e = err as BundlerClientError;
+      expect(e.code).toBe('rpc_error');
+      expect(e.detail).toMatchObject({ code: -32500 });
+    }
+  });
+});
+
+describe('BundlerClient.estimateUserOpGas', () => {
+  it('returns the three gas fields on success', async () => {
+    const fetchImpl = makeMockFetch(async (req) => {
+      const body = (await req.json()) as { method: string };
+      expect(body.method).toBe('eth_estimateUserOperationGas');
+      return jsonResponse({
+        jsonrpc: '2.0',
+        id: 1,
+        result: {
+          callGasLimit: '0x030d40',
+          verificationGasLimit: '0x030d40',
+          preVerificationGas: '0x5208',
+        },
+      });
+    });
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      fetchImpl,
+    });
+    const gas = await client.estimateUserOpGas(
+      partialUserOpFixture(),
+      ENTRY_POINT_07_ADDRESS,
+    );
+    expect(gas.callGasLimit).toBe('0x030d40');
+    expect(gas.preVerificationGas).toBe('0x5208');
+  });
+
+  it('rejects a non-object response', async () => {
+    const fetchImpl = makeMockFetch(async () =>
+      jsonResponse({ jsonrpc: '2.0', id: 1, result: 'not-an-object' }),
+    );
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      fetchImpl,
+    });
+    await expect(
+      client.estimateUserOpGas(partialUserOpFixture(), ENTRY_POINT_07_ADDRESS),
+    ).rejects.toMatchObject({ code: 'invalid_response' });
+  });
+});
+
+describe('BundlerClient.getNonce', () => {
+  it('decodes a uint256 nonce from eth_call', async () => {
+    const fetchImpl = makeMockFetch(async (req) => {
+      const body = (await req.json()) as { method: string; params: unknown[] };
+      expect(body.method).toBe('eth_call');
+      expect(body.params[1]).toBe('latest');
+      // 5 as uint256 (zero-padded big-endian)
+      return jsonResponse({
+        jsonrpc: '2.0',
+        id: 1,
+        result: '0x' + '0'.repeat(63) + '5',
+      });
+    });
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      fetchImpl,
+    });
+    const nonce = await client.getNonce(
+      ('0x' + 'a'.repeat(40)) as `0x${string}`,
+      ENTRY_POINT_07_ADDRESS,
+      0n,
+    );
+    expect(nonce).toBe(5n);
+  });
+
+  it('refuses a non-hex eth_call response', async () => {
+    const fetchImpl = makeMockFetch(async () =>
+      jsonResponse({ jsonrpc: '2.0', id: 1, result: 'not-hex' }),
+    );
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      fetchImpl,
+    });
+    await expect(
+      client.getNonce(
+        ('0x' + 'a'.repeat(40)) as `0x${string}`,
+        ENTRY_POINT_07_ADDRESS,
+        0n,
+      ),
+    ).rejects.toMatchObject({ code: 'invalid_response' });
+  });
+});
+
+describe('BundlerClient.getFeeData', () => {
+  it('returns 2x-margined hex for both maxFeePerGas and maxPriorityFeePerGas', async () => {
+    const fetchImpl = makeMockFetch(async (req) => {
+      const body = (await req.json()) as { method: string };
+      expect(body.method).toBe('eth_gasPrice');
+      // 0x10 = 16; 2x = 32 = 0x20
+      return jsonResponse({ jsonrpc: '2.0', id: 1, result: '0x10' });
+    });
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      fetchImpl,
+    });
+    const data = await client.getFeeData();
+    expect(data.maxFeePerGas).toBe('0x20');
+    expect(data.maxPriorityFeePerGas).toBe('0x20');
+  });
+
+  it('refuses a non-hex gas price', async () => {
+    const fetchImpl = makeMockFetch(async () =>
+      jsonResponse({ jsonrpc: '2.0', id: 1, result: 'not-hex' }),
+    );
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      fetchImpl,
+    });
+    await expect(client.getFeeData()).rejects.toMatchObject({ code: 'invalid_response' });
   });
 });

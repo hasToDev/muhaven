@@ -4,7 +4,7 @@ import { getLogger } from '../../core/logger.js';
 import { ApplicationHttpError } from '../../core/errors.js';
 
 export interface FheEncryptionItem {
-  type: 'euint64' | 'eaddress' | 'ebool';
+  type: 'euint64' | 'euint128' | 'eaddress' | 'ebool';
   value: string | boolean;
 }
 
@@ -66,6 +66,67 @@ export class FheWorkerClient {
 
     const data = (await res.json()) as FheBatchResponse;
     this.logger.info({ totalTime: data.totalEncryptionTimeMs }, 'FHE batch encryption complete');
+    return data;
+  }
+
+  /**
+   * Wave 5 Path D Slice 1 (Commit 3.5) — encrypt with a hard
+   * `setAccount(userAddress)` binding on the cofhe pipeline. Use this
+   * variant whenever the on-chain `msg.sender` of the consuming contract
+   * is `userAddress` (e.g. the user's kernel calling
+   * `subscription.purchase`). See `encryptBatchForAccount` JSDoc in
+   * `fhe-worker/src/index.ts` for the verifier-signature semantics and
+   * why this lives separately from `encryptBatch`.
+   */
+  async encryptBatchForAccount(
+    userAddress: string,
+    items: FheEncryptionItem[],
+  ): Promise<FheBatchResponse> {
+    this.logger.info(
+      { userAddress, itemCount: items.length },
+      'Encrypting batch (for-account) via FHE worker',
+    );
+
+    // Wave 5 Path D Slice 1 Commit 3.5 (BA-H1 / RC round-2 H-2) — forward
+    // `FHE_WORKER_SHARED_SECRET` as `X-FHE-Worker-Secret` header. When
+    // unset on either side, the worker accepts all (back-compat); when
+    // both sides set the matching value, the worker rejects 401 on a
+    // mismatch. Set the env on both sides post-deploy.
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    const sharedSecret = process.env.FHE_WORKER_SHARED_SECRET;
+    if (sharedSecret) {
+      headers['X-FHE-Worker-Secret'] = sharedSecret;
+    }
+
+    const res = await fetch(`${this.baseUrl}/api/v1/encrypt/for-account`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ userAddress, items }),
+      signal: AbortSignal.timeout(60000),
+    });
+
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+      this.logger.error(
+        { status: res.status, error },
+        'FHE worker (for-account) encryption failed',
+      );
+
+      if (res.status === 503) {
+        throw ApplicationHttpError.internalError('FHE worker not ready');
+      }
+      throw ApplicationHttpError.internalError(
+        `FHE encryption (for-account) failed: ${(error as Record<string, string>).detail || (error as Record<string, string>).error || res.statusText}`,
+      );
+    }
+
+    const data = (await res.json()) as FheBatchResponse;
+    this.logger.info(
+      { totalTime: data.totalEncryptionTimeMs },
+      'FHE batch encryption (for-account) complete',
+    );
     return data;
   }
 

@@ -232,6 +232,149 @@ async function encryptBatch(
   return { results, totalEncryptionTimeMs };
 }
 
+const ADDRESS_HEX_RE = /^0x[0-9a-fA-F]{40}$/;
+const ZERO_ADDRESS_LC = '0x0000000000000000000000000000000000000000';
+/**
+ * Defensive ceiling on encrypt-batch input size. A malicious peer with
+ * network reach to the worker can today ask for unbounded items. We
+ * never legitimately need > 50 in one batch (real callers ask for 1-3).
+ */
+const MAX_BATCH_ITEMS = 50;
+const ALLOWED_ITEM_TYPES: ReadonlySet<EncryptionItem['type']> = new Set([
+  'euint64',
+  'euint128',
+  'eaddress',
+  'ebool',
+]);
+
+/**
+ * Wave 5 Path D Slice 1 Commit 3.5 (BA-H1 / RC-H2 reality check) —
+ * shared-secret gate on the new `/api/v1/encrypt/for-account` endpoint.
+ *
+ * Backend forwards `FHE_WORKER_SHARED_SECRET` in the `X-FHE-Worker-Secret`
+ * header. Worker rejects requests whose header doesn't match. Legacy
+ * `/api/v1/encrypt/batch` is intentionally NOT gated — Wave 3 flows
+ * predate this; rotating them is a separate concern. The `for-account`
+ * endpoint is new and ships with the gate from day one.
+ *
+ * When the secret env-var is UNSET on the worker, the gate accepts ALL
+ * callers (back-compat for ops who haven't rotated their env yet). Best
+ * practice is to set the env on both sides post-deploy.
+ */
+const FHE_WORKER_SHARED_SECRET = process.env.FHE_WORKER_SHARED_SECRET;
+
+/**
+ * Wave 5 Path D Slice 1 Commit 3.5 (SecEng round-2 MED-4) — serialize
+ * `encryptInputs(...).setAccount(...).execute()` across the singleton
+ * `cofheClient`. `setAccount` mutates client state in-flight; two
+ * parallel `/for-account` requests for distinct kernel addresses can
+ * race and bind kernel A's encryption under kernel B's setAccount.
+ *
+ * Per-account serialization would be ideal; conservative pessimistic
+ * lock (one-at-a-time) is simpler and acceptable for Slice 1's
+ * single-user workload. Promise-chain pattern: each request awaits the
+ * previous tail before starting, then becomes the new tail.
+ */
+let _encryptForAccountTail: Promise<unknown> = Promise.resolve();
+function serializeForAccount<T>(fn: () => Promise<T>): Promise<T> {
+  const next = _encryptForAccountTail.then(fn, fn);
+  // Never let a rejection poison the chain — subsequent calls must
+  // proceed even if a prior one threw.
+  _encryptForAccountTail = next.catch(() => undefined);
+  return next;
+}
+
+/**
+ * Wave 5 Path D Slice 1 (Commit 3.5) — encrypt with a hard `setAccount`
+ * binding to `userAddress`.
+ *
+ * The cofhe verifier signs each ciphertext over
+ * `(ctHash, utype, securityZone, msg.sender, chainId)` where `msg.sender`
+ * is the address bound via `setAccount(...)`. The on-chain TaskManager's
+ * `extractSigner` then validates that signature against the actual
+ * `msg.sender` of the executing contract. For Path D, the executing
+ * `msg.sender` is the user's kernel — NOT the fhe-worker's own EOA — so
+ * the encrypt step MUST `setAccount(kernelAddress)` or the on-chain
+ * verify reverts `InvalidSigner` (selector `0x7ba5ffb5`).
+ *
+ * Kept as a sibling of `encryptBatch` (not a flag on it) so the Wave 3
+ * legacy escrow flow — which works today only because `msg.sender ==
+ * fhe-worker EOA` happens to match the verifier signer — stays exactly
+ * as it is. Future fixes to the legacy path can opt in by switching to
+ * this endpoint.
+ */
+async function encryptBatchForAccount(
+  userAddress: string,
+  items: EncryptionItem[],
+): Promise<{ results: EncryptedResult[]; totalEncryptionTimeMs: number }> {
+  if (!cofheClient) {
+    throw new Error('CoFHE client not initialized');
+  }
+  if (!ADDRESS_HEX_RE.test(userAddress)) {
+    throw new Error(`userAddress must be a 0x-prefixed 20-byte hex string (got ${JSON.stringify(userAddress)})`);
+  }
+  if (userAddress.toLowerCase() === ZERO_ADDRESS_LC) {
+    throw new Error('userAddress must not be the zero address');
+  }
+  // Defense-in-depth — the use-case caps batch size at the application
+  // layer too, but a direct caller to the worker (cross-container) can
+  // bypass that. Enforce here so OOM via 10k-item blob isn't possible.
+  if (items.length > MAX_BATCH_ITEMS) {
+    throw new Error(`items.length must be <= ${MAX_BATCH_ITEMS} (got ${items.length})`);
+  }
+  for (const item of items) {
+    if (!ALLOWED_ITEM_TYPES.has(item.type)) {
+      throw new Error(`unsupported item type: ${JSON.stringify(item.type)}`);
+    }
+  }
+
+  const { Encryptable } = await import('@cofhe/sdk');
+  const startTime = Date.now();
+
+  const encryptables = items.map((item) => {
+    switch (item.type) {
+      case 'euint64':
+        return Encryptable.uint64(BigInt(item.value as string));
+      case 'euint128':
+        return Encryptable.uint128(BigInt(item.value as string));
+      case 'eaddress':
+        return Encryptable.address(String(item.value));
+      case 'ebool':
+        return Encryptable.bool(Boolean(item.value));
+      default:
+        throw new Error(`Unsupported type: ${item.type}`);
+    }
+  });
+
+  // Lowercase the address before passing to setAccount — the verifier's
+  // signature is over the bytes we send, but on-chain msg.sender is the
+  // EntryPoint's normalized value. Mismatch would yield InvalidSigner.
+  // Handler-side already lowercases accountAddress; mirror here so the
+  // boundary is consistent (AI Engineer L-1).
+  //
+  // Serialize the encrypt+setAccount via `serializeForAccount` — see the
+  // const JSDoc above for why concurrent calls would otherwise corrupt
+  // the singleton cofheClient's setAccount state (SecEng round-2 MED-4).
+  const encrypted = await serializeForAccount(() =>
+    cofheClient
+      .encryptInputs(encryptables)
+      .setAccount(userAddress.toLowerCase())
+      .execute(),
+  );
+  const totalEncryptionTimeMs = Date.now() - startTime;
+
+  const results: EncryptedResult[] = (encrypted as any[]).map((enc, i) => ({
+    type: items[i].type,
+    data: '0x' + enc.ctHash.toString(16).padStart(64, '0'),
+    securityZone: enc.securityZone,
+    utype: enc.utype,
+    inputProof: enc.signature,
+    encryptionTimeMs: Math.round(totalEncryptionTimeMs / items.length),
+  }));
+
+  return { results, totalEncryptionTimeMs };
+}
+
 function parseBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
@@ -332,6 +475,42 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  // Encrypt batch with hard `setAccount(userAddress)` binding (Wave 5
+  // Path D Slice 1 Commit 3.5). See `encryptBatchForAccount` JSDoc for
+  // why this is a sibling of `/api/v1/encrypt/batch` rather than a flag.
+  if (url.pathname === '/api/v1/encrypt/for-account' && req.method === 'POST') {
+    try {
+      // Shared-secret gate (BA-H1 / RC round-2 H-2). When env is set,
+      // require the header to match. When unset, allow all (back-compat
+      // posture for ops who haven't rotated env). The legacy
+      // `/api/v1/encrypt/batch` endpoint is intentionally NOT gated.
+      if (FHE_WORKER_SHARED_SECRET) {
+        const provided = req.headers['x-fhe-worker-secret'];
+        const providedStr = Array.isArray(provided) ? provided[0] : provided;
+        if (providedStr !== FHE_WORKER_SHARED_SECRET) {
+          sendJson(res, 401, { error: 'invalid X-FHE-Worker-Secret header' });
+          return;
+        }
+      }
+
+      await initializeCofhe();
+
+      const body = (await parseBody(req)) as { userAddress: string; items: EncryptionItem[] };
+
+      if (!body?.userAddress || !Array.isArray(body?.items) || body.items.length === 0) {
+        sendJson(res, 400, { error: 'Invalid request: userAddress and items[] required' });
+        return;
+      }
+
+      const result = await encryptBatchForAccount(body.userAddress, body.items);
+      sendJson(res, 200, result);
+    } catch (error: any) {
+      console.error('Encryption (for-account) failed:', error);
+      sendJson(res, 500, { error: error.message || 'Encryption failed' });
+    }
+    return;
+  }
+
   sendJson(res, 404, { error: 'Not found' });
 });
 
@@ -344,5 +523,6 @@ server.listen(port, () => {
   console.log('  GET  /health/ready');
   console.log('  GET  /health');
   console.log('  POST /api/v1/encrypt/batch');
+  console.log('  POST /api/v1/encrypt/for-account');
   console.log('  POST /api/v1/decrypt/for-tx');
 });

@@ -15,6 +15,22 @@ import { privateKeyToAccount, type PrivateKeyAccount } from 'viem/accounts';
 export interface ISigner {
   readonly address: `0x${string}`;
   signHash(hash: `0x${string}`): Promise<`0x${string}`>;
+  /**
+   * Wave 5 Path D Slice 1 Commit 3.5 — EIP-191 personal-sign over a
+   * raw 32-byte hash. ZeroDev's permission validator on Kernel v3.1
+   * (via `@zerodev/permissions::signUserOperation`) does
+   * `signer.account.signMessage({ message: { raw: userOpHash } })` —
+   * i.e., it ECDSA-signs `keccak256("\x19Ethereum Signed Message:\n32"
+   * || userOpHash)`, NOT the raw userOpHash. For Path D autonomous
+   * UserOps, the broker MUST sign via this path or the on-chain
+   * `ecrecover` yields a different address → `AA24 InvalidSigner`.
+   *
+   * `signHash` (raw ECDSA over the supplied hash) stays for back-compat
+   * with `sign_hash` IPC verb / Wave 4 placeholder envelope; the new
+   * `signRawMessage` is the verb Path D's `sign_userop` daemon path
+   * calls.
+   */
+  signRawMessage(hash: `0x${string}`): Promise<`0x${string}`>;
 }
 
 /**
@@ -46,6 +62,9 @@ export class NullSigner implements ISigner {
   async signHash(_hash: `0x${string}`): Promise<`0x${string}`> {
     throw new MissingSessionKeyError();
   }
+  async signRawMessage(_hash: `0x${string}`): Promise<`0x${string}`> {
+    throw new MissingSessionKeyError();
+  }
 }
 
 export class ViemSigner implements ISigner {
@@ -65,5 +84,17 @@ export class ViemSigner implements ISigner {
     // ECDSA signature without the EIP-191 prefix. `account.sign({ hash })`
     // is the right primitive — it ECDSA-signs the digest as-is.
     return this.account.sign({ hash });
+  }
+
+  async signRawMessage(hash: `0x${string}`): Promise<`0x${string}`> {
+    // ZeroDev's permission validator (`@zerodev/permissions::signUserOperation`
+    // on Kernel v3.1) signs the userOpHash via
+    //   signer.account.signMessage({ message: { raw: userOpHash } })
+    // which prepends `"\x19Ethereum Signed Message:\n32"` to the hash and
+    // ECDSA-signs the resulting digest. The on-chain ECDSAValidator
+    // ecrecovers against the same EIP-191 envelope — so a raw `signHash`
+    // here would yield a signer that doesn't match the installed validator
+    // and `AA24 InvalidSigner` would fire on every submit.
+    return this.account.signMessage({ message: { raw: hash } });
   }
 }

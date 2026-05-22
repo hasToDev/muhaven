@@ -314,6 +314,11 @@ function coerceFromDisk(obj: unknown): PolicySnapshot {
       throw new Error('snapshot.consentTextSha256 malformed');
     }
   }
+  if (o.permissionId !== undefined) {
+    if (typeof o.permissionId !== 'string' || !/^0x[0-9a-fA-F]{8}$/.test(o.permissionId)) {
+      throw new Error('snapshot.permissionId malformed (must be 0x-prefixed 4-byte hex)');
+    }
+  }
   return {
     sessionId: o.sessionId,
     mode: 'scoped',
@@ -330,6 +335,9 @@ function coerceFromDisk(obj: unknown): PolicySnapshot {
     ...(o.consentTextSha256 === undefined
       ? {}
       : { consentTextSha256: (o.consentTextSha256 as string).toLowerCase() as `0x${string}` }),
+    ...(o.permissionId === undefined
+      ? {}
+      : { permissionId: (o.permissionId as string).toLowerCase() as `0x${string}` }),
   };
 }
 

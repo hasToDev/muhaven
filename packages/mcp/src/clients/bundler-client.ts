@@ -28,6 +28,7 @@
  */
 
 import { setTimeout as delay } from 'node:timers/promises';
+import { decodeAbiParameters, encodeFunctionData, parseAbi, type Hex } from 'viem';
 
 export type BundlerClientErrorCode =
   | 'config'
@@ -38,6 +39,26 @@ export type BundlerClientErrorCode =
   | 'rpc_error'
   | 'receipt_timeout'
   | 'chain_mismatch';
+
+/**
+ * Canonical EntryPoint v0.7 deployment address (same across every EVM
+ * chain — verified against
+ * https://github.com/eth-infinitism/account-abstraction/releases v0.7.0).
+ * Pinned here so the MCP server never has to look it up at runtime.
+ *
+ * Used by the bundler-client's nonce read (`getNonce` calls
+ * `entryPoint.getNonce(sender, key)` via `eth_call`) and by the
+ * handler-side userOp builder when calling viem's
+ * `getUserOperationHash`. Operators on a future entry-point rotation
+ * override via `MUHAVEN_ENTRY_POINT` env (Wave 5 Path D Slice 1 Commit
+ * 3.5 wiring).
+ */
+export const ENTRY_POINT_07_ADDRESS =
+  '0x0000000071727De22E5E9d8BAf0edAc6f37da032' as `0x${string}`;
+
+const ENTRY_POINT_GET_NONCE_ABI = parseAbi([
+  'function getNonce(address sender, uint192 key) view returns (uint256)',
+]);
 
 export class BundlerClientError extends Error {
   constructor(
@@ -79,6 +100,48 @@ export interface UserOperationV07Wire {
   readonly paymasterPostOpGasLimit?: `0x${string}`;
   readonly paymasterData?: `0x${string}`;
   readonly signature: `0x${string}`;
+}
+
+/**
+ * Wave 5 Path D Slice 1 Commit 3.5 — the unsigned UserOp shape passed
+ * to `pm_sponsorUserOperation`. ZeroDev's paymaster fills in the gas
+ * limits + paymaster fields and returns them; the caller then composes
+ * the full `UserOperationV07Wire` with the placeholder signature
+ * replaced by the broker's session-key signature.
+ *
+ * Optional fields the bundler tolerates being absent: gas + paymaster
+ * fields. `signature` is required (use a non-zero high-entropy
+ * placeholder so the bundler simulates a worst-case verifier cost).
+ */
+export interface PartialUserOpForSponsorship {
+  readonly sender: `0x${string}`;
+  readonly nonce: `0x${string}`;
+  readonly callData: `0x${string}`;
+  readonly maxFeePerGas: `0x${string}`;
+  readonly maxPriorityFeePerGas: `0x${string}`;
+  /** Worst-case placeholder so paymaster simulates realistic gas. */
+  readonly signature: `0x${string}`;
+}
+
+export interface SponsoredUserOpFields {
+  readonly paymaster: `0x${string}`;
+  readonly paymasterVerificationGasLimit: `0x${string}`;
+  readonly paymasterPostOpGasLimit: `0x${string}`;
+  readonly paymasterData: `0x${string}`;
+  readonly callGasLimit: `0x${string}`;
+  readonly verificationGasLimit: `0x${string}`;
+  readonly preVerificationGas: `0x${string}`;
+}
+
+export interface EstimatedUserOpGas {
+  readonly callGasLimit: `0x${string}`;
+  readonly verificationGasLimit: `0x${string}`;
+  readonly preVerificationGas: `0x${string}`;
+}
+
+export interface FeeData {
+  readonly maxFeePerGas: `0x${string}`;
+  readonly maxPriorityFeePerGas: `0x${string}`;
 }
 
 /**
@@ -194,6 +257,117 @@ export class BundlerClient {
       await sleep(Math.min(interval, remaining));
       attempt++;
     }
+  }
+
+  /**
+   * Wave 5 Path D Slice 1 Commit 3.5 — `pm_sponsorUserOperation`.
+   * ZeroDev's bundler URL serves both bundler RPCs AND paymaster RPCs
+   * at the same endpoint, so we don't need a separate paymaster URL.
+   * Returns the paymaster fields + the gas limits the paymaster's
+   * simulation computed (the caller doesn't need a separate
+   * `estimateUserOpGas` round-trip on the happy path).
+   */
+  async sponsorUserOp(
+    userOp: PartialUserOpForSponsorship,
+    entryPoint: `0x${string}`,
+  ): Promise<SponsoredUserOpFields> {
+    const result = await this.rpc('pm_sponsorUserOperation', [userOp, entryPoint]);
+    return parseSponsoredFields(result);
+  }
+
+  /**
+   * Wave 5 Path D Slice 1 Commit 3.5 — `eth_estimateUserOperationGas`.
+   * Not used in the happy path (sponsorship returns gas), but lives as
+   * a fallback for unsponsored flows OR if the operator's paymaster
+   * goes down. Reading gas separately also makes the failure modes
+   * distinguishable for the LLM-facing fallback reasons.
+   */
+  async estimateUserOpGas(
+    userOp: PartialUserOpForSponsorship,
+    entryPoint: `0x${string}`,
+  ): Promise<EstimatedUserOpGas> {
+    const result = await this.rpc('eth_estimateUserOperationGas', [userOp, entryPoint]);
+    if (typeof result !== 'object' || result === null) {
+      throw new BundlerClientError(
+        'invalid_response',
+        'eth_estimateUserOperationGas returned non-object',
+      );
+    }
+    const obj = result as Record<string, unknown>;
+    return {
+      callGasLimit: assertHex(obj.callGasLimit, 'estimateUserOpGas.callGasLimit'),
+      verificationGasLimit: assertHex(
+        obj.verificationGasLimit,
+        'estimateUserOpGas.verificationGasLimit',
+      ),
+      preVerificationGas: assertHex(
+        obj.preVerificationGas,
+        'estimateUserOpGas.preVerificationGas',
+      ),
+    };
+  }
+
+  /**
+   * Wave 5 Path D Slice 1 Commit 3.5 — `eth_call` against the
+   * EntryPoint's `getNonce(sender, key)`. Uses the bundler URL as a
+   * full Arb Sepolia node (ZeroDev's bundler accepts read-side RPCs).
+   *
+   * Pass `key = 0n` for the default nonce key — Path D never uses a
+   * non-default key in Slice 1; reserved for batched UserOps in
+   * later slices.
+   */
+  async getNonce(
+    sender: `0x${string}`,
+    entryPoint: `0x${string}`,
+    key: bigint = 0n,
+  ): Promise<bigint> {
+    const data = encodeFunctionData({
+      abi: ENTRY_POINT_GET_NONCE_ABI,
+      functionName: 'getNonce',
+      args: [sender, key],
+    });
+    const result = await this.rpc('eth_call', [
+      { to: entryPoint, data },
+      'latest',
+    ]);
+    if (typeof result !== 'string' || !/^0x[0-9a-fA-F]*$/.test(result)) {
+      throw new BundlerClientError(
+        'invalid_response',
+        `eth_call returned non-hex: ${JSON.stringify(result).slice(0, 80)}`,
+      );
+    }
+    // eth_call returns a uint256 (32 bytes) — decode via abi.
+    const [nonce] = decodeAbiParameters([{ type: 'uint256' }], result as Hex);
+    return nonce as bigint;
+  }
+
+  /**
+   * Wave 5 Path D Slice 1 Commit 3.5 — fetch the fee market via
+   * `eth_gasPrice` (returns a single value the bundler will accept for
+   * both maxFee + maxPriorityFee on Arb Sepolia, which has effectively
+   * no priority-vs-base distinction).
+   *
+   * Simple-on-purpose: a full EIP-1559 fee market read would need two
+   * RPCs (`eth_maxPriorityFeePerGas` + `eth_getBlock`); Arb Sepolia's
+   * fee dynamics don't require that precision and the paymaster pays
+   * either way. A future caller wanting EIP-1559 precision can add a
+   * sibling method.
+   */
+  async getFeeData(): Promise<FeeData> {
+    const result = await this.rpc('eth_gasPrice', []);
+    if (typeof result !== 'string' || !/^0x[0-9a-fA-F]+$/.test(result)) {
+      throw new BundlerClientError(
+        'invalid_response',
+        `eth_gasPrice returned non-hex: ${JSON.stringify(result).slice(0, 80)}`,
+      );
+    }
+    // 2x safety margin (sponsor pays; Arb Sepolia fee oscillations are
+    // small but the safety margin defends against a fee spike between
+    // estimate and submit).
+    const base = BigInt(result);
+    const margined = base * 2n;
+    const hex = `0x${margined.toString(16)}` as `0x${string}`;
+    return { maxFeePerGas: hex, maxPriorityFeePerGas: hex };
   }
 
   /**
@@ -356,4 +530,133 @@ function parseReceipt(raw: unknown): UserOperationReceipt {
       blockHash: blockHash.toLowerCase() as `0x${string}`,
     },
   };
+}
+
+/**
+ * Wave 5 Path D Slice 1 Commit 3.5 — strict parser for
+ * `pm_sponsorUserOperation` results. ZeroDev returns the seven gas +
+ * paymaster fields together; we refuse to proceed if any are missing
+ * so a future paymaster shape drift surfaces as `invalid_response`
+ * rather than a downstream `AA23 reverted`.
+ */
+function parseSponsoredFields(raw: unknown): SponsoredUserOpFields {
+  if (typeof raw !== 'object' || raw === null) {
+    throw new BundlerClientError(
+      'invalid_response',
+      'pm_sponsorUserOperation returned non-object',
+    );
+  }
+  const obj = raw as Record<string, unknown>;
+  return {
+    paymaster: assertHexAddress(obj.paymaster, 'sponsoredFields.paymaster'),
+    paymasterVerificationGasLimit: assertHexNonZero(
+      obj.paymasterVerificationGasLimit,
+      'sponsoredFields.paymasterVerificationGasLimit',
+      MAX_PAYMASTER_GAS_LIMIT,
+    ),
+    paymasterPostOpGasLimit: assertHexNonZero(
+      obj.paymasterPostOpGasLimit,
+      'sponsoredFields.paymasterPostOpGasLimit',
+      MAX_PAYMASTER_GAS_LIMIT,
+    ),
+    // paymasterData is the only sponsored field that can legitimately
+    // be empty (`0x`) — paymasters with no per-op data return that.
+    paymasterData: assertHex(obj.paymasterData, 'sponsoredFields.paymasterData'),
+    callGasLimit: assertHexNonZero(
+      obj.callGasLimit,
+      'sponsoredFields.callGasLimit',
+      MAX_CALL_GAS_LIMIT,
+    ),
+    verificationGasLimit: assertHexNonZero(
+      obj.verificationGasLimit,
+      'sponsoredFields.verificationGasLimit',
+      MAX_VERIFICATION_GAS_LIMIT,
+    ),
+    preVerificationGas: assertHexNonZero(
+      obj.preVerificationGas,
+      'sponsoredFields.preVerificationGas',
+      MAX_PRE_VERIFICATION_GAS,
+    ),
+  };
+}
+
+function assertHex(value: unknown, label: string): `0x${string}` {
+  if (typeof value !== 'string' || !/^0x([0-9a-fA-F]{2})*$/.test(value)) {
+    // `JSON.stringify(undefined)` is undefined and would throw on `.slice`
+    // — surface a stable string for both undefined AND structured values.
+    // Regex also enforces EVEN hex length (each byte = 2 hex chars) —
+    // an odd-length hex string is malformed (Code Reviewer L-3).
+    const repr =
+      value === undefined ? 'undefined' : JSON.stringify(value);
+    const safe = typeof repr === 'string' ? repr.slice(0, 80) : 'unknown';
+    throw new BundlerClientError(
+      'invalid_response',
+      `${label} must be a 0x-prefixed hex string (got ${safe})`,
+    );
+  }
+  return value as `0x${string}`;
+}
+
+/**
+ * Wave 5 Path D Slice 1 Commit 3.5 (Code Reviewer M-3) — gas-limit
+ * fields must be non-empty AND parse to a non-zero bigint. The bundler
+ * returning `0x` or `0x0` for a gas limit would cause `AA23 reverted`
+ * on submit; surface as `invalid_response` here instead.
+ *
+ * `maxValue` (SecEng round-2 MED-3) — refuse implausibly-large gas
+ * values that a malicious/buggy bundler might return. Per-buy realistic
+ * ceiling on Arb Sepolia is ~500k-2M; 10x headroom is enough for any
+ * future expansion. Without a cap, the userOp could spike into a
+ * guaranteed-revert range OR cause the operator's paymaster credit to
+ * burn faster than expected.
+ */
+function assertHexNonZero(
+  value: unknown,
+  label: string,
+  maxValue?: bigint,
+): `0x${string}` {
+  const hex = assertHex(value, label);
+  // Reject empty (`0x`) AND all-zero hex strings.
+  if (hex.length === 2 || BigInt(hex) === 0n) {
+    throw new BundlerClientError(
+      'invalid_response',
+      `${label} must be a non-zero hex value (got "${hex}")`,
+    );
+  }
+  if (maxValue !== undefined && BigInt(hex) > maxValue) {
+    throw new BundlerClientError(
+      'invalid_response',
+      `${label} = ${BigInt(hex)} exceeds plausible ceiling ${maxValue} — refusing to sign + submit`,
+    );
+  }
+  return hex;
+}
+
+/**
+ * SecEng round-2 MED-3 plausibility ceilings on bundler-returned gas
+ * fields. Per-buy realistic gas on Arb Sepolia: call ~500k-2M,
+ * verification ~500k-2M, preVerification ~50k-200k. 10x ceilings here.
+ * Paymaster fields are typically much smaller.
+ */
+const MAX_CALL_GAS_LIMIT = 20_000_000n;
+const MAX_VERIFICATION_GAS_LIMIT = 20_000_000n;
+const MAX_PRE_VERIFICATION_GAS = 5_000_000n;
+const MAX_PAYMASTER_GAS_LIMIT = 5_000_000n;
+
+/**
+ * Wave 5 Path D Slice 1 Commit 3.5 — paymaster address must be a
+ * proper 20-byte hex (not `0x` or some other shape that `assertHex`
+ * would accept).
+ */
+function assertHexAddress(value: unknown, label: string): `0x${string}` {
+  if (typeof value !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(value)) {
+    const repr =
+      value === undefined ? 'undefined' : JSON.stringify(value);
+    const safe = typeof repr === 'string' ? repr.slice(0, 80) : 'unknown';
+    throw new BundlerClientError(
+      'invalid_response',
+      `${label} must be a 0x-prefixed 20-byte hex address (got ${safe})`,
+    );
+  }
+  return value as `0x${string}`;
 }

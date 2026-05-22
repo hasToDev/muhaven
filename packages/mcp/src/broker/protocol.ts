@@ -265,6 +265,27 @@ export interface PolicySnapshotWire {
   /** Optional Slice 1, REQUIRED Slice 4 wildcard. Hex-32 hash of the
    *  consent text the user saw at mint time (Slice 4 gate #5). */
   readonly consentTextSha256?: `0x${string}`;
+  /**
+   * Wave 5 Path D Slice 1 Commit 3.5 — `getPermissionId()` for the
+   * installed `@zerodev/permissions` PermissionValidator. 4-byte hex
+   * (`keccak256(policyAndSignerData).slice(0, 4)`). Used by the MCP
+   * server to compose the 24-byte nonce-key composite Kernel v3.1
+   * requires for UserOps routed through the permission validator
+   * (`pad(concat([VALIDATOR_MODE, VALIDATOR_TYPE.PERMISSION,
+   * identifier(20), customKey(2)]))`). Without this, the bundler reads
+   * the SUDO-validator nonce slot and the UserOp is routed through
+   * the wrong validator → `AA24 InvalidSigner`.
+   *
+   * **Optional in Slice 1 for back-compat** with the not-yet-built
+   * dashboard-side `storePolicySnapshot` POST. Path D refuses to
+   * compose a UserOp when this field is absent → falls back to Path C
+   * with reason `no_permission_id_in_snapshot`. Slice 2's frontend
+   * mint flow MUST include this field; broker daemon enforces no
+   * tighter today (additive optional field, no protocol version bump
+   * because every existing 0.4.0 consumer that doesn't supply it just
+   * loses Path D and degrades cleanly to Path C).
+   */
+  readonly permissionId?: `0x${string}`;
 }
 
 // ---------- responses ----------
@@ -516,6 +537,15 @@ function isOptionalHash32(value: unknown): value is `0x${string}` | undefined {
   return value === undefined || isHashHex(value);
 }
 
+/**
+ * Wave 5 Path D Slice 1 Commit 3.5 — validator for the 4-byte
+ * `permissionId` hex string (`getPermissionId()` output from
+ * `@zerodev/permissions`). Same shape as a function selector.
+ */
+function isOptionalPermissionId(value: unknown): value is `0x${string}` | undefined {
+  return value === undefined || isSelectorHex(value);
+}
+
 function parsePolicySnapshot(raw: unknown): PolicySnapshotWire | { error: string } {
   if (typeof raw !== 'object' || raw === null) {
     return { error: 'snapshot must be a JSON object' };
@@ -576,6 +606,9 @@ function parsePolicySnapshot(raw: unknown): PolicySnapshotWire | { error: string
   if (!isOptionalHash32(obj.consentTextSha256)) {
     return { error: 'snapshot.consentTextSha256 must be a 0x-prefixed 32-byte hex when provided' };
   }
+  if (!isOptionalPermissionId(obj.permissionId)) {
+    return { error: 'snapshot.permissionId must be a 0x-prefixed 4-byte hex when provided' };
+  }
   return {
     sessionId: obj.sessionId,
     mode: 'scoped',
@@ -592,6 +625,9 @@ function parsePolicySnapshot(raw: unknown): PolicySnapshotWire | { error: string
     ...(obj.consentTextSha256 === undefined
       ? {}
       : { consentTextSha256: (obj.consentTextSha256 as string).toLowerCase() as `0x${string}` }),
+    ...(obj.permissionId === undefined
+      ? {}
+      : { permissionId: (obj.permissionId as string).toLowerCase() as `0x${string}` }),
   };
 }
 

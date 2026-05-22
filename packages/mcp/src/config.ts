@@ -48,6 +48,26 @@ export interface McpRuntimeConfig {
    *  from env so a future mainnet rollout doesn't require a code change.
    *  Default 421614. */
   chainId: number;
+  /**
+   * Wave 5 Path D Slice 1 (Commit 3.5) — the
+   * `MuHavenSubscription.purchase` target the autonomous-buy UserOp
+   * calls into. Undefined → Path D's UserOp build path is disabled
+   * (handler falls back to Path C with reason
+   * `subscription_address_unset`). Lives in env (NOT a contract
+   * deployment lookup) so the MCP package stays free of the deployment
+   * JSON files. Source of truth: `deployments/arb-sepolia-v2.json`
+   * (prod) / `deployments/arb-sepolia-v2.staging.json` (stage) →
+   * `subscription` field.
+   */
+  subscriptionAddress: `0x${string}` | undefined;
+  /**
+   * Wave 5 Path D Slice 1 (Commit 3.5) — ERC-4337 EntryPoint v0.7
+   * address. Defaults to the canonical deployment
+   * `0x0000000071727De22E5E9d8BAf0edAc6f37da032` (same on every EVM
+   * chain). Operators on a future EntryPoint rotation override via
+   * `MUHAVEN_ENTRY_POINT`.
+   */
+  entryPointAddress: `0x${string}`;
 }
 
 export interface BrokerRuntimeConfig {
@@ -90,6 +110,10 @@ const DEFAULT_BUNDLER_TIMEOUT_MS = 20_000;
  *  targets. Operators on a different chain MUST override
  *  MUHAVEN_CHAIN_ID alongside MUHAVEN_BUNDLER_URL. */
 const DEFAULT_CHAIN_ID = 421614;
+/** ERC-4337 EntryPoint v0.7 canonical address. Same on every EVM chain. */
+const DEFAULT_ENTRY_POINT_ADDRESS =
+  '0x0000000071727De22E5E9d8BAf0edAc6f37da032' as `0x${string}`;
+const ADDRESS_HEX_RE = /^0x[0-9a-fA-F]{40}$/;
 
 /**
  * Compute the default IPC endpoint for the broker. POSIX: a socket file
@@ -227,6 +251,36 @@ export function loadMcpConfig(env: NodeJS.ProcessEnv = process.env): McpRuntimeC
   const bundlerTimeoutMs = readEnvInt('MUHAVEN_BUNDLER_TIMEOUT_MS', DEFAULT_BUNDLER_TIMEOUT_MS, env);
   const chainId = readEnvInt('MUHAVEN_CHAIN_ID', DEFAULT_CHAIN_ID, env);
 
+  // Wave 5 Path D Slice 1 (Commit 3.5) — optional subscription
+  // contract address. Undefined → Path D's UserOp build path stays
+  // dormant + position tools fall back to Path C deep-link with a
+  // structured reason. Defensive shape check so a typo doesn't
+  // silently mis-route the autonomous buy.
+  const subscriptionAddressRaw = readEnv('MUHAVEN_SUBSCRIPTION_ADDRESS', env);
+  let subscriptionAddress: `0x${string}` | undefined;
+  if (subscriptionAddressRaw !== undefined) {
+    if (!ADDRESS_HEX_RE.test(subscriptionAddressRaw)) {
+      throw new Error(
+        `MUHAVEN_SUBSCRIPTION_ADDRESS must be a 0x-prefixed 20-byte hex string (got ${JSON.stringify(subscriptionAddressRaw)})`,
+      );
+    }
+    subscriptionAddress = subscriptionAddressRaw.toLowerCase() as `0x${string}`;
+  }
+
+  // ERC-4337 EntryPoint v0.7 address. Defaults to the canonical
+  // deployment; operators on a future EntryPoint rotation override via
+  // `MUHAVEN_ENTRY_POINT`.
+  const entryPointAddressRaw = readEnv('MUHAVEN_ENTRY_POINT', env);
+  let entryPointAddress: `0x${string}` = DEFAULT_ENTRY_POINT_ADDRESS;
+  if (entryPointAddressRaw !== undefined) {
+    if (!ADDRESS_HEX_RE.test(entryPointAddressRaw)) {
+      throw new Error(
+        `MUHAVEN_ENTRY_POINT must be a 0x-prefixed 20-byte hex string (got ${JSON.stringify(entryPointAddressRaw)})`,
+      );
+    }
+    entryPointAddress = entryPointAddressRaw.toLowerCase() as `0x${string}`;
+  }
+
   return {
     backendBaseUrl,
     dashboardBaseUrl,
@@ -239,6 +293,8 @@ export function loadMcpConfig(env: NodeJS.ProcessEnv = process.env): McpRuntimeC
     bundlerUrl,
     bundlerTimeoutMs,
     chainId,
+    subscriptionAddress,
+    entryPointAddress,
   };
 }
 

@@ -216,7 +216,15 @@ export async function handleBrokerRequest(
         return errorResponse(check.code, check.message);
       }
       try {
-        const signature = await signer.signHash(req.userOpHash);
+        // Wave 5 Path D Slice 1 Commit 3.5 — sign via EIP-191 personal-
+        // sign (`signRawMessage`), NOT raw secp256k1 (`signHash`).
+        // ZeroDev's permission validator on Kernel v3.1 expects the
+        // signer to ECDSA-sign `keccak256("\x19Ethereum Signed Message:
+        // \n32" || userOpHash)` — the on-chain ecrecover validates
+        // against that envelope, so raw `signHash` would yield a
+        // different signer address and `AA24 InvalidSigner` would fire.
+        // See `signer.ts::signRawMessage` JSDoc.
+        const signature = await signer.signRawMessage(req.userOpHash);
         return {
           type: 'sign_userop',
           signature,

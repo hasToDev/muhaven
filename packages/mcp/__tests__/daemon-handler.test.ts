@@ -6,8 +6,11 @@ import type { IPolicyStore, PolicySnapshot } from '../src/broker/policy-snapshot
 
 class StubSigner implements ISigner {
   readonly address = '0x1111111111111111111111111111111111111111' as const;
-  async signHash(hash: `0x${string}`): Promise<`0x${string}`> {
+  async signHash(_hash: `0x${string}`): Promise<`0x${string}`> {
     return ('0x' + 'aa'.repeat(64) + '1b') as `0x${string}`;
+  }
+  async signRawMessage(_hash: `0x${string}`): Promise<`0x${string}`> {
+    return ('0x' + 'bb'.repeat(64) + '1c') as `0x${string}`;
   }
 }
 
@@ -220,6 +223,9 @@ describe('handleBrokerRequest', () => {
       address: '0x2222222222222222222222222222222222222222' as const,
       async signHash() {
         throw new Error('viem oom');
+      },
+      async signRawMessage() {
+        throw new Error('viem oom (signRawMessage)');
       },
     };
     await expect(

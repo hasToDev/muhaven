@@ -149,6 +149,12 @@ export interface BuildServerOptions {
    * production URL.
    */
   dashboardBaseUrl?: string;
+  /** Wave 5 Path D Slice 1 (Commit 3.5) — Arb Sepolia chain id (421614). */
+  chainId?: number;
+  /** Wave 5 Path D Slice 1 (Commit 3.5) — MuHavenSubscription target. */
+  subscriptionAddress?: `0x${string}`;
+  /** Wave 5 Path D Slice 1 (Commit 3.5) — ERC-4337 EntryPoint v0.7 addr. */
+  entryPointAddress?: `0x${string}`;
 }
 
 export function buildMcpServer(opts: BuildServerOptions): Server {
@@ -194,6 +200,9 @@ export function buildMcpServer(opts: BuildServerOptions): Server {
         bundler: opts.bundler,
         surface: 'mcp',
         dashboardBaseUrl: opts.dashboardBaseUrl,
+        chainId: opts.chainId,
+        subscriptionAddress: opts.subscriptionAddress,
+        entryPointAddress: opts.entryPointAddress,
       });
       return toolJsonResponse(result);
     } catch (err) {
@@ -300,7 +309,27 @@ export async function runMcpStdioCli(opts: RunMcpStdioCliOptions = {}): Promise<
     broker: config.readOnly ? undefined : broker,
     bundler: config.readOnly ? undefined : bundler,
     dashboardBaseUrl: config.dashboardBaseUrl,
+    chainId: config.chainId,
+    subscriptionAddress: config.subscriptionAddress,
+    entryPointAddress: config.entryPointAddress,
   });
+
+  // Wave 5 Path D Slice 1 Commit 3.5 — fire-and-forget chain-id assert
+  // on boot. Surfaces a misconfigured bundler (wrong chain) as a stderr
+  // warning before the first user-facing tool call rather than as an
+  // opaque AA23 mid-buy. Read tools still work even on a chain
+  // mismatch, so we deliberately don't crash — the warning is enough
+  // for the operator to see in `journalctl --user -u muhaven-broker`
+  // or `claude --mcp-debug`.
+  if (bundler && !config.readOnly) {
+    void bundler.assertChainId().catch((err) => {
+      process.stderr.write(
+        `[muhaven-mcp] bundler chain-id assert failed: ${
+          err instanceof Error ? err.message : String(err)
+        } — Path D autonomous-buys will fail until MUHAVEN_BUNDLER_URL + MUHAVEN_CHAIN_ID agree\n`,
+      );
+    });
+  }
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

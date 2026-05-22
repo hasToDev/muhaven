@@ -690,6 +690,15 @@ interface BrokerStubOverrides {
   policySnapshotError?: Error;
   /** When set, getActiveSessionId rejects. */
   activeSessionIdError?: Error;
+  /**
+   * Wave 5 Path D Slice 1 Commit 3.5 — sign_userop override. When set,
+   * either returns the signature payload or throws (typed
+   * BrokerClientError surface so the handler maps to the right
+   * fallback reason).
+   */
+  signUserOp?:
+    | { type: 'sign_userop'; signature: `0x${string}`; signerAddress: `0x${string}`; sessionId: string }
+    | Error;
 }
 
 /**
@@ -728,6 +737,16 @@ function stubBroker(overrides: BrokerStubOverrides = {}): BrokerClient {
       if (overrides.policySnapshotError) throw overrides.policySnapshotError;
       return overrides.policySnapshot ?? { type: 'get_policy_snapshot', snapshot: null };
     }),
+    signUserOp: vi.fn().mockImplementation(async () => {
+      const o = overrides.signUserOp;
+      if (!o) {
+        throw new Error(
+          'stubBroker: broker.signUserOp not stubbed — extend BrokerStubOverrides.signUserOp if this Path D path reaches the broker sign step',
+        );
+      }
+      if (o instanceof Error) throw o;
+      return o;
+    }),
   };
   return new Proxy(wired, {
     get(target, prop, receiver) {
@@ -743,22 +762,101 @@ function stubBroker(overrides: BrokerStubOverrides = {}): BrokerClient {
   }) as unknown as BrokerClient;
 }
 
-function stubBundler(): BundlerClient {
-  // Path D probe in Commit 3 doesn't actually exercise the bundler (the
-  // UserOp build is deferred to Commit 3.5). The stub throws on ANY
-  // property access so a future regression that calls deps.bundler.X
-  // inside attemptPathD without test wiring fails loudly here instead
-  // of silently passing the Path C fallback (MCP-Builder H-2).
-  return new Proxy(
-    {},
-    {
-      get(_target, prop) {
+interface BundlerStubOverrides {
+  getNonce?: bigint | Error;
+  getFeeData?: { maxFeePerGas: `0x${string}`; maxPriorityFeePerGas: `0x${string}` } | Error;
+  sponsorUserOp?:
+    | {
+        paymaster: `0x${string}`;
+        paymasterVerificationGasLimit: `0x${string}`;
+        paymasterPostOpGasLimit: `0x${string}`;
+        paymasterData: `0x${string}`;
+        callGasLimit: `0x${string}`;
+        verificationGasLimit: `0x${string}`;
+        preVerificationGas: `0x${string}`;
+      }
+    | Error;
+  sendUserOp?: `0x${string}` | Error;
+  waitForReceipt?:
+    | {
+        userOpHash: `0x${string}`;
+        sender: `0x${string}`;
+        success: boolean;
+        receipt: { transactionHash: `0x${string}`; blockNumber: `0x${string}`; blockHash: `0x${string}` };
+      }
+    | Error;
+}
+
+/**
+ * Wave 5 Path D Slice 1 Commit 3.5 — bundler stub. Methods that
+ * aren't overridden throw with a clear "not stubbed" diagnostic so a
+ * test reaching deeper into the pipeline than its scope intends fails
+ * loudly (same H-2 invariant as the broker stub).
+ */
+function stubBundler(overrides: BundlerStubOverrides = {}): BundlerClient {
+  const wired: Partial<Record<keyof BundlerClient, unknown>> = {
+    getNonce: vi.fn().mockImplementation(async () => {
+      const v = overrides.getNonce;
+      if (v === undefined) {
         throw new Error(
-          `stubBundler: bundler.${String(prop)} not stubbed — Commit 3 should not touch the bundler client at all`,
+          'stubBundler: bundler.getNonce not stubbed — extend BundlerStubOverrides.getNonce',
         );
-      },
+      }
+      if (v instanceof Error) throw v;
+      return v;
+    }),
+    getFeeData: vi.fn().mockImplementation(async () => {
+      const v = overrides.getFeeData;
+      if (v === undefined) {
+        throw new Error(
+          'stubBundler: bundler.getFeeData not stubbed — extend BundlerStubOverrides.getFeeData',
+        );
+      }
+      if (v instanceof Error) throw v;
+      return v;
+    }),
+    sponsorUserOp: vi.fn().mockImplementation(async () => {
+      const v = overrides.sponsorUserOp;
+      if (v === undefined) {
+        throw new Error(
+          'stubBundler: bundler.sponsorUserOp not stubbed — extend BundlerStubOverrides.sponsorUserOp',
+        );
+      }
+      if (v instanceof Error) throw v;
+      return v;
+    }),
+    sendUserOp: vi.fn().mockImplementation(async () => {
+      const v = overrides.sendUserOp;
+      if (v === undefined) {
+        throw new Error(
+          'stubBundler: bundler.sendUserOp not stubbed — extend BundlerStubOverrides.sendUserOp',
+        );
+      }
+      if (v instanceof Error) throw v;
+      return v;
+    }),
+    waitForReceipt: vi.fn().mockImplementation(async () => {
+      const v = overrides.waitForReceipt;
+      if (v === undefined) {
+        throw new Error(
+          'stubBundler: bundler.waitForReceipt not stubbed — extend BundlerStubOverrides.waitForReceipt',
+        );
+      }
+      if (v instanceof Error) throw v;
+      return v;
+    }),
+  };
+  return new Proxy(wired, {
+    get(target, prop, receiver) {
+      const v = Reflect.get(target, prop, receiver) as unknown;
+      if (v === undefined) {
+        throw new Error(
+          `stubBundler: bundler.${String(prop)} not stubbed — extend BundlerStubOverrides if Path D needs it`,
+        );
+      }
+      return v;
     },
-  ) as unknown as BundlerClient;
+  }) as unknown as BundlerClient;
 }
 
 function snapshotWith(
@@ -781,9 +879,27 @@ function snapshotWith(
     ],
     validUntilSec: 9_999_999_999,
     mintedAtSec: 1_700_000_000,
+    // Wave 5 Path D Slice 1 Commit 3.5 — required for Path D's nonce-
+    // key composer. Tests that want to exercise the
+    // `no_permission_id_in_snapshot` fallback can `permissionId:
+    // undefined`-override.
+    permissionId: '0xdeadbeef' as `0x${string}`,
     ...overrides,
   };
 }
+
+/**
+ * Wave 5 Path D Slice 1 Commit 3.5 — every Path D gate test now needs
+ * subscriptionAddress/entryPointAddress/chainId on deps (the early
+ * pipeline rejects with `subscription_address_unset` otherwise). The
+ * snapshot fixture's targetContracts entry is `0x222...222` so we
+ * match that as the subscription address — keeps the gate tests
+ * exercising the gate they care about, not the new "subscription not
+ * in target allowlist" path.
+ */
+const STUB_SUBSCRIPTION_ADDRESS = ('0x' + '2'.repeat(40)) as `0x${string}`;
+const STUB_ENTRY_POINT = '0x0000000071727De22E5E9d8BAf0edAc6f37da032' as `0x${string}`;
+const STUB_CHAIN_ID = 421614;
 
 function depsWithPathD(brokerOverrides: BrokerStubOverrides = {}): ToolDeps {
   return {
@@ -792,6 +908,9 @@ function depsWithPathD(brokerOverrides: BrokerStubOverrides = {}): ToolDeps {
     bundler: stubBundler(),
     surface: 'mcp',
     dashboardBaseUrl: 'https://muhaven.app',
+    subscriptionAddress: STUB_SUBSCRIPTION_ADDRESS,
+    entryPointAddress: STUB_ENTRY_POINT,
+    chainId: STUB_CHAIN_ID,
   };
 }
 
@@ -923,9 +1042,15 @@ describe('positionBuy — Path D probe (Wave 5 Slice 1 Commit 3)', () => {
     }
   });
 
-  it('falls back with path_d_userop_build_pending when every gate passes', async () => {
-    // Cap = 1000; amountUsdc 500 → 500 shares → under cap → reaches the
-    // final UserOp-build step which is deferred to Commit 3.5.
+  it('falls back with no_validator_registered when all Commit-3 gates pass but the backend has no validator address', async () => {
+    // Commit 3.5 — the OLD terminal state was the
+    // `path_d_userop_build_pending` placeholder; that's been replaced
+    // with the real UserOp build pipeline. With the default catalog
+    // backend stub (no `/agent/policy/state` route shape), the very
+    // first new step (resolve validator address) returns nothing and
+    // the handler falls back to Path C with `no_validator_registered`.
+    // Tests for the deeper steps (encrypt-shares / sponsor / sign /
+    // submit) live below.
     const snap = snapshotWith();
     const result = await positionBuy(
       { token: 'TBILL1', amountUsdc: '500' },
@@ -935,7 +1060,7 @@ describe('positionBuy — Path D probe (Wave 5 Slice 1 Commit 3)', () => {
     );
     expect(result.ok).toBe(true);
     if (result.ok && 'echo' in result.data) {
-      expect(result.data.echo.pathDFallbackReason).toBe('path_d_userop_build_pending');
+      expect(result.data.echo.pathDFallbackReason).toBe('no_validator_registered');
       // Existing Path C deep-link still returned for the user.
       expect(result.data.dashboardUrl).toContain('/trade');
       expect(new URL(result.data.dashboardUrl).searchParams.get('amount')).toBe('500');
@@ -1051,8 +1176,12 @@ describe('positionBuy — Path D probe (Wave 5 Slice 1 Commit 3)', () => {
     );
     expect(result.ok).toBe(true);
     if (result.ok && 'echo' in result.data) {
-      // Reaches the final terminal — signer matched case-insensitively.
-      expect(result.data.echo.pathDFallbackReason).toBe('path_d_userop_build_pending');
+      // Reaches PAST the signer gate (no `signer_mismatch`). Commit 3.5
+      // — the next gate (no validator address on the backend stub)
+      // surfaces as `no_validator_registered`. What matters is the
+      // signer comparison didn't false-positive.
+      expect(result.data.echo.pathDFallbackReason).not.toBe('signer_mismatch');
+      expect(result.data.echo.pathDFallbackReason).toBe('no_validator_registered');
     }
   });
 
@@ -1082,5 +1211,567 @@ describe('positionBuy — Path D probe (Wave 5 Slice 1 Commit 3)', () => {
     if (result.ok && 'echo' in result.data) {
       expect(result.data.echo.pathDFallbackReason).toBe('selector_uncapped');
     }
+  });
+});
+
+// ── Wave 5 Path D Slice 1 Commit 3.5 — real UserOp pipeline tests ──
+
+import { BackendError } from '../src/clients/backend-client.js';
+import { BrokerClientError } from '../src/clients/broker-client.js';
+import { BundlerClientError } from '../src/clients/bundler-client.js';
+import { getUserOperationHash } from 'viem/account-abstraction';
+import {
+  buildKernelSessionKeySignature,
+  encodeKernelExecuteSingleCall,
+} from '../src/clients/kernel-encoder.js';
+
+const KERNEL_ADDR = ('0x' + 'a'.repeat(40)) as `0x${string}`;
+const VALIDATOR_ADDR = ('0x' + '9'.repeat(40)) as `0x${string}`;
+const SIGNER_ADDR = ('0x' + '1'.repeat(40)) as `0x${string}`;
+
+/**
+ * Backend stub that routes on path. Returns the catalog payload for
+ * `/api/v1/tokens`, a populated PolicyState DTO for
+ * `/api/v1/agent/policy/state`, and per-call `post()` override for
+ * `/api/v1/agent/path-d/encrypt-shares`.
+ */
+const PATH_D_TBILL_ADDR = ('0x' + '3'.repeat(40)) as `0x${string}`;
+
+function pathDBackend(opts: {
+  validatorAddress?: string | null;
+  accountAddress?: string;
+  encryptSharesResult?:
+    | {
+        encShares: {
+          ctHash: string;
+          securityZone: number;
+          utype: number;
+          signature: string;
+        };
+        ephemeralEOA: string;
+      }
+    | BackendError
+    | Error;
+}): BackendClient {
+  const catalog = {
+    tokens: [
+      {
+        // Real-shape 0x-40-hex address — viem's encodeFunctionData
+        // rejects the placeholder `0xtbill` used by the catalog stub
+        // elsewhere in this file.
+        address: PATH_D_TBILL_ADDR,
+        symbol: 'TBILL1',
+        status: 'active',
+        latest_nav: { nav: '1.0' },
+      },
+    ],
+  };
+  return {
+    get: vi.fn().mockImplementation(async (path: string) => {
+      if (path === '/api/v1/agent/policy/state') {
+        return {
+          accountAddress: opts.accountAddress ?? KERNEL_ADDR,
+          surfaces: [
+            {
+              surface: 'mcp',
+              validatorAddress: opts.validatorAddress ?? null,
+            },
+          ],
+        };
+      }
+      return catalog;
+    }),
+    getUnauth: vi.fn().mockResolvedValue(catalog),
+    post: vi.fn().mockImplementation(async (path: string) => {
+      if (path === '/api/v1/agent/path-d/encrypt-shares') {
+        const v = opts.encryptSharesResult;
+        if (!v) {
+          throw new Error('pathDBackend: encryptSharesResult not configured');
+        }
+        if (v instanceof Error) throw v;
+        return v;
+      }
+      throw new Error(`pathDBackend: unexpected post to ${path}`);
+    }),
+  } as unknown as BackendClient;
+}
+
+function happyEncryptShares() {
+  return {
+    encShares: {
+      ctHash: ('0x' + '7'.repeat(64)) as `0x${string}`,
+      securityZone: 0,
+      utype: 5,
+      signature: '0xfeedface' as `0x${string}`,
+    },
+    ephemeralEOA: ('0x' + 'b'.repeat(40)) as `0x${string}`,
+  };
+}
+
+function happySponsored() {
+  return {
+    paymaster: ('0x' + 'c'.repeat(40)) as `0x${string}`,
+    paymasterVerificationGasLimit: '0x186a0' as `0x${string}`,
+    paymasterPostOpGasLimit: '0x186a0' as `0x${string}`,
+    paymasterData: '0xabcd' as `0x${string}`,
+    callGasLimit: '0x30d40' as `0x${string}`,
+    verificationGasLimit: '0x30d40' as `0x${string}`,
+    preVerificationGas: '0x5208' as `0x${string}`,
+  };
+}
+
+function happyReceipt(userOpHash: `0x${string}`) {
+  return {
+    userOpHash,
+    sender: KERNEL_ADDR,
+    success: true,
+    receipt: {
+      transactionHash: ('0x' + 'd'.repeat(64)) as `0x${string}`,
+      blockNumber: '0x10' as `0x${string}`,
+      blockHash: ('0x' + 'e'.repeat(64)) as `0x${string}`,
+    },
+  };
+}
+
+/** Reproduces the handler's userOpHash computation so the tests can
+ *  feed the same hash back into `sendUserOp` / `waitForReceipt`. */
+function computeExpectedUserOpHash(args: {
+  nonce: bigint;
+  feeMaxFeePerGas: `0x${string}`;
+  feePriorityFeePerGas: `0x${string}`;
+}): `0x${string}` {
+  const innerCalldata = '0x' as `0x${string}`; // placeholder — overridden below if needed
+  // Real hash test below skips this fn; it's here so the happy-path
+  // test can pre-compute the expected hash to register on the stub.
+  void innerCalldata;
+  void args;
+  // Returning a fixed sentinel — the happy path test below captures the
+  // hash dynamically via a sendUserOp spy instead of pre-computing it.
+  return ('0x' + '0'.repeat(64)) as `0x${string}`;
+}
+
+describe('positionBuy — Path D Slice 1 Commit 3.5 UserOp pipeline', () => {
+  it('falls back with no_permission_id_in_snapshot when snapshot lacks the permissionId field (frontend storePolicySnapshot wire-up gap)', async () => {
+    // The PolicySnapshotWire field is optional in Slice 1 for back-compat
+    // with the not-yet-built dashboard-side `storePolicySnapshot` POST
+    // (Slice 2 prerequisite). Until that lands, Path D MUST refuse to
+    // build a UserOp (no permissionId → no valid nonce-key composite
+    // → AA24 on submit) and surface the structured reason for operator
+    // remediation.
+    const snap = snapshotWith({ permissionId: undefined });
+    const backend = pathDBackend({});
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '500' },
+      {
+        backend,
+        broker: stubBroker({ policySnapshot: { type: 'get_policy_snapshot', snapshot: snap } }),
+        bundler: stubBundler(),
+        surface: 'mcp',
+        dashboardBaseUrl: 'https://muhaven.app',
+        subscriptionAddress: STUB_SUBSCRIPTION_ADDRESS,
+        entryPointAddress: STUB_ENTRY_POINT,
+        chainId: STUB_CHAIN_ID,
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && 'echo' in result.data) {
+      expect(result.data.echo.pathDFallbackReason).toBe('no_permission_id_in_snapshot');
+    }
+  });
+
+  it('falls back with target_not_in_snapshot when subscriptionAddress is not in the snapshot allowlist', async () => {
+    const snap = snapshotWith({
+      targetContracts: [('0x' + '7'.repeat(40)) as `0x${string}`],
+    });
+    const backend = pathDBackend({ validatorAddress: VALIDATOR_ADDR });
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '500' },
+      {
+        backend,
+        broker: stubBroker({ policySnapshot: { type: 'get_policy_snapshot', snapshot: snap } }),
+        bundler: stubBundler(),
+        surface: 'mcp',
+        dashboardBaseUrl: 'https://muhaven.app',
+        subscriptionAddress: STUB_SUBSCRIPTION_ADDRESS,
+        entryPointAddress: STUB_ENTRY_POINT,
+        chainId: STUB_CHAIN_ID,
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && 'echo' in result.data) {
+      expect(result.data.echo.pathDFallbackReason).toBe('target_not_in_snapshot');
+    }
+  });
+
+  it('falls back with encrypt_shares_rejected on backend 4xx', async () => {
+    const snap = snapshotWith();
+    const backend = pathDBackend({
+      validatorAddress: VALIDATOR_ADDR,
+      encryptSharesResult: new BackendError('not_found', 'token not in catalog', 404),
+    });
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '500' },
+      {
+        backend,
+        broker: stubBroker({ policySnapshot: { type: 'get_policy_snapshot', snapshot: snap } }),
+        bundler: stubBundler(),
+        surface: 'mcp',
+        dashboardBaseUrl: 'https://muhaven.app',
+        subscriptionAddress: STUB_SUBSCRIPTION_ADDRESS,
+        entryPointAddress: STUB_ENTRY_POINT,
+        chainId: STUB_CHAIN_ID,
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && 'echo' in result.data) {
+      expect(result.data.echo.pathDFallbackReason).toBe('encrypt_shares_rejected');
+    }
+  });
+
+  it('falls back with encrypt_shares_server_error on backend 5xx', async () => {
+    const snap = snapshotWith();
+    const backend = pathDBackend({
+      validatorAddress: VALIDATOR_ADDR,
+      encryptSharesResult: new BackendError('server_error', 'fhe-worker not ready', 500),
+    });
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '500' },
+      {
+        backend,
+        broker: stubBroker({ policySnapshot: { type: 'get_policy_snapshot', snapshot: snap } }),
+        bundler: stubBundler(),
+        surface: 'mcp',
+        dashboardBaseUrl: 'https://muhaven.app',
+        subscriptionAddress: STUB_SUBSCRIPTION_ADDRESS,
+        entryPointAddress: STUB_ENTRY_POINT,
+        chainId: STUB_CHAIN_ID,
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && 'echo' in result.data) {
+      expect(result.data.echo.pathDFallbackReason).toBe('encrypt_shares_server_error');
+    }
+  });
+
+  it('falls back with paymaster_rejected when pm_sponsorUserOperation rpc_errors', async () => {
+    const snap = snapshotWith();
+    const backend = pathDBackend({
+      validatorAddress: VALIDATOR_ADDR,
+      encryptSharesResult: happyEncryptShares(),
+    });
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '500' },
+      {
+        backend,
+        broker: stubBroker({ policySnapshot: { type: 'get_policy_snapshot', snapshot: snap } }),
+        bundler: stubBundler({
+          getNonce: 5n,
+          getFeeData: { maxFeePerGas: '0x10' as `0x${string}`, maxPriorityFeePerGas: '0x10' as `0x${string}` },
+          sponsorUserOp: new BundlerClientError('rpc_error', 'sponsor rejected', { code: -32500 }),
+        }),
+        surface: 'mcp',
+        dashboardBaseUrl: 'https://muhaven.app',
+        subscriptionAddress: STUB_SUBSCRIPTION_ADDRESS,
+        entryPointAddress: STUB_ENTRY_POINT,
+        chainId: STUB_CHAIN_ID,
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && 'echo' in result.data) {
+      expect(result.data.echo.pathDFallbackReason).toBe('paymaster_rejected');
+    }
+  });
+
+  it('falls back with broker_policy_violation on broker sign_userop policy rejection', async () => {
+    const snap = snapshotWith();
+    const backend = pathDBackend({
+      validatorAddress: VALIDATOR_ADDR,
+      encryptSharesResult: happyEncryptShares(),
+    });
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '500' },
+      {
+        backend,
+        broker: stubBroker({
+          policySnapshot: { type: 'get_policy_snapshot', snapshot: snap },
+          signUserOp: new BrokerClientError(
+            'broker_error',
+            'policy_violation: target mismatch',
+            undefined,
+            'policy_violation',
+          ),
+        }),
+        bundler: stubBundler({
+          getNonce: 5n,
+          getFeeData: { maxFeePerGas: '0x10' as `0x${string}`, maxPriorityFeePerGas: '0x10' as `0x${string}` },
+          sponsorUserOp: happySponsored(),
+        }),
+        surface: 'mcp',
+        dashboardBaseUrl: 'https://muhaven.app',
+        subscriptionAddress: STUB_SUBSCRIPTION_ADDRESS,
+        entryPointAddress: STUB_ENTRY_POINT,
+        chainId: STUB_CHAIN_ID,
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && 'echo' in result.data) {
+      expect(result.data.echo.pathDFallbackReason).toBe('broker_policy_violation');
+    }
+  });
+
+  it('falls back with userop_hash_mismatch when bundler-reported hash differs from broker-signed hash', async () => {
+    const snap = snapshotWith();
+    const backend = pathDBackend({
+      validatorAddress: VALIDATOR_ADDR,
+      encryptSharesResult: happyEncryptShares(),
+    });
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '500' },
+      {
+        backend,
+        broker: stubBroker({
+          policySnapshot: { type: 'get_policy_snapshot', snapshot: snap },
+          signUserOp: {
+            type: 'sign_userop',
+            sessionId: 'sess_test',
+            signerAddress: SIGNER_ADDR,
+            signature: ('0x' + 'ab'.repeat(65)) as `0x${string}`,
+          },
+        }),
+        bundler: stubBundler({
+          getNonce: 5n,
+          getFeeData: { maxFeePerGas: '0x10' as `0x${string}`, maxPriorityFeePerGas: '0x10' as `0x${string}` },
+          sponsorUserOp: happySponsored(),
+          // Bundler returns a hash that DOESN'T match the one viem computes.
+          sendUserOp: ('0x' + '0'.repeat(64)) as `0x${string}`,
+        }),
+        surface: 'mcp',
+        dashboardBaseUrl: 'https://muhaven.app',
+        subscriptionAddress: STUB_SUBSCRIPTION_ADDRESS,
+        entryPointAddress: STUB_ENTRY_POINT,
+        chainId: STUB_CHAIN_ID,
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && 'echo' in result.data) {
+      expect(result.data.echo.pathDFallbackReason).toBe('userop_hash_mismatch');
+    }
+  });
+
+  it('falls back with bundler_receipt_timeout and surfaces the submitted userOpHash for verification', async () => {
+    // To make the hash check pass, we need to capture the hash the
+    // handler computes and replay it from sendUserOp + raise a
+    // receipt_timeout on waitForReceipt. We do that by:
+    //   1. Building the same UserOp the handler would build via the
+    //      same helpers (encrypt-shares fixture → inner ABI → kernel
+    //      execute encode → known nonce + fee data → known sponsor
+    //      output).
+    //   2. Calling viem's getUserOperationHash with the same inputs.
+    //   3. Configuring the stub's sendUserOp to return that hash.
+    //   4. Configuring waitForReceipt to throw `receipt_timeout`.
+    const snap = snapshotWith();
+    const enc = happyEncryptShares();
+    const sponsored = happySponsored();
+    const nonce = 5n;
+    const fee = { maxFeePerGas: '0x10' as `0x${string}`, maxPriorityFeePerGas: '0x10' as `0x${string}` };
+    const { encodeFunctionData, parseAbi } = await import('viem');
+    const innerCalldata = encodeFunctionData({
+      abi: parseAbi([
+        'function purchase(address token, (uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) encShares, uint128 maxSharesHint, address ephemeralEOA)',
+      ]),
+      functionName: 'purchase',
+      args: [
+        PATH_D_TBILL_ADDR,
+        {
+          ctHash: BigInt(enc.encShares.ctHash),
+          securityZone: enc.encShares.securityZone,
+          utype: enc.encShares.utype,
+          signature: enc.encShares.signature,
+        },
+        500n,
+        enc.ephemeralEOA,
+      ],
+    }) as `0x${string}`;
+    const kernelCallData = encodeKernelExecuteSingleCall({
+      target: STUB_SUBSCRIPTION_ADDRESS,
+      value: 0n,
+      callData: innerCalldata,
+    });
+    const placeholderSig = ('0x' + 'fe'.repeat(86)) as `0x${string}`;
+    const userOpForHash = {
+      sender: KERNEL_ADDR,
+      nonce,
+      factory: undefined,
+      factoryData: undefined,
+      callData: kernelCallData,
+      callGasLimit: BigInt(sponsored.callGasLimit),
+      verificationGasLimit: BigInt(sponsored.verificationGasLimit),
+      preVerificationGas: BigInt(sponsored.preVerificationGas),
+      maxFeePerGas: BigInt(fee.maxFeePerGas),
+      maxPriorityFeePerGas: BigInt(fee.maxPriorityFeePerGas),
+      paymaster: sponsored.paymaster,
+      paymasterVerificationGasLimit: BigInt(sponsored.paymasterVerificationGasLimit),
+      paymasterPostOpGasLimit: BigInt(sponsored.paymasterPostOpGasLimit),
+      paymasterData: sponsored.paymasterData,
+      signature: placeholderSig,
+    };
+    const expectedHash = getUserOperationHash({
+      userOperation: userOpForHash as unknown as Parameters<typeof getUserOperationHash>[0]['userOperation'],
+      entryPointAddress: STUB_ENTRY_POINT,
+      entryPointVersion: '0.7',
+      chainId: STUB_CHAIN_ID,
+    });
+
+    const backend = pathDBackend({
+      validatorAddress: VALIDATOR_ADDR,
+      encryptSharesResult: enc,
+    });
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '500' },
+      {
+        backend,
+        broker: stubBroker({
+          policySnapshot: { type: 'get_policy_snapshot', snapshot: snap },
+          signUserOp: {
+            type: 'sign_userop',
+            sessionId: 'sess_test',
+            signerAddress: SIGNER_ADDR,
+            signature: ('0x' + 'ab'.repeat(65)) as `0x${string}`,
+          },
+        }),
+        bundler: stubBundler({
+          getNonce: nonce,
+          getFeeData: fee,
+          sponsorUserOp: sponsored,
+          sendUserOp: expectedHash,
+          waitForReceipt: new BundlerClientError('receipt_timeout', 'no receipt'),
+        }),
+        surface: 'mcp',
+        dashboardBaseUrl: 'https://muhaven.app',
+        subscriptionAddress: STUB_SUBSCRIPTION_ADDRESS,
+        entryPointAddress: STUB_ENTRY_POINT,
+        chainId: STUB_CHAIN_ID,
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && 'echo' in result.data) {
+      expect(result.data.echo.pathDFallbackReason).toBe('bundler_receipt_timeout');
+      expect(result.data.echo.pathDSubmittedUserOpHash).toBe(expectedHash);
+    }
+  });
+
+  it('happy path: every stub returns a success → returns ok with submitted UserOp + receipt', async () => {
+    const snap = snapshotWith();
+    const enc = happyEncryptShares();
+    const sponsored = happySponsored();
+    const nonce = 5n;
+    const fee = { maxFeePerGas: '0x10' as `0x${string}`, maxPriorityFeePerGas: '0x10' as `0x${string}` };
+    const { encodeFunctionData, parseAbi } = await import('viem');
+    const innerCalldata = encodeFunctionData({
+      abi: parseAbi([
+        'function purchase(address token, (uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) encShares, uint128 maxSharesHint, address ephemeralEOA)',
+      ]),
+      functionName: 'purchase',
+      args: [
+        PATH_D_TBILL_ADDR,
+        {
+          ctHash: BigInt(enc.encShares.ctHash),
+          securityZone: enc.encShares.securityZone,
+          utype: enc.encShares.utype,
+          signature: enc.encShares.signature,
+        },
+        500n,
+        enc.ephemeralEOA,
+      ],
+    }) as `0x${string}`;
+    const kernelCallData = encodeKernelExecuteSingleCall({
+      target: STUB_SUBSCRIPTION_ADDRESS,
+      value: 0n,
+      callData: innerCalldata,
+    });
+    const placeholderSig = ('0x' + 'fe'.repeat(86)) as `0x${string}`;
+    const expectedHash = getUserOperationHash({
+      userOperation: {
+        sender: KERNEL_ADDR,
+        nonce,
+        factory: undefined,
+        factoryData: undefined,
+        callData: kernelCallData,
+        callGasLimit: BigInt(sponsored.callGasLimit),
+        verificationGasLimit: BigInt(sponsored.verificationGasLimit),
+        preVerificationGas: BigInt(sponsored.preVerificationGas),
+        maxFeePerGas: BigInt(fee.maxFeePerGas),
+        maxPriorityFeePerGas: BigInt(fee.maxPriorityFeePerGas),
+        paymaster: sponsored.paymaster,
+        paymasterVerificationGasLimit: BigInt(sponsored.paymasterVerificationGasLimit),
+        paymasterPostOpGasLimit: BigInt(sponsored.paymasterPostOpGasLimit),
+        paymasterData: sponsored.paymasterData,
+        signature: placeholderSig,
+      } as unknown as Parameters<typeof getUserOperationHash>[0]['userOperation'],
+      entryPointAddress: STUB_ENTRY_POINT,
+      entryPointVersion: '0.7',
+      chainId: STUB_CHAIN_ID,
+    });
+
+    const sendSpy = vi.fn().mockResolvedValue(expectedHash);
+    const backend = pathDBackend({
+      validatorAddress: VALIDATOR_ADDR,
+      encryptSharesResult: enc,
+    });
+    const bundler = {
+      getNonce: vi.fn().mockResolvedValue(nonce),
+      getFeeData: vi.fn().mockResolvedValue(fee),
+      sponsorUserOp: vi.fn().mockResolvedValue(sponsored),
+      sendUserOp: sendSpy,
+      waitForReceipt: vi.fn().mockResolvedValue(happyReceipt(expectedHash)),
+    } as unknown as BundlerClient;
+    const broker = stubBroker({
+      policySnapshot: { type: 'get_policy_snapshot', snapshot: snap },
+      signUserOp: {
+        type: 'sign_userop',
+        sessionId: 'sess_test',
+        signerAddress: SIGNER_ADDR,
+        signature: ('0x' + 'ab'.repeat(65)) as `0x${string}`,
+      },
+    });
+
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '500' },
+      {
+        backend,
+        broker,
+        bundler,
+        surface: 'mcp',
+        dashboardBaseUrl: 'https://muhaven.app',
+        subscriptionAddress: STUB_SUBSCRIPTION_ADDRESS,
+        entryPointAddress: STUB_ENTRY_POINT,
+        chainId: STUB_CHAIN_ID,
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && !('echo' in result.data)) {
+      // PositionSubmittedData branch (no `echo` field)
+      expect(result.data.action).toBe('buy');
+      expect(result.data.status).toBe('submitted');
+      expect(result.data.path).toBe('D');
+      expect(result.data.userOpHash).toBe(expectedHash);
+      expect(result.data.txHash).toMatch(/^0x[0-9a-f]{64}$/);
+    } else {
+      throw new Error('expected PositionSubmittedData but got PositionPrefillData');
+    }
+
+    // The submitted UserOp's signature MUST be the kernel-format
+    // PermissionValidator signature: 0xff prefix + 65 bytes ECDSA = 66
+    // bytes total. Validator address is in the nonce key composite, NOT
+    // the signature (Commit 3.5 round-1 H-1 correction).
+    const submitted = sendSpy.mock.calls[0]![0] as { signature: `0x${string}` };
+    const expectedSig = buildKernelSessionKeySignature({
+      ecdsaSignature: ('0x' + 'ab'.repeat(65)) as `0x${string}`,
+    });
+    expect(submitted.signature).toBe(expectedSig);
+    expect(submitted.signature).not.toBe(placeholderSig);
+    // Sanity: 66 bytes = 132 hex chars + 0x prefix.
+    expect(submitted.signature.length).toBe(2 + 132);
+    expect(submitted.signature.slice(0, 4)).toBe('0xff');
   });
 });

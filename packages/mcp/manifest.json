@@ -34,7 +34,9 @@
         "MUHAVEN_BROKER_ENDPOINT": "${user_config.broker_endpoint}",
         "MUHAVEN_READ_ONLY": "${user_config.read_only}",
         "MUHAVEN_BUNDLER_URL": "${user_config.bundler_url}",
-        "MUHAVEN_CHAIN_ID": "${user_config.chain_id}"
+        "MUHAVEN_CHAIN_ID": "${user_config.chain_id}",
+        "MUHAVEN_SUBSCRIPTION_ADDRESS": "${user_config.subscription_address}",
+        "MUHAVEN_ENTRY_POINT": "${user_config.entry_point_address}"
       }
     }
   },
@@ -110,6 +112,22 @@
       "title": "Chain id (for Path D bundler chain check)",
       "description": "Chain id the bundler must report. Default 421614 (Arbitrum Sepolia). Operators on a different network MUST override alongside bundler_url. Unused when bundler_url is blank.",
       "default": "421614",
+      "sensitive": false
+    },
+    {
+      "key": "subscription_address",
+      "type": "string",
+      "title": "MuHavenSubscription contract address (Path D autonomous-buy target)",
+      "description": "Wave 5 Path D Slice 1 Commit 3.5 — the MuHavenSubscription contract address Path D's autonomous-buy UserOp targets. Source: deployments/arb-sepolia-v2.json (prod) or deployments/arb-sepolia-v2.staging.json (stage), `subscription` field. Leave blank to keep position.buy on Path C even when bundler_url + broker are set.",
+      "default": "",
+      "sensitive": false
+    },
+    {
+      "key": "entry_point_address",
+      "type": "string",
+      "title": "ERC-4337 EntryPoint address (Path D, defaults to v0.7 canonical)",
+      "description": "Wave 5 Path D Slice 1 Commit 3.5 — defaults to the canonical EntryPoint v0.7 deployment (0x0000000071727De22E5E9d8BAf0edAc6f37da032), same on every EVM chain. Only override on a future EntryPoint rotation.",
+      "default": "0x0000000071727De22E5E9d8BAf0edAc6f37da032",
       "sensitive": false
     }
   ],

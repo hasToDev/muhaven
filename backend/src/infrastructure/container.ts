@@ -49,6 +49,7 @@ import { JwtService } from './auth/jwt.service.js';
 import { NonceService } from './auth/nonce.service.js';
 import { SiweVerifier } from './auth/siwe-verifier.js';
 import { FheService } from './fhe/fhe.service.js';
+import { FheWorkerClient } from './fhe/fhe-worker.client.js';
 import { QuickNodeVerifier } from './webhook/quicknode-verifier.js';
 import {
   DeployTokenLibrary,
@@ -133,6 +134,9 @@ import { GetPolicyStateUseCase } from '../application/use-case/agent/policy/get-
 import { ConfirmTokenService } from '../application/use-case/agent/policy/confirm-token.service.js';
 import { AppendAuditEventUseCase } from '../application/use-case/agent/policy/append-audit-event.use-case.js';
 import { PauseAgentUseCase } from '../application/use-case/agent/policy/pause-agent.use-case.js';
+// Wave 5 Path D Slice 1 Commit 3.5 — backend encrypt-shares mediation
+// for MCP autonomous-buy. See dto/agent/path-d.dto.ts.
+import { EncryptSharesForPurchaseUseCase } from '../application/use-case/agent/path-d/encrypt-shares-for-purchase.use-case.js';
 import {
   PublishIssuerChannelEventUseCase,
   LoggingIssuerChannelTransport,
@@ -320,6 +324,10 @@ function getCheckoutRepos(): CheckoutRepositories {
 const jwtService = new JwtService();
 const siweVerifier = new SiweVerifier();
 const fheService = new FheService();
+// Wave 5 Path D Slice 1 Commit 3.5 — sibling of fheService, exposed to
+// the EncryptSharesForPurchaseUseCase getter. Stateless (just stores
+// baseUrl); cheap to instantiate once at module load.
+const fheWorkerClient = new FheWorkerClient();
 
 const checkoutSseChannel = new SseChannelService();
 let _webhookDispatcher: WebhookDispatcher | null = null;
@@ -1023,5 +1031,15 @@ export const container = {
     return getOperatorAlertTransport() instanceof HttpOperatorAlertTransport
       ? 'http'
       : 'logging';
+  },
+  // Wave 5 Path D Slice 1 (Commit 3.5) — encrypts cleartext share
+  // amounts into InEuint128 ciphertext bound to the user's kernel
+  // address for MCP-side Path D autonomous-buy assembly. New per
+  // request — the use-case itself is cheap; both deps are pre-built.
+  get encryptSharesForPurchase() {
+    return new EncryptSharesForPurchaseUseCase(
+      fheWorkerClient,
+      getMuHavenRepos().rwaTokenRepo,
+    );
   },
 };
