@@ -76,10 +76,17 @@ describeIfPg('PgAgentDeviceCodeRepository (real postgres)', () => {
     // `agent_device_codes.user_id` has FK → `users.id` (onDelete: set null).
     // The `authorize` / `deny` use-cases set `userId` to the authorizing user's
     // PK, so every test that touches those paths needs a `users` row to be
-    // present. TRUNCATE with CASCADE so the FK chain unwinds cleanly, then
-    // seed the canonical 'u1' user the tests reference. Without this, CI's
-    // fresh Postgres fails with `23503` violating agent_device_codes_user_id_users_id_fk.
-    await db.execute(sql`TRUNCATE TABLE ${agentDeviceCodes}, ${users} CASCADE`);
+    // present.
+    //
+    // Targeted DELETE (not TRUNCATE) so the per-suite footprint doesn't
+    // wipe rows owned by other integration test files running in
+    // parallel against the shared CI Pg. The sibling
+    // `pg-scoped-session.integration.test.ts` follows the same pattern;
+    // TRUNCATE users CASCADE was racing against parallel INSERTs of
+    // `'u1'` from that suite (PK collision → 23505) until both suites
+    // namespaced their user IDs + switched to targeted DELETE.
+    await db.execute(sql`DELETE FROM ${agentDeviceCodes} WHERE user_id = ${'u1'} OR user_id IS NULL`);
+    await db.execute(sql`DELETE FROM ${users} WHERE id = ${'u1'}`);
     await db.insert(users).values({
       id: 'u1',
       walletAddress: '0x0000000000000000000000000000000000000001',

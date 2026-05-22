@@ -31,10 +31,19 @@ const describeIfPg = PG_URL ? describe : describe.skip;
 const NOW = new Date('2026-05-22T12:00:00.000Z');
 const NOW_SEC = Math.floor(NOW.getTime() / 1000);
 
+// User IDs are namespaced to this test suite. Vitest runs integration
+// test files in parallel against a shared CI Pg instance; the sibling
+// `pg-agent-device-code.integration.test.ts` also inserts a `'u1'`
+// users row. Without namespacing, both suites race on the same PK and
+// the loser 23505s — which is exactly what failed CI on commit 9cbef56.
+// Per-suite namespacing keeps each test's users-table footprint disjoint.
+const U1 = 'scoped-session-u1';
+const U2 = 'scoped-session-u2';
+
 function makeSession(overrides: Partial<ConstructorParameters<typeof ScopedSession>[0]> = {}): ScopedSession {
   return new ScopedSession({
     sessionId: 'session-base-001',
-    userId: 'u1',
+    userId: U1,
     surface: Surface.MCP,
     status: ScopedSessionStatus.Active,
     signerAddress: '0xaaaa000000000000000000000000000000000001',
@@ -75,22 +84,41 @@ describeIfPg('PgScopedSessionRepository (real postgres)', () => {
   });
 
   beforeEach(async () => {
-    // CASCADE order: scoped sessions → user_state (independent) → users.
-    // Both child tables FK to users(id); TRUNCATE users CASCADE wipes
-    // both via the FK chain.
+    // CI runs integration test files in PARALLEL against a shared Pg
+    // instance. `TRUNCATE users CASCADE` from this suite would race
+    // with the sibling `pg-agent-device-code` suite (also resets users),
+    // wiping each other's rows mid-test. Targeted DELETE that only
+    // touches this suite's footprint is concurrency-safe — each suite
+    // owns its own user namespace and resets only its own rows.
+    //
+    // FK CASCADE behavior: `agent_scoped_sessions.user_id` is
+    // `onDelete: 'set null'`, so DELETE FROM users nulls the userId in
+    // any stranded scoped-session rows but doesn't cascade-delete them.
+    // We explicitly delete child rows first via the per-suite namespace
+    // (sessionId pattern is fully suite-local). `agent_user_state`
+    // uses NO ACTION by default — its rows must be deleted explicitly
+    // before the users delete can succeed.
     await db.execute(
-      sql`TRUNCATE TABLE ${agentScopedSessions}, ${agentUserState}, ${users} CASCADE`,
+      sql`DELETE FROM ${agentScopedSessions} WHERE user_id IN (${U1}, ${U2}) OR user_id IS NULL`,
     );
+    await db.execute(
+      sql`DELETE FROM ${agentUserState} WHERE user_id IN (${U1}, ${U2})`,
+    );
+    await db.execute(sql`DELETE FROM ${users} WHERE id IN (${U1}, ${U2})`);
+    // Wallet addresses chosen in the `0x...01xx` range to stay disjoint
+    // from the device-code suite's `0x...0001`/`0x...0002` reservations.
+    // Both are also UNIQUE constraints — parallel suites that pick
+    // overlapping wallet addresses would 23505 each other on insert.
     await db.insert(users).values([
       {
-        id: 'u1',
-        walletAddress: '0x0000000000000000000000000000000000000001',
+        id: U1,
+        walletAddress: '0x0000000000000000000000000000000000000101',
         walletProvider: 'zerodev',
         role: 'investor',
       },
       {
-        id: 'u2',
-        walletAddress: '0x0000000000000000000000000000000000000002',
+        id: U2,
+        walletAddress: '0x0000000000000000000000000000000000000102',
         walletProvider: 'zerodev',
         role: 'investor',
       },
@@ -199,7 +227,7 @@ describeIfPg('PgScopedSessionRepository (real postgres)', () => {
         await expect(
           db.insert(agentScopedSessions).values({
             sessionId: `session-check-${Math.random().toString(36).slice(2, 10)}`,
-            userId: 'u1',
+            userId: U1,
             surface: 'mcp',
             status: 'active',
             signerAddress: '0xaaaa000000000000000000000000000000000001',
@@ -225,30 +253,30 @@ describeIfPg('PgScopedSessionRepository (real postgres)', () => {
   describe('findLatestActive', () => {
     it('returns the row matching (user, surface, status=active, validUntil > now)', async () => {
       await repo.create(makeSession());
-      const result = await repo.findLatestActive('u1', Surface.MCP, NOW_SEC);
+      const result = await repo.findLatestActive(U1, Surface.MCP, NOW_SEC);
       expect(result?.sessionId).toBe('session-base-001');
     });
 
     it('returns null when validUntilSec <= nowSec (server-side filter)', async () => {
       await repo.create(makeSession({ validUntilSec: NOW_SEC }));
-      expect(await repo.findLatestActive('u1', Surface.MCP, NOW_SEC)).toBeNull();
+      expect(await repo.findLatestActive(U1, Surface.MCP, NOW_SEC)).toBeNull();
     });
 
     it('returns null when status != active', async () => {
       await repo.create(
         makeSession({ status: ScopedSessionStatus.Revoked, revokedAt: NOW }),
       );
-      expect(await repo.findLatestActive('u1', Surface.MCP, NOW_SEC)).toBeNull();
+      expect(await repo.findLatestActive(U1, Surface.MCP, NOW_SEC)).toBeNull();
     });
 
     it('does not cross users', async () => {
-      await repo.create(makeSession({ userId: 'u2' }));
-      expect(await repo.findLatestActive('u1', Surface.MCP, NOW_SEC)).toBeNull();
+      await repo.create(makeSession({ userId: U2 }));
+      expect(await repo.findLatestActive(U1, Surface.MCP, NOW_SEC)).toBeNull();
     });
 
     it('does not cross surfaces', async () => {
       await repo.create(makeSession({ surface: Surface.HavenBot }));
-      expect(await repo.findLatestActive('u1', Surface.MCP, NOW_SEC)).toBeNull();
+      expect(await repo.findLatestActive(U1, Surface.MCP, NOW_SEC)).toBeNull();
     });
 
     it('partial UNIQUE index rejects a SECOND active row for (user, surface) with Pg 23505', async () => {
@@ -391,13 +419,13 @@ describeIfPg('PgScopedSessionRepository (real postgres)', () => {
       //   3. findLatestActive no longer surfaces the orphaned row (the
       //      `eq(user_id, $)` predicate excludes NULL).
       await repo.create(makeSession({ sessionId: 'session-orphaned' }));
-      await db.execute(sql`DELETE FROM ${users} WHERE id = 'u1'`);
+      await db.execute(sql`DELETE FROM ${users} WHERE id = ${U1}`);
       const orphaned = await repo.findById('session-orphaned');
       expect(orphaned).not.toBeNull();
       expect(orphaned!.userId).toBeNull();
       expect(orphaned!.maxPerOpUsd6).toBe(100_000_000n);
       // Active lookup excludes orphans
-      const active = await repo.findLatestActive('u1', Surface.MCP, NOW_SEC);
+      const active = await repo.findLatestActive(U1, Surface.MCP, NOW_SEC);
       expect(active).toBeNull();
     });
   });
