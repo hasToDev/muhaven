@@ -99,17 +99,19 @@ function makeCron(deps?: {
 
   // Drizzle stubs:
   //  - db.execute(sql`...`) → resolves to `{ rowCount }`. Cron uses it
-  //    for the tick guard + boot-alert debounce updates.
+  //    for the tick guard + heartbeat debounce updates.
   //  - db.insert(...).values([...]).onConflictDoNothing() → no-op.
   //  - db.select({...}).from(...).where(...).limit(...) → no override.
   let executeCallIdx = 0;
   const executeMock = vi.fn().mockImplementation(() => {
-    // First execute call inside tick is the tick guard;
-    // boot-alert paths fire separately via maybeFireBootAlert.
+    // First execute call inside tick is the tick guard; the heartbeat
+    // debounce fires from inside `maybeFireDailyHeartbeat` at the end
+    // of a successful sweep. Tests pass exactly the counts they need
+    // via the tickGuardRowCount / bootAlertRowCount switch (the
+    // latter is the legacy field name; kept for back-compat with
+    // existing tests — it now controls the heartbeat row's UPDATE
+    // result).
     executeCallIdx++;
-    // crude routing: dry-run boot-alert OR tick guard share the same
-    // shape. Tests pass exactly the counts they need via the
-    // tickGuardRowCount / bootAlertRowCount switch.
     return Promise.resolve({
       rowCount:
         executeCallIdx === 1 ? tickGuardRowCount : bootAlertRowCount,
@@ -180,7 +182,10 @@ describe('YieldDistributionCron.tick', () => {
   it('returns immediately when the cron_state 23h guard says already-fired', async () => {
     const { cron, rwaTokenRepo, notifyYieldCronFailure } = makeCron({ tickGuardRowCount: 0 });
     const result = await cron.tick();
-    expect(result).toEqual({ attempted: 0, succeeded: 0, skipped: 0, failed: 0 });
+    // toMatchObject (not toEqual) — the result also carries
+    // `skipReasons: Record<...>` per the 2026-05-22 heartbeat work;
+    // those buckets are tested separately below.
+    expect(result).toMatchObject({ attempted: 0, succeeded: 0, skipped: 0, failed: 0 });
     expect(rwaTokenRepo.findByStatus).not.toHaveBeenCalled();
     expect(notifyYieldCronFailure.execute).not.toHaveBeenCalled();
   });
@@ -196,7 +201,9 @@ describe('YieldDistributionCron.handleToken pre-flight skips', () => {
   it('skips silently when oracle has no snapshot (legacy synthetic tokens)', async () => {
     const { cron, notifyYieldCronFailure } = makeCron({ oracleSnapshot: null });
     const result = await cron.tick();
-    expect(result).toEqual({ attempted: 1, succeeded: 0, skipped: 1, failed: 0 });
+    expect(result).toMatchObject({ attempted: 1, succeeded: 0, skipped: 1, failed: 0 });
+    // 2026-05-22 heartbeat: per-reason bucket carries the skip cause.
+    expect(result.skipReasons.no_oracle_snapshot).toBe(1);
     expect(RUN_YIELD_EPOCH).not.toHaveBeenCalled();
     // No alert fired — silent skip for the "not in oracle catalog" case.
     expect(notifyYieldCronFailure.execute).not.toHaveBeenCalled();
@@ -339,7 +346,12 @@ describe('YieldDistributionCron alert tokenAddress invariant (I-4)', () => {
     // on every call (Round-2 Security M-4 invariant).
     for (const call of notifyYieldCronFailure.execute.mock.calls) {
       const payload = call[0];
-      if (payload.tokenSymbol === 'YIELD_CRON_BOOT') continue;
+      // Sentinel-symbol alerts (heartbeat / float-read sweep failure)
+      // carry the SIGNER address (not a token address) — they're
+      // tracked via the tokenAddress allowlist path but for a non-
+      // token entity. Skip the strict 0x-lowercase regex; their own
+      // tests cover the payload-shape invariant.
+      if (payload.tokenSymbol === 'YIELD_CRON_HEARTBEAT') continue;
       if (payload.tokenSymbol === 'YIELD_CRON_FLOAT_READ') continue;
       expect(payload).toHaveProperty('tokenAddress');
       expect(payload.tokenAddress).toMatch(/^0x[0-9a-f]{40}$/);
@@ -504,4 +516,282 @@ describe('YieldDistributionCron handleToken null-guard (Arch H-2)', () => {
     expect(result.failed).toBe(1);
     expect(RUN_YIELD_EPOCH).not.toHaveBeenCalled();
   });
+});
+
+// ── composeHeartbeatBody (2026-05-22 daily heartbeat) ────────────────
+//
+// Pure-function tests — no cron / mocks needed. The function renders
+// the Telegram-visible heartbeat body from a tick result, including
+// dry-run state suffix + only-non-zero skip bucket enumeration.
+
+import {
+  composeHeartbeatBody,
+  type YieldCronTickResult,
+} from '../yield-cron.js';
+
+function tickResult(
+  overrides: Partial<YieldCronTickResult> = {},
+): YieldCronTickResult {
+  const skipReasons = {
+    no_holders: 0,
+    missing_nav: 0,
+    stale_nav: 0,
+    no_oracle_snapshot: 0,
+    lock_busy: 0,
+    parse_error: 0,
+    zero_yield: 0,
+    pending_fund: 0,
+    float_short: 0,
+    dry_run: 0,
+    other: 0,
+  };
+  return {
+    attempted: 11,
+    succeeded: 0,
+    skipped: 11,
+    failed: 0,
+    skipReasons,
+    ...overrides,
+  };
+}
+
+describe('composeHeartbeatBody', () => {
+  it('renders the today-shaped summary for the prod no_holders + missing_nav split', () => {
+    const result = tickResult({
+      skipReasons: {
+        ...tickResult().skipReasons,
+        no_holders: 7,
+        missing_nav: 4,
+      },
+    });
+    const body = composeHeartbeatBody(result, true);
+    expect(body).toMatch(/^yield-distribution OK \d{4}-\d{2}-\d{2} \(DRY-RUN\): /);
+    expect(body).toContain('11 swept');
+    expect(body).toContain('7 no_holders');
+    expect(body).toContain('4 missing_nav');
+    expect(body).toContain('0 distributed');
+    // failed=0 → 'failed' bucket NOT emitted (cleaner body).
+    expect(body).not.toContain('failed');
+  });
+
+  it('drops the (DRY-RUN) suffix when dryRun=false', () => {
+    const body = composeHeartbeatBody(tickResult({ succeeded: 1, skipped: 10 }), false);
+    expect(body).toMatch(/^yield-distribution OK \d{4}-\d{2}-\d{2}: /);
+    expect(body).not.toContain('DRY-RUN');
+  });
+
+  it('emits "no active tokens" for attempted=0 ticks', () => {
+    const result = tickResult({ attempted: 0, succeeded: 0, skipped: 0 });
+    const body = composeHeartbeatBody(result, false);
+    expect(body).toContain('no active tokens');
+    expect(body).not.toContain('swept');
+  });
+
+  it('includes "failed" only when result.failed > 0', () => {
+    const withFailures = composeHeartbeatBody(
+      tickResult({ succeeded: 8, skipped: 0, failed: 3 }),
+      false,
+    );
+    expect(withFailures).toContain('3 failed');
+    const cleanSweep = composeHeartbeatBody(
+      tickResult({ succeeded: 11, skipped: 0, failed: 0 }),
+      false,
+    );
+    expect(cleanSweep).not.toContain('failed');
+  });
+
+  it('omits zero-count skip-reason buckets (visual noise reduction)', () => {
+    const body = composeHeartbeatBody(
+      tickResult({
+        attempted: 11,
+        skipped: 11,
+        skipReasons: { ...tickResult().skipReasons, no_holders: 11 },
+      }),
+      true,
+    );
+    // Only no_holders shows up; other 8 reasons stay invisible.
+    expect(body).toContain('11 no_holders');
+    expect(body).not.toContain('0 missing_nav');
+    expect(body).not.toContain('0 stale_nav');
+  });
+
+  it('emits all non-zero buckets in deterministic order', () => {
+    const body = composeHeartbeatBody(
+      tickResult({
+        attempted: 5,
+        skipped: 5,
+        skipReasons: {
+          ...tickResult().skipReasons,
+          parse_error: 1,
+          no_holders: 2,
+          stale_nav: 1,
+          missing_nav: 1,
+        },
+      }),
+      false,
+    );
+    // Order matches ALL_SKIP_REASONS declaration:
+    //   no_holders, missing_nav, stale_nav, no_oracle_snapshot,
+    //   lock_busy, parse_error, float_short, dry_run, other
+    const noHoldersIdx = body.indexOf('2 no_holders');
+    const missingNavIdx = body.indexOf('1 missing_nav');
+    const staleNavIdx = body.indexOf('1 stale_nav');
+    const parseErrorIdx = body.indexOf('1 parse_error');
+    expect(noHoldersIdx).toBeLessThan(missingNavIdx);
+    expect(missingNavIdx).toBeLessThan(staleNavIdx);
+    expect(staleNavIdx).toBeLessThan(parseErrorIdx);
+  });
+
+  it('fits under the 1024-char sanitiser body cap even at saturated bucket counts', () => {
+    // Worst case: every bucket non-zero at 4-digit count. The body
+    // length should stay well under 1024 (the
+    // `OperatorAlertPayloadSchema.shortMessage.max(1024)` cap).
+    const body = composeHeartbeatBody(
+      tickResult({
+        attempted: 9999,
+        succeeded: 9999,
+        skipped: 9999,
+        failed: 9999,
+        skipReasons: {
+          no_holders: 1234,
+          missing_nav: 1234,
+          stale_nav: 1234,
+          no_oracle_snapshot: 1234,
+          lock_busy: 1234,
+          parse_error: 1234,
+          zero_yield: 1234,
+          pending_fund: 1234,
+          float_short: 1234,
+          dry_run: 1234,
+          other: 1234,
+        },
+      }),
+      true,
+    );
+    expect(body.length).toBeLessThan(1024);
+  });
+});
+
+// ── Heartbeat integration (Round-1 CR M-3, 2026-05-22) ───────────────
+//
+// Pure-function tests above pin composeHeartbeatBody. These tests
+// verify the wiring: tick() → debounce eligibility check → notify
+// call with YIELD_CRON_HEARTBEAT sentinel + severity:'info' +
+// tokenAddress. Pre-2026-05-22 this surface was untested end-to-end,
+// which would have let a regression silently break the operator's
+// only liveness signal post-dry-run-flip.
+
+describe('YieldDistributionCron daily heartbeat integration', () => {
+  it('fires notify with YIELD_CRON_HEARTBEAT + info severity + signer address when debounce clears', async () => {
+    // bootAlertRowCount: 1 → the eligibility-check SELECT returns
+    // `eligible: true`; the heartbeat path proceeds. The actual
+    // SELECT shape is `{eligible: boolean}` from the post-H-1-fix
+    // helper, but the test stub returns `{ rowCount: N }`. The cron
+    // reads `rows?.[0]?.eligible === true` so we need to inject a
+    // proper row. See helper override below.
+    const { cron, notifyYieldCronFailure, db } = makeCron({});
+    // Override execute to return the right shape for both the tick
+    // guard (RETURNING 1) AND the heartbeat eligibility SELECT.
+    let callIdx = 0;
+    db.execute = vi.fn().mockImplementation(() => {
+      callIdx++;
+      // First call = tick guard UPDATE; row count 1.
+      if (callIdx === 1) return Promise.resolve({ rowCount: 1, rows: [] });
+      // Second call = heartbeat eligibility SELECT; returns one row.
+      if (callIdx === 2)
+        return Promise.resolve({ rowCount: 1, rows: [{ eligible: true }] });
+      // Third call = heartbeat advance UPDATE; row count 1.
+      return Promise.resolve({ rowCount: 1, rows: [] });
+    });
+    await cron.tick();
+    const heartbeats = notifyYieldCronFailure.execute.mock.calls.filter(
+      (c: Array<{ tokenSymbol: string }>) => c[0].tokenSymbol === 'YIELD_CRON_HEARTBEAT',
+    );
+    expect(heartbeats).toHaveLength(1);
+    const payload = heartbeats[0]![0];
+    expect(payload.severity).toBe('info');
+    expect(payload.tokenAddress).toBe('0x1111111111111111111111111111111111111111');
+    expect(payload.err.name).toBe('YieldCronHeartbeat');
+    expect(payload.err.message).toContain('yield-distribution OK');
+  });
+
+  it('skips notify when debounce check returns not-eligible', async () => {
+    const { cron, notifyYieldCronFailure, db } = makeCron({});
+    let callIdx = 0;
+    db.execute = vi.fn().mockImplementation(() => {
+      callIdx++;
+      if (callIdx === 1) return Promise.resolve({ rowCount: 1, rows: [] });
+      // Eligibility SELECT returns row with eligible=false → no notify.
+      if (callIdx === 2)
+        return Promise.resolve({ rowCount: 1, rows: [{ eligible: false }] });
+      return Promise.resolve({ rowCount: 1, rows: [] });
+    });
+    await cron.tick();
+    const heartbeats = notifyYieldCronFailure.execute.mock.calls.filter(
+      (c: Array<{ tokenSymbol: string }>) => c[0].tokenSymbol === 'YIELD_CRON_HEARTBEAT',
+    );
+    expect(heartbeats).toHaveLength(0);
+  });
+
+  it('does NOT advance debounce row when notify throws (H-1 ordering fix)', async () => {
+    const { cron, notifyYieldCronFailure, db } = makeCron({});
+    let callIdx = 0;
+    let advanceCalled = false;
+    db.execute = vi.fn().mockImplementation((stmt: unknown) => {
+      callIdx++;
+      if (callIdx === 1) return Promise.resolve({ rowCount: 1, rows: [] });
+      if (callIdx === 2)
+        return Promise.resolve({ rowCount: 1, rows: [{ eligible: true }] });
+      // Any later execute = the advance UPDATE. Track it.
+      advanceCalled = true;
+      void stmt;
+      return Promise.resolve({ rowCount: 1, rows: [] });
+    });
+    // Force notify to throw — simulates Telegram transport outage.
+    notifyYieldCronFailure.execute = vi
+      .fn()
+      .mockImplementation(async (p: { tokenSymbol: string }) => {
+        if (p.tokenSymbol === 'YIELD_CRON_HEARTBEAT') {
+          throw new Error('simulated transport outage');
+        }
+      });
+    await cron.tick();
+    // Per H-1 (Backend-Architect 2026-05-22): on notify throw, the
+    // advance UPDATE MUST NOT run — so the next tick retries.
+    expect(advanceCalled).toBe(false);
+  });
+});
+
+// ── bucketRunnerSkipReason mapping (Round-1 CR M-4 + CR H-1, 2026-05-22) ──
+//
+// The runner emits skipReason strings from a 4-value union; the cron
+// buckets them into operator-facing labels. Pre-2026-05-22 only
+// 'dry_run' and 'no_holders' were mapped; the H-1 fix adds
+// 'insufficient_mhusdc_float' → 'float_short' and 'orphaned_audit'
+// → 'pending_fund'.
+
+describe('YieldDistributionCron runner skip-reason bucketing', () => {
+  const runnerSkipCases: Array<{
+    runnerReason: string;
+    expectedBucket: keyof YieldCronTickResult['skipReasons'];
+  }> = [
+    { runnerReason: 'no_holders', expectedBucket: 'no_holders' },
+    { runnerReason: 'dry_run', expectedBucket: 'dry_run' },
+    { runnerReason: 'insufficient_mhusdc_float', expectedBucket: 'float_short' },
+    { runnerReason: 'orphaned_audit', expectedBucket: 'pending_fund' },
+    { runnerReason: 'something_new', expectedBucket: 'other' },
+  ];
+  for (const { runnerReason, expectedBucket } of runnerSkipCases) {
+    it(`maps runner skipReason '${runnerReason}' to bucket '${expectedBucket}'`, async () => {
+      const { cron } = makeCron();
+      RUN_YIELD_EPOCH.mockResolvedValueOnce({
+        epochId: 0n,
+        status: 'skipped',
+        skipReason: runnerReason,
+      } as any);
+      const result = await cron.tick();
+      expect(result.skipped).toBe(1);
+      expect(result.skipReasons[expectedBucket]).toBe(1);
+    });
+  }
 });

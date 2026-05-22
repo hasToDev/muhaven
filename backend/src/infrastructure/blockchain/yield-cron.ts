@@ -87,11 +87,24 @@
  *   I-6  **Dry-run is opt-in production safety, not a dev toggle.**
  *        `YIELD_CRON_DRY_RUN=true` → all on-chain side effects (open
  *        / snapshot / finalize / fund / setOperator) are NO-OPs in
- *        the runner. The cron still fires its tick + iterates
- *        tokens, but the per-tick boot Telegram alert (debounced 6h
- *        via `cron_state['yield-cron-boot-alert']` row, v3.1 S5)
- *        warns operators they're in dry-run mode so prod cutover
- *        isn't accidentally left half-engaged.
+ *        the runner. The cron still fires its tick + iterates tokens
+ *        + sends a daily heartbeat (debounced 23h via
+ *        `cron_state['yield-distribution-heartbeat']` row); the
+ *        heartbeat body carries `(DRY-RUN)` so the operator never
+ *        loses the "is the cron alive?" signal when flipping live
+ *        (2026-05-22 — replaced the pre-existing dry-run-gated
+ *        `yield-cron-boot-alert` per operator feedback).
+ *
+ *   I-7  **`cron_state` rows are owned by the cron — never UPDATE by
+ *        hand.** The 23h atomic-UPDATE debounce semantics on
+ *        `yield-distribution` + `yield-distribution-heartbeat` rows
+ *        are load-bearing: a manual UPDATE to either row's
+ *        `last_fired_at` either silently skips the next tick
+ *        (advancing the timestamp) or double-fires (rolling it
+ *        back). Operator-facing surfaces for manual recovery should
+ *        document this; one-shot ops scripts MUST use the same
+ *        atomic-UPDATE-with-23h-guard pattern as the cron itself
+ *        (DevOps L-2, 2026-05-22).
  *
  * Deferred (filed as follow-ups, not Q3 blockers):
  *   - per-token YieldSnapshot proxy deploys (Q3_PLAN §A dropped — singleton
@@ -128,9 +141,30 @@ import { getLogger } from '../../core/logger.js';
 import type { Logger } from 'pino';
 
 const CRON_NAME_TICK = 'yield-distribution';
-const CRON_NAME_BOOT_ALERT = 'yield-cron-boot-alert';
+/**
+ * cron_state row that gates the daily Telegram heartbeat. One ping per
+ * UTC day with a per-tick summary (succeeded / per-reason-skipped /
+ * failed counts + dry-run flag). Replaces the pre-2026-05-22
+ * `yield-cron-boot-alert` row (Q2 deferred item #1 + operator-feedback:
+ * the old boot-alert was DRY-RUN-gated → flipping
+ * YIELD_CRON_DRY_RUN=false would silence ALL observability, which is
+ * the opposite of what the operator wants for a daily liveness signal).
+ *
+ * The legacy `yield-cron-boot-alert` row stays in the table after this
+ * change — drizzle's declarative push doesn't run data migrations and
+ * a dangling row costs nothing. The new heartbeat row is seeded
+ * alongside the tick row in `start()`.
+ */
+const CRON_NAME_HEARTBEAT = 'yield-distribution-heartbeat';
 const TICK_GUARD_INTERVAL_HOURS = 23;
-const BOOT_ALERT_DEBOUNCE_HOURS = 6;
+/**
+ * Heartbeat debounce: 23h matches the tick guard so each midnight UTC
+ * tick fires AT MOST one heartbeat (modulo node-cron skew + container
+ * restart). Pin to 23h (not 24h) so a tick that fires a few minutes
+ * "late" on day N+1 still clears the debounce — same rationale as
+ * TICK_GUARD_INTERVAL_HOURS.
+ */
+const HEARTBEAT_DEBOUNCE_HOURS = 23;
 const DEFAULT_CRON_EXPR = '0 0 * * *';
 const DEFAULT_TIMEZONE = 'UTC';
 
@@ -182,15 +216,24 @@ export class MissingYieldSnapshotAddressError extends Error {
   }
 }
 
-/** Boot/lifecycle alert payload — named so the operator's Telegram
- *  reads `Error: YieldCronBootAlert` instead of the generic
- *  `Error: Error` of a raw `new Error(...)`. Not thrown anywhere; only
- *  constructed in `maybeFireBootAlert` to give the sanitiser a
- *  meaningful `err.name`. */
-export class YieldCronBootAlert extends Error {
+/**
+ * Daily-heartbeat payload class — named so the operator's Telegram
+ * reads `Info: YieldCronHeartbeat` (post-2026-05-22 severity-aware
+ * header in operator-alert-transport.ts) instead of `Error: Error` of
+ * a raw `new Error(...)`. Not thrown anywhere; only constructed in
+ * `maybeFireDailyHeartbeat` to give the sanitiser a meaningful
+ * `err.name`.
+ *
+ * Replaces the pre-2026-05-22 `YieldCronBootAlert` class. The boot
+ * alert was DRY-RUN-gated (only fired when YIELD_CRON_DRY_RUN=true),
+ * which meant flipping to live mode silenced ALL observability.
+ * Heartbeat fires unconditionally; the dry-run state is carried in
+ * the message body as `(DRY-RUN)` suffix instead.
+ */
+export class YieldCronHeartbeat extends Error {
   constructor(message: string) {
     super(message);
-    this.name = 'YieldCronBootAlert';
+    this.name = 'YieldCronHeartbeat';
   }
 }
 
@@ -227,11 +270,136 @@ export interface YieldCronDeps {
   notifyYieldCronFailure: NotifyYieldCronFailureUseCase;
 }
 
+/**
+ * Per-skip-reason bucket. Operator-facing — the heartbeat body
+ * enumerates these so a glance at Telegram tells the operator WHY a
+ * token was skipped without log-diving.
+ *
+ * Buckets (declared narrow to defeat string-typo proliferation):
+ *  - `no_holders` — InvestorRegistry.holderCountFor returned 0 (most
+ *    common today; the 7 yield-bearing RWAs all sit at holderCount=0
+ *    pre-launch).
+ *  - `missing_nav` — oracle snapshot's apy7Day or navDollar is null
+ *    (non-yield-bearing token like NVDAon / MUon / STRCx / TSLAx).
+ *  - `stale_nav` — NAV age > staleNavHaltDays (fires WARN alert).
+ *  - `no_oracle_snapshot` — token has no row in oracle_snapshots
+ *    (legacy TBILL1/GOLD1 synthetics; correct to skip silently).
+ *  - `lock_busy` — per-token advisory lock held (operator running a
+ *    manual script in parallel).
+ *  - `parse_error` — apy/nav numeric parse failed OR ≤ 0 (true data
+ *    error: oracle delivered something that isn't a positive
+ *    decimal).
+ *  - `zero_yield` — math floored to 0 even though parse succeeded —
+ *    `apyScaled === 0n`, `ratePerShare === 0n`, or
+ *    `encTotalYield === 0n`. Operationally distinct from
+ *    `parse_error` because the remediation differs: parse_error =
+ *    fix the oracle / data ingest; zero_yield = raise the per-token
+ *    `max_supply_cap_override` OR accept that the token's rate is
+ *    too small to distribute at the current cap (Code-Reviewer H-2,
+ *    2026-05-22).
+ *  - `pending_fund` — runner's `orphaned_audit` skip (the prior
+ *    tick funded on-chain but the audit row write didn't land
+ *    before the runner crashed; this tick's pre-resume completes
+ *    the audit but doesn't refund). EXPECTED catch-up state, not
+ *    anomalous (Code-Reviewer H-1, 2026-05-22).
+ *  - `float_short` — issuer mhUSDC float insufficient for the
+ *    computed encTotalYield (fires WARN alert). Maps from BOTH the
+ *    cron's own pre-flight AND the runner's `insufficient_mhusdc_float`
+ *    skip (Code-Reviewer H-1, 2026-05-22).
+ *  - `dry_run` — runner returned `skipped: dry_run` (cron is in
+ *    dry-run mode).
+ *  - `other` — fallback bucket; an unexpected runner-side skip
+ *    reason that doesn't map to the above. Surfaces as a warn in the
+ *    log so future drift can be promoted to a named bucket.
+ */
+export type YieldCronSkipReason =
+  | 'no_holders'
+  | 'missing_nav'
+  | 'stale_nav'
+  | 'no_oracle_snapshot'
+  | 'lock_busy'
+  | 'parse_error'
+  | 'zero_yield'
+  | 'pending_fund'
+  | 'float_short'
+  | 'dry_run'
+  | 'other';
+
+const ALL_SKIP_REASONS: readonly YieldCronSkipReason[] = [
+  'no_holders',
+  'missing_nav',
+  'stale_nav',
+  'no_oracle_snapshot',
+  'lock_busy',
+  'parse_error',
+  'zero_yield',
+  'pending_fund',
+  'float_short',
+  'dry_run',
+  'other',
+];
+
 export interface YieldCronTickResult {
   attempted: number;
   succeeded: number;
   skipped: number;
   failed: number;
+  /** Per-skip-reason counts. Sum across all keys equals `skipped`.
+   *  Surfaced in the daily Telegram heartbeat body. */
+  skipReasons: Record<YieldCronSkipReason, number>;
+}
+
+function emptySkipReasons(): Record<YieldCronSkipReason, number> {
+  const out = {} as Record<YieldCronSkipReason, number>;
+  for (const r of ALL_SKIP_REASONS) out[r] = 0;
+  return out;
+}
+
+/**
+ * Per-token handler outcome. Discriminated on `kind` so the tick
+ * aggregator can bucket per-reason skip counts for the daily heartbeat.
+ * Failed and success outcomes carry no extra data — failures already
+ * fire their own Telegram alert via `notifyYieldCronFailure`, and the
+ * success count is read from `result.succeeded`.
+ */
+type HandleTokenOutcome =
+  | { kind: 'success' }
+  | { kind: 'failed' }
+  | { kind: 'skipped'; reason: YieldCronSkipReason };
+
+/**
+ * Bucket a runner-reported `skipReason` string into the cron's
+ * operator-facing skip enum. The runner's `RunEpochSkipReason` union
+ * is `'no_holders' | 'insufficient_mhusdc_float' | 'orphaned_audit' |
+ * 'dry_run'` (see `yield-epoch-runner.ts`).
+ *
+ * Mapping (Code-Reviewer H-1, 2026-05-22):
+ *  - `no_holders` → `no_holders` (operator's most common heartbeat row)
+ *  - `dry_run` → `dry_run`
+ *  - `insufficient_mhusdc_float` → `float_short` (peer of the cron's
+ *    own pre-flight `float_short` skip — same root cause, same
+ *    remediation; pre-fix this collapsed into `other` and hid the
+ *    signal)
+ *  - `orphaned_audit` → `pending_fund` (the funded-but-no-audit
+ *    catch-up state; EXPECTED in prod after a runner crash mid-fund
+ *    + restart, NOT anomalous — pre-fix this hid as `other`)
+ *  - anything else → `other` (true unknown — surfaces as a warn in
+ *    log + non-zero `other` count in heartbeat tells operator to
+ *    audit a future runner refactor)
+ */
+function bucketRunnerSkipReason(reason: string | undefined): YieldCronSkipReason {
+  switch (reason) {
+    case 'dry_run':
+      return 'dry_run';
+    case 'no_holders':
+      return 'no_holders';
+    case 'insufficient_mhusdc_float':
+      return 'float_short';
+    case 'orphaned_audit':
+      return 'pending_fund';
+    default:
+      return 'other';
+  }
 }
 
 export class YieldDistributionCron {
@@ -286,7 +454,7 @@ export class YieldDistributionCron {
       privateKey: this.config.privateKey,
     });
 
-    // Seed cron_state rows for the tick guard + boot-alert debounce.
+    // Seed cron_state rows for the tick guard + heartbeat debounce.
     // ON CONFLICT DO NOTHING so a re-deploy keeps the existing
     // `last_fired_at` (we honor the previous tick's age across
     // container restarts — that's the load-bearing property of the
@@ -299,16 +467,12 @@ export class YieldDistributionCron {
     // just-inserted row's `NOW()` timestamp + lose, silently
     // delaying the first distribution by 23h.
     //
-    // Round-2 Reality M-1 (2026-05-21): also back-date the boot-
-    // alert row by 7h. The earlier `defaultNow()` seed contradicted
-    // the documented intent — `maybeFireBootAlert`'s 6h debounce
-    // rejects rows where `age < 6h`, and a `NOW()`-seeded row has
-    // age = 0, so the first-install dry-run boot would silently
-    // NOT alert and operator misses the warning until 6h later. The
-    // 7h backdate ensures the first boot fires the alert (debounce
-    // rolls forward from then).
+    // The heartbeat row uses the same 25h back-date so the first
+    // scheduled tick after a green-field deploy fires the heartbeat
+    // immediately. Replaces the pre-2026-05-22 `yield-cron-boot-alert`
+    // seed (which was 7h backdated for a 6h debounce) — heartbeat is
+    // 23h debounced, so 25h matches the tick row's pattern exactly.
     const TICK_SEED_BACKDATE_HOURS = 25;
-    const BOOT_ALERT_SEED_BACKDATE_HOURS = 7;
     await this.deps.db
       .insert(cronState)
       .values([
@@ -317,10 +481,8 @@ export class YieldDistributionCron {
           lastFiredAt: new Date(Date.now() - TICK_SEED_BACKDATE_HOURS * 60 * 60 * 1000),
         },
         {
-          cronName: CRON_NAME_BOOT_ALERT,
-          lastFiredAt: new Date(
-            Date.now() - BOOT_ALERT_SEED_BACKDATE_HOURS * 60 * 60 * 1000,
-          ),
+          cronName: CRON_NAME_HEARTBEAT,
+          lastFiredAt: new Date(Date.now() - TICK_SEED_BACKDATE_HOURS * 60 * 60 * 1000),
         },
       ])
       .onConflictDoNothing();
@@ -340,14 +502,15 @@ export class YieldDistributionCron {
       },
       'YieldDistributionCron scheduled',
     );
-
-    // Fire the boot alert ourselves (debounced) so the operator sees
-    // "cron is up + in dry-run" on container restart without waiting
-    // for the next midnight tick. The 6h `cron_state` row absorbs
-    // crash-loops.
-    if (this.config.dryRun) {
-      await this.maybeFireBootAlert();
-    }
+    // No start-time Telegram alert. Pre-2026-05-22 this fired a
+    // `YieldCronBootAlert` (dry-run only). That message has been
+    // replaced by the unconditional daily heartbeat that fires from
+    // INSIDE the tick (`tick()` → `maybeFireDailyHeartbeat(result)`),
+    // so every UTC day operator sees one ping with sweep summary +
+    // dry-run state — far higher signal than a per-restart "cron is
+    // in dry-run" reminder. Container restarts are visible in docker
+    // logs + `getStatus()` for diagnostic purposes; no Telegram noise
+    // on every restart.
   }
 
   /** Pause the scheduled task. The connected provider + cofhe client
@@ -400,10 +563,41 @@ export class YieldDistributionCron {
     // null), but the result-counter race exists between them.
     if (this.running) {
       this.logger.debug('Previous tick still running, skipping');
-      return { attempted: 0, succeeded: 0, skipped: 0, failed: 0 };
+      return {
+        attempted: 0,
+        succeeded: 0,
+        skipped: 0,
+        failed: 0,
+        skipReasons: emptySkipReasons(),
+      };
     }
     this.running = true;
-    const result: YieldCronTickResult = { attempted: 0, succeeded: 0, skipped: 0, failed: 0 };
+    const result: YieldCronTickResult = {
+      attempted: 0,
+      succeeded: 0,
+      skipped: 0,
+      failed: 0,
+      skipReasons: emptySkipReasons(),
+    };
+    // Tick-guard-cleared flag — set true after the 23h cron_state
+    // UPDATE clears. The heartbeat call sits in the `finally` of the
+    // tick-lock try so EVERY post-guard-cleared exit path fires it
+    // (Backend-Architect H-2 + self-spotted concern, 2026-05-22):
+    // pre-fix, the heartbeat was placed AFTER the for-loop, so the
+    // early-return paths for "no active tokens" and "float-preflight
+    // failed" silently consumed the day's heartbeat slot. Now any
+    // exit AFTER the 23h guard clears (sweep-completed, no-active-
+    // tokens, float-preflight-failed, mid-sweep early-return) fires
+    // the heartbeat exactly once.
+    //
+    // Cases that intentionally do NOT fire:
+    //   - tickLock null (some other process holds the lock — that
+    //     process will fire its own heartbeat).
+    //   - 23h tick-guard not cleared (another tick already fired
+    //     within the last 23h; heartbeat row debounce will also
+    //     reject so a double-fire here would be a no-op anyway, but
+    //     the explicit gate avoids the wasted SELECT).
+    let tickGuardCleared = false;
     try {
       const tickLock = await acquireTickLock(this.deps.pool);
       if (!tickLock) {
@@ -431,12 +625,7 @@ export class YieldDistributionCron {
           this.logger.info('cron_state guard held — already fired in last 23h, skipping');
           return result;
         }
-
-        // Dry-run boot alert (debounced 6h) — fired on every tick
-        // start, the cron_state row swallows the repeat firings.
-        if (this.config.dryRun) {
-          await this.maybeFireBootAlert();
-        }
+        tickGuardCleared = true;
 
         const tokens = await this.deps.rwaTokenRepo.findByStatus('active');
         if (tokens.length === 0) {
@@ -486,9 +675,11 @@ export class YieldDistributionCron {
                 if (floatRemaining !== null) floatRemaining -= amount;
               },
             });
-            if (outcome === 'success') result.succeeded++;
-            else if (outcome === 'skipped') result.skipped++;
-            else if (outcome === 'failed') result.failed++;
+            if (outcome.kind === 'success') result.succeeded++;
+            else if (outcome.kind === 'skipped') {
+              result.skipped++;
+              result.skipReasons[outcome.reason]++;
+            } else if (outcome.kind === 'failed') result.failed++;
           } catch (err) {
             // handleToken is supposed to swallow its own throws + alert.
             // If something escapes, log + treat as failure but keep
@@ -500,6 +691,10 @@ export class YieldDistributionCron {
             );
           }
         }
+        // Heartbeat fires from the outer `finally` (see
+        // `tickGuardCleared` flag declaration above), so every
+        // post-guard-cleared exit path is covered — including the
+        // for-loop natural completion that lands here.
         return result;
       } finally {
         // Round-1 Code-Reviewer M-3 (2026-05-21): distinguished
@@ -519,6 +714,17 @@ export class YieldDistributionCron {
       this.running = false;
       this.lastTickAt = new Date();
       this.lastResult = result;
+      // Heartbeat: fires from the outer `finally` so every exit path
+      // that cleared the tick guard sends one Telegram ping per UTC
+      // day (cron_state row debounce gives the deduplication). The
+      // `maybeFireDailyHeartbeat` helper is self-protecting (its own
+      // try/catch swallows errors so the outer `finally` never
+      // re-throws). Skipped when tick guard didn't clear (another
+      // tick already won the day) OR tickLock was held (other process
+      // owns the heartbeat for this day).
+      if (tickGuardCleared) {
+        await this.maybeFireDailyHeartbeat(result);
+      }
     }
   }
 
@@ -529,8 +735,9 @@ export class YieldDistributionCron {
    * passes the lock to the runner on the happy path. Catches runner
    * throws + routes them to `notifyYieldCronFailure` with `tokenAddress`.
    *
-   * Returns the outcome class so the tick's result counters stay
-   * accurate.
+   * Returns a discriminated outcome so the tick can both update its
+   * 3-counter result AND aggregate per-skip-reason counts for the
+   * daily heartbeat body (2026-05-22 — was a string union pre that).
    */
   private async handleToken(
     token: {
@@ -543,7 +750,7 @@ export class YieldDistributionCron {
       readonly floatRemaining: bigint | null;
       consumeFloat(amount: bigint): void;
     },
-  ): Promise<'success' | 'skipped' | 'failed'> {
+  ): Promise<HandleTokenOutcome> {
     // Round-1 Backend-Arch H-2 (2026-05-21): null-guard at handleToken
     // entry. If `start()` was never called (test path constructing
     // the cron directly), `signer` / `cofheClient` are null and the
@@ -554,7 +761,7 @@ export class YieldDistributionCron {
         { symbol: token.symbol, token: token.address.toLowerCase() },
         'handleToken called before start() initialised clients — refusing to proceed',
       );
-      return 'failed';
+      return { kind: 'failed' };
     }
     const tokenAddrLower = token.address.toLowerCase();
     const lock = await acquireTokenLock(this.deps.pool, tokenAddrLower);
@@ -563,7 +770,7 @@ export class YieldDistributionCron {
         { symbol: token.symbol, token: tokenAddrLower },
         'per-token advisory lock held — skipping (manual script likely running)',
       );
-      return 'skipped';
+      return { kind: 'skipped', reason: 'lock_busy' };
     }
 
     // Lock ownership: from here through the runner call, the lock is
@@ -582,14 +789,14 @@ export class YieldDistributionCron {
           { symbol: token.symbol, token: tokenAddrLower },
           'no oracle snapshot — skipping (likely legacy synthetic)',
         );
-        return 'skipped';
+        return { kind: 'skipped', reason: 'no_oracle_snapshot' };
       }
       if (snapshot.apy7Day === null || snapshot.navDollar === null) {
         this.logger.info(
           { symbol: token.symbol, token: tokenAddrLower },
           'apy7Day or navDollar null on latest snapshot — skipping (non-yield-bearing or pre-ingest)',
         );
-        return 'skipped';
+        return { kind: 'skipped', reason: 'missing_nav' };
       }
       const ageDays = (Date.now() - snapshot.snapshotAt.getTime()) / (24 * 60 * 60 * 1000);
       if (ageDays > this.config.staleNavHaltDays) {
@@ -599,7 +806,7 @@ export class YieldDistributionCron {
           tokenAddress: tokenAddrLower,
           severity: 'warn',
         });
-        return 'skipped';
+        return { kind: 'skipped', reason: 'stale_nav' };
       }
 
       // ── Compute ratePerShare + encTotalYield + effectiveCap ─────
@@ -615,7 +822,7 @@ export class YieldDistributionCron {
           { symbol: token.symbol, apy7Day: snapshot.apy7Day },
           'apy7Day failed numeric parse or <= 0 — skipping',
         );
-        return 'skipped';
+        return { kind: 'skipped', reason: 'parse_error' };
       }
       const navDecimal = Number.parseFloat(snapshot.navDollar);
       if (!Number.isFinite(navDecimal) || navDecimal <= 0) {
@@ -623,7 +830,7 @@ export class YieldDistributionCron {
           { symbol: token.symbol, navDollar: snapshot.navDollar },
           'navDollar failed numeric parse or <= 0 — skipping',
         );
-        return 'skipped';
+        return { kind: 'skipped', reason: 'parse_error' };
       }
       const navUsd6 = BigInt(Math.floor(navDecimal * Number(NAV_USD6_SCALE)));
       // `apyDecimal × navUsd6` is bigint-safe via scaled-int: scale
@@ -662,7 +869,7 @@ export class YieldDistributionCron {
           { symbol: token.symbol, apy7Day: snapshot.apy7Day },
           'apyScaled floored to 0 — would produce zero rate, skipping',
         );
-        return 'skipped';
+        return { kind: 'skipped', reason: 'zero_yield' };
       }
       const ratePerShare = (apyScaled * navUsd6) / DAYS_PER_YEAR;
       if (ratePerShare === 0n) {
@@ -670,7 +877,7 @@ export class YieldDistributionCron {
           { symbol: token.symbol, navUsd6: navUsd6.toString(), apyScaled: apyScaled.toString() },
           'ratePerShare floored to 0 — every claim would silent-fail; skipping',
         );
-        return 'skipped';
+        return { kind: 'skipped', reason: 'zero_yield' };
       }
       if (ratePerShare > UINT128_MAX) {
         await this.deps.notifyYieldCronFailure.execute({
@@ -682,7 +889,7 @@ export class YieldDistributionCron {
           tokenAddress: tokenAddrLower,
           severity: 'error',
         });
-        return 'failed';
+        return { kind: 'failed' };
       }
 
       // Per-token effective cap; falls back to global. The `rwa_tokens
@@ -734,7 +941,7 @@ export class YieldDistributionCron {
           tokenAddress: tokenAddrLower,
           severity: 'error',
         });
-        return 'failed';
+        return { kind: 'failed' };
       }
       // Self-review (2026-05-21): defensive — when override=1 + sub-
       // RATE_SCALE ratePerShare (e.g. 0.001% APY token), the floor
@@ -753,7 +960,7 @@ export class YieldDistributionCron {
           },
           'encTotalYield floored to 0 — sub-RATE_SCALE rate × tight cap; skipping',
         );
-        return 'skipped';
+        return { kind: 'skipped', reason: 'zero_yield' };
       }
 
       // ── Resolve YieldSnapshot proxy ──────────────────────────────
@@ -765,7 +972,7 @@ export class YieldDistributionCron {
           tokenAddress: tokenAddrLower,
           severity: 'error',
         });
-        return 'failed';
+        return { kind: 'failed' };
       }
 
       // ── mhUSDC float pre-flight (I-5, multi-token-safe) ──────────
@@ -785,7 +992,7 @@ export class YieldDistributionCron {
         if (remaining === null) {
           // Sweep-start read failed — caller already alerted + would
           // have skipped the entire sweep. Defensive only.
-          return 'skipped';
+          return { kind: 'skipped', reason: 'float_short' };
         }
         if (remaining < encTotalYield) {
           await this.deps.notifyYieldCronFailure.execute({
@@ -799,7 +1006,7 @@ export class YieldDistributionCron {
             tokenAddress: tokenAddrLower,
             severity: 'warn',
           });
-          return 'skipped';
+          return { kind: 'skipped', reason: 'float_short' };
         }
       }
 
@@ -861,7 +1068,7 @@ export class YieldDistributionCron {
         // float → spurious InsufficientMhusdcFloatError skips +
         // operator alert noise claiming float is short when it isn't.
         if (!this.config.dryRun) sweepCtx.consumeFloat(encTotalYield);
-        return 'success';
+        return { kind: 'success' };
       }
       if (result.status === 'resumed_success') {
         // Prior tick's drain already in sweep-start balance — no
@@ -877,9 +1084,14 @@ export class YieldDistributionCron {
         // is one token silent-fails for the value of the still-
         // pending epoch — bounded by 1 in-flight epoch per token per
         // sweep. Acceptable: documented for the operator runbook.
-        return 'success';
+        return { kind: 'success' };
       }
-      if (result.status === 'skipped') return 'skipped';
+      if (result.status === 'skipped') {
+        return {
+          kind: 'skipped',
+          reason: bucketRunnerSkipReason(result.skipReason),
+        };
+      }
       // Round-2 Reality H-1 (2026-05-21): `'partial'` is declared in
       // the runner's `RunEpochResult.status` union but no return site
       // currently emits it. If a future runner edit DOES emit it
@@ -896,7 +1108,7 @@ export class YieldDistributionCron {
         },
         'unexpected runYieldEpoch status — treating as failure',
       );
-      return 'failed';
+      return { kind: 'failed' };
     } catch (err) {
       // Runner threw — route through the operator-alert path with
       // tokenAddress so the sanitiser preserves the canonical address
@@ -908,7 +1120,7 @@ export class YieldDistributionCron {
         tokenAddress: tokenAddrLower,
         severity: 'error',
       });
-      return 'failed';
+      return { kind: 'failed' };
     } finally {
       // I-3 belt-and-braces. `release()` is idempotent + never-throws.
       await lock.release();
@@ -1003,46 +1215,118 @@ export class YieldDistributionCron {
   }
 
   /**
-   * Fire the dry-run boot Telegram alert when the `cron_state` debounce
-   * row has aged past 6h. Single-statement atomic UPDATE so a crash-
-   * loop can't multi-fire — same pattern as the main tick guard.
+   * Fire the daily Telegram heartbeat at the end of a tick. Dedup'd
+   * via `cron_state.yield-distribution-heartbeat` row (23h debounce
+   * via single-statement atomic UPDATE — same pattern as the main
+   * tick guard, prevents a crash-loop tick from multi-firing the
+   * heartbeat across multiple restarts in one day).
+   *
+   * Replaces the pre-2026-05-22 dry-run-gated `maybeFireBootAlert`.
+   * The heartbeat fires UNCONDITIONALLY (dry-run or live); dry-run
+   * state is carried in the body as a `(DRY-RUN)` suffix so the
+   * operator's "is the cron alive?" signal survives the flip to live
+   * mode (operator feedback 2026-05-22: "I wouldn't want to lose
+   * receiving the message").
+   *
+   * The body enumerates the sweep result (succeeded / per-reason-
+   * skipped / failed counts) so a glance at Telegram tells the
+   * operator both "cron is alive" AND "here's what it did", without
+   * SSHing to the homelab for log triage. Per-reason skip buckets
+   * make anomalies (e.g. `no_holders` dropping while `parse_error`
+   * spikes) operator-visible without log-diving.
+   *
+   * **Order-of-operations (Backend-Architect H-1, 2026-05-22 review):**
+   * notify FIRST, UPDATE the debounce row only on success. The
+   * pre-fix order (UPDATE then notify) silent-skipped the next 23h
+   * window on any transport throw — debounce row already advanced
+   * but operator never got the ping. The reverse order accepts the
+   * inverse failure mode (notify succeeds but UPDATE fails → next
+   * tick fires a duplicate ping); that's strictly less bad than a
+   * silent day, and the per-tick-guard 23h debounce gives at most
+   * one duplicate.
    */
-  private async maybeFireBootAlert(): Promise<void> {
+  private async maybeFireDailyHeartbeat(result: YieldCronTickResult): Promise<void> {
     try {
-      const debounceResult = await this.deps.db.execute<{ ok: number }>(sql`
-        UPDATE cron_state
-        SET last_fired_at = NOW() AT TIME ZONE 'UTC'
-        WHERE cron_name = ${CRON_NAME_BOOT_ALERT}
-          AND last_fired_at < (NOW() AT TIME ZONE 'UTC') - (${BOOT_ALERT_DEBOUNCE_HOURS}::int * INTERVAL '1 hour')
-        RETURNING 1 AS ok
+      // Step 1 — claim eligibility WITHOUT consuming the debounce row.
+      // Read-only SELECT against the current state.
+      const eligibility = await this.deps.db.execute<{ eligible: boolean }>(sql`
+        SELECT (last_fired_at < (NOW() AT TIME ZONE 'UTC') - (${HEARTBEAT_DEBOUNCE_HOURS}::int * INTERVAL '1 hour'))
+               AS eligible
+        FROM cron_state
+        WHERE cron_name = ${CRON_NAME_HEARTBEAT}
       `);
-      if ((debounceResult.rowCount ?? 0) === 0) {
-        this.logger.debug('boot alert debounced (< 6h since last)');
+      const eligible = eligibility.rows?.[0]?.eligible === true;
+      if (!eligible) {
+        this.logger.debug('heartbeat debounced (< 23h since last)');
         return;
       }
+      // Step 2 — emit Telegram FIRST. If this throws, we never
+      // advance the debounce row, so the next tick retries.
+      const body = composeHeartbeatBody(result, this.config.dryRun);
       // Pass signer address as `tokenAddress` so the sanitiser
-      // preserves it in the body instead of redacting to `0x…addr`
-      // (Round-1 Security M-5 sentinel-preservation path). The
-      // boot-alert symbol is sentinel-only; the address ISN'T a
-      // token's, but the sanitiser's known-address preservation
-      // logic keys on tokenAddress regardless of whether it's a
-      // token or any other operator-relevant EOA. Lower-cased for
-      // case-insensitive match against the body's address text.
+      // preserves it in the body's known-token allowlist instead of
+      // redacting it (Round-1 Security M-5 sentinel-preservation
+      // path). The signer EOA isn't strictly a "token" but the
+      // sanitiser's allowlist keys on tokenAddress regardless.
       await this.deps.notifyYieldCronFailure.execute({
-        err: new YieldCronBootAlert(
-          `YieldDistributionCron booted in DRY-RUN mode. No on-chain ` +
-            `side effects will fire until YIELD_CRON_DRY_RUN=false. ` +
-            `Cron expression: ${this.config.cronExpr}; issuer: ${this.signer?.address ?? 'unknown'}.`,
-        ),
-        tokenSymbol: 'YIELD_CRON_BOOT',
+        err: new YieldCronHeartbeat(body),
+        tokenSymbol: 'YIELD_CRON_HEARTBEAT',
         ...(this.signer?.address
           ? { tokenAddress: this.signer.address.toLowerCase() }
           : {}),
         severity: 'info',
       });
+      // Step 3 — notify succeeded, advance the debounce row. Atomic
+      // UPDATE with the 23h guard still in the WHERE clause so a
+      // concurrent restart-induced tick that already advanced the
+      // row doesn't get clobbered (idempotent: row stays at the
+      // most-recent fire time either way).
+      await this.deps.db.execute(sql`
+        UPDATE cron_state
+        SET last_fired_at = NOW() AT TIME ZONE 'UTC'
+        WHERE cron_name = ${CRON_NAME_HEARTBEAT}
+          AND last_fired_at < (NOW() AT TIME ZONE 'UTC') - (${HEARTBEAT_DEBOUNCE_HOURS}::int * INTERVAL '1 hour')
+      `);
     } catch (err) {
-      // Boot alert is best-effort — never gate cron lifecycle on it.
-      this.logger.warn({ err }, 'boot alert path threw — continuing');
+      // Heartbeat is best-effort — never gate cron lifecycle on it.
+      // On a notify throw we INTENTIONALLY do NOT advance the row
+      // (the UPDATE in step 3 didn't run). Next tick retries.
+      this.logger.warn({ err }, 'heartbeat path threw — continuing');
     }
   }
+}
+
+/**
+ * Render the Telegram-visible heartbeat body from a tick result.
+ *
+ * Format:
+ *   "yield-distribution OK 2026-05-22 (DRY-RUN): 11 swept · 7 no_holders ·
+ *    4 missing_nav · 0 distributed · 0 failed. Cron 0 0 * * *."
+ *
+ * - Only non-zero skip-reason buckets are emitted (keeps the body
+ *   under the 1024-char sanitiser cap and reduces visual noise).
+ * - When `result.attempted === 0` (no active tokens), the body
+ *   reads "no active tokens" instead of "0 swept" — operator's
+ *   first-read should be unambiguous.
+ * - Dry-run state carried as `(DRY-RUN)` suffix in the date prefix.
+ *
+ * Pure function (no `this`); hoisted to module scope for testability.
+ */
+export function composeHeartbeatBody(
+  result: YieldCronTickResult,
+  dryRun: boolean,
+): string {
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const dryRunSuffix = dryRun ? ' (DRY-RUN)' : '';
+  if (result.attempted === 0) {
+    return `yield-distribution OK ${dateStr}${dryRunSuffix}: no active tokens — tick was a no-op.`;
+  }
+  const parts: string[] = [`${result.attempted} swept`];
+  for (const reason of ALL_SKIP_REASONS) {
+    const count = result.skipReasons[reason];
+    if (count > 0) parts.push(`${count} ${reason}`);
+  }
+  parts.push(`${result.succeeded} distributed`);
+  if (result.failed > 0) parts.push(`${result.failed} failed`);
+  return `yield-distribution OK ${dateStr}${dryRunSuffix}: ${parts.join(' · ')}.`;
 }

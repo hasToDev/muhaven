@@ -45,6 +45,45 @@ describe('composeMessage — structured header', () => {
   });
 });
 
+describe('composeMessage — severity-aware header (2026-05-22 false-positive fix)', () => {
+  // Pre-2026-05-22 the header hardcoded "Error: ${errorClass}" for ALL
+  // severities. The body emoji from the bot (ℹ️ / ⚠️ / ❌) contradicted
+  // the embedded "Error:" text for info / warn payloads → operator
+  // false positive ("looks like a failure" when it's a heartbeat).
+  // Now the prefix matches severity. The errorClass is still rendered
+  // (it's a useful log-grep handle).
+
+  it('renders Info: for severity=info', () => {
+    const result = composeMessage(
+      payload({ severity: 'info', errorClass: 'YieldCronHeartbeat' }),
+    );
+    expect(result).toMatch(/^Token: USYC\nInfo: YieldCronHeartbeat\n/);
+    expect(result).not.toContain('Error:');
+  });
+
+  it('renders Warn: for severity=warn', () => {
+    const result = composeMessage(
+      payload({ severity: 'warn', errorClass: 'StaleNavError' }),
+    );
+    expect(result).toMatch(/^Token: USYC\nWarn: StaleNavError\n/);
+    expect(result).not.toContain('Error:');
+  });
+
+  it('keeps Error: for severity=error (unchanged behaviour)', () => {
+    const result = composeMessage(payload({ severity: 'error' }));
+    expect(result).toMatch(/^Token: USYC\nError: ZeroRateError\n/);
+  });
+
+  it('errorClass text still appears in the header for log-grep parity across severities', () => {
+    for (const severity of ['info', 'warn', 'error'] as const) {
+      const result = composeMessage(
+        payload({ severity, errorClass: 'CanaryClass' }),
+      );
+      expect(result).toContain('CanaryClass');
+    }
+  });
+});
+
 describe('composeMessage — short-message length cap (Round-2 R2-CR HIGH)', () => {
   it('passes a small message through unchanged', () => {
     const result = composeMessage(payload({ shortMessage: 'small' }));

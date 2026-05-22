@@ -7,7 +7,7 @@ mechanism owns it, how it alerts, and where the per-cron notes live.
 
 | Cron | Mechanism | Schedule | Failure detector | Escalation | Runbook |
 |---|---|---|---|---|---|
-| YieldDistributionCron | Backend docker container (node-cron) | Daily at `00:00 UTC` | Per-tick try/catch + `notifyYieldCronFailure` → Telegram | Immediate Telegram on phase failure; boot-alert on every backend restart | `backend/src/infrastructure/blockchain/yield-cron.ts` header; `development/DEV_WAVE_5/Q3_PLAN.md` |
+| YieldDistributionCron | Backend docker container (node-cron) | Daily at `00:00 UTC` | Per-tick try/catch + `notifyYieldCronFailure` → Telegram | Immediate Telegram on phase failure; daily heartbeat (`YIELD_CRON_HEARTBEAT`, severity=info) at end of every tick with per-token sweep summary (2026-05-22 — replaced the pre-existing dry-run-gated boot-alert) | `backend/src/infrastructure/blockchain/yield-cron.ts` header; `development/DEV_WAVE_5/Q3_PLAN.md` |
 | oracle-staleness-check.sh | Homelab host crontab (`*/30 * * * *`) | Every 30 min | Per-token `getNAV().updatedAt` age vs `THRESHOLD_HR` (default 28h) | Telegram alert per stale token; backstop for ALL upstream NAV pipelines | `scripts/oracle-staleness-check.sh` header; `development/DEV_WAVE_3/HOMELAB_DEPLOY.md` "Oracle staleness monitor" |
 | nav-publisher | Dedicated docker service | Per-token internal scheduler; refreshes a token when its on-chain NAV age ≥ ½ of contract max-staleness | Container restart loop + structured logs | Surfaces as stale NAV at the 28h backstop above | `nav-publisher/src/publisher.ts`; `project_design_a_navwriter_pattern` memory |
 | refresh-and-ingest (Wave 5 Q2) | systemd `--user` timer in autologin desktop session | `00:00 / 08:00 / 16:00 UTC` daily | Per-phase exit code + partial-scrape detection (`refresh-history.log` `failed=...` match) + `notify=fail` history flag when alert delivery itself broke + daily heartbeat ping (absence-of-heartbeat for >24h IS the "cron never fired" signal — operator-monitored today; an automated absence-detector is filed as a future enhancement) | Telegram via `/api/v1/operator/alert-test` (failures AND daily liveness); 28h backstop above | `scripts/refresh-and-ingest.sh` header; `scripts/oracle-mine/README.md` |
@@ -205,39 +205,43 @@ enhancement.
 These were filed across the Q2 → Q2b → Q2c → Q2d review rounds; none
 block the live cron. Pick in order of payoff:
 
-1. **`/api/v1/operator/cron-failure` route rename + Telegram template
-   fix** (~1.5h backend + wrapper switch).
-   `/api/v1/operator/alert-test` is repurposed from manual smoke
-   endpoint → automated alarm channel + daily-heartbeat carrier.
-   Severity hardcoded to `'info'` at
-   `backend/api/v1/operator/alert-test.ts:82`. Introduce a new route
-   that accepts `{severity, source, note}` in the DTO; keep `alert-test`
-   as a thin synonym for one release for backward-compat. Surfaced by
-   Round-1 Security M-1 + Round-2 Software Architect MED.
+1. **~~`/api/v1/operator/cron-failure` route rename + Telegram template fix~~ — PARTIALLY CLOSED 2026-05-22.**
+   The **template-fix half (part b)** landed: `operator-alert-transport.ts::buildHeader`
+   now renders `Info:` / `Warn:` / `Error:` per the payload's
+   `severity` field. Telegram heartbeats no longer read as
+   `Error: YieldCronBootAlert` / `Error: AlertTestPing` — the prefix
+   matches the icon. The `Token:` field still carries the cron's
+   sentinel symbol (`YIELD_CRON_HEARTBEAT` for the daily yield-cron
+   ping; `CONFIG_TEST` for the legacy alert-test surface) until the
+   route-rename half ships.
+   **Still deferred (parts a + c + d):**
+   - `/api/v1/operator/cron-failure` route rename (DTO accepts
+     `severity` + `source`; keeps `alert-test` as a thin synonym for
+     one release).
+   - `Token:` field renders the `source` (`q2-heartbeat` /
+     `q3-yield-cron`) instead of legacy hardcodes.
+   - Wrapper at `scripts/refresh-and-ingest.sh` passes
+     `{severity: 'info', source: 'q2-heartbeat'}` to the new route.
 
-   **Operator-confirmed misread risk (2026-05-21).** First Q2d daily
-   heartbeat arrived as:
+   Original surfacing context (kept for the route-rename half):
+   Round-1 Security M-1 + Round-2 Software Architect MED. The
+   pre-fix operator-confirmed misread was:
 
    ```
    ℹ️ Token: CONFIG_TEST
-   Error: AlertTestPing
+   Error: AlertTestPing               ← false positive (icon ≠ label)
 
    Q2 daily heartbeat OK date=2026-05-21 host=muhaven-VMware
    ```
 
-   Both `Token: CONFIG_TEST` and the `Error: AlertTestPing` label
-   are template hardcodes that misrepresent the payload —
-   `CONFIG_TEST` is the legacy smoke-test source name, and `Error:`
-   prefixes every payload regardless of severity. Operator's first
-   read was "something failed"; a future real failure could be
-   dismissed the same way ("oh, another smoke ping"). Fix scope when
-   picking this up: (a) DTO accepts `severity` + `source`; (b)
-   template renders `severity` (with non-error severities using
-   `ℹ️ Info:` / `⚠️ Warn:` instead of `Error:`); (c) `Token:` field
-   renders the `source` (`q2-heartbeat` / `q3-yield-cron` / etc.)
-   not the legacy hardcode; (d) wrapper at
-   `scripts/refresh-and-ingest.sh` is updated to pass
-   `{severity: 'info', source: 'q2-heartbeat'}` to the new route.
+   Post-2026-05-22 (after the template-half fix) reads as:
+
+   ```
+   ℹ️ Token: CONFIG_TEST              (still the legacy source name)
+   Info: AlertTestPing                ← now matches the icon
+
+   Q2 daily heartbeat OK date=2026-05-21 host=muhaven-VMware
+   ```
 2. **`scripts/verify-secrets-sync.sh`** (~30 min). Read-only probe of
    all 3 secret-holding files (`backend/.env`, `.monitor.env`,
    `scripts/refresh-and-ingest.env`). Reports drift between

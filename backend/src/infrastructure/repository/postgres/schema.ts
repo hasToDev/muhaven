@@ -1176,10 +1176,16 @@ export const yieldDistributions = pgTable(
 
 // `cron_state` is the single-flight tick guard for any backend cron that
 // needs idempotency across container restarts. Q3 keys two rows on this
-// table: `yield-distribution` (the 23h-floor tick guard per A.1) and
-// `yield-cron-boot-alert` (the 6h-debounce for dry-run boot Telegram
-// alerts per A.6 / v3.1 S5). Future crons add more rows; the table is
-// not Q3-specific. `defaultNow()` on `lastFiredAt` lets the
+// table:
+//   - `yield-distribution` — the 23h-floor tick guard per A.1.
+//   - `yield-distribution-heartbeat` — the 23h-floor debounce for the
+//     daily Telegram heartbeat at end-of-tick (2026-05-22 — replaces
+//     the pre-existing `yield-cron-boot-alert` row that was a 6h-
+//     debounce on a dry-run-gated boot alert; the legacy row stays
+//     as dangling data in prod until the operator runs the one-shot
+//     `scripts/sql/cleanup-yield-cron-boot-alert.sql`).
+// Future crons add more rows; the table is not Q3-specific.
+// `defaultNow()` on `lastFiredAt` lets the
 // `INSERT … ON CONFLICT DO NOTHING` seed pattern omit the column.
 //
 // LOAD-BEARING INVARIANT (DB review H-1, 2026-05-20): the tick guard

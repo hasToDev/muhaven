@@ -240,10 +240,36 @@ export function composeMessage(payload: OperatorAlertPayload): string {
   return header + body;
 }
 
+/**
+ * Map a severity to the header prefix for the errorClass line.
+ *
+ * Pre-2026-05-22: every payload (info / warn / error) rendered
+ * `Error: ${errorClass}` regardless of severity — the body emoji from
+ * the bot (`ℹ️` / `⚠️` / `❌`) contradicted the embedded `Error:` text
+ * for non-error alerts, causing operator false positives (Q2 deferred
+ * item #1 / Round-1 Security M-1 + Round-2 Software Architect MED).
+ * Now the header prefix matches the severity so the operator's first
+ * read of "is this a failure?" is correct from the header alone.
+ *
+ * `errorClass` is still rendered verbatim — it's a useful log-grep
+ * handle (`AlertTestPing` / `YieldCronHeartbeat` / `StaleNavError`)
+ * and the prefix change doesn't lose that information.
+ */
+function severityHeaderPrefix(severity: OperatorAlertPayload['severity']): string {
+  switch (severity) {
+    case 'info':
+      return 'Info';
+    case 'warn':
+      return 'Warn';
+    case 'error':
+      return 'Error';
+  }
+}
+
 function buildHeader(payload: OperatorAlertPayload): string {
   const lines: string[] = [
     `Token: ${payload.tokenSymbol}`,
-    `Error: ${payload.errorClass}`,
+    `${severityHeaderPrefix(payload.severity)}: ${payload.errorClass}`,
   ];
   if (payload.epochId !== undefined) {
     lines.push(`Epoch: ${payload.epochId.toString()}`);
