@@ -16,9 +16,13 @@
 #   bash scripts/db-push-homelab.sh stage
 #
 # Safety posture:
-#   - Branch-guarded (prod → master, stage → develop) to mirror
-#     deploy-homelab.sh — refuses to push if local branch doesn't
-#     match. Bypass for one-offs via FORCE_BRANCH=1.
+#   - Branch-guarded (prod → master, stage → agenticwave) to mirror
+#     deploy-homelab.sh's `EXPECTED_BRANCH` — refuses to push if local
+#     branch doesn't match. The stage branch tracks Wave 4's active
+#     development branch (`agenticwave`) per the model documented in
+#     development/STAGING.md; it will rotate to the next active branch
+#     when Wave 4 / Wave 5 merges back into master. Bypass for one-offs
+#     via FORCE_BRANCH=1.
 #   - Uses --frozen + drizzle-kit's idempotent push: re-runs are
 #     safe; no-op when schema is already in sync.
 #   - The backend container's `pnpm db:push` reads DATABASE_URL from
@@ -48,7 +52,11 @@ else
   COMPOSE_FILE="docker-compose.stage.yml"
   COMPOSE_PROJECT="muhaven-stage"
   REMOTE_PATH="/home/muhaven/Project/Fhenix/MuHaven-stage"
-  EXPECTED_BRANCH="develop"
+  # Must match `scripts/deploy-homelab.sh`'s EXPECTED_BRANCH for stage.
+  # Wave 4/5 development branch model: stage tracks `agenticwave` until
+  # active development merges back into master. Rotates with the
+  # active branch per development/STAGING.md.
+  EXPECTED_BRANCH="agenticwave"
 fi
 
 # Branch guard — mirrors deploy-homelab.sh:114
