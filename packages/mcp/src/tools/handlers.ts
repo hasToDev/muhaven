@@ -363,6 +363,23 @@ export type PathDFallbackReason =
   | 'version_too_old'
   | 'session_key_unavailable'
   | 'no_active_session_key'
+  /**
+   * Wave 5 Path D Slice 2 Commit 2.B — the broker keystore had no
+   * active snapshot, the MCP server fell through to the backend
+   * mirror via `GET /agent/policy/scoped-session`, and EITHER the
+   * mirror call errored (4xx/5xx/network) OR the subsequent
+   * `broker.storePolicySnapshot` IPC errored OR the post-store
+   * `getActiveSessionId` re-probe still returned null (broker
+   * accepted store but failed to surface the row as active).
+   *
+   * Distinct from `no_active_session_key` (now: "neither broker
+   * keystore nor backend mirror has a snapshot — the user hasn't
+   * minted one yet, or they revoked through the dashboard"). The
+   * sync-failed case warrants different operator remediation
+   * (transport / broker bug) vs. the no-session case (user
+   * action).
+   */
+  | 'mirror_sync_failed'
   | 'no_active_snapshot'
   | 'snapshot_lookup_failed'
   | 'signer_mismatch'
@@ -744,13 +761,421 @@ function mapBrokerCallFailure(
       message: `broker daemon rejected ${verb} as unsupported_type — daemon is likely older than protocol 0.4.0; upgrade @muhaven/mcp and restart the broker`,
     };
   }
+  // Embed typed error code only (not free-form `err.message`) so a
+  // malicious / compromised broker daemon can't inject crafted prompt
+  // text into LLM context via the fallback echo. Closes SecEng-L2
+  // round 1 across the original pre-2.B call site (`typedErrorCode`
+  // already covers the new auto-sync paths). Reality Checker MED-5
+  // pre-Codex.
   return {
     kind: 'fallback',
     reason: defaultReason,
-    message:
-      `broker rejected ${verb}: ` +
-      (err instanceof BrokerClientError ? `${err.code}: ${err.message}` : String(err)),
+    message: `broker rejected ${verb} (${typedErrorCode(err)})`,
   };
+}
+
+/**
+ * Wave 5 Path D Slice 2 Commit 2.B — narrow type for the
+ * `GET /api/v1/agent/policy/scoped-session?surface=mcp` response. Carries
+ * only the fields the MCP server reads (a strict subset of the backend's
+ * `ScopedSessionDto`). Hand-pinned rather than imported to keep the MCP
+ * package free of a backend-runtime dep + decouple from backend DTO
+ * release cadence (the wire shape is locked by the REST contract; DTO
+ * additions inside the backend bundle are transparent here as long as
+ * the documented fields stay).
+ */
+interface ScopedSessionMirrorDto {
+  readonly sessionId: string;
+  readonly mode: 'scoped';
+  /**
+   * Defense-in-depth (AI Engineer MED-1 pre-Codex pass): the MCP
+   * re-validates `status === 'active'` before installing the snapshot
+   * into the broker keystore, mirroring the same defensive posture as
+   * the `signerAddress` cross-check. The backend's `findLatestActive`
+   * already filters by `status='active'`, but a future SQL refactor
+   * regression that dropped the predicate would silently leak a
+   * revoked row to the broker — the structural defense lives at the
+   * MCP boundary because it's the only chokepoint that survives a
+   * backend filter bug.
+   */
+  readonly status: 'active' | 'revoked' | 'expired';
+  readonly signerAddress: string;
+  readonly permissionId: string | null;
+  readonly targetContracts: readonly string[];
+  readonly selectorCaps: readonly {
+    readonly selector: string;
+    readonly capArgIndex: number | null;
+    readonly maxAmount: string | null;
+  }[];
+  readonly validUntilSec: number;
+  readonly mintedAtSec: number;
+  readonly consentActionHash: string | null;
+  readonly consentTextSha256: string | null;
+}
+
+interface ScopedSessionMirrorResponse {
+  readonly session: ScopedSessionMirrorDto | null;
+}
+
+/**
+ * Wave 5 Path D Slice 2 Commit 2.B — defensive hex shape guards. The
+ * backend Zod schema enforces these regexes at mint time + the broker
+ * daemon's `parsePolicySnapshot` re-validates on store; this layer
+ * catches malformed mirror rows LOCALLY (before the broker IPC round-
+ * trip) so a tampered backend response surfaces with a clear
+ * pre-broker error message instead of forwarding the broker's
+ * `invalid_request` string verbatim into the LLM context
+ * (round-1 SecEng L-3).
+ */
+const MCP_HEX_20_BYTE_RE = /^0x[0-9a-fA-F]{40}$/;
+const MCP_HEX_4_BYTE_RE = /^0x[0-9a-fA-F]{8}$/;
+const MCP_HEX_32_BYTE_RE = /^0x[0-9a-fA-F]{64}$/;
+
+/**
+ * Symmetric with broker daemon's `SESSION_ID_RE` at
+ * `packages/mcp/src/broker/protocol.ts` (mirror copy — keeping them in
+ * sync is verified by integration tests). MCP-side guard rejects
+ * path-traversal-ish or control-char sessionIds before the IPC round-
+ * trip so the broker never sees a malformed key — Reality Checker
+ * LOW-4 pre-Codex.
+ */
+const MCP_SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+class MirrorDtoMalformedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MirrorDtoMalformedError';
+  }
+}
+
+/**
+ * Transform the backend mirror's `ScopedSessionDto` to the broker IPC's
+ * `PolicySnapshotWire`. Pure; pulls forward only the fields the broker
+ * cares about (mirror also carries DB-only state like `userId`,
+ * `status`, `maxPerOpUsd6`, `totalSpentUsd6`, `mintedAt` ISO strings —
+ * those are for the dashboard banner + audit-replay, NOT broker
+ * enforcement). Optional fields with `null` on the wire become
+ * `undefined`-omitted on the broker side (parser uses optional-field
+ * presence as the carrier; presence-of-null would fail the
+ * `isOptionalHash32` guard).
+ *
+ * Throws `MirrorDtoMalformedError` on:
+ *   - HEX-SHAPE violation (signerAddress, targetContracts entries,
+ *     selectorCaps[].selector, permissionId, consent*Hash) — caught
+ *     LOCALLY so a poisoned backend response surfaces with a structural
+ *     message instead of echoing arbitrary backend error text.
+ *   - `mode` not literally `'scoped'` — a future wildcard mirror row
+ *     would otherwise be silently rewritten as scoped on the wire and
+ *     bounce at the broker with a confusing tampered-payload error
+ *     (CR-R2 L-3).
+ *
+ * **What this guard does NOT validate** (and therefore bounces at the
+ * broker daemon's `parsePolicySnapshot` with a `mirror_sync_failed
+ * (broker.invalid_request)` surface — see `typedErrorCode`):
+ * - `validUntilSec` / `mintedAtSec` numeric range (must be positive,
+ *   safe-integer).
+ * - `selectorCaps[].capArgIndex` integer range (0-31) and the paired
+ *   nullness of `capArgIndex` ↔ `maxAmount`.
+ * - `selectorCaps[].maxAmount` uint256 decimal-string range.
+ * - `targetContracts` / `selectorCaps` element-count bounds (1..32).
+ * The broker remains the structural gate; this layer just catches the
+ * cheap hex-shape cases before the IPC round-trip (CR-R2 M-2).
+ */
+function mirrorDtoToPolicySnapshot(
+  dto: ScopedSessionMirrorDto,
+): import('../broker/protocol.js').PolicySnapshotWire {
+  // Runtime mode discriminator — the TS type pins literal `'scoped'`
+  // but a regressed backend / future wildcard row would slip past
+  // the type assertion. Slice 4 wildcard widens the union explicitly.
+  if (dto.mode !== 'scoped') {
+    throw new MirrorDtoMalformedError(
+      `mode must be 'scoped' (got ${JSON.stringify(dto.mode)}); wildcard mirror auto-sync ships in Slice 4`,
+    );
+  }
+  // Defense-in-depth on backend filter regression (AI Engineer MED-1
+  // pre-Codex). Backend's `findLatestActive` filters by
+  // `status='active'`, so today this branch can never fire. A future
+  // SQL refactor that drops the predicate would silently install a
+  // revoked / expired row into the broker keystore — catching it here
+  // means a revoke that landed in the mirror table also blocks the
+  // auto-sync, preserving the Compliance "revoke = consent window
+  // closes" invariant even under a backend regression.
+  if (dto.status !== 'active') {
+    throw new MirrorDtoMalformedError(
+      `status must be 'active' for auto-sync (got ${JSON.stringify(dto.status)}); backend mirror should have filtered this row out`,
+    );
+  }
+  // Defense-in-depth on sessionId shape (Reality Checker LOW-4
+  // pre-Codex). Broker's parsePolicySnapshot also re-checks, but
+  // catching it here means a tampered backend response with a
+  // path-traversal-ish sessionId never reaches the broker IPC.
+  if (typeof dto.sessionId !== 'string' || !MCP_SESSION_ID_RE.test(dto.sessionId)) {
+    throw new MirrorDtoMalformedError(
+      `sessionId must match /^[A-Za-z0-9_-]{1,128}$/`,
+    );
+  }
+  if (!MCP_HEX_20_BYTE_RE.test(dto.signerAddress)) {
+    throw new MirrorDtoMalformedError(
+      `signerAddress is not a 0x-prefixed 20-byte hex`,
+    );
+  }
+  if (!Array.isArray(dto.targetContracts) || dto.targetContracts.length === 0) {
+    throw new MirrorDtoMalformedError(
+      `targetContracts must be a non-empty array`,
+    );
+  }
+  for (const t of dto.targetContracts) {
+    if (typeof t !== 'string' || !MCP_HEX_20_BYTE_RE.test(t)) {
+      throw new MirrorDtoMalformedError(
+        `targetContracts entry is not a 0x-prefixed 20-byte hex`,
+      );
+    }
+  }
+  if (!Array.isArray(dto.selectorCaps) || dto.selectorCaps.length === 0) {
+    throw new MirrorDtoMalformedError(`selectorCaps must be a non-empty array`);
+  }
+  for (const c of dto.selectorCaps) {
+    if (typeof c?.selector !== 'string' || !MCP_HEX_4_BYTE_RE.test(c.selector)) {
+      throw new MirrorDtoMalformedError(
+        `selectorCaps entry has a malformed selector`,
+      );
+    }
+  }
+  // Optional fields: loose `!= null` catches BOTH `null` (today's
+  // backend emits this when the field is absent) AND `undefined`
+  // (defense against a future backend serializer that omits null
+  // keys; without the loose-eq guard, a missing key would route to
+  // `regex.test(undefined)` → throws "malformed" with a misleading
+  // message). The spread blocks below ALREADY use truthiness checks
+  // which correctly handle both cases; this guard's only job is to
+  // catch present-but-malformed values.
+  if (dto.permissionId != null && !MCP_HEX_4_BYTE_RE.test(dto.permissionId)) {
+    throw new MirrorDtoMalformedError(
+      `permissionId is not a 0x-prefixed 4-byte hex`,
+    );
+  }
+  if (
+    dto.consentActionHash != null &&
+    !MCP_HEX_32_BYTE_RE.test(dto.consentActionHash)
+  ) {
+    throw new MirrorDtoMalformedError(
+      `consentActionHash is not a 0x-prefixed 32-byte hex`,
+    );
+  }
+  if (
+    dto.consentTextSha256 != null &&
+    !MCP_HEX_32_BYTE_RE.test(dto.consentTextSha256)
+  ) {
+    throw new MirrorDtoMalformedError(
+      `consentTextSha256 is not a 0x-prefixed 32-byte hex`,
+    );
+  }
+  // Lowercase normalize at the boundary so the broker IPC receives
+  // case-stable hex. The broker daemon's `parsePolicySnapshot` also
+  // lowercases on its side (defense-in-depth), but normalizing here
+  // means broker-internal `seenSelectors` deduplication + any future
+  // equality check on the wire format reads consistent input
+  // regardless of which casing the mirror happened to emit
+  // (AI Engineer LOW-1 pre-Codex).
+  return {
+    sessionId: dto.sessionId,
+    mode: 'scoped',
+    signerAddress: dto.signerAddress.toLowerCase() as `0x${string}`,
+    targetContracts: dto.targetContracts.map(
+      (a) => a.toLowerCase() as `0x${string}`,
+    ),
+    selectorCaps: dto.selectorCaps.map((c) => ({
+      selector: c.selector.toLowerCase() as `0x${string}`,
+      capArgIndex: c.capArgIndex,
+      maxAmount: c.maxAmount,
+    })),
+    validUntilSec: dto.validUntilSec,
+    mintedAtSec: dto.mintedAtSec,
+    ...(dto.consentActionHash
+      ? { consentActionHash: dto.consentActionHash.toLowerCase() as `0x${string}` }
+      : {}),
+    ...(dto.consentTextSha256
+      ? { consentTextSha256: dto.consentTextSha256.toLowerCase() as `0x${string}` }
+      : {}),
+    ...(dto.permissionId
+      ? { permissionId: dto.permissionId.toLowerCase() as `0x${string}` }
+      : {}),
+  };
+}
+
+/**
+ * Wave 5 Path D Slice 2 Commit 2.B — fetch the backend mirror's latest
+ * active scoped-session row and install it into the broker keystore via
+ * IPC. Called from `attemptPathD` when the broker reports no active
+ * session — recovers from a fresh broker restart without forcing the
+ * user back through the tier transition ceremony.
+ *
+ * Returns either:
+ *   - `{ kind: 'ok', sessionId }` — the snapshot was successfully synced
+ *     AND the broker now reports it active. Caller resumes the probe
+ *     chain with `sessionId`.
+ *   - `{ kind: 'fallback', reason: 'no_active_session_key' }` — the
+ *     mirror has nothing (user hasn't minted, or they revoked).
+ *   - `{ kind: 'fallback', reason: 'mirror_sync_failed' }` — anything
+ *     else: backend 4xx/5xx, broker IPC error, malformed mirror row, or
+ *     post-store re-probe still returning null.
+ */
+type MirrorSyncResult =
+  | { kind: 'ok'; sessionId: string }
+  | { kind: 'fallback'; reason: PathDFallbackReason; message: string };
+
+/**
+ * Wave 5 Path D Slice 2 Commit 2.B — error-message embedding for the
+ * mirror_sync_failed branch. Echoes the typed `err.code` ONLY (not the
+ * free-form `err.message`) so a malicious / compromised backend cannot
+ * inject crafted text into the LLM context via the auto-sync's
+ * fallback echo. Symmetric with the Commit 3.5 bundler error
+ * sanitization (`handlers.ts` bundler-error helper) — operator gets a
+ * stable enum-shape diagnostic; full message is only available in
+ * server logs (the BackendError/BrokerClientError instances bubble up
+ * unchanged to the surrounding logger).
+ *
+ * Code Reviewer L-2 + Security Engineer L-2 (round 1).
+ */
+function typedErrorCode(err: unknown): string {
+  if (err instanceof BackendError) return `backend.${err.code}`;
+  if (err instanceof BrokerClientError) {
+    // Prefer the daemon-side typed code (`brokerCode`) when present —
+    // `err.code` is `'broker_error'` for every structured daemon
+    // failure, which would collapse `unsupported_type` /
+    // `policy_violation` / `invalid_request` etc. into the same opaque
+    // `broker.broker_error` string. Fall through to `err.code` for the
+    // transport-layer cases (`connect_failed`, `timeout`,
+    // `protocol_error`) where `brokerCode` is undefined (CR-R2 H-1).
+    return err.brokerCode
+      ? `broker.${err.brokerCode}`
+      : `broker.${err.code}`;
+  }
+  if (err instanceof MirrorDtoMalformedError) return 'malformed_mirror_row';
+  return 'unknown';
+}
+
+async function syncSnapshotFromMirror(
+  deps: ToolDeps,
+  /**
+   * Address the broker is currently signing as, observed from
+   * `preflight()` upstream in `attemptPathD`. Used as a pre-store
+   * signer-mismatch gate (Code Reviewer M-1 round 1): when the mirror
+   * carries a snapshot bound to a DIFFERENT signer than the broker has
+   * loaded, the broker daemon would accept the store but never
+   * surface the row as active (its activeSessionId filter intersects
+   * with the loaded signer). Catching the mismatch BEFORE the store
+   * avoids polluting the on-disk keystore with a dormant snapshot AND
+   * gives the operator a concrete remediation path.
+   */
+  brokerSignerAddress: `0x${string}`,
+): Promise<MirrorSyncResult> {
+  // Broker is guaranteed defined here — attemptPathD's `!deps.broker`
+  // guard rejected upstream — but TS narrowing across an async helper
+  // call doesn't propagate. Defensive re-check keeps the helper
+  // independently typeable.
+  if (!deps.broker) {
+    return {
+      kind: 'fallback',
+      reason: 'mirror_sync_failed',
+      message: 'auto-sync invoked without a broker dep — pipeline bug',
+    };
+  }
+  let mirror: ScopedSessionMirrorResponse;
+  try {
+    mirror = await deps.backend.get<ScopedSessionMirrorResponse>(
+      '/api/v1/agent/policy/scoped-session',
+      { surface: 'mcp' },
+    );
+  } catch (err) {
+    return {
+      kind: 'fallback',
+      reason: 'mirror_sync_failed',
+      message: `backend mirror lookup failed (${typedErrorCode(err)})`,
+    };
+  }
+  // Loose-eq `== null` catches BOTH `null` (mirror has nothing) AND
+  // `undefined` (top-level response missing the `session` key, e.g. an
+  // upstream proxy rewrote the body). Strict `=== null` would let
+  // undefined fall through into mirrorDtoToPolicySnapshot, which would
+  // then throw TypeError on `dto.sessionId` — same outer fallback but
+  // with a misleading "malformed row" message. Code Reviewer H-2.
+  if (!mirror || mirror.session == null) {
+    // Distinct from mirror_sync_failed: the mirror itself answered
+    // "user has no active scoped session." The user either never minted
+    // OR revoked via the dashboard. LLM remediation is "visit
+    // /agent/policy/transition", not "report bug to operator."
+    return {
+      kind: 'fallback',
+      reason: 'no_active_session_key',
+      message:
+        'no active scoped session — visit /agent/policy/transition to mint one, then retry. (Mirror also empty; nothing to auto-sync.)',
+    };
+  }
+  let snapshot: import('../broker/protocol.js').PolicySnapshotWire;
+  try {
+    snapshot = mirrorDtoToPolicySnapshot(mirror.session);
+  } catch (err) {
+    return {
+      kind: 'fallback',
+      reason: 'mirror_sync_failed',
+      message: `mirror returned a malformed scoped-session row (${typedErrorCode(err)})`,
+    };
+  }
+  // Signer-mismatch pre-check (CR M-1 round 1). The broker daemon's
+  // `activeSessionId` filters by the loaded signer; storing a snapshot
+  // bound to a different signer would land an unreachable row in the
+  // keystore. Bounce here with a concrete remediation instead of
+  // hitting the broker IPC + the opaque re-probe-null branch below.
+  if (snapshot.signerAddress.toLowerCase() !== brokerSignerAddress.toLowerCase()) {
+    return {
+      kind: 'fallback',
+      reason: 'signer_mismatch',
+      message: `mirror snapshot is bound to signer ${snapshot.signerAddress}, broker is currently signing as ${brokerSignerAddress} — re-mint the scoped tier from the dashboard against the broker's current session key, OR restart the broker with the session key matching the mirror snapshot`,
+    };
+  }
+  try {
+    await deps.broker.storePolicySnapshot(snapshot);
+  } catch (err) {
+    return {
+      kind: 'fallback',
+      reason: 'mirror_sync_failed',
+      message: `broker rejected store_policy_snapshot (${typedErrorCode(err)})`,
+    };
+  }
+  // Re-probe after install. The broker SHOULD now return the snapshot
+  // we just stored as the active id (uniqueness is per loaded signer →
+  // exactly one snapshot matches), but defense-in-depth: if the broker
+  // accepted the store but didn't surface the row, fall through cleanly
+  // instead of continuing the pipeline with a NULL activeId that would
+  // surface as a downstream `signer_mismatch` or `no_active_snapshot`.
+  let activeId: string | null;
+  try {
+    const res = await deps.broker.getActiveSessionId();
+    activeId = res.sessionId;
+  } catch (err) {
+    return {
+      kind: 'fallback',
+      reason: 'mirror_sync_failed',
+      message: `broker re-probe after store_policy_snapshot failed (${typedErrorCode(err)})`,
+    };
+  }
+  if (!activeId) {
+    // We pre-checked signer match above, so the most plausible cause
+    // here is broker-keystore ambiguity — `activeSessionId` returns
+    // null on `matches.length !== 1`, so a broker with multiple
+    // non-expired snapshots for the same signer collapses to this
+    // branch even after the store landed. Operator remediation differs
+    // from a fresh-mint suggestion: clear stale snapshots first via
+    // `muhaven-broker` CLI (CR H-1).
+    return {
+      kind: 'fallback',
+      reason: 'mirror_sync_failed',
+      message:
+        'broker accepted store_policy_snapshot but get_active_session_id returned null — most likely cause: multiple non-expired snapshots for the same signer collapse to ambiguous. Clear stale snapshots via the muhaven-broker CLI before retrying. (Snapshot signer was pre-validated to match the broker; signer mismatch already filtered upstream.)',
+    };
+  }
+  return { kind: 'ok', sessionId: activeId };
 }
 
 async function attemptPathD(
@@ -826,6 +1251,23 @@ async function attemptPathD(
     };
   }
   // 2. Is there a unique active scoped session?
+  //
+  // Two-stage probe (Commit 2.B):
+  //   stage 1 — ask the broker keystore directly. Cheap, hot-path.
+  //   stage 2 — if stage 1 says null, fall through to the backend
+  //             mirror (`GET /agent/policy/scoped-session?surface=mcp`).
+  //             Mirror returns the latest active row → MCP pushes it
+  //             back into the broker via `storePolicySnapshot` IPC →
+  //             re-probe `getActiveSessionId` to pick up the synced id.
+  //
+  // The two-stage shape lets a fresh / restarted broker daemon recover
+  // the snapshot installed by an earlier-session frontend mint without
+  // requiring the user to re-walk the tier transition. The broker
+  // remains the authority for sign-time policy (RD-3 read-only mirror);
+  // this just bridges the dashboard-mint → broker-keystore transport
+  // gap on broker restart. Per-tool-call (no boot poll) preserves the
+  // R-1 zero-egress invariant on the broker itself — only the MCP
+  // server reaches the backend.
   let activeId: string | null;
   try {
     const res = await deps.broker.getActiveSessionId();
@@ -834,12 +1276,19 @@ async function attemptPathD(
     return mapBrokerCallFailure(err, 'get_active_session_id');
   }
   if (!activeId) {
-    return {
-      kind: 'fallback',
-      reason: 'no_active_session_key',
-      message:
-        'no active scoped session — visit /agent/policy/transition to mint one, then retry. (Multiple non-expired sessions also collapse to this case; clear stale snapshots via muhaven-broker before retrying.)',
-    };
+    const synced = await syncSnapshotFromMirror(deps, preflight.signerAddress);
+    if (synced.kind === 'fallback') {
+      return synced;
+    }
+    // `synced.sessionId` is the broker-reported active id post-store.
+    // The cross-validator at the snapshot-fetch step (line below)
+    // re-confirms the snapshot's signer matches preflight, so a
+    // hypothetical broker that returned a foreign sessionId on the
+    // re-probe would bounce there with `signer_mismatch`. The
+    // identity check we ran inside syncSnapshotFromMirror only
+    // verified the MIRROR's signer matched preflight; the broker is
+    // still trusted to return the same id back (BA L-3 round 1).
+    activeId = synced.sessionId;
   }
   // 3. Snapshot still readable (defensive — the broker may GC between
   //    getActiveSessionId() and now)?

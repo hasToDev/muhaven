@@ -1,7 +1,10 @@
 import { ApplicationHttpError } from '../../../../core/errors.js';
+import { getLogger } from '../../../../core/logger.js';
+import { AuditEventType } from '../../../../domain/agent/model/audit-event-type.enum.js';
 import type { ScopedSession } from '../../../../domain/agent/model/scoped-session.js';
 import { ScopedSessionStatus } from '../../../../domain/agent/model/scoped-session-status.enum.js';
 import type { IScopedSessionRepository } from '../../../../domain/agent/repository/scoped-session.repository.js';
+import type { AppendAuditEventUseCase } from './append-audit-event.use-case.js';
 
 /**
  * Wave 5 Path D Slice 2 Commit 2.A · DELETE /policy/scoped-session/:id.
@@ -31,7 +34,39 @@ import type { IScopedSessionRepository } from '../../../../domain/agent/reposito
  * (don't leak existence) but the use-case sees the distinction for
  * audit emission in Commit 2.B.
  *
- * **Audit emission deferred to Commit 2.B**.
+ * **Audit emission (Commit 2.B)**: composes `AppendAuditEventUseCase`
+ * with `eventType: AuditEventType.ScopedSessionRevoked`. Metadata
+ * carries `{ sessionId, revokedAt }` so the forensic-chain query that
+ * pairs mint↔revoke can use the audit row's `created_at` as the closure
+ * timestamp without re-joining to `agent_scoped_sessions.revoked_at`
+ * (the row is the WORM stable key per Security M-2).
+ *
+ * **`broker.clearPolicySnapshot` deferred to Slice 3.** The backend
+ * runs in the homelab; the broker daemon runs on the user's machine
+ * (loopback Unix socket / Windows named pipe). The use-case has no
+ * line-of-sight to the broker IPC socket; ANY backend-side clear would
+ * have to route through the MCP server (which the user might not be
+ * running). Slice 3 wires the full kill-switch ceremony: dashboard
+ * revoke → backend mirror revoke → MCP-side "broker stale on next call"
+ * detection → `broker.clearPolicySnapshot` over IPC. Today (Slice 2.B),
+ * the mirror row's `status='revoked'` is the authoritative signal; a
+ * stale broker keystore is forensically harmless because the on-chain
+ * CallPolicy validator + per-selector cap still bound execution, and
+ * the broker daemon's restart-from-scratch flow re-fetches the active
+ * snapshot from the mirror.
+ *
+ * **Audit-throw orphan risk (CR-R2 M-1)**: when `repo.revoke` succeeds
+ * but `appendAudit.execute` throws, the mirror row is already terminal
+ * (`status='revoked'`) and a subsequent DELETE on the same sessionId
+ * hits the "already terminal" 409 branch — the missed audit row is NOT
+ * re-emitted (asymmetric vs. mint, where a retry hits the active-dedup
+ * 409 but at least the row pair is detectable via "orphan mirror has
+ * NO `ScopedSessionRevoked` audit pair"). Until the Slice 3+
+ * transactional-outbox closes this gap, the operator runbook is "scan
+ * `agent_scoped_sessions` for revoked rows lacking a paired
+ * `ScopedSessionRevoked` audit row" — the use-case logs a
+ * `orphanMirrorRow:true` structured log on emission throw so the entry
+ * shows up in homelab grep sweeps (Compliance L-4 round 2).
  */
 export interface RevokeScopedSessionInput {
   userId: string;
@@ -44,7 +79,10 @@ export interface RevokeScopedSessionResult {
 }
 
 export class RevokeScopedSessionUseCase {
-  constructor(private readonly scopedRepo: IScopedSessionRepository) {}
+  constructor(
+    private readonly scopedRepo: IScopedSessionRepository,
+    private readonly appendAudit: AppendAuditEventUseCase,
+  ) {}
 
   async execute(input: RevokeScopedSessionInput): Promise<RevokeScopedSessionResult> {
     const now = input.now ?? new Date();
@@ -75,11 +113,44 @@ export class RevokeScopedSessionUseCase {
         `scoped session ${input.sessionId} could not be revoked (already terminal?)`,
       );
     }
-    // TODO(Commit 2.B): emit AuditEventType.ScopedSessionRevoked via
-    // AppendAuditEventUseCase. Metadata: { sessionId, revokedAt }.
-    // Also wire `broker.clearPolicySnapshot(sessionId)` IPC call so the
-    // broker keystore drops its half of the pair (Slice 3 ships the
-    // full kill-switch ceremony; Slice 2.B partial covers mirror + IPC).
+
+    // Use the use-case's `now` as the revoke wall-clock so the audit
+    // row's `created_at` is consistent with the persisted
+    // `revoked_at`. The repo's `revoke()` also took `now` — these are
+    // the same instant by design (test injection works through both).
+    //
+    // `existing.surface` (not `revoked.surface`) is the audit anchor:
+    // the surface the user originally minted under is the invariant,
+    // and a future repo migration that mutated the field on revoke
+    // would shift the audit metadata away from the user's intent
+    // (Backend Architect L-5 round 1).
+    try {
+      await this.appendAudit.execute({
+        userId: input.userId,
+        surface: existing.surface,
+        eventType: AuditEventType.ScopedSessionRevoked,
+        metadata: {
+          sessionId: revoked.sessionId,
+          revokedAt: now.toISOString(),
+        },
+        now,
+      });
+    } catch (err) {
+      // CR-R2 M-1 / Compliance L-4 round 2 — structured log so the
+      // orphan-revoke gap is grep-able even before the H-2
+      // reconciliation cron lands. Re-throw to surface a 500.
+      getLogger('RevokeScopedSessionUseCase').error(
+        {
+          err,
+          sessionId: revoked.sessionId,
+          userId: input.userId,
+          surface: existing.surface,
+          orphanMirrorRow: true,
+        },
+        'audit emission failed AFTER revoke commit — mirror row terminal without paired audit row; reconcile manually',
+      );
+      throw err;
+    }
 
     return { session: revoked };
   }

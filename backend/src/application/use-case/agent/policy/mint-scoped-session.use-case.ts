@@ -1,4 +1,6 @@
 import { ApplicationHttpError } from '../../../../core/errors.js';
+import { getLogger } from '../../../../core/logger.js';
+import { AuditEventType } from '../../../../domain/agent/model/audit-event-type.enum.js';
 import { ScopedSession } from '../../../../domain/agent/model/scoped-session.js';
 import { ScopedSessionStatus } from '../../../../domain/agent/model/scoped-session-status.enum.js';
 import { Tier } from '../../../../domain/agent/model/tier.enum.js';
@@ -6,6 +8,7 @@ import type { Surface } from '../../../../domain/agent/model/surface.enum.js';
 import type { IAgentStateRepository } from '../../../../domain/agent/repository/agent-state.repository.js';
 import type { IScopedSessionRepository } from '../../../../domain/agent/repository/scoped-session.repository.js';
 import type { MintScopedSessionDto } from '../../../dto/agent/policy.dto.js';
+import type { AppendAuditEventUseCase } from './append-audit-event.use-case.js';
 
 /**
  * Wave 5 Path D Slice 2 Commit 2.A · POST /policy/scoped-session.
@@ -40,11 +43,60 @@ import type { MintScopedSessionDto } from '../../../dto/agent/policy.dto.js';
  *     checkPolicy`. Slice 4 wildcard adds a known-selectors allowlist
  *     here when multi-selector sessions ship.
  *
- * **Audit emission deferred to Commit 2.B**. This commit lands only the
- * REST/storage surface — emission from here will compose
- * `AppendAuditEventUseCase` with `eventType:
- * AuditEventType.ScopedSessionMinted` + metadata payload referencing
- * `consent_action_hash` for the forensic chain.
+ * **Audit emission (Commit 2.B)**: composes `AppendAuditEventUseCase` with
+ * `eventType: AuditEventType.ScopedSessionMinted`. Metadata carries the
+ * **partial** forensic-chain anchors per Security M-2 (RD-3) —
+ * `sessionId`, `signerAddress`, `maxPerOpUsd6`, `validUntilSec`,
+ * `mintedAtSec`, and `consentActionHash` when the mint carried one.
+ * NEVER store decrypted FHE values in `metadata` — only handles /
+ * hashes / cleartext-by-design fields (`agent_audit_events.metadata`
+ * schema JSDoc).
+ *
+ * **Forensic-chain partial state (CR-R2 H-2 + Compliance H-1)** —
+ * READ THIS QUALIFIER FIRST before assuming WORM-alone reconstruction
+ * works in prod TODAY:
+ *   - The frontend Pickup A (Slice 1 PolicyTransitionPage) does NOT
+ *     yet POST `consentActionHash` on the mint DTO (the field is
+ *     `.optional()` in `MintScopedSessionDtoSchema`). So between 2.B
+ *     ship and the frontend wire-up, every prod `ScopedSessionMinted`
+ *     row's `metadata.consentActionHash` is ABSENT. Compliance audit
+ *     queries that JOIN on stable key would find NO matches today.
+ *   - **TODAY's adjacency-based chain**: forensic queries reconstruct
+ *     `{ScopedSessionMinted → TierChanged → ConfirmTokenConsumed}` via
+ *     `userId + surface + created_at` adjacency (the three rows land
+ *     within a single use-case execution, microseconds apart). Lossy
+ *     under concurrent mints but acceptable for Slice 2 traffic
+ *     volume (one mint per user per day at most).
+ *   - **TOMORROW's stable-key chain** (post-Pickup-A): WORM-alone
+ *     reconstruction by stable key works — the matching
+ *     `ConfirmTokenConsumed` and `TierChanged` audit rows already
+ *     carry the same `actionHash` since 2.B
+ *     (`transition-tier.use-case.ts:toChainAnchorHash`); the chain
+ *     closes the moment the frontend Pickup A starts populating
+ *     `consentActionHash` on the mint POST.
+ *   - `consentTextSha256` is intentionally omitted today; Slice 4
+ *     wildcard gate item #5 will graduate.
+ *
+ * The emission lives in the USE-CASE layer (not the REST handler) so
+ * direct-domain callers (a future CLI, a cron job) also emit — a route-
+ * layer-only emission would silently miss any non-HTTP entry point. The
+ * audit row writes AFTER the mirror row commits; if the audit write
+ * throws, the use-case re-throws (500) AND emits a structured
+ * `orphanMirrorRow:true` log so the entry shows up in homelab grep
+ * sweeps. Atomic ordering matters less here than the audit row
+ * arriving SOON: the forensic chain reconstructs from the row pair,
+ * not from join-time ordering.
+ *
+ * **Known deferred work (Compliance Auditor R2 H-2)**: orphan-mirror
+ * detection has NO automated cron yet — STATUS.md Slice 3 pickup
+ * tracks the reconciliation script + Telegram alert (LEFT JOIN
+ * `agent_scoped_sessions` against `agent_audit_events` where
+ * `metadata->>'sessionId'` doesn't pair). Until the cron lands, prod-
+ * curl operators MUST monitor backend logs for `orphanMirrorRow:true`
+ * entries AND scan the mirror table by hand on incident-response
+ * cadence. The "no-prod-curl window" is closed for the success path
+ * but the audit-throw path's compensating control is still
+ * runbook-only.
  */
 export interface MintScopedSessionInput {
   userId: string;
@@ -75,6 +127,7 @@ export class MintScopedSessionUseCase {
   constructor(
     private readonly stateRepo: IAgentStateRepository,
     private readonly scopedRepo: IScopedSessionRepository,
+    private readonly appendAudit: AppendAuditEventUseCase,
   ) {}
 
   async execute(input: MintScopedSessionInput): Promise<MintScopedSessionResult> {
@@ -163,11 +216,55 @@ export class MintScopedSessionUseCase {
     });
 
     await this.scopedRepo.create(session);
-    // TODO(Commit 2.B): emit AuditEventType.ScopedSessionMinted via
-    // AppendAuditEventUseCase here. Metadata payload: { sessionId,
-    // signerAddress, maxPerOpUsd6, validUntilSec, consentActionHash }
-    // — keeps the forensic chain {userop → tier transition → snapshot
-    // mint → ConfirmToken} reconstructable by stable key (Security M-2).
+
+    // Forensic-chain anchor — Security M-2 (RD-3). Stored as cleartext
+    // structural fields + optional `consentActionHash`; no decrypted FHE
+    // primitives. `maxPerOpUsd6` is serialized as string (bigint isn't
+    // JSON-safe). `consentTextSha256` is intentionally omitted from the
+    // audit metadata — today the chain only needs `consentActionHash`
+    // to correlate the authorizing ConfirmTokenConsumed row.
+    //
+    // TODO(Slice 4 wildcard gate #5): graduate to include
+    // `consentTextSha256` on every `ScopedSessionMinted` AND every
+    // Scoped-bound `TierChanged` audit row, so a forensic query "prove
+    // the user saw THIS text" reconstructs from the WORM audit chain
+    // alone (without joining against the mirror table, which doesn't
+    // carry the WORM property and could drift). Codified in
+    // SecEng M-2 round 1 + Code Reviewer L-2 round 1.
+    try {
+      await this.appendAudit.execute({
+        userId: input.userId,
+        surface,
+        eventType: AuditEventType.ScopedSessionMinted,
+        metadata: {
+          sessionId: session.sessionId,
+          signerAddress: session.signerAddress,
+          maxPerOpUsd6: session.maxPerOpUsd6.toString(),
+          validUntilSec: session.validUntilSec,
+          mintedAtSec: session.mintedAtSec,
+          ...(session.consentActionHash
+            ? { consentActionHash: session.consentActionHash }
+            : {}),
+        },
+        now,
+      });
+    } catch (err) {
+      // Structured log so the operator can grep `orphanMirrorRow:true`
+      // even before the H-2 reconciliation cron lands (Compliance L-4
+      // round 2). Re-throw — the use-case MUST surface the failure so
+      // the REST handler returns 500 and the user/operator notices.
+      getLogger('MintScopedSessionUseCase').error(
+        {
+          err,
+          sessionId: session.sessionId,
+          userId: input.userId,
+          surface,
+          orphanMirrorRow: true,
+        },
+        'audit emission failed AFTER mirror commit — mirror row is orphaned, reconcile manually',
+      );
+      throw err;
+    }
 
     return { session };
   }

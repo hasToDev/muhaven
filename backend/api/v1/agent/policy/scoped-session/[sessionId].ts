@@ -40,7 +40,10 @@ const log = getLogger('RevokeScopedSession');
  * grants this. MCP device-flow JWTs need explicit `mcp.propose.*` —
  * matches the POST/DELETE write convention.
  */
-const revokeUseCase = new RevokeScopedSessionUseCase(container.scopedSessionRepo);
+const revokeUseCase = new RevokeScopedSessionUseCase(
+  container.scopedSessionRepo,
+  container.appendAuditEvent,
+);
 
 async function deleteHandler(req: VercelRequest, res: VercelResponse): Promise<void> {
   try {

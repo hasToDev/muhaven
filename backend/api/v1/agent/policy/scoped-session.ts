@@ -49,6 +49,7 @@ const getLog = getLogger('GetActiveScopedSession');
 const mintUseCase = new MintScopedSessionUseCase(
   container.agentStateRepo,
   container.scopedSessionRepo,
+  container.appendAuditEvent,
 );
 
 const getActiveUseCase = new GetActiveScopedSessionUseCase(

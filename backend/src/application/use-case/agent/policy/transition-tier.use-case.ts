@@ -13,6 +13,39 @@ import { ConfirmTokenService, type IssueConfirmTokenResult } from './confirm-tok
 import { AppendAuditEventUseCase } from './append-audit-event.use-case.js';
 
 /**
+ * Wave 5 Path D Slice 2 Commit 2.B — chain-anchor hash normalization
+ * (self-review pre-Codex pass).
+ *
+ * `ConfirmTokenService.hashAction` returns `createHash('sha256').
+ * digest('hex')` which is 64 bare-hex chars WITHOUT `0x` prefix
+ * (matches the DB column `agent_confirm_tokens.action_hash` historical
+ * shape). The `agent_scoped_sessions` mirror's `consent_action_hash`,
+ * by contrast, follows the codebase's standard `HEX_32_BYTE_RE`
+ * convention `/^0x[0-9a-fA-F]{64}$/` (Zod-enforced at mint time per
+ * `MintScopedSessionDtoSchema:250`).
+ *
+ * For the WORM forensic-chain JOIN to work
+ * (`ScopedSessionMinted.metadata.consentActionHash` ↔
+ * `ConfirmTokenConsumed.metadata.actionHash` ↔
+ * `TierChanged.metadata.actionHash` ↔
+ * `ConfirmTokenIssued.metadata.actionHash`), the audit-metadata view
+ * of the hash MUST be byte-equal. Without normalization, a JOIN
+ * query `metadata->>'consentActionHash' = metadata->>'actionHash'`
+ * would compare `'0xabc...'` (mint side) against `'abc...'` (consume
+ * side) and produce zero matches — silently defeating the Compliance
+ * H-1 forensic-chain claim.
+ *
+ * Resolution: keep the DB column shape unchanged (bare-hex, no
+ * back-compat churn) and prefix `0x` at the audit-emit boundary. The
+ * mint-side `consentActionHash` already arrives `0x`-prefixed per
+ * Zod; this normalization makes ALL chain anchors consistently
+ * `0x`-prefixed hex in audit metadata.
+ */
+function toChainAnchorHash(bareHashHex: string): `0x${string}` {
+  return (bareHashHex.startsWith('0x') ? bareHashHex : `0x${bareHashHex}`) as `0x${string}`;
+}
+
+/**
  * Phase-1 (issue): user requests a tier transition. The state machine
  * validates the proposed transition against current state. If allowed
  * but requires a passkey-bound confirmation (any transition out of
@@ -86,7 +119,7 @@ export class RequestTierTransitionUseCase {
       now,
       metadata: {
         actionKind: 'tier_transition',
-        actionHash: confirmation.actionHash,
+        actionHash: toChainAnchorHash(confirmation.actionHash),
         expiresAt: confirmation.expiresAt.toISOString(),
         targetTier: input.targetTier,
       },
@@ -136,7 +169,17 @@ export class CommitTierTransitionUseCase {
       throw mapRejectionToHttp(result.code, result.message);
     }
 
-    await this.confirmTokens.consume(
+    // Capture the consumed token's `actionHash` so both audit rows
+    // below can embed it. PATH_D_PLAN.md §"Slice 2 audit-correlation
+    // requirement" (line 263-265, Security M-2) mandates that the
+    // forensic chain {userop → ScopedSessionMinted → TierChanged →
+    // ConfirmTokenConsumed} be reconstructable from the WORM audit log
+    // alone, i.e. without joining against the mutable
+    // `agent_confirm_tokens` table. Anchoring the SAME hash on the
+    // mint row (Commit 2.B mint use-case) AND the consume + tier-
+    // change rows below gives forensic queries a stable join key
+    // (Compliance Auditor R2 H-1).
+    const consumed = await this.confirmTokens.consume(
       input.confirmationToken,
       input.userId,
       'tier_transition',
@@ -146,12 +189,17 @@ export class CommitTierTransitionUseCase {
 
     await this.stateRepo.upsert(result.state);
 
+    const anchoredHash = toChainAnchorHash(consumed.actionHash);
     await this.appendAudit.execute({
       userId: input.userId,
       surface: input.surface,
       eventType: AuditEventType.ConfirmTokenConsumed,
       now,
-      metadata: { actionKind: 'tier_transition', targetTier: input.targetTier },
+      metadata: {
+        actionKind: 'tier_transition',
+        targetTier: input.targetTier,
+        actionHash: anchoredHash,
+      },
     });
     await this.appendAudit.execute({
       userId: input.userId,
@@ -160,6 +208,7 @@ export class CommitTierTransitionUseCase {
       tierBefore: current.tier,
       tierAfter: input.targetTier,
       now,
+      metadata: { actionHash: anchoredHash },
     });
 
     return result.state;

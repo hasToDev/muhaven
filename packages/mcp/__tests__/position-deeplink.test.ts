@@ -46,17 +46,53 @@ function stubBackend(): BackendClient {
 }
 
 /**
- * Catalog stub used by the 0.2.1 positionBuy NAV-fetch path. Returns
- * TBILL1 at NAV $1 + GOLD1 at NAV $0.01 by default; override for tests
- * that need a malformed / missing NAV.
+ * Catalog stub used by the 0.2.1 positionBuy NAV-fetch path + the
+ * Commit 2.B scoped-session mirror auto-sync. Returns TBILL1 at NAV $1
+ * + GOLD1 at NAV $0.01 by default; override for tests that need a
+ * malformed / missing NAV.
  *
- * Stubs BOTH `get` and `getUnauth` to the same payload so the test
- * doesn't care which the handler uses — but the production handler
- * MUST use `getUnauth` for `/api/v1/tokens` (the endpoint is public;
- * see 0.2.1 H1 review hardening).
+ * Stubs BOTH `get` and `getUnauth` so the test doesn't care which the
+ * handler uses — but the production handler MUST use `getUnauth` for
+ * `/api/v1/tokens` (the endpoint is public; see 0.2.1 H1 review
+ * hardening). `get` routes by path so callers can stub multiple paths
+ * with shape-specific responses (catalog vs scoped-session mirror).
+ *
+ * `mirrorSession` (Commit 2.B):
+ *   - `undefined`: mirror returns `{ session: null }` (the common case
+ *     — most Path D probe tests don't exercise the auto-sync gate
+ *     because they set `activeSessionId` non-null).
+ *   - `null`: mirror returns `{ session: null }` (explicit "empty
+ *     mirror" — the existing `no_active_session_key` test).
+ *   - object: mirror returns `{ session: <object> }`.
+ *   - Error: mirror's get throws (auto-sync `mirror_sync_failed`).
  */
+type ScopedSessionMirrorOverride =
+  | null
+  | {
+      sessionId: string;
+      mode: 'scoped';
+      // AI Engineer MED-1 pre-Codex: status is now part of the mirror
+      // DTO so the MCP transform can re-validate `status === 'active'`
+      // as a defense-in-depth gate against a backend filter regression.
+      status: 'active' | 'revoked' | 'expired';
+      signerAddress: string;
+      permissionId: string | null;
+      targetContracts: readonly string[];
+      selectorCaps: readonly {
+        selector: string;
+        capArgIndex: number | null;
+        maxAmount: string | null;
+      }[];
+      validUntilSec: number;
+      mintedAtSec: number;
+      consentActionHash: string | null;
+      consentTextSha256: string | null;
+    }
+  | Error;
+
 function catalogBackend(
   overrides?: ReadonlyArray<{ address: string; symbol: string; nav: string | null; status?: string }>,
+  mirrorSession?: ScopedSessionMirrorOverride,
 ): BackendClient {
   const defaults = [
     { address: '0xtbill', symbol: 'TBILL1', nav: '1.0' },
@@ -69,10 +105,25 @@ function catalogBackend(
     status: t.status ?? 'active',
     latest_nav: t.nav === null ? null : { nav: t.nav },
   }));
-  const payload = { tokens };
+  const catalogPayload = { tokens };
+  const getImpl = vi.fn().mockImplementation(async (path: string) => {
+    if (path.startsWith('/api/v1/agent/policy/scoped-session')) {
+      if (mirrorSession instanceof Error) throw mirrorSession;
+      // null OR undefined override → empty mirror response.
+      const session = mirrorSession === undefined || mirrorSession === null
+        ? null
+        : mirrorSession;
+      return { session };
+    }
+    // Default: catalog shape (used for /api/v1/tokens AND any other
+    // path; the older /agent/policy/state callers in Path D Commit 3.5
+    // tests rely on this poison-shape behaviour to surface
+    // no_validator_registered).
+    return catalogPayload;
+  });
   return {
-    get: vi.fn().mockResolvedValue(payload),
-    getUnauth: vi.fn().mockResolvedValue(payload),
+    get: getImpl,
+    getUnauth: vi.fn().mockResolvedValue(catalogPayload),
     post: vi.fn(),
   } as unknown as BackendClient;
 }
@@ -685,11 +736,38 @@ import type {
 interface BrokerStubOverrides {
   preflight?: PreflightResult;
   activeSessionId?: BrokerGetActiveSessionIdResponse;
+  /**
+   * Wave 5 Path D Slice 2 Commit 2.B — value to return on the SECOND
+   * call to getActiveSessionId (post auto-sync re-probe). Lets the
+   * happy-path mirror-sync test simulate "first call: broker has
+   * nothing; second call: broker now reports the synced id." When
+   * unset, getActiveSessionId returns `activeSessionId` on every call.
+   */
+  activeSessionIdAfterSync?: BrokerGetActiveSessionIdResponse;
   policySnapshot?: BrokerGetPolicySnapshotResponse;
   /** When set, getPolicySnapshot rejects (broker_internal path). */
   policySnapshotError?: Error;
-  /** When set, getActiveSessionId rejects. */
+  /** When set, getActiveSessionId rejects on EVERY call. */
   activeSessionIdError?: Error;
+  /**
+   * Reality Checker MED-3 pre-Codex — when set, getActiveSessionId
+   * rejects ONLY on the second call (the post-store re-probe inside
+   * syncSnapshotFromMirror). First call still returns `activeSessionId`
+   * (typically `null` to trigger the auto-sync). Lets the test pin
+   * the `mirror_sync_failed (broker.timeout)` branch at
+   * `syncSnapshotFromMirror`'s re-probe-throw path which the prior
+   * 10-case auto-sync test sweep didn't cover.
+   */
+  activeSessionIdAfterSyncError?: Error;
+  /**
+   * Wave 5 Path D Slice 2 Commit 2.B — storePolicySnapshot override.
+   * Either resolves to the success response shape or throws (typed
+   * BrokerClientError surface so the handler maps to
+   * `mirror_sync_failed`).
+   */
+  storePolicySnapshot?:
+    | { type: 'store_policy_snapshot'; stored: true; sessionId: string }
+    | Error;
   /**
    * Wave 5 Path D Slice 1 Commit 3.5 — sign_userop override. When set,
    * either returns the signature payload or throws (typed
@@ -722,17 +800,52 @@ function stubBroker(overrides: BrokerStubOverrides = {}): BrokerClient {
         signerAddress: '0x' + '1'.repeat(40),
       },
     ),
-    getActiveSessionId: vi
-      .fn()
-      .mockImplementation(async () => {
+    getActiveSessionId: (() => {
+      // Tracks call count so the Commit 2.B auto-sync test can simulate
+      // first-call=null → second-call=synced-id. Without this the
+      // probe re-firing after store_policy_snapshot just sees the same
+      // mock value and never recovers.
+      let callCount = 0;
+      return vi.fn().mockImplementation(async () => {
+        callCount += 1;
+        // First-call error short-circuits both invocations (back-compat
+        // with existing 'broker_internal when getActiveSessionId throws'
+        // test which doesn't reach the second call).
         if (overrides.activeSessionIdError) throw overrides.activeSessionIdError;
+        // Second-call-only error — exercises the post-store re-probe
+        // throw branch inside `syncSnapshotFromMirror` (Reality Checker
+        // MED-1 pre-Codex). First call returns null (to trigger the
+        // auto-sync), second call throws.
+        if (callCount >= 2 && overrides.activeSessionIdAfterSyncError) {
+          throw overrides.activeSessionIdAfterSyncError;
+        }
+        if (callCount === 1) {
+          return (
+            overrides.activeSessionId ?? {
+              type: 'get_active_session_id',
+              sessionId: 'sess_test',
+            }
+          );
+        }
         return (
+          overrides.activeSessionIdAfterSync ??
           overrides.activeSessionId ?? {
             type: 'get_active_session_id',
             sessionId: 'sess_test',
           }
         );
-      }),
+      });
+    })(),
+    storePolicySnapshot: vi.fn().mockImplementation(async () => {
+      const o = overrides.storePolicySnapshot;
+      if (o === undefined) {
+        throw new Error(
+          'stubBroker: broker.storePolicySnapshot not stubbed — Commit 2.B auto-sync needs storePolicySnapshot wired',
+        );
+      }
+      if (o instanceof Error) throw o;
+      return o;
+    }),
     getPolicySnapshot: vi.fn().mockImplementation(async () => {
       if (overrides.policySnapshotError) throw overrides.policySnapshotError;
       return overrides.policySnapshot ?? { type: 'get_policy_snapshot', snapshot: null };
@@ -901,9 +1014,12 @@ const STUB_SUBSCRIPTION_ADDRESS = ('0x' + '2'.repeat(40)) as `0x${string}`;
 const STUB_ENTRY_POINT = '0x0000000071727De22E5E9d8BAf0edAc6f37da032' as `0x${string}`;
 const STUB_CHAIN_ID = 421614;
 
-function depsWithPathD(brokerOverrides: BrokerStubOverrides = {}): ToolDeps {
+function depsWithPathD(
+  brokerOverrides: BrokerStubOverrides = {},
+  mirrorSession?: ScopedSessionMirrorOverride,
+): ToolDeps {
   return {
-    backend: catalogBackend(),
+    backend: catalogBackend(undefined, mirrorSession),
     broker: stubBroker(brokerOverrides),
     bundler: stubBundler(),
     surface: 'mcp',
@@ -1211,6 +1327,320 @@ describe('positionBuy — Path D probe (Wave 5 Slice 1 Commit 3)', () => {
     if (result.ok && 'echo' in result.data) {
       expect(result.data.echo.pathDFallbackReason).toBe('selector_uncapped');
     }
+  });
+
+  // ── Wave 5 Path D Slice 2 Commit 2.B — backend mirror auto-sync ──
+  //
+  // When the broker keystore has no active session (fresh restart,
+  // never-loaded daemon) the probe chain falls through to
+  // `GET /agent/policy/scoped-session?surface=mcp` against the backend
+  // mirror, installs the returned snapshot via `storePolicySnapshot`,
+  // and re-probes. Three paths:
+  //   - happy: mirror returns a session → broker accepts store →
+  //            re-probe surfaces synced id → probe continues (and
+  //            eventually fails at `no_validator_registered` because
+  //            the catalog stub's `/agent/policy/state` returns a poison
+  //            shape; the auto-sync gate itself passed).
+  //   - empty: mirror returns `{ session: null }` → existing
+  //            `no_active_session_key` fallback (narrowed: "neither
+  //            broker nor mirror has a snapshot").
+  //   - error: backend or broker IPC throws → `mirror_sync_failed`.
+
+  describe('Commit 2.B backend-mirror auto-sync', () => {
+    function mirrorSession(
+      overrides: Partial<ScopedSessionMirrorOverride & object> = {},
+    ): ScopedSessionMirrorOverride {
+      return {
+        sessionId: 'sess_synced_from_mirror',
+        mode: 'scoped',
+        status: 'active',
+        signerAddress: '0x' + '1'.repeat(40),
+        permissionId: '0xdeadbeef',
+        targetContracts: [STUB_SUBSCRIPTION_ADDRESS],
+        selectorCaps: [
+          { selector: SUBSCRIPTION_PURCHASE_SELECTOR, capArgIndex: 2, maxAmount: '1000' },
+        ],
+        validUntilSec: 9_999_999_999,
+        mintedAtSec: 1_700_000_000,
+        consentActionHash: null,
+        consentTextSha256: null,
+        ...overrides,
+      } as ScopedSessionMirrorOverride;
+    }
+
+    it('happy path: empty broker → mirror returns row → storePolicySnapshot → re-probe surfaces synced id → continues probe chain', async () => {
+      const result = await positionBuy(
+        { token: 'TBILL1', amountUsdc: '5' },
+        depsWithPathD(
+          {
+            // First probe says null (broker empty); second probe (after
+            // store) surfaces the synced id.
+            activeSessionId: { type: 'get_active_session_id', sessionId: null },
+            activeSessionIdAfterSync: {
+              type: 'get_active_session_id',
+              sessionId: 'sess_synced_from_mirror',
+            },
+            // Broker accepts the store.
+            storePolicySnapshot: {
+              type: 'store_policy_snapshot',
+              stored: true,
+              sessionId: 'sess_synced_from_mirror',
+            },
+            // Re-fetch the snapshot for the cap-check step. Carry the
+            // SAME shape the mirror sent (passing the cap/target gates),
+            // pinned to the synced id so the test cares ONLY that the
+            // auto-sync gate passes.
+            policySnapshot: {
+              type: 'get_policy_snapshot',
+              snapshot: snapshotWith({
+                sessionId: 'sess_synced_from_mirror',
+              }),
+            },
+          },
+          mirrorSession(),
+        ),
+      );
+      expect(result.ok).toBe(true);
+      if (result.ok && 'echo' in result.data) {
+        // Auto-sync didn't bail. The next gate it hits is
+        // `no_validator_registered` because the catalog stub returns
+        // `{ tokens }` for `/agent/policy/state` (the poison-shape that
+        // surfaces as no accountAddress). The point is we got PAST the
+        // sync gate — not the deeper validator step.
+        expect(result.data.echo.pathDFallbackReason).not.toBe('mirror_sync_failed');
+        expect(result.data.echo.pathDFallbackReason).not.toBe('no_active_session_key');
+        expect(result.data.echo.pathDFallbackReason).toBe('no_validator_registered');
+      }
+    });
+
+    it('empty mirror: broker has no session AND mirror returns null → no_active_session_key (user remediation, not bug)', async () => {
+      // mirrorSession: null in the third arg → catalogBackend stub
+      // returns `{ session: null }` on the mirror GET.
+      const result = await positionBuy(
+        { token: 'TBILL1', amountUsdc: '5' },
+        depsWithPathD(
+          {
+            activeSessionId: { type: 'get_active_session_id', sessionId: null },
+          },
+          null,
+        ),
+      );
+      expect(result.ok).toBe(true);
+      if (result.ok && 'echo' in result.data) {
+        expect(result.data.echo.pathDFallbackReason).toBe('no_active_session_key');
+      }
+    });
+
+    it('mirror GET errors → mirror_sync_failed (operator remediation, not user)', async () => {
+      const result = await positionBuy(
+        { token: 'TBILL1', amountUsdc: '5' },
+        depsWithPathD(
+          {
+            activeSessionId: { type: 'get_active_session_id', sessionId: null },
+          },
+          new BackendError('server_error', 'mirror lookup 503', 503),
+        ),
+      );
+      expect(result.ok).toBe(true);
+      if (result.ok && 'echo' in result.data) {
+        expect(result.data.echo.pathDFallbackReason).toBe('mirror_sync_failed');
+      }
+    });
+
+    it('broker storePolicySnapshot IPC fails → mirror_sync_failed (transport bug, not user)', async () => {
+      const result = await positionBuy(
+        { token: 'TBILL1', amountUsdc: '5' },
+        depsWithPathD(
+          {
+            activeSessionId: { type: 'get_active_session_id', sessionId: null },
+            storePolicySnapshot: new BrokerClientError(
+              'protocol_error',
+              'broker rejected snapshot shape',
+            ),
+          },
+          mirrorSession(),
+        ),
+      );
+      expect(result.ok).toBe(true);
+      if (result.ok && 'echo' in result.data) {
+        expect(result.data.echo.pathDFallbackReason).toBe('mirror_sync_failed');
+      }
+    });
+
+    it('post-store re-probe still returns null → mirror_sync_failed (broker keystore ambiguity post-sync; signer match was pre-validated)', async () => {
+      // Both probes return null — simulates the broker accepting the
+      // store but not surfacing the row as active. Now that the auto-
+      // sync pre-validates the signer (CR M-1 round 1), the remaining
+      // plausible cause is keystore ambiguity: `activeSessionId`
+      // returns null on `matches.length !== 1`, so a broker with ≥2
+      // non-expired snapshots for the same signer collapses to this
+      // branch even after the store landed. Test the diagnostic
+      // routes to the correct operator remediation (CR H-1 round 1).
+      const result = await positionBuy(
+        { token: 'TBILL1', amountUsdc: '5' },
+        depsWithPathD(
+          {
+            activeSessionId: { type: 'get_active_session_id', sessionId: null },
+            activeSessionIdAfterSync: { type: 'get_active_session_id', sessionId: null },
+            storePolicySnapshot: {
+              type: 'store_policy_snapshot',
+              stored: true,
+              sessionId: 'sess_synced_from_mirror',
+            },
+          },
+          mirrorSession(),
+        ),
+      );
+      expect(result.ok).toBe(true);
+      if (result.ok && 'echo' in result.data) {
+        expect(result.data.echo.pathDFallbackReason).toBe('mirror_sync_failed');
+      }
+    });
+
+    it('mirror snapshot signer ≠ broker signer → signer_mismatch (caught BEFORE polluting broker keystore — CR M-1 round 1)', async () => {
+      // The broker's preflight reports signer `0x111...1`; the mirror
+      // returns a snapshot bound to `0x999...9`. Auto-sync MUST bounce
+      // here without calling `storePolicySnapshot` (would land a
+      // dormant snapshot the broker can never surface as active).
+      const result = await positionBuy(
+        { token: 'TBILL1', amountUsdc: '5' },
+        depsWithPathD(
+          {
+            activeSessionId: { type: 'get_active_session_id', sessionId: null },
+            // If this is reached, the test should fail — storing a
+            // signer-mismatched snapshot pollutes the keystore.
+            storePolicySnapshot: new Error(
+              'storePolicySnapshot should NOT be called when signer pre-check fires',
+            ),
+          },
+          mirrorSession({
+            signerAddress: '0x' + '9'.repeat(40),
+          }),
+        ),
+      );
+      expect(result.ok).toBe(true);
+      if (result.ok && 'echo' in result.data) {
+        expect(result.data.echo.pathDFallbackReason).toBe('signer_mismatch');
+      }
+    });
+
+    it('mirror returns malformed signerAddress → mirror_sync_failed (caught locally; broker never receives the poisoned payload — SecEng L-3 round 1)', async () => {
+      // A malicious / regressed backend returns a row with a
+      // structurally invalid signerAddress (e.g. an underscore
+      // instead of hex). The MCP-side guard catches it before the
+      // broker IPC round-trip; the broker never sees the malformed
+      // payload (defense in depth).
+      const result = await positionBuy(
+        { token: 'TBILL1', amountUsdc: '5' },
+        depsWithPathD(
+          {
+            activeSessionId: { type: 'get_active_session_id', sessionId: null },
+            storePolicySnapshot: new Error(
+              'storePolicySnapshot should NOT be called when MCP-side guard catches malformed mirror',
+            ),
+          },
+          mirrorSession({
+            signerAddress: '0x' + '_'.repeat(40),
+          }),
+        ),
+      );
+      expect(result.ok).toBe(true);
+      if (result.ok && 'echo' in result.data) {
+        expect(result.data.echo.pathDFallbackReason).toBe('mirror_sync_failed');
+      }
+    });
+
+    it('post-store getActiveSessionId THROW → mirror_sync_failed (Reality Checker MED-1 pre-Codex)', async () => {
+      // First probe: null (broker empty → triggers auto-sync). Store
+      // succeeds. Second probe: broker IPC throws (timeout / connect
+      // EPIPE). Without coverage on this branch, a regression dropping
+      // the try/catch at `syncSnapshotFromMirror`'s re-probe step
+      // would surface as a bare promise rejection from `attemptPathD`
+      // (silently breaking the Path C fallback contract).
+      const result = await positionBuy(
+        { token: 'TBILL1', amountUsdc: '5' },
+        depsWithPathD(
+          {
+            activeSessionId: { type: 'get_active_session_id', sessionId: null },
+            activeSessionIdAfterSyncError: new BrokerClientError(
+              'timeout',
+              'broker IPC timeout on re-probe',
+            ),
+            storePolicySnapshot: {
+              type: 'store_policy_snapshot',
+              stored: true,
+              sessionId: 'sess_synced_from_mirror',
+            },
+          },
+          mirrorSession(),
+        ),
+      );
+      expect(result.ok).toBe(true);
+      if (result.ok && 'echo' in result.data) {
+        expect(result.data.echo.pathDFallbackReason).toBe('mirror_sync_failed');
+      }
+    });
+
+    it('mirror returns a REVOKED row → mirror_sync_failed (defense-in-depth vs backend filter regression — AI Engineer MED-1)', async () => {
+      // Backend's findLatestActive filters by status='active' today,
+      // but the MCP transform re-validates as defense-in-depth. If a
+      // future SQL refactor drops the predicate, a revoked row would
+      // otherwise slip into the broker keystore → user has signed
+      // away consent but auto-sync re-installs the dead snapshot.
+      const result = await positionBuy(
+        { token: 'TBILL1', amountUsdc: '5' },
+        depsWithPathD(
+          {
+            activeSessionId: { type: 'get_active_session_id', sessionId: null },
+            storePolicySnapshot: new Error(
+              'storePolicySnapshot should NOT be called for a revoked mirror row',
+            ),
+          },
+          mirrorSession({ status: 'revoked' }),
+        ),
+      );
+      expect(result.ok).toBe(true);
+      if (result.ok && 'echo' in result.data) {
+        expect(result.data.echo.pathDFallbackReason).toBe('mirror_sync_failed');
+      }
+    });
+
+    it('mirror response is missing the top-level `session` key (undefined, not null) → no_active_session_key — CR H-2 round 1', async () => {
+      // Top-level proxy rewriting / backend regression: the response
+      // shape is `{ ... }` without the `session` field. Pre-fix code
+      // used `mirror.session === null` (strict) which let undefined
+      // fall through into mirrorDtoToPolicySnapshot → TypeError →
+      // wrong fallback message. The loose `== null` correctly treats
+      // both null AND undefined as "empty mirror" (no_active_session_key).
+      const malformedBackend: BackendClient = {
+        get: vi.fn().mockResolvedValue({ /* no `session` key */ }),
+        getUnauth: vi.fn().mockResolvedValue({
+          tokens: [
+            { address: '0xtbill', symbol: 'TBILL1', status: 'active', latest_nav: { nav: '1.0' } },
+          ],
+        }),
+        post: vi.fn(),
+      } as unknown as BackendClient;
+      const result = await positionBuy(
+        { token: 'TBILL1', amountUsdc: '5' },
+        {
+          backend: malformedBackend,
+          broker: stubBroker({
+            activeSessionId: { type: 'get_active_session_id', sessionId: null },
+          }),
+          bundler: stubBundler(),
+          surface: 'mcp',
+          dashboardBaseUrl: 'https://muhaven.app',
+          subscriptionAddress: STUB_SUBSCRIPTION_ADDRESS,
+          entryPointAddress: STUB_ENTRY_POINT,
+          chainId: STUB_CHAIN_ID,
+        },
+      );
+      expect(result.ok).toBe(true);
+      if (result.ok && 'echo' in result.data) {
+        expect(result.data.echo.pathDFallbackReason).toBe('no_active_session_key');
+      }
+    });
   });
 });
 

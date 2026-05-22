@@ -964,6 +964,15 @@ export const container = {
   get scopedSessionRepo() {
     return getAgentRepos().scopedSessionRepo;
   },
+  // Wave 5 Path D Slice 2 Commit 2.B — shared `AppendAuditEventUseCase`
+  // singleton, exposed so the scoped-session REST handlers compose the
+  // SAME instance the ToolDispatcher + commit paths already use. A
+  // dedicated audit-emission singleton means a future
+  // metadata-sanitizer (P8) lands in one place and protects every
+  // emission site.
+  get appendAuditEvent() {
+    return getAppendAuditEvent();
+  },
   get openclawIntentRepo() {
     return getAgentRepos().openclawIntentRepo;
   },
