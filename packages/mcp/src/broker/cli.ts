@@ -18,6 +18,12 @@ import {
 } from '../config.js';
 import { BrokerClient } from '../clients/broker-client.js';
 import { DeviceFlowClient, DeviceFlowAbortedError } from '../auth/device-flow.js';
+import {
+  decodeJwtPayload,
+  JwtDecodeError,
+  sanitizeClaimForTerminal,
+  truncateSubject,
+} from '../auth/jwt-decode.js';
 import { openKeystore } from './keystore.js';
 import { runBrokerDaemonCli } from './daemon.js';
 import {
@@ -385,6 +391,63 @@ export async function runDoctor(): Promise<number> {
     if (h.effectiveConfig) {
       print(`Daemon backend URL: ${h.effectiveConfig.backendBaseUrl}`);
       print(`Daemon dashboard  : ${h.effectiveConfig.dashboardBaseUrl}`);
+    }
+    // Bug #6 — surface JWT subject + scope + expiry when present so
+    // operators can verify the broker is authenticated as the wallet
+    // they expect WITHOUT manually decoding the JWT (the Pickup A smoke
+    // wasted a round-trip diagnosing exactly this gap; the broker's
+    // stored JWT was for a different user than the operator assumed).
+    // Best-effort: malformed JWTs / IPC errors print a diagnostic line
+    // rather than failing the whole doctor run.
+    if (h.hasJwt) {
+      try {
+        const jwtRes = await broker.getJwt();
+        if (!jwtRes.jwt) {
+          print(`JWT inspection    : daemon protocol violation — hello.hasJwt=true but get_jwt returned null; run \`muhaven-broker logout && muhaven-broker login\` to reset keystore`);
+        } else {
+          const decoded = decodeJwtPayload(jwtRes.jwt);
+          print(`JWT subject       : ${truncateSubject(decoded.sub)}  (unverified — backend re-validates on every API call)`);
+          // Cap scope to first 20 entries with sanitized per-entry
+          // content — defends against a pathological JWT spamming the
+          // terminal with thousands of entries OR injecting ANSI/OSC
+          // escapes via crafted scope strings (Security Engineer M-1/M-2).
+          if (decoded.scope.length === 0) {
+            print(`JWT scope         : (none — legacy SIWE token; all-scopes for back-compat)`);
+          } else {
+            const SCOPE_CAP = 20;
+            const displayed = decoded.scope
+              .slice(0, SCOPE_CAP)
+              .map((s) => sanitizeClaimForTerminal(s, 80));
+            const overflow = decoded.scope.length > SCOPE_CAP
+              ? ` (+${decoded.scope.length - SCOPE_CAP} more, suppressed)`
+              : '';
+            print(`JWT scope         : ${displayed.join(', ')}${overflow}`);
+          }
+          if (decoded.iss !== null) {
+            print(`JWT issuer        : ${sanitizeClaimForTerminal(decoded.iss, 80)}`);
+          }
+          if (decoded.expSec !== null) {
+            const nowSec = Math.floor(Date.now() / 1000);
+            const remainingSec = decoded.expSec - nowSec;
+            const expiresAt = new Date(decoded.expSec * 1000).toISOString();
+            if (remainingSec <= 0) {
+              print(`JWT expires       : ${expiresAt} (EXPIRED — run \`muhaven-broker login\` to refresh)`);
+            } else {
+              const remainingHr = Math.floor(remainingSec / 3600);
+              const remainingMin = Math.floor((remainingSec % 3600) / 60);
+              print(`JWT expires       : ${expiresAt} (in ${remainingHr}h${remainingMin}m)`);
+            }
+          }
+        }
+      } catch (err) {
+        if (err instanceof JwtDecodeError) {
+          print(`JWT inspection    : FAILED (${err.code}: ${err.message}) — JWT is in keystore but malformed; run \`muhaven-broker logout && login\` to refresh`);
+        } else {
+          const errName = err instanceof Error ? (err.constructor?.name ?? 'Error') : 'unknown';
+          const errMsg = err instanceof Error ? err.message : String(err);
+          print(`JWT inspection    : FAILED (${errName}: ${errMsg})`);
+        }
+      }
     }
     return 0;
   } catch (err) {

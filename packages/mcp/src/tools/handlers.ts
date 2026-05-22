@@ -26,6 +26,7 @@ import type { BrokerClient } from '../clients/broker-client.js';
 import { BrokerClientError } from '../clients/broker-client.js';
 import type { BundlerClient } from '../clients/bundler-client.js';
 import { BundlerClientError } from '../clients/bundler-client.js';
+import { decodeJwtPayload, truncateSubject } from '../auth/jwt-decode.js';
 import {
   buildKernelSessionKeySignature,
   composeKernelV3NonceKey,
@@ -1055,6 +1056,53 @@ function typedErrorCode(err: unknown): string {
   return 'unknown';
 }
 
+/**
+ * Bug #5 (Pickup A follow-up) — best-effort decode of the broker JWT's
+ * subject for inclusion in `no_active_session_key` fallback messages.
+ * Returns `null` on ANY failure (broker IPC, missing JWT, malformed
+ * JWT); callers must treat the suffix as cosmetic, never gating an
+ * action on it. The hint distinguishes "operator's broker authenticated
+ * as user X, but mirror has no row for X" from "broker is logged in as
+ * a different user than the one who minted the Scoped tier on the
+ * dashboard" — the exact gap that wasted a round-trip on the Pickup A
+ * smoke (PICKUP_A_OPEN_INVESTIGATIONS.md bug #5).
+ *
+ * Truncated to 8 + 4 chars (via `truncateSubject`) so the suffix is
+ * short enough to fit in the LLM's verbatim echo without padding-out
+ * the operator-actionable remediation text that precedes it.
+ *
+ * Acceptable-disclosure note: the truncated subject lands in MCP
+ * transcripts which operators may share (Discord, bug reports). The
+ * 8+4 hex prefix of a v4 UUID retains roughly 48 bits of entropy —
+ * not a population-wide identifier, the operator IS the subject, and
+ * it grants no access (backend re-verifies JWT on every API call).
+ * The truncation is the deliberate ceiling on information surface;
+ * do NOT expand to the full UUID even if a future caller "needs more
+ * specificity" (Security Engineer L-1).
+ *
+ * Bare `catch {}` is intentional design (cosmetic-only enrichment).
+ * It does silently absorb protocol regressions from `broker.getJwt()`
+ * — a future contributor wanting to observe those should add a
+ * console.warn on stderr (the MCP harness does NOT surface stderr to
+ * the LLM, so it's safe) rather than letting errors propagate to the
+ * caller (which would degrade the fallback message into an opaque
+ * `mirror_sync_failed` instead of the actionable `no_active_session_key`).
+ */
+export async function fetchJwtSubjectHint(deps: ToolDeps): Promise<string | null> {
+  if (!deps.broker) return null;
+  try {
+    const res = await deps.broker.getJwt();
+    if (!res.jwt) return null;
+    const decoded = decodeJwtPayload(res.jwt);
+    return truncateSubject(decoded.sub);
+  } catch {
+    // Any failure (broker down mid-call, malformed JWT, network blip)
+    // collapses to "no hint" — the fallback message is still operator-
+    // actionable, just less specific.
+    return null;
+  }
+}
+
 async function syncSnapshotFromMirror(
   deps: ToolDeps,
   /**
@@ -1105,11 +1153,23 @@ async function syncSnapshotFromMirror(
     // "user has no active scoped session." The user either never minted
     // OR revoked via the dashboard. LLM remediation is "visit
     // /agent/policy/transition", not "report bug to operator."
+    //
+    // Bug #5 (Pickup A follow-up) — surface the JWT subject hint so
+    // the operator can distinguish "I'm logged in as the right user but
+    // the row truly isn't there" from "my broker JWT is for a different
+    // user than the one I minted under on the dashboard." Best-effort
+    // only; if the decode fails, the message degrades to the original
+    // generic shape.
+    const subjectHint = await fetchJwtSubjectHint(deps);
+    const hintSuffix = subjectHint
+      ? ` (broker JWT subject: ${subjectHint} — verify this matches the userId of the wallet you used to mint the scoped tier; if not, run \`muhaven-broker logout && muhaven-broker login\` and re-authorize with the correct passkey)`
+      : '';
     return {
       kind: 'fallback',
       reason: 'no_active_session_key',
       message:
-        'no active scoped session — visit /agent/policy/transition to mint one, then retry. (Mirror also empty; nothing to auto-sync.)',
+        'no active scoped session — visit /agent/policy/transition to mint one, then retry. (Mirror also empty; nothing to auto-sync.)' +
+        hintSuffix,
     };
   }
   let snapshot: import('../broker/protocol.js').PolicySnapshotWire;

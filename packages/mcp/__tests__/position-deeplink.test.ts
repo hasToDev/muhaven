@@ -777,6 +777,16 @@ interface BrokerStubOverrides {
   signUserOp?:
     | { type: 'sign_userop'; signature: `0x${string}`; signerAddress: `0x${string}`; sessionId: string }
     | Error;
+  /**
+   * Pickup A follow-up Bug #5 — getJwt stub for the
+   * `fetchJwtSubjectHint` enrichment that surfaces the broker JWT's
+   * subject in the `no_active_session_key` fallback message. When
+   * unset, the stubBroker's Proxy throws `broker.getJwt not stubbed`
+   * which `fetchJwtSubjectHint` catches and degrades to "no hint." So
+   * tests can opt in by setting this field; existing tests that don't
+   * set it still see the original generic fallback message.
+   */
+  getJwt?: { type: 'get_jwt'; jwt: string | null; expiresAtSec: number | null };
 }
 
 /**
@@ -860,6 +870,11 @@ function stubBroker(overrides: BrokerStubOverrides = {}): BrokerClient {
       if (o instanceof Error) throw o;
       return o;
     }),
+    // Only wired when the test opts in via overrides.getJwt — otherwise
+    // the Proxy below throws `broker.getJwt not stubbed`, which
+    // `fetchJwtSubjectHint`'s catch swallows. That degradation keeps
+    // existing tests passing while letting new tests opt in.
+    ...(overrides.getJwt ? { getJwt: vi.fn().mockResolvedValue(overrides.getJwt) } : {}),
   };
   return new Proxy(wired, {
     get(target, prop, receiver) {

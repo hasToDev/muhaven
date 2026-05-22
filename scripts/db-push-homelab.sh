@@ -127,6 +127,34 @@ echo "==> running: drizzle-kit push (inside backend container, bypassing pnpm/co
 "${SSH_CMD[@]}" "${REMOTE_USER}@${REMOTE_HOST}" \
   "docker compose -f ${REMOTE_PATH}/${COMPOSE_FILE} -p ${COMPOSE_PROJECT} exec -T backend node_modules/.bin/drizzle-kit push"
 
+# Bug #3 (Pickup A follow-up) — write a marker file so the next
+# `deploy-homelab.sh` run can detect schema.ts drift that would
+# require another db:push. The Pickup A smoke wasted a round-trip
+# because the 2.A schema-push was missed silently; this is the data
+# the warning consumes. Best-effort: a write failure here doesn't
+# fail the script (the push itself already succeeded).
+#
+# Defense-in-depth (SecEng H-2 / CR MED — round 1):
+#   - SHA-shape validation. `git rev-parse HEAD` always returns 40 hex
+#     today, but we treat the value as untrusted before it crosses the
+#     SSH boundary into a remote shell, so a future tweak to git args
+#     (e.g. a custom --short alias) can't break the quoting.
+#   - Stream the SHA over stdin via `cat >` rather than interpolating
+#     it into a single-quoted printf — eliminates shell-quoting class
+#     of bugs entirely.
+#   - We do NOT suppress remote stderr — if the remote rejects the
+#     write (e.g. permission drift on REMOTE_PATH), the operator sees
+#     the OS-level reason instead of an opaque "could not write."
+HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || echo "")"
+if [[ ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "    marker: WARNING — git rev-parse HEAD returned a non-SHA value ('${HEAD_SHA:0:20}…'); drift detection disabled"
+elif printf '%s\n' "$HEAD_SHA" | "${SSH_CMD[@]}" "${REMOTE_USER}@${REMOTE_HOST}" \
+       "cat > ${REMOTE_PATH}/.last-db-pushed-commit"; then
+  echo "    marker: wrote .last-db-pushed-commit ($HEAD_SHA) — drift detection armed"
+else
+  echo "    marker: WARNING — could not write .last-db-pushed-commit (drift detection disabled; see remote stderr above for cause)"
+fi
+
 echo
 echo "==> done. Verify with:"
 echo "  ssh -i \"$SSH_KEY\" ${REMOTE_USER}@${REMOTE_HOST} \\"
