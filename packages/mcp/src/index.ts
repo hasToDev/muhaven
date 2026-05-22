@@ -40,8 +40,18 @@ export { BackendClient, BackendError, type BackendErrorCode } from './clients/ba
 export {
   BrokerClient,
   BrokerClientError,
+  semverGte,
   type BrokerClientErrorCode,
+  type PreflightResult,
 } from './clients/broker-client.js';
+export {
+  BundlerClient,
+  BundlerClientError,
+  type BundlerClientErrorCode,
+  type UserOperationV07Wire,
+  type UserOperationReceipt,
+  type BundlerClientOptions,
+} from './clients/bundler-client.js';
 export { JwtSource, NoJwtAvailableError } from './auth/jwt-source.js';
 export {
   DeviceFlowClient,

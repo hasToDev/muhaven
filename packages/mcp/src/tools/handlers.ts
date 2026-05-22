@@ -18,10 +18,12 @@
  *    MUST NOT auto-retry 4xx.
  */
 
+import { toFunctionSelector } from 'viem';
 import type { BackendClient } from '../clients/backend-client.js';
 import { BackendError } from '../clients/backend-client.js';
 import type { BrokerClient } from '../clients/broker-client.js';
 import { BrokerClientError } from '../clients/broker-client.js';
+import type { BundlerClient } from '../clients/bundler-client.js';
 import {
   authRequiredPayload,
   sessionKeyRequiredPayload,
@@ -64,6 +66,16 @@ import {
 export interface ToolDeps {
   backend: BackendClient;
   broker?: BrokerClient;
+  /**
+   * Wave 5 Path D Slice 1 (Commit 3) — ERC-4337 bundler JSON-RPC client.
+   * Undefined → Path D autonomous-buy disabled, position tools fall back
+   * to Path C deep-link (existing behaviour). Configured at MCP boot via
+   * `MUHAVEN_BUNDLER_URL`. Slice 1 ships the probe + cap-check chain;
+   * the actual UserOp build lands in Commit 3.5 (the FHE encrypt + kernel-
+   * execute encoding pieces have unresolved design points — see
+   * PATH_D_PLAN.md Commit 3 scope-cut).
+   */
+  bundler?: BundlerClient;
   /** Surface this MCP server is configured for. Always 'mcp' here, but
    *  carried as a dep so the audit tool can filter to the local surface. */
   surface: 'mcp';
@@ -75,6 +87,25 @@ export interface ToolDeps {
    */
   dashboardBaseUrl?: string;
 }
+
+/**
+ * Wave 5 Path D Slice 1 — `subscription.purchase` 4-byte selector. Derived
+ * at module load from the canonical signature; pinning here means a future
+ * refactor that drops the @muhaven/sdk dep doesn't have to ship the full
+ * ABI just to read the cap. The expanded `InEuint128` tuple shape
+ * `(uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature)`
+ * matches the on-chain layout in `contracts/MuHavenSubscription.sol:195`
+ * (cross-checked against the policy-snapshot.ts JSDoc selectorCaps
+ * commentary in protocol.ts).
+ *
+ * If this constant ever drifts from the deployed selector, EVERY Path D
+ * cap lookup misses → every buy falls back to Path C — a degraded UX
+ * but NOT a security regression. The on-chain CallPolicy validator is
+ * the hard backstop (RD-5).
+ */
+export const SUBSCRIPTION_PURCHASE_SELECTOR = toFunctionSelector(
+  'function purchase(address,(uint256,uint8,uint8,bytes),uint128,address)',
+).toLowerCase() as `0x${string}`;
 
 export type ToolResult<T> =
   | { ok: true; data: T }
@@ -263,6 +294,49 @@ export async function readActivity(
  * settle-side gap requires Arch-B (ERC-7715 caveated permissions) +
  * an SSE-aware broker — Wave 5.
  */
+/**
+ * Wave 5 Path D Slice 1 (Commit 3) — non-retryable Path D fall-back reason
+ * codes. The LLM treats these as one-shot — DO NOT auto-retry the same
+ * call. The structured `reason` is carried in the Path C echo so an
+ * auditor (or the LLM) can see why autonomy didn't fire on this call.
+ *
+ * Mapped from broker error codes + the new MCP-side preflight states.
+ * Per PATH_D_PLAN.md "Commit 3 (handlers.ts) — non-retryable error
+ * mapping": broker `internal` / `policy_violation` / `max_spend_exceeded`
+ * / `scope_violation` / `no_active_snapshot` are ALL non-retryable; they
+ * all surface here as `pathDFallbackReason`.
+ */
+export type PathDFallbackReason =
+  | 'unconfigured'
+  | 'broker_unreachable'
+  | 'version_too_old'
+  | 'session_key_unavailable'
+  | 'no_active_session_key'
+  | 'no_active_snapshot'
+  | 'snapshot_lookup_failed'
+  | 'signer_mismatch'
+  | 'selector_not_in_snapshot'
+  | 'selector_uncapped'
+  | 'out_of_scope'
+  | 'path_d_userop_build_pending'
+  | 'broker_internal';
+
+/**
+ * Wave 5 Path D Slice 1 (Commit 3) — Path D success shape. Returned when
+ * the LLM-proposed buy is signed by the broker + submitted to the
+ * bundler + a receipt comes back from Arb Sepolia. Commit 3 NEVER
+ * returns this shape (the final UserOp-build step lands in Commit 3.5);
+ * the type is defined now so the handler's return-type union doesn't
+ * need to widen mid-slice.
+ */
+interface PositionSubmittedData {
+  readonly action: 'buy';
+  readonly status: 'submitted';
+  readonly txHash: `0x${string}`;
+  readonly userOpHash: `0x${string}`;
+  readonly path: 'D';
+}
+
 interface PositionPrefillData {
   /**
    * Absolute deep-link URL the LLM relays to the user. Of shape
@@ -321,6 +395,15 @@ interface PositionPrefillData {
      * exact share-count computation.
      */
     readonly navUsd6?: string;
+    /**
+     * Wave 5 Path D Slice 1 (Commit 3) — when set, the MCP server
+     * attempted the Path D autonomous-buy probe and fell back to Path C
+     * for the reason given. Omitted when Path D is unconfigured (no
+     * bundler URL set) — that's the common case today, NOT a degraded
+     * state worth surfacing per-call. See `PathDFallbackReason` for the
+     * exhaustive value set. Non-retryable.
+     */
+    readonly pathDFallbackReason?: PathDFallbackReason;
   };
 }
 
@@ -463,10 +546,196 @@ function sanitizeSymbolForLlmContext(raw: string): string {
   return cleaned.length > 16 ? cleaned.slice(0, 16) : cleaned;
 }
 
+/**
+ * Wave 5 Path D Slice 1 (Commit 3) — autonomous-buy probe. Runs after
+ * NAV-fetch + shares-compute (the handler has the `shares` value to cap-
+ * check). Either:
+ *  - returns `{ kind: 'ok', ... }` when every precondition + cap passes
+ *    AND the Commit 3.5 UserOp-build path is ready (today: NEVER, because
+ *    build is deferred; the probe always falls back with reason
+ *    `path_d_userop_build_pending` when every gate passes);
+ *  - returns `{ kind: 'fallback', reason, message }` when ANY gate fails
+ *    — caller propagates the reason into the Path C echo;
+ *  - returns `{ kind: 'unconfigured' }` when bundler OR broker is
+ *    undefined (common case; no Path D in this MCP install).
+ *
+ * Every fallback is non-retryable from the LLM's perspective — the
+ * underlying cause (no session key, version mismatch, cap exceeded) won't
+ * resolve from a re-call within the same conversation turn. Per
+ * PATH_D_PLAN.md Commit 3 note.
+ */
+type PathDAttempt =
+  | { kind: 'unconfigured' }
+  | { kind: 'fallback'; reason: PathDFallbackReason; message: string }
+  | { kind: 'ok'; data: PositionSubmittedData };
+
+/**
+ * Map a broker-side IPC call failure to a Path D fallback. Separates
+ * the two cases:
+ *
+ *  - The daemon answered with a structured `unsupported_type` error
+ *    (typical of a stale 0.3.x daemon that doesn't speak the verb we
+ *    just sent). The MCP server's `preflight()` is meant to catch this
+ *    first, but a future caller bypassing preflight should still get a
+ *    clean `version_too_old` reason — not a generic `broker_internal`
+ *    (MCP-Builder H-1).
+ *  - Anything else (connect_failed, timeout, protocol_error, other
+ *    daemon-side errors) maps to the caller-supplied default
+ *    (`broker_internal` or `snapshot_lookup_failed`).
+ *
+ * The `brokerCode` field on `BrokerClientError` (added 2026-05-22)
+ * lets us inspect the typed daemon code without substring-matching the
+ * message.
+ */
+function mapBrokerCallFailure(
+  err: unknown,
+  verb: string,
+  defaultReason: PathDFallbackReason = 'broker_internal',
+): { kind: 'fallback'; reason: PathDFallbackReason; message: string } {
+  if (err instanceof BrokerClientError && err.brokerCode === 'unsupported_type') {
+    return {
+      kind: 'fallback',
+      reason: 'version_too_old',
+      message: `broker daemon rejected ${verb} as unsupported_type — daemon is likely older than protocol 0.4.0; upgrade @muhaven/mcp and restart the broker`,
+    };
+  }
+  return {
+    kind: 'fallback',
+    reason: defaultReason,
+    message:
+      `broker rejected ${verb}: ` +
+      (err instanceof BrokerClientError ? `${err.code}: ${err.message}` : String(err)),
+  };
+}
+
+async function attemptPathD(shares: bigint, deps: ToolDeps): Promise<PathDAttempt> {
+  if (!deps.broker || !deps.bundler) {
+    return { kind: 'unconfigured' };
+  }
+  // 1. Daemon reachable AND protocol 0.4.0+ AND session-key loaded?
+  const preflight = await deps.broker.preflight();
+  if (!preflight.supported) {
+    if (preflight.reason === 'broker_unreachable') {
+      return {
+        kind: 'fallback',
+        reason: 'broker_unreachable',
+        message: `broker daemon not reachable (${preflight.message}) — falling back to Path C dashboard deep-link`,
+      };
+    }
+    if (preflight.reason === 'version_too_old') {
+      return {
+        kind: 'fallback',
+        reason: 'version_too_old',
+        message: `broker speaks ${preflight.daemonVersion}, Path D requires ≥${preflight.requiredVersion} — upgrade @muhaven/mcp and restart the broker`,
+      };
+    }
+    // session_key_unavailable
+    return {
+      kind: 'fallback',
+      reason: 'session_key_unavailable',
+      message:
+        'broker is running in read-only posture (no MUHAVEN_BROKER_SESSION_KEY set) — Path D requires a loaded session key',
+    };
+  }
+  // 2. Is there a unique active scoped session?
+  let activeId: string | null;
+  try {
+    const res = await deps.broker.getActiveSessionId();
+    activeId = res.sessionId;
+  } catch (err) {
+    return mapBrokerCallFailure(err, 'get_active_session_id');
+  }
+  if (!activeId) {
+    return {
+      kind: 'fallback',
+      reason: 'no_active_session_key',
+      message:
+        'no active scoped session — visit /agent/policy/transition to mint one, then retry. (Multiple non-expired sessions also collapse to this case; clear stale snapshots via muhaven-broker before retrying.)',
+    };
+  }
+  // 3. Snapshot still readable (defensive — the broker may GC between
+  //    getActiveSessionId() and now)?
+  let snapshot;
+  try {
+    const res = await deps.broker.getPolicySnapshot(activeId);
+    snapshot = res.snapshot;
+  } catch (err) {
+    return mapBrokerCallFailure(err, 'get_policy_snapshot', 'snapshot_lookup_failed');
+  }
+  if (!snapshot) {
+    return {
+      kind: 'fallback',
+      reason: 'no_active_snapshot',
+      message: `broker reported session ${activeId} active but get_policy_snapshot returned null (race? — refresh tier from dashboard)`,
+    };
+  }
+  // 3b. Cross-validate: the snapshot we just read MUST be bound to the
+  //     same signer the preflight call observed. The broker's daemon-
+  //     side `checkPolicy.signerAddress` enforces this too, but
+  //     re-validating here makes a daemon restart (signer rotation)
+  //     between preflight and sign_userop fail closed on the MCP side
+  //     with a clear reason — instead of routing through an opaque
+  //     `policy_violation` from the broker at sign time (CR H-1).
+  if (
+    snapshot.signerAddress.toLowerCase() !== preflight.signerAddress.toLowerCase()
+  ) {
+    return {
+      kind: 'fallback',
+      reason: 'signer_mismatch',
+      message: `snapshot ${activeId} is bound to signer ${snapshot.signerAddress}, broker is currently signing as ${preflight.signerAddress} — broker session-key likely rotated mid-flight; re-mint the scoped tier from the dashboard`,
+    };
+  }
+  // 4. Snapshot has a selectorCap for subscription.purchase?
+  //    Two distinct failures: (a) selector absent, (b) selector present
+  //    but uncapped (capArgIndex/maxAmount === null). The protocol
+  //    supports (b) for nullary selectors (claim() in future slices),
+  //    but `purchase` is a CAP-bearing call by design — an uncapped
+  //    purchase snapshot is operator misconfiguration, not the LLM's
+  //    fault. Distinct reasons surface distinct remediations (CR H-2).
+  const purchaseCap = snapshot.selectorCaps.find(
+    (c) => c.selector.toLowerCase() === SUBSCRIPTION_PURCHASE_SELECTOR,
+  );
+  if (!purchaseCap) {
+    return {
+      kind: 'fallback',
+      reason: 'selector_not_in_snapshot',
+      message:
+        'active scoped session does not authorize subscription.purchase — re-mint the session with a purchase cap',
+    };
+  }
+  if (purchaseCap.maxAmount === null) {
+    return {
+      kind: 'fallback',
+      reason: 'selector_uncapped',
+      message:
+        'active scoped session lists subscription.purchase but with no per-op cap (capArgIndex/maxAmount both null) — Slice 1 refuses to autonomy-buy without an explicit ceiling; re-mint with a maxAmount',
+    };
+  }
+  // 5. Computed shares within cap?
+  const maxShares = BigInt(purchaseCap.maxAmount);
+  if (shares > maxShares) {
+    return {
+      kind: 'fallback',
+      reason: 'out_of_scope',
+      message: `requested ${shares} shares exceeds the active session's per-op cap of ${maxShares} shares — fall back to Path C dashboard deep-link for this larger buy`,
+    };
+  }
+  // 6. UserOp build + sign + submit — DEFERRED to Commit 3.5. The FHE
+  //    encrypt + kernel-execute encoding pieces have unresolved design
+  //    points; rather than ship a half-built path, fall back to Path C
+  //    with a structured reason so the LLM steers the user that way.
+  return {
+    kind: 'fallback',
+    reason: 'path_d_userop_build_pending',
+    message:
+      'Path D preconditions met (broker reachable, session active, cap not exceeded) but the autonomous-submit path ships in @muhaven/mcp 0.3.x — use the dashboard deep-link below for now',
+  };
+}
+
 export async function positionBuy(
   input: PositionBuyInput,
   deps: ToolDeps,
-): Promise<ToolResult<PositionPrefillData>> {
+): Promise<ToolResult<PositionPrefillData | PositionSubmittedData>> {
   // 0.2.1: convert mhUSDC notional → integer shares using current NAV
   // BEFORE building the URL. Fixes the unit-mismatch class where MCP
   // emitted `?amount=3` meaning "3 mhUSDC" but the dashboard form
@@ -570,6 +839,20 @@ export async function positionBuy(
   const navDisplay = formatUsd6AsDecimal(navUsd6);
   const sharesStr = shares.toString();
 
+  // Wave 5 Path D Slice 1 (Commit 3) — autonomous-buy probe. Returns
+  //   - 'ok' → broker signed + bundler submitted (Commit 3.5; not yet)
+  //   - 'fallback' with structured non-retryable reason → continue to
+  //     Path C with the reason echoed
+  //   - 'unconfigured' → bundler/broker not set; skip Path D silently
+  let pathDFallbackReason: PathDFallbackReason | undefined;
+  const pathD = await attemptPathD(shares, deps);
+  if (pathD.kind === 'ok') {
+    return ok(pathD.data);
+  }
+  if (pathD.kind === 'fallback') {
+    pathDFallbackReason = pathD.reason;
+  }
+
   // Build the URL using the existing `?amount=<integer-shares>`
   // contract. The TradePage's buy-mode handler reads `?amount=` and
   // submits `BigInt(Math.floor(numericAmount))` as shares — passing an
@@ -598,6 +881,7 @@ export async function positionBuy(
       amountUsdc: input.amountUsdc,
       effectiveNotionalUsd6: effectiveNotionalUsd6.toString(),
       navUsd6: navUsd6.toString(),
+      ...(pathDFallbackReason ? { pathDFallbackReason } : {}),
     },
   });
 }

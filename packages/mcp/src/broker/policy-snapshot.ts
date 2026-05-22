@@ -45,6 +45,22 @@ export interface IPolicyStore {
    *  doctor / hello surfaces for diagnostics. NEVER exposed over IPC —
    *  see RD-3 commentary in PATH_D_PLAN.md and Backend Architect M-4. */
   list(): Promise<PolicySnapshot[]>;
+  /**
+   * Return the sessionId of the SINGLE non-expired snapshot whose
+   * `signerAddress` (case-insensitive) matches `activeSignerAddress`, or
+   * `null` when zero match OR when 2+ match (ambiguous case). Backs the
+   * narrow `get_active_session_id` IPC verb (Wave 5 Path D Slice 1
+   * Commit 3) — intentionally narrower than `list()` so RD-3 / M-4 stays
+   * honoured (snapshot enumeration never crosses the IPC boundary; only
+   * the unique-id answer does).
+   *
+   * Callers fall back to Path C on null. The "ambiguous" case is a
+   * design choice — operators rotating through scoped sessions
+   * intentionally must clear the prior session before the new one
+   * becomes "active" — so we never auto-pick a winner the operator
+   * didn't ask for.
+   */
+  activeSessionId(activeSignerAddress: `0x${string}`, nowSec: number): Promise<string | null>;
   /** Optional one-shot async setup. The file-backed impl doesn't need
    *  this — the dir is created lazily on first put. Slice 5's spend-
    *  ledger impl will need to seed the SHA-256 chain from disk at boot;
@@ -195,6 +211,21 @@ export class FilePolicyStore implements IPolicyStore {
       }
     }
     return out;
+  }
+
+  async activeSessionId(
+    activeSignerAddress: `0x${string}`,
+    nowSec: number,
+  ): Promise<string | null> {
+    // Reuse list() to scan the dir; filter to non-expired + signer-bound.
+    // Returns null on zero AND ambiguous (≥2) — IPolicyStore contract.
+    const all = await this.list();
+    const needle = activeSignerAddress.toLowerCase();
+    const matches = all.filter(
+      (s) =>
+        s.validUntilSec > nowSec && s.signerAddress.toLowerCase() === needle,
+    );
+    return matches.length === 1 ? matches[0]!.sessionId : null;
   }
 }
 

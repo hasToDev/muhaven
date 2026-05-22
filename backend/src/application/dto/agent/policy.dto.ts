@@ -136,6 +136,18 @@ export function toAuditEventDto(event: AgentAuditEvent): AgentAuditEventDto {
 }
 
 export interface PolicyStateResponseDto {
+  /**
+   * The authenticated user's smart-account address (= JWT subject).
+   * Surfaced at the top level (not just on `surfaces[n].userId`) so MCP
+   * clients can resolve the kernel address without ordering / non-empty
+   * assumptions about the surfaces array.
+   *
+   * Wave 5 Path D Slice 1 (Commit 3) — added so the MCP server can
+   * resolve the kernel address before building a Path D UserOp. Slice 2
+   * will extend further with an `activeScopedSession` block carrying
+   * the in-force snapshot summary (RD-3).
+   */
+  accountAddress: string;
   surfaces: AgentUserStateDto[];
 }
 

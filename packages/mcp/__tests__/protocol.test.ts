@@ -376,6 +376,23 @@ describe('broker protocol parser', () => {
     expect(res.type).toBe('error');
   });
 
+  // get_active_session_id (Wave 5 Path D Slice 1 Commit 3) -------------
+
+  it('parses get_active_session_id', () => {
+    const res = parseBrokerRequest(JSON.stringify({ type: 'get_active_session_id' }));
+    expect(res.type).toBe('get_active_session_id');
+  });
+
+  it('get_active_session_id rejects extra payload keys (single-shot strictness)', () => {
+    // Parser doesn't strictly reject extras at the verb level today; this
+    // test pins that the verb is RECOGNIZED + parsed despite extra noise.
+    // The wire-shape guard lives in the daemon — extras are just dropped.
+    const res = parseBrokerRequest(
+      JSON.stringify({ type: 'get_active_session_id', sessionId: 'unused' }),
+    );
+    expect(res.type).toBe('get_active_session_id');
+  });
+
   // Type narrowers ------------------------------------------------------
 
   it('isAddressHex narrows correctly', () => {

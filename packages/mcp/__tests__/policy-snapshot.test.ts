@@ -349,4 +349,63 @@ describe('FilePolicyStore', () => {
     // mode bits — mask out file type
     expect(s.mode & 0o777).toBe(0o600);
   });
+
+  // ── Wave 5 Path D Slice 1 Commit 3 — activeSessionId() narrow probe ─────
+
+  describe('activeSessionId', () => {
+    const NOW = 1_500_000_000;
+
+    it('returns null when store is empty', async () => {
+      expect(await store.activeSessionId(ACTIVE_SIGNER, NOW)).toBeNull();
+    });
+
+    it('returns null when dir does not exist', async () => {
+      const emptyStore = new FilePolicyStore(join(dir, 'nonexistent'));
+      expect(await emptyStore.activeSessionId(ACTIVE_SIGNER, NOW)).toBeNull();
+    });
+
+    it('returns the only non-expired snapshot bound to the active signer', async () => {
+      await store.put(snap({ sessionId: 'sess_only' }));
+      expect(await store.activeSessionId(ACTIVE_SIGNER, NOW)).toBe('sess_only');
+    });
+
+    it('returns null when 2 non-expired snapshots match the active signer (ambiguous)', async () => {
+      await store.put(snap({ sessionId: 'sess_a' }));
+      await store.put(snap({ sessionId: 'sess_b' }));
+      expect(await store.activeSessionId(ACTIVE_SIGNER, NOW)).toBeNull();
+    });
+
+    it('skips expired snapshots — picks the only non-expired one', async () => {
+      await store.put(snap({ sessionId: 'sess_old', validUntilSec: 1 }));
+      await store.put(snap({ sessionId: 'sess_live' }));
+      expect(await store.activeSessionId(ACTIVE_SIGNER, NOW)).toBe('sess_live');
+    });
+
+    it('skips snapshots bound to a different signer', async () => {
+      const OTHER = '0x3333333333333333333333333333333333333333' as const;
+      await store.put(snap({ sessionId: 'sess_mine' }));
+      await store.put(snap({ sessionId: 'sess_other', signerAddress: OTHER }));
+      // From the active signer's perspective, only sess_mine is active.
+      expect(await store.activeSessionId(ACTIVE_SIGNER, NOW)).toBe('sess_mine');
+      // From the other signer's perspective, only sess_other.
+      expect(await store.activeSessionId(OTHER, NOW)).toBe('sess_other');
+    });
+
+    it('signer match is case-insensitive', async () => {
+      await store.put(snap({ sessionId: 'sess_mixed' }));
+      // ACTIVE_SIGNER stored lowercase via coerceFromDisk; query with upper.
+      expect(
+        await store.activeSessionId(
+          ACTIVE_SIGNER.toUpperCase() as `0x${string}`,
+          NOW,
+        ),
+      ).toBe('sess_mixed');
+    });
+
+    it('returns null when all matching snapshots are expired', async () => {
+      await store.put(snap({ sessionId: 'sess_expired_a', validUntilSec: 1 }));
+      await store.put(snap({ sessionId: 'sess_expired_b', validUntilSec: 2 }));
+      expect(await store.activeSessionId(ACTIVE_SIGNER, NOW)).toBeNull();
+    });
+  });
 });

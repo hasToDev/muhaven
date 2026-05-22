@@ -33,6 +33,18 @@ class MemoryPolicyStore implements IPolicyStore {
     return Array.from(this.snapshots.values());
   }
 
+  async activeSessionId(
+    activeSignerAddress: `0x${string}`,
+    nowSec: number,
+  ): Promise<string | null> {
+    const needle = activeSignerAddress.toLowerCase();
+    const matches = Array.from(this.snapshots.values()).filter(
+      (s) =>
+        s.validUntilSec > nowSec && s.signerAddress.toLowerCase() === needle,
+    );
+    return matches.length === 1 ? matches[0]!.sessionId : null;
+  }
+
   // Test helpers
   raw(): Map<string, PolicySnapshot> {
     return this.snapshots;
@@ -739,5 +751,97 @@ describe('handleBrokerRequest', () => {
       expect(res.type).toBe('error');
       if (res.type === 'error') expect(res.code).toBe('internal');
     }
+  });
+
+  // ── get_active_session_id (Wave 5 Path D Slice 1 Commit 3) ────────────
+
+  it('get_active_session_id returns the unique active session id', async () => {
+    const policyStore = new MemoryPolicyStore();
+    await policyStore.put(snap({ sessionId: 'sess_only' }));
+    const res = await handleBrokerRequest(
+      { type: 'get_active_session_id' },
+      signer,
+      keystore,
+      undefined,
+      {},
+      policyStore,
+    );
+    expect(res.type).toBe('get_active_session_id');
+    if (res.type === 'get_active_session_id') {
+      expect(res.sessionId).toBe('sess_only');
+    }
+  });
+
+  it('get_active_session_id returns null when no session is active', async () => {
+    const policyStore = new MemoryPolicyStore();
+    const res = await handleBrokerRequest(
+      { type: 'get_active_session_id' },
+      signer,
+      keystore,
+      undefined,
+      {},
+      policyStore,
+    );
+    expect(res.type).toBe('get_active_session_id');
+    if (res.type === 'get_active_session_id') {
+      expect(res.sessionId).toBeNull();
+    }
+  });
+
+  it('get_active_session_id returns null when 2+ sessions match (ambiguous)', async () => {
+    const policyStore = new MemoryPolicyStore();
+    await policyStore.put(snap({ sessionId: 'sess_a' }));
+    await policyStore.put(snap({ sessionId: 'sess_b' }));
+    const res = await handleBrokerRequest(
+      { type: 'get_active_session_id' },
+      signer,
+      keystore,
+      undefined,
+      {},
+      policyStore,
+    );
+    expect(res.type).toBe('get_active_session_id');
+    if (res.type === 'get_active_session_id') {
+      expect(res.sessionId).toBeNull();
+    }
+  });
+
+  it('get_active_session_id filters to the broker’s active signer', async () => {
+    const policyStore = new MemoryPolicyStore();
+    // Two snapshots: one bound to our signer, one bound to a different signer.
+    // Only sess_mine should surface — the other is invisible to us even
+    // though it exists in the store.
+    await policyStore.put(snap({ sessionId: 'sess_mine' }));
+    await policyStore.put(
+      snap({
+        sessionId: 'sess_other',
+        signerAddress: '0x9999999999999999999999999999999999999999',
+      }),
+    );
+    const res = await handleBrokerRequest(
+      { type: 'get_active_session_id' },
+      signer, // signer.address = 0x1111…
+      keystore,
+      undefined,
+      {},
+      policyStore,
+    );
+    expect(res.type).toBe('get_active_session_id');
+    if (res.type === 'get_active_session_id') {
+      expect(res.sessionId).toBe('sess_mine');
+    }
+  });
+
+  it('get_active_session_id returns internal when no policyStore wired', async () => {
+    const res = await handleBrokerRequest(
+      { type: 'get_active_session_id' },
+      signer,
+      keystore,
+      undefined,
+      {},
+      // no policyStore
+    );
+    expect(res.type).toBe('error');
+    if (res.type === 'error') expect(res.code).toBe('internal');
   });
 });

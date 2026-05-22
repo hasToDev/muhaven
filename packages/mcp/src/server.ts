@@ -31,6 +31,7 @@ import { loadMcpConfig } from './config.js';
 import { JwtSource, NoJwtAvailableError } from './auth/jwt-source.js';
 import { BackendClient, BackendError } from './clients/backend-client.js';
 import { BrokerClient, BrokerClientError } from './clients/broker-client.js';
+import { BundlerClient } from './clients/bundler-client.js';
 import { selectRegistry, type ToolEntry } from './tools/registry.js';
 import {
   TOOL_DESCRIPTORS,
@@ -136,6 +137,13 @@ export interface BuildServerOptions {
   backend: BackendClient;
   broker: BrokerClient | undefined;
   /**
+   * Wave 5 Path D Slice 1 (Commit 3) — bundler client wired through to
+   * `ToolDeps.bundler`. Undefined → Path D autonomous mode off; position
+   * tools stay on Path C deep-link (existing behaviour). Configured from
+   * `MUHAVEN_BUNDLER_URL` env at MCP boot.
+   */
+  bundler?: BundlerClient;
+  /**
    * Threaded into `ToolDeps` so the `SESSION_KEY_REQUIRED` payload's
    * `mintUrl` points at the operator's actual dashboard, not a hardcoded
    * production URL.
@@ -183,6 +191,7 @@ export function buildMcpServer(opts: BuildServerOptions): Server {
       const result = await entry.handler(parsed, {
         backend: opts.backend,
         broker: opts.broker,
+        bundler: opts.bundler,
         surface: 'mcp',
         dashboardBaseUrl: opts.dashboardBaseUrl,
       });
@@ -263,6 +272,19 @@ export async function runMcpStdioCli(opts: RunMcpStdioCliOptions = {}): Promise<
     timeoutMs: config.requestTimeoutMs,
     allowedHosts: config.allowedBackendHosts,
   });
+  // Wave 5 Path D Slice 1 (Commit 3) — bundler client. Constructed only
+  // when MUHAVEN_BUNDLER_URL is set; undefined disables Path D and
+  // position tools stay on the Path C dashboard deep-link contract.
+  // Read-only mode also implicitly disables Path D (no position tools
+  // to call) — but we still construct the client so a future read tool
+  // that wants chain id can use it; cheap to keep.
+  const bundler = config.bundlerUrl
+    ? new BundlerClient({
+        endpoint: config.bundlerUrl,
+        requestTimeoutMs: config.bundlerTimeoutMs,
+        expectedChainId: config.chainId,
+      })
+    : undefined;
   const baseRegistry = selectRegistry(config.readOnly);
   const registry = opts.filterRegistry ? opts.filterRegistry(baseRegistry) : baseRegistry;
   if (registry.length === 0) {
@@ -276,6 +298,7 @@ export async function runMcpStdioCli(opts: RunMcpStdioCliOptions = {}): Promise<
     registry,
     backend,
     broker: config.readOnly ? undefined : broker,
+    bundler: config.readOnly ? undefined : bundler,
     dashboardBaseUrl: config.dashboardBaseUrl,
   });
 

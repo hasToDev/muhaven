@@ -30,11 +30,17 @@ const getHandler = createGetHandler({
 
     if (parsed) {
       const state = await getUseCase.forSurface(userId, parsed);
-      const dto: PolicyStateResponseDto = { surfaces: [toUserStateDto(state)] };
+      const dto: PolicyStateResponseDto = {
+        accountAddress: userId,
+        surfaces: [toUserStateDto(state)],
+      };
       return Response.ok(dto);
     }
     const states = await getUseCase.forAllSurfaces(userId);
-    const dto: PolicyStateResponseDto = { surfaces: states.map(toUserStateDto) };
+    const dto: PolicyStateResponseDto = {
+      accountAddress: userId,
+      surfaces: states.map(toUserStateDto),
+    };
     return Response.ok(dto);
   },
 });

@@ -32,7 +32,9 @@
         "MUHAVEN_BACKEND_URL": "${user_config.backend_url}",
         "MUHAVEN_DASHBOARD_URL": "${user_config.dashboard_url}",
         "MUHAVEN_BROKER_ENDPOINT": "${user_config.broker_endpoint}",
-        "MUHAVEN_READ_ONLY": "${user_config.read_only}"
+        "MUHAVEN_READ_ONLY": "${user_config.read_only}",
+        "MUHAVEN_BUNDLER_URL": "${user_config.bundler_url}",
+        "MUHAVEN_CHAIN_ID": "${user_config.chain_id}"
       }
     }
   },
@@ -92,6 +94,22 @@
       "title": "Read-only mode",
       "description": "When enabled, only the muhaven.read.* toolset is exposed; position.* and policy.* tools are not registered.",
       "default": false,
+      "sensitive": false
+    },
+    {
+      "key": "bundler_url",
+      "type": "string",
+      "title": "ERC-4337 bundler RPC URL (Path D autonomous mode)",
+      "description": "Wave 5 Path D — when set, enables broker-signed autonomous position.buy submission via this bundler. Leave blank to keep position tools on Path C (dashboard deep-link, user passkey-signs). Must be https:// (or http:// to loopback for dev). The full Path D UserOp-build path ships in @muhaven/mcp 0.3.x; today's 0.2.1 only exercises the preflight + Path C fall-through.",
+      "default": "",
+      "sensitive": false
+    },
+    {
+      "key": "chain_id",
+      "type": "string",
+      "title": "Chain id (for Path D bundler chain check)",
+      "description": "Chain id the bundler must report. Default 421614 (Arbitrum Sepolia). Operators on a different network MUST override alongside bundler_url. Unused when bundler_url is blank.",
+      "default": "421614",
       "sensitive": false
     }
   ],

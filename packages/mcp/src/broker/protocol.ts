@@ -18,6 +18,14 @@
  *    `clear_policy_snapshot` — per-session policy CRUD. Snapshot
  *    persists across daemon restarts (file-backed under
  *    `~/.muhaven/policy-snapshots/<sessionId>.json`).
+ *  - `get_active_session_id` — narrow "which session is live?" probe used
+ *    by the MCP server to bootstrap Path D without needing the operator
+ *    to thread the sessionId through env vars. Returns the sessionId of
+ *    the SINGLE non-expired snapshot whose `signerAddress` matches the
+ *    broker's loaded signer; returns `null` when zero match OR when
+ *    multiple non-expired snapshots match (ambiguous case — caller falls
+ *    back to Path C). Intentionally narrower than `list()` so RD-3 stays
+ *    honoured (list() is daemon-internal only).
  * Also adds error codes `rate_limited`, `max_spend_exceeded`,
  * `policy_violation`, `scope_violation`, `no_active_snapshot`. Rate
  * limiting is enforced in Slice 5; the enum value ships now so
@@ -153,6 +161,25 @@ export interface BrokerGetPolicySnapshotRequest {
 export interface BrokerClearPolicySnapshotRequest {
   readonly type: 'clear_policy_snapshot';
   readonly sessionId: string;
+}
+
+/**
+ * Wave 5 Path D Slice 1 (Commit 3) — narrow "active session" probe. No
+ * arguments; the broker resolves uniqueness against its loaded signer's
+ * address. The MCP server uses this to bootstrap Path D's broker-side
+ * signing path before Slice 2's backend-mirror `agent_scoped_sessions`
+ * table lands. Distinct from `get_policy_snapshot(sessionId)`: that
+ * fetches a known-id snapshot; this discovers the active id when there
+ * is exactly one.
+ *
+ * Returns `sessionId: null` (rather than an error) for both the "no
+ * active snapshot" AND "ambiguous, multiple match" cases — callers must
+ * treat them identically (fall back to Path C). Enumerating expired
+ * snapshots OR snapshots for other signers is daemon-internal; never
+ * surfaced over IPC.
+ */
+export interface BrokerGetActiveSessionIdRequest {
+  readonly type: 'get_active_session_id';
 }
 
 /**
@@ -340,6 +367,14 @@ export interface BrokerClearPolicySnapshotResponse {
   readonly sessionId: string;
 }
 
+export interface BrokerGetActiveSessionIdResponse {
+  readonly type: 'get_active_session_id';
+  /** Null when zero non-expired snapshots match the broker's loaded
+   *  signer, OR when 2+ match (ambiguous). Callers fall back to Path C
+   *  in either case. */
+  readonly sessionId: string | null;
+}
+
 export interface BrokerErrorResponse {
   readonly type: 'error';
   readonly code: BrokerErrorCode;
@@ -371,7 +406,8 @@ export type BrokerRequest =
   | BrokerSignUserOpRequest
   | BrokerStorePolicySnapshotRequest
   | BrokerGetPolicySnapshotRequest
-  | BrokerClearPolicySnapshotRequest;
+  | BrokerClearPolicySnapshotRequest
+  | BrokerGetActiveSessionIdRequest;
 
 export type BrokerResponse =
   | BrokerHelloResponse
@@ -383,6 +419,7 @@ export type BrokerResponse =
   | BrokerStorePolicySnapshotResponse
   | BrokerGetPolicySnapshotResponse
   | BrokerClearPolicySnapshotResponse
+  | BrokerGetActiveSessionIdResponse
   | BrokerErrorResponse;
 
 const HASH_HEX_RE = /^0x[0-9a-fA-F]{64}$/;
@@ -762,6 +799,8 @@ export function parseBrokerRequest(line: string): BrokerRequest | BrokerErrorRes
       }
       return { type: 'clear_policy_snapshot', sessionId: obj.sessionId };
     }
+    case 'get_active_session_id':
+      return { type: 'get_active_session_id' };
     default:
       return {
         type: 'error',

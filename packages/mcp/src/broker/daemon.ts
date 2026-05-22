@@ -298,6 +298,26 @@ export async function handleBrokerRequest(
         );
       }
     }
+    case 'get_active_session_id': {
+      if (!policyStore) {
+        return errorResponse(
+          'internal',
+          'broker daemon is not configured with a policy store',
+        );
+      }
+      try {
+        const sessionId = await policyStore.activeSessionId(signer.address, nowSec());
+        return { type: 'get_active_session_id', sessionId };
+      } catch (err) {
+        if (err instanceof PolicyStoreError) {
+          return errorResponse('internal', err.message);
+        }
+        return errorResponse(
+          'internal',
+          err instanceof Error ? err.message : 'policy store enumerate failed',
+        );
+      }
+    }
   }
 }
 

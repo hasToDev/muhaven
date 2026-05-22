@@ -658,3 +658,429 @@ describe('cashWrap', () => {
     }
   });
 });
+
+// ── Wave 5 Path D Slice 1 Commit 3 — positionBuy Path D probe ─────────────
+//
+// The Path D probe runs after NAV-fetch + shares-compute. When neither
+// broker NOR bundler is wired (existing deps shape), Path D is silently
+// skipped and the echo carries NO pathDFallbackReason. When BOTH are
+// wired, the probe walks: preflight → getActiveSessionId →
+// getPolicySnapshot → selectorCap match → cap check. Each gate failure
+// surfaces as a structured pathDFallbackReason in the echo while still
+// returning a valid Path C deep-link.
+//
+// The Commit 3.5 UserOp build is deferred — when EVERY gate passes, the
+// probe surfaces `path_d_userop_build_pending` and falls through to
+// Path C. There is no positive Path D test in this slice.
+
+import { SUBSCRIPTION_PURCHASE_SELECTOR } from '../src/tools/handlers.js';
+import type { BrokerClient, PreflightResult } from '../src/clients/broker-client.js';
+import type { BundlerClient } from '../src/clients/bundler-client.js';
+import type {
+  BrokerGetActiveSessionIdResponse,
+  BrokerGetPolicySnapshotResponse,
+  PolicySnapshotWire,
+} from '../src/broker/protocol.js';
+
+interface BrokerStubOverrides {
+  preflight?: PreflightResult;
+  activeSessionId?: BrokerGetActiveSessionIdResponse;
+  policySnapshot?: BrokerGetPolicySnapshotResponse;
+  /** When set, getPolicySnapshot rejects (broker_internal path). */
+  policySnapshotError?: Error;
+  /** When set, getActiveSessionId rejects. */
+  activeSessionIdError?: Error;
+}
+
+/**
+ * Build a stub for the BrokerClient using a Proxy so any method not
+ * explicitly mocked throws a self-documenting error. Without the proxy,
+ * a Commit 3.5 refactor that calls (say) broker.signUserOp() inside
+ * attemptPathD would silently throw `TypeError: signUserOp is not a
+ * function` — which the handler's catch would map to `broker_internal`
+ * and every Path D test would still pass (the fallback path still
+ * returns a Path C URL), masking the regression (MCP-Builder H-2).
+ *
+ * With the proxy, the missing-method call throws "broker.X not
+ * stubbed" and surfaces in the test failure summary clearly.
+ */
+function stubBroker(overrides: BrokerStubOverrides = {}): BrokerClient {
+  const wired: Partial<Record<keyof BrokerClient, unknown>> = {
+    preflight: vi.fn().mockResolvedValue(
+      overrides.preflight ?? {
+        supported: true,
+        daemonVersion: '0.4.0',
+        signerAddress: '0x' + '1'.repeat(40),
+      },
+    ),
+    getActiveSessionId: vi
+      .fn()
+      .mockImplementation(async () => {
+        if (overrides.activeSessionIdError) throw overrides.activeSessionIdError;
+        return (
+          overrides.activeSessionId ?? {
+            type: 'get_active_session_id',
+            sessionId: 'sess_test',
+          }
+        );
+      }),
+    getPolicySnapshot: vi.fn().mockImplementation(async () => {
+      if (overrides.policySnapshotError) throw overrides.policySnapshotError;
+      return overrides.policySnapshot ?? { type: 'get_policy_snapshot', snapshot: null };
+    }),
+  };
+  return new Proxy(wired, {
+    get(target, prop, receiver) {
+      const key = prop as keyof BrokerClient;
+      const v = Reflect.get(target, key, receiver) as unknown;
+      if (v === undefined) {
+        throw new Error(
+          `stubBroker: broker.${String(prop)} not stubbed — extend BrokerStubOverrides if this is a new Path D step`,
+        );
+      }
+      return v;
+    },
+  }) as unknown as BrokerClient;
+}
+
+function stubBundler(): BundlerClient {
+  // Path D probe in Commit 3 doesn't actually exercise the bundler (the
+  // UserOp build is deferred to Commit 3.5). The stub throws on ANY
+  // property access so a future regression that calls deps.bundler.X
+  // inside attemptPathD without test wiring fails loudly here instead
+  // of silently passing the Path C fallback (MCP-Builder H-2).
+  return new Proxy(
+    {},
+    {
+      get(_target, prop) {
+        throw new Error(
+          `stubBundler: bundler.${String(prop)} not stubbed — Commit 3 should not touch the bundler client at all`,
+        );
+      },
+    },
+  ) as unknown as BundlerClient;
+}
+
+function snapshotWith(
+  overrides: Partial<PolicySnapshotWire> = {},
+): PolicySnapshotWire {
+  return {
+    sessionId: 'sess_test',
+    mode: 'scoped',
+    signerAddress: ('0x' + '1'.repeat(40)) as `0x${string}`,
+    targetContracts: [('0x' + '2'.repeat(40)) as `0x${string}`],
+    selectorCaps: [
+      // 1000-share cap. TBILL1 default fixture has NAV $1, so shares
+      // == amountUsdc — i.e., amountUsdc '500' → 500 shares → under cap;
+      // amountUsdc '1500' → 1500 shares → over cap.
+      {
+        selector: SUBSCRIPTION_PURCHASE_SELECTOR,
+        capArgIndex: 2,
+        maxAmount: '1000',
+      },
+    ],
+    validUntilSec: 9_999_999_999,
+    mintedAtSec: 1_700_000_000,
+    ...overrides,
+  };
+}
+
+function depsWithPathD(brokerOverrides: BrokerStubOverrides = {}): ToolDeps {
+  return {
+    backend: catalogBackend(),
+    broker: stubBroker(brokerOverrides),
+    bundler: stubBundler(),
+    surface: 'mcp',
+    dashboardBaseUrl: 'https://muhaven.app',
+  };
+}
+
+describe('positionBuy — Path D probe (Wave 5 Slice 1 Commit 3)', () => {
+  it('Path D is silently skipped when bundler+broker are not wired', async () => {
+    // makeDeps() returns deps WITHOUT broker/bundler — the existing
+    // happy-path tests rely on this not affecting the echo shape.
+    const result = await positionBuy({ token: 'TBILL1', amountUsdc: '5' }, makeDeps());
+    expect(result.ok).toBe(true);
+    if (result.ok && 'echo' in result.data) {
+      expect(result.data.echo).not.toHaveProperty('pathDFallbackReason');
+    }
+  });
+
+  it('falls back with version_too_old when broker speaks 0.3.x', async () => {
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '5' },
+      depsWithPathD({
+        preflight: {
+          supported: false,
+          reason: 'version_too_old',
+          daemonVersion: '0.3.0',
+          requiredVersion: '0.4.0',
+        },
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && 'echo' in result.data) {
+      expect(result.data.echo.pathDFallbackReason).toBe('version_too_old');
+      // Path C URL still returned — single-affordance fallback.
+      expect(result.data.dashboardUrl).toContain('/trade');
+    }
+  });
+
+  it('falls back with broker_unreachable when daemon is down', async () => {
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '5' },
+      depsWithPathD({
+        preflight: {
+          supported: false,
+          reason: 'broker_unreachable',
+          message: 'connect ECONNREFUSED',
+          requiredVersion: '0.4.0',
+        },
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && 'echo' in result.data) {
+      expect(result.data.echo.pathDFallbackReason).toBe('broker_unreachable');
+    }
+  });
+
+  it('falls back with session_key_unavailable when broker is read-only', async () => {
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '5' },
+      depsWithPathD({
+        preflight: {
+          supported: false,
+          reason: 'session_key_unavailable',
+          daemonVersion: '0.4.0',
+          requiredVersion: '0.4.0',
+        },
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && 'echo' in result.data) {
+      expect(result.data.echo.pathDFallbackReason).toBe('session_key_unavailable');
+    }
+  });
+
+  it('falls back with no_active_session_key when no scoped session is active', async () => {
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '5' },
+      depsWithPathD({
+        activeSessionId: { type: 'get_active_session_id', sessionId: null },
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && 'echo' in result.data) {
+      expect(result.data.echo.pathDFallbackReason).toBe('no_active_session_key');
+    }
+  });
+
+  it('falls back with no_active_snapshot when snapshot disappears between lookups', async () => {
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '5' },
+      depsWithPathD({
+        activeSessionId: { type: 'get_active_session_id', sessionId: 'sess_test' },
+        policySnapshot: { type: 'get_policy_snapshot', snapshot: null },
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && 'echo' in result.data) {
+      expect(result.data.echo.pathDFallbackReason).toBe('no_active_snapshot');
+    }
+  });
+
+  it('falls back with selector_not_in_snapshot when purchase is not whitelisted', async () => {
+    const snap = snapshotWith({
+      selectorCaps: [
+        // Some other selector — not subscription.purchase.
+        { selector: '0xdeadbeef', capArgIndex: 0, maxAmount: '1000' },
+      ],
+    });
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '5' },
+      depsWithPathD({
+        policySnapshot: { type: 'get_policy_snapshot', snapshot: snap },
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && 'echo' in result.data) {
+      expect(result.data.echo.pathDFallbackReason).toBe('selector_not_in_snapshot');
+    }
+  });
+
+  it('falls back with out_of_scope when shares exceed the per-op cap', async () => {
+    // Cap = 1000; TBILL1 NAV = 1; amountUsdc 1500 → 1500 shares → over cap.
+    const snap = snapshotWith();
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '1500' },
+      depsWithPathD({
+        policySnapshot: { type: 'get_policy_snapshot', snapshot: snap },
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && 'echo' in result.data) {
+      expect(result.data.echo.pathDFallbackReason).toBe('out_of_scope');
+    }
+  });
+
+  it('falls back with path_d_userop_build_pending when every gate passes', async () => {
+    // Cap = 1000; amountUsdc 500 → 500 shares → under cap → reaches the
+    // final UserOp-build step which is deferred to Commit 3.5.
+    const snap = snapshotWith();
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '500' },
+      depsWithPathD({
+        policySnapshot: { type: 'get_policy_snapshot', snapshot: snap },
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && 'echo' in result.data) {
+      expect(result.data.echo.pathDFallbackReason).toBe('path_d_userop_build_pending');
+      // Existing Path C deep-link still returned for the user.
+      expect(result.data.dashboardUrl).toContain('/trade');
+      expect(new URL(result.data.dashboardUrl).searchParams.get('amount')).toBe('500');
+    }
+  });
+
+  it('falls back with broker_internal when getActiveSessionId throws', async () => {
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '5' },
+      depsWithPathD({
+        activeSessionIdError: new Error('socket EPIPE'),
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && 'echo' in result.data) {
+      expect(result.data.echo.pathDFallbackReason).toBe('broker_internal');
+    }
+  });
+
+  it('falls back with snapshot_lookup_failed when getPolicySnapshot throws', async () => {
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '5' },
+      depsWithPathD({
+        activeSessionId: { type: 'get_active_session_id', sessionId: 'sess_test' },
+        policySnapshotError: new Error('socket EPIPE'),
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && 'echo' in result.data) {
+      expect(result.data.echo.pathDFallbackReason).toBe('snapshot_lookup_failed');
+    }
+  });
+
+  // ── MCP-Builder H-1: stale 0.3.x daemon — unsupported_type remap ─────
+
+  it('remaps unsupported_type from getActiveSessionId to version_too_old (MCP H-1)', async () => {
+    // Simulates a 0.3.x daemon. preflight() would normally catch this
+    // first, but we exercise the catch path defense-in-depth in case a
+    // future caller skips preflight.
+    const { BrokerClientError } = await import('../src/clients/broker-client.js');
+    const err = new BrokerClientError(
+      'broker_error',
+      'unsupported_type: unsupported request type: get_active_session_id',
+      undefined,
+      'unsupported_type',
+    );
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '5' },
+      depsWithPathD({ activeSessionIdError: err }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && 'echo' in result.data) {
+      expect(result.data.echo.pathDFallbackReason).toBe('version_too_old');
+    }
+  });
+
+  it('remaps unsupported_type from getPolicySnapshot to version_too_old (MCP H-1)', async () => {
+    const { BrokerClientError } = await import('../src/clients/broker-client.js');
+    const err = new BrokerClientError(
+      'broker_error',
+      'unsupported_type: unsupported request type: get_policy_snapshot',
+      undefined,
+      'unsupported_type',
+    );
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '5' },
+      depsWithPathD({
+        activeSessionId: { type: 'get_active_session_id', sessionId: 'sess_test' },
+        policySnapshotError: err,
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && 'echo' in result.data) {
+      expect(result.data.echo.pathDFallbackReason).toBe('version_too_old');
+    }
+  });
+
+  // ── CR H-1: signer-mismatch race window ──────────────────────────────
+
+  it('falls back with signer_mismatch when snapshot signer != preflight signer', async () => {
+    // preflight reports signer 0x1111…; snapshot is bound to 0x9999…
+    // — simulates a daemon restart with a rotated session key between
+    // mint and probe. (Slice 1 doesn't sign, but CR H-1 wants this
+    // failure surfaced cleanly instead of routing through a Commit 3.5
+    // policy_violation from sign_userop.)
+    const snap = snapshotWith({
+      signerAddress: ('0x' + '9'.repeat(40)) as `0x${string}`,
+    });
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '5' },
+      depsWithPathD({
+        policySnapshot: { type: 'get_policy_snapshot', snapshot: snap },
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && 'echo' in result.data) {
+      expect(result.data.echo.pathDFallbackReason).toBe('signer_mismatch');
+    }
+  });
+
+  it('signer comparison is case-insensitive (no false signer_mismatch)', async () => {
+    // preflight stub returns lowercased signer; snapshot uses upper.
+    const snap = snapshotWith({
+      // SUBSCRIPTION_PURCHASE_SELECTOR already lowercased; signer is the
+      // only mixed-case axis here.
+      signerAddress: ('0x' + '1'.repeat(40).toUpperCase()) as `0x${string}`,
+    });
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '500' },
+      depsWithPathD({
+        policySnapshot: { type: 'get_policy_snapshot', snapshot: snap },
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && 'echo' in result.data) {
+      // Reaches the final terminal — signer matched case-insensitively.
+      expect(result.data.echo.pathDFallbackReason).toBe('path_d_userop_build_pending');
+    }
+  });
+
+  // ── CR H-2: split !purchaseCap vs maxAmount === null ─────────────────
+
+  it('selector_uncapped fires when purchase selector is allowed but has no cap', async () => {
+    const snap = snapshotWith({
+      selectorCaps: [
+        // Selector listed, but capArgIndex/maxAmount both null. Protocol-
+        // legal for nullary selectors (claim() in future slices) but
+        // NOT for purchase — Slice 1 refuses to autonomy-buy without a
+        // ceiling.
+        {
+          selector: SUBSCRIPTION_PURCHASE_SELECTOR,
+          capArgIndex: null,
+          maxAmount: null,
+        },
+      ],
+    });
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '5' },
+      depsWithPathD({
+        policySnapshot: { type: 'get_policy_snapshot', snapshot: snap },
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && 'echo' in result.data) {
+      expect(result.data.echo.pathDFallbackReason).toBe('selector_uncapped');
+    }
+  });
+});

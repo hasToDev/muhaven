@@ -33,6 +33,21 @@ export interface McpRuntimeConfig {
   allowedBackendHosts: readonly string[];
   /** In-process JWT cache TTL in seconds. Default 30. */
   jwtCacheTtlSec: number;
+  /**
+   * Wave 5 Path D Slice 1 (Commit 3) — ERC-4337 v0.7 bundler JSON-RPC URL.
+   * Undefined → Path D autonomous-buy mode disabled (position tools fall
+   * back to Path C deep-link). Validated via the same https-or-loopback
+   * rule as backend/dashboard URLs.
+   */
+  bundlerUrl: string | undefined;
+  /** Path D request timeout for bundler RPC calls. Default 20s
+   *  (slightly higher than backend default to absorb head-of-line block
+   *  delays). */
+  bundlerTimeoutMs: number;
+  /** Wave 5 Path D — expected chain id (Arb Sepolia = 421614). Sourced
+   *  from env so a future mainnet rollout doesn't require a code change.
+   *  Default 421614. */
+  chainId: number;
 }
 
 export interface BrokerRuntimeConfig {
@@ -66,6 +81,15 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 const DEFAULT_BROKER_TIMEOUT_MS = 5_000;
 const DEFAULT_BROKER_MAX_BYTES = 64 * 1024;
 const DEFAULT_JWT_CACHE_TTL_SEC = 30;
+/** Wave 5 Path D — bundler RPC timeout. Higher than backend (15s) because
+ *  bundler `eth_sendUserOperation` performs simulation before accepting
+ *  the userOp, which can stall under network load. 20s is the ZeroDev
+ *  reference default. */
+const DEFAULT_BUNDLER_TIMEOUT_MS = 20_000;
+/** Arbitrum Sepolia chain id — the only network MuHaven currently
+ *  targets. Operators on a different chain MUST override
+ *  MUHAVEN_CHAIN_ID alongside MUHAVEN_BUNDLER_URL. */
+const DEFAULT_CHAIN_ID = 421614;
 
 /**
  * Compute the default IPC endpoint for the broker. POSIX: a socket file
@@ -189,6 +213,19 @@ export function loadMcpConfig(env: NodeJS.ProcessEnv = process.env): McpRuntimeC
   const requestTimeoutMs = readEnvInt('MUHAVEN_REQUEST_TIMEOUT_MS', DEFAULT_REQUEST_TIMEOUT_MS, env);
   const brokerTimeoutMs = readEnvInt('MUHAVEN_BROKER_TIMEOUT_MS', DEFAULT_BROKER_TIMEOUT_MS, env);
   const jwtCacheTtlSec = readEnvInt('MUHAVEN_JWT_CACHE_TTL_SEC', DEFAULT_JWT_CACHE_TTL_SEC, env);
+  // Wave 5 Path D — bundler URL is OPTIONAL. Unset → Path D disabled,
+  // position tools fall back to Path C deep-link (existing behaviour).
+  // Set → validated by the same https-or-loopback rule as the other
+  // public URLs (Security M-2 generalization).
+  const bundlerUrlRaw = readEnv('MUHAVEN_BUNDLER_URL', env);
+  let bundlerUrl: string | undefined;
+  if (bundlerUrlRaw !== undefined) {
+    const validationErr = validatePublicUrlEnv('MUHAVEN_BUNDLER_URL', bundlerUrlRaw);
+    if (validationErr) throw new Error(validationErr);
+    bundlerUrl = trimTrailingSlash(bundlerUrlRaw);
+  }
+  const bundlerTimeoutMs = readEnvInt('MUHAVEN_BUNDLER_TIMEOUT_MS', DEFAULT_BUNDLER_TIMEOUT_MS, env);
+  const chainId = readEnvInt('MUHAVEN_CHAIN_ID', DEFAULT_CHAIN_ID, env);
 
   return {
     backendBaseUrl,
@@ -199,6 +236,9 @@ export function loadMcpConfig(env: NodeJS.ProcessEnv = process.env): McpRuntimeC
     brokerTimeoutMs,
     allowedBackendHosts: deriveAllowedHosts(backendBaseUrl),
     jwtCacheTtlSec,
+    bundlerUrl,
+    bundlerTimeoutMs,
+    chainId,
   };
 }
 

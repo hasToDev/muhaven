@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Wave 5 Path D Slice 1 (in flight)
+
+- **Broker protocol verb `get_active_session_id`** (additive over 0.4.0).
+  Narrow "which session is live?" probe — returns the sessionId of the
+  single non-expired snapshot bound to the broker's loaded signer, or
+  null on zero / 2+ matches. Backs the MCP server's bootstrap of Path
+  D's broker-side signing path before Slice 2's backend-mirror
+  `agent_scoped_sessions` table lands. Intentionally narrower than
+  `list()` so RD-3 (no IPC enumeration) stays honoured.
+- **`BrokerClient.preflight()` + semver gate (Backend Architect H-2).**
+  Detects stale 0.3.x daemons before any sign_userop call, surfacing
+  `version_too_old` / `session_key_unavailable` / `broker_unreachable`
+  with structured remediation hints instead of an opaque
+  `unsupported_type`.
+- **`BundlerClient` (NEW, `src/clients/bundler-client.ts`).** ERC-4337
+  v0.7 JSON-RPC client surface — `sendUserOp` + `getReceipt` +
+  `waitForReceipt` + `assertChainId`. Lives MCP-server-side (network
+  egress), not in the broker (R-1 zero-egress invariant preserved).
+  Configured via new `MUHAVEN_BUNDLER_URL` + `MUHAVEN_CHAIN_ID` env
+  vars (manifest.json user_config block extended). The UserOp BUILD +
+  SIGN path remains DEFERRED to a later release (FHE encrypt + kernel-
+  execute encode have unresolved design points); the bundler-client
+  surface ships now with full test coverage.
+- **`positionBuy` Path D probe.** When BOTH bundler and broker are
+  configured, the handler runs a preflight chain
+  (preflight → getActiveSessionId → getPolicySnapshot → selector-cap
+  match → shares cap) BEFORE building the Path C deep-link. Every gate
+  failure surfaces as a structured non-retryable
+  `pathDFallbackReason` in the echo while still returning a valid
+  Path C URL — single affordance for the user, full structured
+  observability for the LLM. The "all gates pass" terminal state
+  returns `path_d_userop_build_pending` until the UserOp build path
+  lands.
+- **`/agent/policy/state` extension** (backend): top-level
+  `accountAddress` field (= JWT subject = kernel smart-account
+  address). Backward-compatible; older callers ignore the new field.
+  Lays foundation for the Commit 3.5 UserOp builder's kernel-address
+  lookup without needing a separate /me endpoint.
+
+### Internal — Wave 5 Path D Slice 1
+
+- `IPolicyStore.activeSessionId(activeSignerAddress, nowSec)` method —
+  enumerates daemon-internal snapshots, returns the unique active
+  sessionId or null. File-backed + memory implementations both honour
+  the same "zero or ambiguous → null" semantics.
+- 65 new vitest cases across protocol / policy-snapshot / daemon-handler
+  / bundler-client / broker-client-preflight / position-deeplink test
+  files. Total 474 MCP vitest cases (up from 409). Three-agent parallel
+  pre-commit review (Code Reviewer + MCP Builder + Security Engineer
+  fresh) absorbed: 4 HIGH addressed inline (BrokerClientError gains
+  typed `brokerCode` field with `unsupported_type → version_too_old`
+  remap; `attemptPathD` adds signer-mismatch guard + splits
+  selector-uncapped vs selector-not-in-snapshot; test stubs replaced
+  with Proxy-based throw-on-unstubbed-access); MED-1 closed (semverGte
+  regex tightened to reject leading zeros per SemVer 2.0 §2). Security
+  Engineer approved with no HIGH findings.
+
 ## [0.2.0] — 2026-05-18
 
 **Minor bump signals a breaking change to `position.buy`'s input
