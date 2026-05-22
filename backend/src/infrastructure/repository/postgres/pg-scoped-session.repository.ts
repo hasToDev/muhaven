@@ -135,6 +135,37 @@ export class PgScopedSessionRepository implements IScopedSessionRepository {
     return rows.length;
   }
 
+  async markExpiredForUserSurface(
+    userId: string,
+    surface: Surface,
+    beforeSec: number,
+    now: Date,
+  ): Promise<number> {
+    // Per-user narrow — uses the partial active-index
+    // `agent_scoped_sessions_user_surface_active_uq_v2` for the
+    // (user_id, surface, status='active') seek. At most one row in the
+    // active state per (user, surface) per the partial UNIQUE, so the
+    // index scan returns ≤1 row, the UPDATE locks ≤1 row, and the
+    // cross-user write amplification of the bulk variant is eliminated
+    // on the mint hot path. R2 Software Architect H-2 round 1.
+    const rows = await this.db
+      .update(agentScopedSessions)
+      .set({
+        status: ScopedSessionStatus.Expired,
+        expiredAt: now,
+      })
+      .where(
+        and(
+          eq(agentScopedSessions.userId, userId),
+          eq(agentScopedSessions.surface, surface),
+          eq(agentScopedSessions.status, ScopedSessionStatus.Active),
+          lte(agentScopedSessions.validUntilSec, beforeSec),
+        ),
+      )
+      .returning({ sessionId: agentScopedSessions.sessionId });
+    return rows.length;
+  }
+
   private toDomain(row: typeof agentScopedSessions.$inferSelect): ScopedSession {
     // Defense-in-depth at the read boundary. Scalar columns are gated by
     // schema CHECK constraints (`schema.ts:agent_scoped_sessions_*_chk`)

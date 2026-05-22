@@ -397,10 +397,14 @@ export type PathDFallbackReason =
   /** MCP env `MUHAVEN_CHAIN_ID` resolved to undefined / non-number
    *  (defensive — config.ts defaults it). */
   | 'chain_id_unset'
-  /** Snapshot lacks the 4-byte `permissionId` field — frontend's
-   *  storePolicySnapshot call hasn't been wired to populate it yet
-   *  (Slice 2 prerequisite). Without it the MCP can't compose the
-   *  Kernel v3.1 nonce-key composite. */
+  /** Snapshot lacks the 4-byte `permissionId` field — Pickup B's
+   *  frontend mint POST populates it; this reason now only fires for
+   *  legacy pre-Pickup-B mirror rows OR for non-Pickup-B clients
+   *  posting to the wire. Without it the MCP can't compose the
+   *  Kernel v3.1 nonce-key composite (`identifier(20)` slot in the
+   *  24-byte composite stays zero → bundler reads SUDO-validator
+   *  nonce slot → AA24). Remediation: revoke the stale session,
+   *  re-mint via a Pickup B+ frontend. */
   | 'no_permission_id_in_snapshot'
   /** Backend hasn't recorded an `accountAddress` for the authenticated
    *  user (login/state corruption). */

@@ -693,8 +693,11 @@ export const agentScopedSessions = pgTable(
      *  the session-key private half the frontend minted. */
     signerAddress: text('signer_address').notNull(),
     /** 0x-prefixed 4-byte hex from `@zerodev/permissions::getPermissionId()`.
-     *  NULL until Pickup B's frontend wires it; Path D probe chain returns
-     *  `no_permission_id_in_snapshot` until populated. */
+     *  NULLABLE for back-compat with legacy pre-Pickup-B rows; Pickup B
+     *  (commit `1a28618`) populates on every fresh mint via the frontend's
+     *  `installScopedSessionKey` → `buildScopedMintBody` thread. Rows
+     *  with NULL here return Path D fallback `no_permission_id_in_snapshot`
+     *  and degrade cleanly to Path C deep-link. */
     permissionId: text('permission_id'),
     /** Lowercased 0x-addresses the broker will accept as innerCall.target.
      *  JSON array of strings; matches the broker's

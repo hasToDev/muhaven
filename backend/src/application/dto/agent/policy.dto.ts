@@ -258,10 +258,13 @@ export const MintScopedSessionDtoSchema = z
         mintedAtSec: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
         consentActionHash: z.string().regex(HEX_32_BYTE_RE).optional(),
         consentTextSha256: z.string().regex(HEX_32_BYTE_RE).optional(),
-        /** 4-byte permissionId optional in Slice 1; MUST be populated by
-         *  Pickup B / Slice 2 frontend so the MCP server can compose the
-         *  Kernel v3.1 24-byte nonce-key composite. Without it the Path D
-         *  probe chain returns `no_permission_id_in_snapshot`. */
+        /** 4-byte permissionId. Pickup B (commit `1a28618`) frontends
+         *  populate it; kept `.optional()` here for back-compat with
+         *  pre-Pickup-B clients (legacy stage frontends, hand-curled
+         *  POSTs, future external mint clients). MCP server's
+         *  `attemptPathD` returns `no_permission_id_in_snapshot` when
+         *  absent → Path C deep-link fallback. Tighten to required
+         *  when all known clients are Pickup B+. */
         permissionId: z.string().regex(HEX_4_BYTE_RE).optional(),
       })
       .strict(),

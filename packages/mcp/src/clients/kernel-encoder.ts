@@ -201,11 +201,13 @@ export function composeKernelV3NonceKey(args: {
   /**
    * 4-byte permissionId from `@zerodev/permissions::getPermissionId()`.
    * Sourced from the broker's policy snapshot's `permissionId` field
-   * (which the frontend's storePolicySnapshot call populates at scoped-
-   * tier mint time — Slice 2 prerequisite).
+   * (populated by the frontend's Pickup B mint POST per commit
+   * `1a28618`; legacy pre-Pickup-B snapshots return Path D fallback
+   * `no_permission_id_in_snapshot` and never reach this encoder).
    */
   readonly permissionId: `0x${string}`;
-  /** Customary 2-byte key for batched UserOps. Slice 1 always 0n. */
+  /** Customary 2-byte key for batched UserOps. Slice 1 always 0n
+   *  (defaulted when omitted by the only caller at handlers.ts). */
   readonly customKey?: bigint;
 }): bigint {
   if (!PERMISSION_ID_HEX_RE.test(args.permissionId)) {

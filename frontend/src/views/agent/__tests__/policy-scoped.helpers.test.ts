@@ -308,6 +308,11 @@ describe('policy-scoped.helpers — buildScopedMintBody', () => {
     // Kernel v3.1 24-byte nonce-key composite. Without it the bundler
     // reads the SUDO-validator nonce slot and AA24's every UserOp.
     const body = buildScopedMintBody(baseInput)
+    // R2 Reality Checker M-1 — defensive `.toBeDefined()` so a future
+    // fixture refactor that lets `baseInput.permissionId` slip to
+    // `undefined` would still fail loudly here (the equality check
+    // would silently pass with undefined === undefined).
+    expect(body.snapshot.permissionId).toBeDefined()
     expect(body.snapshot.permissionId).toBe(baseInput.permissionId)
     expect(body.snapshot.permissionId).toMatch(/^0x[0-9a-f]{8}$/)
   })

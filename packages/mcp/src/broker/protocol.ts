@@ -276,14 +276,14 @@ export interface PolicySnapshotWire {
    * the SUDO-validator nonce slot and the UserOp is routed through
    * the wrong validator → `AA24 InvalidSigner`.
    *
-   * **Optional in Slice 1 for back-compat** with the not-yet-built
-   * dashboard-side `storePolicySnapshot` POST. Path D refuses to
-   * compose a UserOp when this field is absent → falls back to Path C
-   * with reason `no_permission_id_in_snapshot`. Slice 2's frontend
-   * mint flow MUST include this field; broker daemon enforces no
-   * tighter today (additive optional field, no protocol version bump
-   * because every existing 0.4.0 consumer that doesn't supply it just
-   * loses Path D and degrades cleanly to Path C).
+   * **Optional in the wire shape** so the protocol stays back-compat
+   * with pre-Pickup-B mints (DB row + broker keystore snapshots
+   * predating the Pickup B commit `1a28618` may have NULL here).
+   * Pickup B's frontend mint flow ALWAYS populates this field; any
+   * non-Pickup-B client / legacy row that omits it surfaces as Path D
+   * fallback reason `no_permission_id_in_snapshot` and degrades
+   * cleanly to Path C. Broker daemon enforces no tighter today
+   * (additive optional field, no protocol version bump).
    */
   readonly permissionId?: `0x${string}`;
 }

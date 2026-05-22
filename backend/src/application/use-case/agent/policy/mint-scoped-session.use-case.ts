@@ -7,6 +7,7 @@ import { Tier } from '../../../../domain/agent/model/tier.enum.js';
 import type { Surface } from '../../../../domain/agent/model/surface.enum.js';
 import type { IAgentStateRepository } from '../../../../domain/agent/repository/agent-state.repository.js';
 import type { IScopedSessionRepository } from '../../../../domain/agent/repository/scoped-session.repository.js';
+import { isPgUniqueViolation } from '../../../../infrastructure/repository/postgres/pg-errors.js';
 import type { MintScopedSessionDto } from '../../../dto/agent/policy.dto.js';
 import type { AppendAuditEventUseCase } from './append-audit-event.use-case.js';
 
@@ -161,21 +162,24 @@ export class MintScopedSessionUseCase {
     //    Bit the operator tonight 2026-05-22 on the Pickup A re-smoke;
     //    the only recovery was a manual `UPDATE` on prod DB.
     //
-    //    **Scope of this sweep is intentionally BULK** (no per-user
-    //    predicate). Today the active-and-expired pool is bounded by
-    //    the partial active-index, so per-mint write cost is small.
-    //    Slice 5+ ships the expiry-sweep cron; at that point this
-    //    per-mint sweep can be narrowed to `eq(userId)` to eliminate
-    //    cross-user write amplification (Code Reviewer MED-1 +
-    //    Security Engineer MED-1 round 1 — explicitly deferred until
-    //    the cron lands so the operator doesn't lose the safety net
-    //    in the meantime).
+    //    **Scope of this sweep is per-(user, surface)** via
+    //    `markExpiredForUserSurface`. Uses the partial active-index
+    //    `agent_scoped_sessions_user_surface_active_uq_v2` — at most
+    //    one row in the active state per (user, surface), so the
+    //    UPDATE locks ≤1 row per mint and there is no cross-user
+    //    write contention with concurrent mints from OTHER users.
+    //    R1 Code Reviewer MED-1 + Security Engineer MED-1 +
+    //    R2 Software Architect H-2 round 2 — narrowed from the bulk
+    //    variant which would have full-table-scanned the active-index
+    //    on every mint. The bulk `markExpired` stays for the future
+    //    expiry-sweep cron (Slice 5+) which sweeps cross-user on a
+    //    schedule.
     //
     //    The DB-constraint catch at step 5 (see below) closes the race
     //    where two concurrent mints for the same (user, surface) both
     //    pass dedup but the loser hits 23505 — Security Engineer H-1
     //    round 1.
-    await this.scopedRepo.markExpired(nowSec, now);
+    await this.scopedRepo.markExpiredForUserSurface(input.userId, surface, nowSec, now);
 
     // 2b. Active-dedup. A user wanting to rotate a still-valid session
     //    must DELETE the old row first (operator-confirmed Slice 2
@@ -258,11 +262,16 @@ export class MintScopedSessionUseCase {
     //    emits. The DB constraint is the load-bearing gate; this catch
     //    just maps it to the user-friendly response shape.
     //    Security Engineer H-1 round 1.
+    //
+    //    R2 Software Architect H-1 + Backend Architect M-1 — use
+    //    `isPgUniqueViolation` (walks `.code` / `.cause.code` /
+    //    `.driverError.code`) instead of reading the top-level `.code`
+    //    directly. Defends against a future Drizzle major-version bump
+    //    that wraps pg errors in `DrizzleQueryError`.
     try {
       await this.scopedRepo.create(session);
     } catch (err) {
-      const code = (err as { code?: string } | null)?.code;
-      if (code === '23505') {
+      if (isPgUniqueViolation(err)) {
         // Re-query to surface the actual existing row's sessionId. The
         // race winner's row landed between our dedup check and our
         // create, so a fresh lookup gets the authoritative answer.

@@ -49,6 +49,8 @@ import { AppendAuditEventUseCase } from '../append-audit-event.use-case.js';
 import { MemoryAgentAuditRepository } from '../../../../../infrastructure/repository/memory/memory-agent-audit.repository.js';
 import { MemoryAgentStateRepository } from '../../../../../infrastructure/repository/memory/memory-agent-state.repository.js';
 import { MemoryScopedSessionRepository } from '../../../../../infrastructure/repository/memory/memory-scoped-session.repository.js';
+import { ScopedSession } from '../../../../../domain/agent/model/scoped-session.js';
+import { ScopedSessionStatus } from '../../../../../domain/agent/model/scoped-session-status.enum.js';
 import type { MintScopedSessionDto } from '../../../../dto/agent/policy.dto.js';
 
 const NOW = new Date('2026-05-22T12:00:00.000Z');
@@ -89,6 +91,12 @@ describe('MintScopedSessionUseCase', () => {
   let useCase: MintScopedSessionUseCase;
 
   beforeEach(() => {
+    // R2 Reality Checker M-2 — restore spies from prior iterations so a
+    // future `vi.spyOn(...)` left over from one test can't leak into the
+    // next. The store-fresh pattern below makes today's leakage path
+    // unreachable, but the defense is one line + survives any refactor
+    // that starts reusing repo instances.
+    vi.restoreAllMocks();
     stateRepo = new MemoryAgentStateRepository();
     scopedRepo = new MemoryScopedSessionRepository();
     auditRepo = new MemoryAgentAuditRepository();
@@ -166,6 +174,104 @@ describe('MintScopedSessionUseCase', () => {
       statusCode: 409,
       existingSessionId: 'session-abc-123',
     });
+  });
+
+  it('catches DB 23505 from create + re-emits as 409 (race-safety pattern, step 5b)', async () => {
+    // R1 SecEng H-1 absorbed into mint-scoped-session.use-case.ts:5b —
+    // two concurrent mints for the same (user, surface) where BOTH
+    // pass the optimistic 2b dedup (race window between A's 2a sweep
+    // and A's 5 create) would both attempt INSERT and the loser
+    // would hit DB partial-UNIQUE → 23505. Without the 5b catch the
+    // loser surfaces as a generic 500; WITH it the loser sees the
+    // same 409 + existingSessionId the optimistic gate emits.
+    //
+    // Test shape: directly seed the race-winner row into the repo
+    // (mimics the winner having INSERT'd between our findLatestActive
+    // and our create). Then spy on findLatestActive to return null on
+    // the FIRST call (mimicking the race-window read; 2b gate passes)
+    // and let the REAL impl run on the SECOND call (the 5b catch's
+    // re-query, which should now find the winner).
+    await seedTier(Tier.Scoped);
+
+    // Seed the race-winner row directly into the repo. Bypass the
+    // use-case so we don't trip its own dedup or markExpired.
+    const winnerSession = new ScopedSession({
+      sessionId: 'race-winner',
+      userId: 'u1',
+      surface: Surface.MCP,
+      status: ScopedSessionStatus.Active,
+      signerAddress: '0xbbbb000000000000000000000000000000000002',
+      permissionId: '0xdeadbeef',
+      targetContracts: [SUBSCRIPTION_ADDR.toLowerCase()],
+      selectorCaps: [{ selector: PURCHASE_SELECTOR, capArgIndex: 2, maxAmount: '1000000' }],
+      maxPerOpUsd6: 100_000_000n,
+      totalSpentUsd6: 0n,
+      validUntilSec: NOW_SEC + 3600,
+      mintedAtSec: NOW_SEC,
+      consentActionHash: null,
+      consentTextSha256: null,
+      mintedAt: NOW,
+      revokedAt: null,
+      expiredAt: null,
+    });
+    await scopedRepo.create(winnerSession);
+
+    // Spy on findLatestActive: return null ONCE (mimicking race-window
+    // read at 2b), then fall through to the real implementation for
+    // the 5b catch's re-query.
+    const findSpy = vi.spyOn(scopedRepo, 'findLatestActive');
+    findSpy.mockResolvedValueOnce(null);
+
+    // Execute. 2a sweep flips nothing (winner is still valid). 2b
+    // dedup returns null (mocked). 5 create attempts INSERT → memory
+    // repo's partial-UNIQUE rejects with `.code='23505'`. 5b catch
+    // matches the code, re-queries findLatestActive (real impl this
+    // time → finds the winner), throws MintScopedSessionConflictError
+    // naming the winner's sessionId.
+    await expect(
+      useCase.execute({
+        userId: 'u1',
+        dto: makeDto({ sessionId: 'loser' }),
+        now: NOW,
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      existingSessionId: 'race-winner',
+    });
+
+    // The catch's re-query confirms findLatestActive was called twice:
+    // once for the mocked 2b dedup (null), once for the 5b race-resolve
+    // (real impl returned the winner). If a future regression removes
+    // the 5b catch, find would only be called once + an unwrapped 23505
+    // would surface as 500.
+    expect(findSpy).toHaveBeenCalledTimes(2);
+
+    // No audit row landed — the create threw before the appendAudit
+    // call, so the WORM forensic chain isn't polluted with a phantom
+    // mint row for the loser session.
+    const audit = await auditRepo.findByUserId('u1');
+    expect(audit.items).toHaveLength(0);
+  });
+
+  it('re-throws non-23505 errors from create unchanged (5b catch is 23505-only)', async () => {
+    // Defensive — if the DB throws ANYTHING other than 23505 (foreign
+    // key, check constraint, connection error), 5b must NOT swallow
+    // it. The catch's `if (code === '23505')` branch is the only path
+    // that maps to a friendly 409; everything else bubbles up.
+    await seedTier(Tier.Scoped);
+    const fakeError = new Error('simulated foreign key violation') as Error & {
+      code?: string;
+    };
+    fakeError.code = '23503';
+    const createSpy = vi.spyOn(scopedRepo, 'create').mockRejectedValueOnce(fakeError);
+
+    // Combine both assertions on the SAME rejection: must carry the
+    // simulated message AND must NOT be wrapped as a conflict error
+    // (proves the 5b catch's narrow `code === '23505'` discriminator).
+    const promise = useCase.execute({ userId: 'u1', dto: makeDto(), now: NOW });
+    await expect(promise).rejects.toMatchObject({ message: 'simulated foreign key violation' });
+    await expect(promise).rejects.not.toBeInstanceOf(MintScopedSessionConflictError);
+    expect(createSpy).toHaveBeenCalledTimes(1);
   });
 
   it('allows re-mint when an existing active row has expired by time (Pickup A follow-up bug #10)', async () => {

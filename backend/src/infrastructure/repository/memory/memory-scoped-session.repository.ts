@@ -95,4 +95,25 @@ export class MemoryScopedSessionRepository implements IScopedSessionRepository {
     }
     return count;
   }
+
+  async markExpiredForUserSurface(
+    userId: string,
+    surface: Surface,
+    beforeSec: number,
+    now: Date,
+  ): Promise<number> {
+    let count = 0;
+    for (const [sessionId, session] of this.store) {
+      if (session.userId !== userId) continue;
+      if (session.surface !== surface) continue;
+      if (session.status !== ScopedSessionStatus.Active) continue;
+      if (session.validUntilSec > beforeSec) continue;
+      this.store.set(
+        sessionId,
+        session.with({ status: ScopedSessionStatus.Expired, expiredAt: now }),
+      );
+      count += 1;
+    }
+    return count;
+  }
 }

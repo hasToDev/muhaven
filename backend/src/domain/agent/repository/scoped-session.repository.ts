@@ -65,6 +65,34 @@ export interface IScopedSessionRepository {
    * flipped. Driven by a future expiry-sweep cron (not in Commit 2.A;
    * Slice 5+); shipped on the interface now so the cron can land without
    * widening this surface later.
+   *
+   * **Caution**: this method touches EVERY active-and-expired row in the
+   * table. Per-request hot-path callers should prefer
+   * `markExpiredForUserSurface` (per-user predicate) to avoid the
+   * cross-user write-amplification on every mint. R2 Software Architect
+   * H-2 round 1.
    */
   markExpired(beforeSec: number, now: Date): Promise<number>;
+
+  /**
+   * Per-user variant of `markExpired` — flips `status='active'` rows
+   * to `'expired'` ONLY for `(userId, surface)`. Used by
+   * `MintScopedSessionUseCase` step 2a as the opportunistic sweep that
+   * frees the partial-UNIQUE slot before the optimistic dedup check.
+   *
+   * Returns the count of rows flipped. The partial active-index +
+   * (user, surface) predicate makes this O(0) or O(1) per call —
+   * exactly one row maximum per user/surface in the active state per
+   * the partial UNIQUE constraint.
+   *
+   * R2 Software Architect H-2 round 1 — narrowed from the bulk variant
+   * to eliminate cross-user write amplification on the mint hot path.
+   * Bulk `markExpired` stays for the future expiry-sweep cron.
+   */
+  markExpiredForUserSurface(
+    userId: string,
+    surface: Surface,
+    beforeSec: number,
+    now: Date,
+  ): Promise<number>;
 }
