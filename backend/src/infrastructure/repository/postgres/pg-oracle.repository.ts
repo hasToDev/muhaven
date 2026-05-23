@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, lte, sql } from 'drizzle-orm';
 import type { IOracleRepository } from '../../../domain/oracle/repository/oracle.repository.js';
 import type {
   OracleAssetWrite,
@@ -155,6 +155,18 @@ export class PgOracleRepository implements IOracleRepository {
     // collapses what was 9 parallel `findFirst` calls in
     // `GetTokensUseCase`'s fallback path — relieves pg pool pressure
     // under concurrent `/api/v1/tokens` + MCP read.tokens load.
+    //
+    // WHY `inArray(sql\`lower(${ticker})\`, lowered)` instead of
+    // `lower(ticker) = ANY($1::text[])`: drizzle's `sql\`\`` tag
+    // serializes a JS array as a record/tuple, not as a Pg `text[]`
+    // bind — passing `${lowered}::text[]` raises
+    // `22P02 malformed array literal` / `42846 cannot cast type record
+    // to text[]` against real Pg. The `inArray()` helper emits the
+    // canonical `IN ($1, $2, ...)` shape with one bind per element.
+    // That pattern matches the rest of the codebase
+    // (`pg-user.repository.ts::findByWalletAddresses` does the same
+    // case-insensitive `inArray(sql\`lower(${col})\`, lowered)`).
+    const inLowered = inArray(sql`lower(${oracleSnapshots.ticker})`, lowered);
     const result = await this.db.execute<{
       ticker: string;
       snapshot_at: Date | string;
@@ -174,27 +186,27 @@ export class PgOracleRepository implements IOracleRepository {
       top_5_holder_concentration: string | null;
       rwaxyz_updated_at: Date | string | null;
     }>(sql`
-      SELECT DISTINCT ON (lower(ticker))
-        ticker,
-        snapshot_at,
-        source,
-        nav_dollar,
-        price_dollar,
-        apy_7_day,
-        apy_30_day,
-        daily_yield_rate,
-        yield_to_maturity_percent,
-        daily_yield_distributed_dollar,
-        hypothetical_10k_performance,
-        total_supply_token,
-        total_asset_value_dollar,
-        market_value_dollar,
-        holding_addresses_count,
-        top_5_holder_concentration,
-        rwaxyz_updated_at
-      FROM oracle_snapshots
-      WHERE lower(ticker) = ANY(${lowered}::text[])
-      ORDER BY lower(ticker), snapshot_at DESC
+      SELECT DISTINCT ON (lower(${oracleSnapshots.ticker}))
+        ${oracleSnapshots.ticker} AS ticker,
+        ${oracleSnapshots.snapshotAt} AS snapshot_at,
+        ${oracleSnapshots.source} AS source,
+        ${oracleSnapshots.navDollar} AS nav_dollar,
+        ${oracleSnapshots.priceDollar} AS price_dollar,
+        ${oracleSnapshots.apy7Day} AS apy_7_day,
+        ${oracleSnapshots.apy30Day} AS apy_30_day,
+        ${oracleSnapshots.dailyYieldRate} AS daily_yield_rate,
+        ${oracleSnapshots.yieldToMaturityPercent} AS yield_to_maturity_percent,
+        ${oracleSnapshots.dailyYieldDistributedDollar} AS daily_yield_distributed_dollar,
+        ${oracleSnapshots.hypothetical10kPerformance} AS hypothetical_10k_performance,
+        ${oracleSnapshots.totalSupplyToken} AS total_supply_token,
+        ${oracleSnapshots.totalAssetValueDollar} AS total_asset_value_dollar,
+        ${oracleSnapshots.marketValueDollar} AS market_value_dollar,
+        ${oracleSnapshots.holdingAddressesCount} AS holding_addresses_count,
+        ${oracleSnapshots.top5HolderConcentration} AS top_5_holder_concentration,
+        ${oracleSnapshots.rwaxyzUpdatedAt} AS rwaxyz_updated_at
+      FROM ${oracleSnapshots}
+      WHERE ${inLowered}
+      ORDER BY lower(${oracleSnapshots.ticker}), ${oracleSnapshots.snapshotAt} DESC
     `);
 
     const out = new Map<string, OracleSnapshotRead>();
