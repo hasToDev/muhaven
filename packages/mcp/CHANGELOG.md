@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4] — 2026-05-23
+
+### Fixed
+
+- **Paymaster RPC method + param shape**:
+  `pm_sponsorUserOperation` → `zd_sponsorUserOperation`. ZeroDev v3
+  endpoints route paymaster RPCs through Alchemy infrastructure, which
+  exposes only ERC-7677 (`pm_getPaymasterStubData` / `pm_getPaymasterData`)
+  and ZeroDev-prefixed (`zd_sponsorUserOperation`) — the legacy
+  `pm_sponsorUserOperation` returns `"Unsupported method"` from
+  Alchemy. The MCP server's `attemptPathD` failed at
+  `pathDFallbackReason: paymaster_rejected` on every Path D autonomous
+  buy. Fix: switch method name + change request shape from positional
+  `[userOp, entryPoint]` to wrapped
+  `[{chainId, userOp, entryPointAddress, shouldOverrideFee, shouldConsume}]`.
+  Matches `@zerodev/sdk@5.5.10`'s `paymaster/sponsorUserOperation.js`
+  byte-for-byte. Verified 2026-05-23 via direct curl reproduction
+  against the prod bundler URL (bare → "Unsupported method"; correct
+  shape → simulation result with AA23 from synthetic UserOp, proving
+  the method works).
+
+  `sponsorUserOp` now requires `expectedChainId` in `BundlerClientOptions`
+  (throws `BundlerClientError(config)` when missing) — the chainId is
+  part of the request envelope. Defaults conservative placeholder gas
+  limits on the userOp when the caller omits them (ZeroDev's Zod
+  validator requires the gas fields in the request even though
+  simulation recomputes them).
+
+  Added 3 regression tests pinning the new method name, the wrapped
+  envelope, the gas-default behaviour + a `config`-error case when
+  expectedChainId is missing.
+
 ## [0.2.3] — 2026-05-23
 
 ### Fixed

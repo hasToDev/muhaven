@@ -423,21 +423,81 @@ function sponsoredFixture(): Record<string, string> {
 }
 
 describe('BundlerClient.sponsorUserOp', () => {
-  it('returns the sponsored fields on success', async () => {
+  // 0.2.4: sponsorUserOp now calls `zd_sponsorUserOperation` (ZeroDev's
+  // RPC name) with the wrapped param shape `[{chainId, userOp,
+  // entryPointAddress, shouldOverrideFee, shouldConsume}]`. The legacy
+  // `pm_sponsorUserOperation` method is not exposed by ZeroDev v3
+  // endpoints (they proxy through Alchemy which returns "Unsupported
+  // method"). Verified 2026-05-23 via direct curl against
+  // `https://rpc.zerodev.app/api/v3/<id>/chain/<chain>`.
+
+  it('calls zd_sponsorUserOperation with the wrapped param shape', async () => {
+    const captured: { method?: string; params?: unknown[] } = {};
     const fetchImpl = makeMockFetch(async (req) => {
       const body = (await req.json()) as { method: string; params: unknown[] };
-      expect(body.method).toBe('pm_sponsorUserOperation');
-      expect(body.params[1]).toBe(ENTRY_POINT_07_ADDRESS);
+      captured.method = body.method;
+      captured.params = body.params;
       return jsonResponse({ jsonrpc: '2.0', id: 1, result: sponsoredFixture() });
     });
     const client = new BundlerClient({
       endpoint: 'http://localhost:4337',
       requestTimeoutMs: 5_000,
+      expectedChainId: 421614,
       fetchImpl,
     });
     const out = await client.sponsorUserOp(partialUserOpFixture(), ENTRY_POINT_07_ADDRESS);
+    expect(captured.method).toBe('zd_sponsorUserOperation');
+    // Wrapped envelope (NOT positional [userOp, entryPoint]).
+    expect(captured.params).toHaveLength(1);
+    const env = captured.params![0] as Record<string, unknown>;
+    expect(env.chainId).toBe(421614);
+    expect(env.entryPointAddress).toBe(ENTRY_POINT_07_ADDRESS);
+    expect(env.shouldOverrideFee).toBe(false);
+    expect(env.shouldConsume).toBe(true);
+    expect(env.userOp).toMatchObject({ sender: partialUserOpFixture().sender });
     expect(out.paymaster).toBe('0x' + '99'.repeat(20));
     expect(out.callGasLimit).toBe('0x030d40');
+  });
+
+  it('defaults the gas-limit fields on the userOp envelope when the caller omits them', async () => {
+    // ZeroDev's request-side Zod validator requires callGasLimit /
+    // verificationGasLimit / preVerificationGas to be present even
+    // though it recomputes them in simulation. The fixture's
+    // PartialUserOpForSponsorship shape doesn't carry them — the
+    // client must inject conservative placeholders so the request
+    // shape validates.
+    const captured: { userOp?: Record<string, string> } = {};
+    const fetchImpl = makeMockFetch(async (req) => {
+      const body = (await req.json()) as { params: { userOp: Record<string, string> }[] };
+      captured.userOp = body.params[0].userOp;
+      return jsonResponse({ jsonrpc: '2.0', id: 1, result: sponsoredFixture() });
+    });
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      expectedChainId: 421614,
+      fetchImpl,
+    });
+    // Use the minimal partial (no gas fields).
+    await client.sponsorUserOp(partialUserOpFixture(), ENTRY_POINT_07_ADDRESS);
+    expect(captured.userOp?.callGasLimit).toMatch(/^0x[0-9a-fA-F]+$/);
+    expect(captured.userOp?.verificationGasLimit).toMatch(/^0x[0-9a-fA-F]+$/);
+    expect(captured.userOp?.preVerificationGas).toMatch(/^0x[0-9a-fA-F]+$/);
+  });
+
+  it('refuses to call when expectedChainId is not configured (config error)', async () => {
+    const fetchImpl = makeMockFetch(async () =>
+      jsonResponse({ jsonrpc: '2.0', id: 1, result: sponsoredFixture() }),
+    );
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      // expectedChainId intentionally omitted.
+      fetchImpl,
+    });
+    await expect(
+      client.sponsorUserOp(partialUserOpFixture(), ENTRY_POINT_07_ADDRESS),
+    ).rejects.toMatchObject({ code: 'config' });
   });
 
   it('rejects a sponsored response missing a required field', async () => {
@@ -449,6 +509,7 @@ describe('BundlerClient.sponsorUserOp', () => {
     const client = new BundlerClient({
       endpoint: 'http://localhost:4337',
       requestTimeoutMs: 5_000,
+      expectedChainId: 421614,
       fetchImpl,
     });
     await expect(
@@ -468,6 +529,7 @@ describe('BundlerClient.sponsorUserOp', () => {
     const client = new BundlerClient({
       endpoint: 'http://localhost:4337',
       requestTimeoutMs: 5_000,
+      expectedChainId: 421614,
       fetchImpl,
     });
     const out = await client.sponsorUserOp(partialUserOpFixture(), ENTRY_POINT_07_ADDRESS);
@@ -488,6 +550,7 @@ describe('BundlerClient.sponsorUserOp', () => {
     const client = new BundlerClient({
       endpoint: 'http://localhost:4337',
       requestTimeoutMs: 5_000,
+      expectedChainId: 421614,
       fetchImpl,
     });
     await expect(
@@ -495,7 +558,7 @@ describe('BundlerClient.sponsorUserOp', () => {
     ).rejects.toMatchObject({ code: 'invalid_response' });
   });
 
-  it('surfaces upstream pm_sponsorUserOperation rpc errors as rpc_error with the code preserved', async () => {
+  it('surfaces upstream zd_sponsorUserOperation rpc errors as rpc_error with the code preserved', async () => {
     const fetchImpl = makeMockFetch(async () =>
       jsonResponse({
         jsonrpc: '2.0',
@@ -506,6 +569,7 @@ describe('BundlerClient.sponsorUserOp', () => {
     const client = new BundlerClient({
       endpoint: 'http://localhost:4337',
       requestTimeoutMs: 5_000,
+      expectedChainId: 421614,
       fetchImpl,
     });
     try {

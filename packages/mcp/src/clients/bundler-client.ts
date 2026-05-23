@@ -121,6 +121,17 @@ export interface PartialUserOpForSponsorship {
   readonly maxPriorityFeePerGas: `0x${string}`;
   /** Worst-case placeholder so paymaster simulates realistic gas. */
   readonly signature: `0x${string}`;
+  /**
+   * Optional pre-estimated gas fields. ZeroDev's `zd_sponsorUserOperation`
+   * does its own simulation + recomputes these in the response, so
+   * passing placeholders is OK — but the upstream Zod validator
+   * REQUIRES the fields to be present. `sponsorUserOp` defaults them
+   * to safe placeholders when omitted (the response carries the real
+   * values for the caller to use).
+   */
+  readonly callGasLimit?: `0x${string}`;
+  readonly verificationGasLimit?: `0x${string}`;
+  readonly preVerificationGas?: `0x${string}`;
 }
 
 export interface SponsoredUserOpFields {
@@ -289,7 +300,45 @@ export class BundlerClient {
     userOp: PartialUserOpForSponsorship,
     entryPoint: `0x${string}`,
   ): Promise<SponsoredUserOpFields> {
-    const result = await this.rpc('pm_sponsorUserOperation', [userOp, entryPoint]);
+    if (this.options.expectedChainId === undefined) {
+      throw new BundlerClientError(
+        'config',
+        'sponsorUserOp requires expectedChainId in BundlerClientOptions — ZeroDev paymaster needs it in the request envelope',
+      );
+    }
+    // ZeroDev's `zd_sponsorUserOperation` Zod validator REQUIRES the gas
+    // limit fields in the request even though it recomputes them in its
+    // simulation. Default to conservative placeholders so the request
+    // shape validates; the response's `callGasLimit` /
+    // `verificationGasLimit` / `preVerificationGas` are the values the
+    // caller actually plugs into the assembled UserOp. Sizes picked to
+    // be ABOVE any real call we'd make so the paymaster doesn't fail
+    // simulation on an under-estimated stub.
+    const userOpWithGas = {
+      ...userOp,
+      callGasLimit: userOp.callGasLimit ?? ('0x100000' as `0x${string}`), // 1_048_576
+      verificationGasLimit: userOp.verificationGasLimit ?? ('0x100000' as `0x${string}`),
+      preVerificationGas: userOp.preVerificationGas ?? ('0x100000' as `0x${string}`),
+    };
+    // Why `zd_sponsorUserOperation` not `pm_sponsorUserOperation`:
+    // ZeroDev v3 endpoints route paymaster RPCs through Alchemy
+    // infrastructure which only exposes the standard ERC-7677 method
+    // names (`pm_getPaymasterStubData` / `pm_getPaymasterData`) and
+    // the ZeroDev-prefixed `zd_sponsorUserOperation` (the all-in-one
+    // sponsor + simulate method the SDK uses). The legacy
+    // `pm_sponsorUserOperation` is NOT exposed and returns
+    // `"Unsupported method"` from Alchemy. Verified 2026-05-23 via
+    // direct curl against `https://rpc.zerodev.app/api/v3/<id>/chain/<chain>`.
+    // Param shape matches `@zerodev/sdk@5.5.10` (paymaster/sponsorUserOperation.js).
+    const result = await this.rpc('zd_sponsorUserOperation', [
+      {
+        chainId: this.options.expectedChainId,
+        userOp: userOpWithGas,
+        entryPointAddress: entryPoint,
+        shouldOverrideFee: false,
+        shouldConsume: true,
+      },
+    ]);
     return parseSponsoredFields(result);
   }
 
