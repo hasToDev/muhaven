@@ -702,6 +702,114 @@ describe('BundlerClient.getFeeData', () => {
   });
 });
 
+describe('BundlerClient.drainTrace — ring buffer for inline echo diagnostic (0.2.8)', () => {
+  it('returns an empty trace on a fresh client', async () => {
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      fetchImpl: makeMockFetch(async () => jsonResponse({ jsonrpc: '2.0', id: 1, result: '0x' })),
+    });
+    expect(client.drainTrace()).toEqual([]);
+  });
+
+  it('captures a successful RPC into the trace', async () => {
+    const fetchImpl = makeMockFetch(async () =>
+      jsonResponse({ jsonrpc: '2.0', id: 1, result: '0x66eee' }),
+    );
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      expectedChainId: 421614,
+      fetchImpl,
+    });
+    await client.assertChainId();
+    const trace = client.drainTrace();
+    expect(trace).toHaveLength(1);
+    expect(trace[0].method).toBe('eth_chainId');
+    expect(trace[0].responseStatus).toBe(200);
+    expect(trace[0].responseBody).toContain('0x66eee');
+    expect(trace[0].error).toBeUndefined();
+    expect(trace[0].elapsedMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('drain returns the trace AND clears it (next call sees empty)', async () => {
+    const fetchImpl = makeMockFetch(async () =>
+      jsonResponse({ jsonrpc: '2.0', id: 1, result: '0x66eee' }),
+    );
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      expectedChainId: 421614,
+      fetchImpl,
+    });
+    await client.assertChainId();
+    expect(client.drainTrace()).toHaveLength(1);
+    expect(client.drainTrace()).toHaveLength(0);
+  });
+
+  it('captures HTTP error responses with status + body', async () => {
+    const fetchImpl = makeMockFetch(async () => new Response('not found', { status: 404 }));
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      expectedChainId: 421614,
+      fetchImpl,
+    });
+    await expect(client.getFeeData()).rejects.toBeInstanceOf(BundlerClientError);
+    const trace = client.drainTrace();
+    expect(trace).toHaveLength(1);
+    expect(trace[0].method).toBe('eth_gasPrice');
+    expect(trace[0].responseStatus).toBe(404);
+    expect(trace[0].responseBody).toBe('not found');
+    expect(trace[0].error).toMatchObject({ code: 'http_error' });
+  });
+
+  it('captures RPC-error responses (e.g. paymaster AA23) with the upstream message', async () => {
+    const fetchImpl = makeMockFetch(async () =>
+      jsonResponse({
+        jsonrpc: '2.0',
+        id: 1,
+        error: { code: -32603, message: 'AA23 reverted during simulation' },
+      }),
+    );
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      expectedChainId: 421614,
+      fetchImpl,
+    });
+    await expect(
+      client.sponsorUserOp(partialUserOpFixture(), ENTRY_POINT_07_ADDRESS),
+    ).rejects.toBeInstanceOf(BundlerClientError);
+    const trace = client.drainTrace();
+    expect(trace).toHaveLength(1);
+    expect(trace[0].method).toBe('zd_sponsorUserOperation');
+    expect(trace[0].responseBody).toContain('AA23 reverted');
+    expect(trace[0].error).toMatchObject({ code: 'rpc_error' });
+  });
+
+  it('is bounded to 20 events (older entries shift off)', async () => {
+    const fetchImpl = makeMockFetch(async () =>
+      jsonResponse({ jsonrpc: '2.0', id: 1, result: '0x66eee' }),
+    );
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      expectedChainId: 421614,
+      fetchImpl,
+    });
+    for (let i = 0; i < 25; i++) {
+      await client.assertChainId();
+    }
+    const trace = client.drainTrace();
+    expect(trace).toHaveLength(20);
+    // Newest entries at the end; first surviving id should be the 6th
+    // call (call ids 1..5 dropped).
+    expect(trace[0].id).toBe(6);
+    expect(trace[19].id).toBe(25);
+  });
+});
+
 describe('BundlerClient verbose logging (MUHAVEN_MCP_VERBOSE)', () => {
   // 0.2.7 — every bundler RPC writes one request line + one response
   // line to stderr when MUHAVEN_MCP_VERBOSE=1. Default-off so normal

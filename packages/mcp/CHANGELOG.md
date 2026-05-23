@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.8] — 2026-05-23
+
+### Added
+
+- **`pathDBundlerTrace` inline in the `muhaven.position.buy` echo on
+  fallback.** Every Path D attempt now buffers its bundler RPC
+  round-trips in a 20-event ring on the `BundlerClient`; on any
+  fallback return the handler drains the ring and inlines it into
+  the echo:
+
+      pathDBundlerTrace: [
+        {
+          method: 'eth_call',
+          id: 12,
+          requestBody: '{"jsonrpc":"2.0","id":12,"method":"eth_call",...}',
+          responseStatus: 200,
+          responseBody: '{"jsonrpc":"2.0","id":12,"result":"0x..."}',
+          elapsedMs: 87,
+        },
+        {
+          method: 'zd_sponsorUserOperation',
+          id: 14,
+          requestBody: '{"jsonrpc":"2.0","method":"zd_sponsorUserOperation","params":[...]}',
+          responseStatus: 400,
+          responseBody: '{"error":"AA23 reverted ..."}',
+          error: { code: 'http_error', message: '...' },
+          elapsedMs: 412,
+        },
+      ]
+
+  Bodies truncated at 2KB. The LLM (and the operator reading the
+  tool result) sees the EXACT wire payload that the bundler /
+  paymaster rejected — no need for curl repro or Claude Code
+  subprocess log digging. Confirmed 2026-05-23 that Claude Code's
+  MCP client only captures subprocess stderr at handshake (not
+  during tool calls), so the 0.2.7 stderr-verbose path never reached
+  the LLM context during the smoke iterations.
+
+  Ring buffer is always-on (no env-gate, ~80KB worst-case per
+  BundlerClient instance) so the next gate is self-diagnosing
+  immediately without a second `npm i -g` cycle.
+
+  `BundlerClient.drainTrace()` returns + clears the ring; called at
+  the start of `attemptPathD` (clear stale) and again right before
+  the fallback echo (collect + inline).
+
+### Tests
+
+- bundler-client.test.ts: new ring-buffer behaviour cases (drain
+  returns a copy; drain clears; ring is bounded at 20; populates on
+  success + http_error + timeout + rpc_error).
+
 ## [0.2.7] — 2026-05-23
 
 ### Added

@@ -173,6 +173,41 @@ export interface UserOperationReceipt {
   };
 }
 
+/**
+ * Wave 5 Path D 0.2.8 — single bundler RPC round-trip captured for
+ * downstream diagnostic. Stored in a ring buffer on the client; the
+ * caller (attemptPathD) drains the buffer at each fallback return and
+ * inlines it into the `position.buy` echo's `pathDFallbackDetail`
+ * field. Claude Code's MCP client only captures subprocess stderr at
+ * connection handshake (NOT during tool calls — verified 2026-05-23
+ * via Claude Code's `mcp-logs-muhaven` JSONL files), so the previous
+ * stderr-only verbose path was invisible to operators. Returning the
+ * trace IN the tool response is the diagnostic surface that actually
+ * reaches the LLM context.
+ *
+ * Bodies truncated at 2KB each to keep the echo small + bounded.
+ * Sensitive fields (signatures) are kept since the LLM already sees
+ * the unsigned UserOp shape elsewhere — there's no incremental
+ * disclosure beyond what `pathDFallbackDetail`'s sanitized message
+ * already carries.
+ */
+export interface BundlerTraceEvent {
+  /** RPC method (e.g. `eth_call`, `eth_gasPrice`, `zd_sponsorUserOperation`). */
+  readonly method: string;
+  /** Monotonically-incrementing per-client RPC id. */
+  readonly id: number;
+  /** Request body (JSON), truncated. */
+  readonly requestBody: string;
+  /** HTTP status of the response. Undefined for transport-layer failures. */
+  readonly responseStatus?: number;
+  /** Response body (text), truncated. Undefined on transport-layer failures. */
+  readonly responseBody?: string;
+  /** Set when the rpc threw — captures the BundlerClientError code+message. */
+  readonly error?: { code: string; message: string };
+  /** Wall-clock ms elapsed (request start → response received / failure). */
+  readonly elapsedMs: number;
+}
+
 export interface BundlerClientOptions {
   /** Bundler RPC endpoint — MUHAVEN_BUNDLER_URL. https-or-loopback validated
    *  at config-load time (see `config.ts::validatePublicUrlEnv`). */
@@ -208,8 +243,40 @@ export class BundlerClient {
   private readonly fetchImpl: typeof fetch;
   private nextRpcId = 1;
 
+  /**
+   * Ring buffer of the most recent RPC round-trips. Surfaced via
+   * `drainTrace()` to the caller (attemptPathD) for inline diagnostic
+   * in the position.buy echo. Always populated (no env-gate) — bounded
+   * at 20 events × ~4KB each ≈ 80KB worst-case per client instance.
+   * Cheap enough to keep on for all installs so the next paymaster
+   * gate is self-diagnosing without a second binary spin.
+   */
+  private static readonly TRACE_BUFFER_SIZE = 20;
+  private recentTrace: BundlerTraceEvent[] = [];
+
   constructor(private readonly options: BundlerClientOptions) {
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
+  }
+
+  /**
+   * Return AND CLEAR the in-memory trace ring. attemptPathD calls this
+   * right before constructing a fallback echo so the trace inlined
+   * into the echo corresponds to THAT smoke iteration (subsequent
+   * tool calls start with an empty buffer). Returns a copy so the
+   * caller can safely serialize without races against in-flight
+   * concurrent RPCs.
+   */
+  drainTrace(): readonly BundlerTraceEvent[] {
+    const snapshot = this.recentTrace.slice();
+    this.recentTrace = [];
+    return snapshot;
+  }
+
+  private pushTrace(event: BundlerTraceEvent): void {
+    this.recentTrace.push(event);
+    if (this.recentTrace.length > BundlerClient.TRACE_BUFFER_SIZE) {
+      this.recentTrace.shift();
+    }
   }
 
   /**
@@ -474,20 +541,20 @@ export class BundlerClient {
     const id = this.nextRpcId++;
     const body = JSON.stringify({ jsonrpc: '2.0', id, method, params });
     // 0.2.7 — verbose request/response logging gated on
-    // `MUHAVEN_MCP_VERBOSE`. Lands on stderr (Claude Code captures
-    // MCP subprocess stderr to its session log; visible via the host
-    // log dir or `--debug` mode). Default off to keep normal smokes
-    // quiet; flip on when triaging a `pathDFallbackReason` to see the
-    // exact wire payloads being exchanged.
+    // `MUHAVEN_MCP_VERBOSE`. Lands on stderr; useful for
+    // local-development debugging but Claude Code's MCP client only
+    // captures subprocess stderr at handshake (not during tool calls).
+    // 0.2.8 — ALWAYS-on in-memory ring buffer drained by
+    // `attemptPathD` and inlined into the fallback echo. That's the
+    // diagnostic surface that actually reaches the LLM context.
     const verbose = process.env.MUHAVEN_MCP_VERBOSE === '1';
+    const truncate = (s: string): string =>
+      s.length > 2048 ? s.slice(0, 2048) + '…(truncated)' : s;
+    const requestBody = truncate(body);
+    const startMs = Date.now();
     if (verbose) {
-      // Cap the dump so a 30KB UserOp doesn't drown the log. The
-      // method + first ~2KB of params is enough to pinpoint shape
-      // issues (chainId, entryPointAddress, userOp.sender / nonce /
-      // signature / callData[..32].
-      const bodyDump = body.length > 2048 ? body.slice(0, 2048) + '…(truncated)' : body;
       process.stderr.write(
-        `[muhaven-mcp] [bundler→] ${method} id=${id} body=${bodyDump}\n`,
+        `[muhaven-mcp] [bundler→] ${method} id=${id} body=${requestBody}\n`,
       );
     }
     const ctrl = new AbortController();
@@ -514,20 +581,36 @@ export class BundlerClient {
       });
     } catch (err) {
       clearTimeout(timer);
+      const elapsedMs = Date.now() - startMs;
       if ((err as Error).name === 'AbortError') {
         if (verbose) {
           process.stderr.write(`[muhaven-mcp] [bundler✗] ${method} id=${id} timeout\n`);
         }
+        this.pushTrace({
+          method,
+          id,
+          requestBody,
+          error: { code: 'timeout', message: `bundler ${method} timed out` },
+          elapsedMs,
+        });
         throw new BundlerClientError('timeout', `bundler ${method} timed out`);
       }
+      const netMsg = err instanceof Error ? err.message : String(err);
       if (verbose) {
         process.stderr.write(
-          `[muhaven-mcp] [bundler✗] ${method} id=${id} network err=${err instanceof Error ? err.message : String(err)}\n`,
+          `[muhaven-mcp] [bundler✗] ${method} id=${id} network err=${netMsg}\n`,
         );
       }
+      this.pushTrace({
+        method,
+        id,
+        requestBody,
+        error: { code: 'network', message: `bundler ${method} network error: ${netMsg}` },
+        elapsedMs,
+      });
       throw new BundlerClientError(
         'network',
-        `bundler ${method} network error: ${err instanceof Error ? err.message : String(err)}`,
+        `bundler ${method} network error: ${netMsg}`,
         err,
       );
     } finally {
@@ -546,6 +629,18 @@ export class BundlerClient {
           `[muhaven-mcp] [bundler✗] ${method} id=${id} HTTP ${res.status} body=${text}\n`,
         );
       }
+      this.pushTrace({
+        method,
+        id,
+        requestBody,
+        responseStatus: res.status,
+        responseBody: text,
+        error: {
+          code: 'http_error',
+          message: `bundler ${method} → HTTP ${res.status}: ${text}`,
+        },
+        elapsedMs: Date.now() - startMs,
+      });
       throw new BundlerClientError(
         'http_error',
         `bundler ${method} → HTTP ${res.status}: ${text}`,
@@ -555,22 +650,41 @@ export class BundlerClient {
     try {
       parsed = await res.json();
     } catch (err) {
+      const jsonErr = err instanceof Error ? err.message : String(err);
       if (verbose) {
         process.stderr.write(
-          `[muhaven-mcp] [bundler✗] ${method} id=${id} non-JSON err=${err instanceof Error ? err.message : String(err)}\n`,
+          `[muhaven-mcp] [bundler✗] ${method} id=${id} non-JSON err=${jsonErr}\n`,
         );
       }
+      this.pushTrace({
+        method,
+        id,
+        requestBody,
+        responseStatus: res.status,
+        error: { code: 'invalid_response', message: `bundler ${method} returned non-JSON: ${jsonErr}` },
+        elapsedMs: Date.now() - startMs,
+      });
       throw new BundlerClientError(
         'invalid_response',
-        `bundler ${method} returned non-JSON: ${err instanceof Error ? err.message : String(err)}`,
+        `bundler ${method} returned non-JSON: ${jsonErr}`,
       );
     }
+    const respDump = JSON.stringify(parsed);
+    const respBody = truncate(respDump);
     if (verbose) {
-      const respDump = JSON.stringify(parsed);
-      const trunc = respDump.length > 2048 ? respDump.slice(0, 2048) + '…(truncated)' : respDump;
-      process.stderr.write(`[muhaven-mcp] [bundler←] ${method} id=${id} resp=${trunc}\n`);
+      process.stderr.write(`[muhaven-mcp] [bundler←] ${method} id=${id} resp=${respBody}\n`);
     }
+    const elapsedMs = Date.now() - startMs;
     if (typeof parsed !== 'object' || parsed === null) {
+      this.pushTrace({
+        method,
+        id,
+        requestBody,
+        responseStatus: res.status,
+        responseBody: respBody,
+        error: { code: 'invalid_response', message: `bundler ${method} returned non-object` },
+        elapsedMs,
+      });
       throw new BundlerClientError(
         'invalid_response',
         `bundler ${method} returned non-object`,
@@ -579,12 +693,30 @@ export class BundlerClient {
     const obj = parsed as Record<string, unknown>;
     if (obj.error !== undefined && obj.error !== null) {
       const err = obj.error as Record<string, unknown>;
+      const errMsg = typeof err.message === 'string' ? err.message : '<no message>';
+      this.pushTrace({
+        method,
+        id,
+        requestBody,
+        responseStatus: res.status,
+        responseBody: respBody,
+        error: { code: 'rpc_error', message: `bundler ${method} rpc error: ${errMsg}` },
+        elapsedMs,
+      });
       throw new BundlerClientError(
         'rpc_error',
-        `bundler ${method} rpc error: ${typeof err.message === 'string' ? err.message : '<no message>'}`,
+        `bundler ${method} rpc error: ${errMsg}`,
         { code: err.code, message: err.message, data: err.data },
       );
     }
+    this.pushTrace({
+      method,
+      id,
+      requestBody,
+      responseStatus: res.status,
+      responseBody: respBody,
+      elapsedMs,
+    });
     return obj.result;
   }
 }

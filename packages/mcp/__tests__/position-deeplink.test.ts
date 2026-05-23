@@ -973,6 +973,13 @@ function stubBundler(overrides: BundlerStubOverrides = {}): BundlerClient {
       if (v instanceof Error) throw v;
       return v;
     }),
+    // 0.2.8 — drainTrace is called by attemptPathD at start (to clear
+    // stale RPC trace) and by positionBuy at fallback (to inline the
+    // trace into the echo). Path D probe tests don't exercise real
+    // bundler RPCs, so an empty trace is the correct stub response.
+    // Returns a fresh array each call (matches the real impl's
+    // contract of returning a copy + clearing).
+    drainTrace: vi.fn().mockImplementation((): readonly unknown[] => []),
   };
   return new Proxy(wired, {
     get(target, prop, receiver) {
@@ -2172,6 +2179,10 @@ describe('positionBuy — Path D Slice 1 Commit 3.5 UserOp pipeline', () => {
       sponsorUserOp: vi.fn().mockResolvedValue(sponsored),
       sendUserOp: sendSpy,
       waitForReceipt: vi.fn().mockResolvedValue(happyReceipt(expectedHash)),
+      // 0.2.8 — attemptPathD calls drainTrace() at the start (clear
+      // stale ring) and positionBuy calls it on fallback (inline into
+      // echo). The happy path only exercises the clear-at-start call.
+      drainTrace: vi.fn().mockReturnValue([]),
     } as unknown as BundlerClient;
     const broker = stubBroker({
       policySnapshot: { type: 'get_policy_snapshot', snapshot: snap },

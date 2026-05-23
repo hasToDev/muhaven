@@ -24,7 +24,7 @@ import type { BackendClient } from '../clients/backend-client.js';
 import { BackendError } from '../clients/backend-client.js';
 import type { BrokerClient } from '../clients/broker-client.js';
 import { BrokerClientError } from '../clients/broker-client.js';
-import type { BundlerClient } from '../clients/bundler-client.js';
+import type { BundlerClient, BundlerTraceEvent } from '../clients/bundler-client.js';
 import { BundlerClientError } from '../clients/bundler-client.js';
 import { decodeJwtPayload, truncateSubject } from '../auth/jwt-decode.js';
 import {
@@ -1295,6 +1295,12 @@ async function attemptPathD(
   if (!deps.broker || !deps.bundler) {
     return { kind: 'unconfigured' };
   }
+  // 0.2.8 — clear the bundler's recent-trace ring at the start of
+  // every Path D attempt so the trace inlined into the fallback echo
+  // (drained by the caller) contains ONLY this iteration's RPCs.
+  // Stale trace from a prior failed smoke would otherwise mix into
+  // the echo and confuse the LLM's diagnosis.
+  deps.bundler.drainTrace();
   // Slice 1 Commit 3.5 — the new sub-pipeline needs a target address
   // (the MuHavenSubscription contract) + an entry point + a chain id.
   // Without all three the new path can't compose a valid UserOp; fall
@@ -1984,6 +1990,7 @@ export async function positionBuy(
   let pathDFallbackReason: PathDFallbackReason | undefined;
   let pathDFallbackDetail: string | undefined;
   let pathDSubmittedUserOpHash: `0x${string}` | undefined;
+  let pathDBundlerTrace: readonly BundlerTraceEvent[] | undefined;
   const pathD = await attemptPathD(
     { shares, tokenAddress: token.address as `0x${string}`, tokenSymbol: token.symbol },
     deps,
@@ -1993,20 +2000,23 @@ export async function positionBuy(
   }
   if (pathD.kind === 'fallback') {
     pathDFallbackReason = pathD.reason;
-    // 0.2.5 — also surface the structured fallback `message` to the LLM
-    // echo. Pre-0.2.5 only the `reason` code was echoed; the underlying
-    // bundler / paymaster / broker error message was dropped. Every
-    // Path D smoke that surfaced a new gate (bundler_setup_failed,
-    // paymaster_rejected, encrypt_shares_server_error) required curl
-    // repro to find the actual error class. With the detail in the
-    // echo, future fallback iterations carry enough context for the
-    // LLM (and a human reading the trace) to self-diagnose. Sanitized
-    // server-side already where untrusted input crosses the boundary
-    // (e.g. bundler RPC error messages run through
-    // `sanitizeRpcMessageForLlmContext`).
     pathDFallbackDetail = pathD.message;
     if (pathD.submittedUserOpHash) {
       pathDSubmittedUserOpHash = pathD.submittedUserOpHash;
+    }
+    // 0.2.8 — drain the bundler's per-attempt RPC ring buffer and
+    // inline it into the echo. Each event carries the truncated
+    // request body + response body + per-call elapsed ms, so the LLM
+    // (and the operator reading Claude Code's tool result) sees the
+    // EXACT wire payload that ZeroDev's paymaster rejected — no need
+    // for curl repro or Claude Code subprocess log digging (the
+    // latter doesn't even capture per-tool-call stderr, verified
+    // 2026-05-23 against `mcp-logs-muhaven` JSONL).
+    if (deps.bundler) {
+      const trace = deps.bundler.drainTrace();
+      if (trace.length > 0) {
+        pathDBundlerTrace = trace;
+      }
     }
   }
 
@@ -2041,6 +2051,7 @@ export async function positionBuy(
       ...(pathDFallbackReason ? { pathDFallbackReason } : {}),
       ...(pathDFallbackDetail ? { pathDFallbackDetail } : {}),
       ...(pathDSubmittedUserOpHash ? { pathDSubmittedUserOpHash } : {}),
+      ...(pathDBundlerTrace ? { pathDBundlerTrace } : {}),
     },
   });
 }
