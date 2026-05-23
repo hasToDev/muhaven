@@ -10,11 +10,16 @@ import type { EncryptSharesForPurchaseResponseDto } from '../../../dto/agent/pat
  * autonomous-buy encrypt step.
  *
  * Inputs:
- *   - userId: kernel address (= JWT subject), the on-chain `msg.sender`
- *     of the downstream `subscription.purchase` UserOp. Used as the
- *     `setAccount(...)` binding so the cofhe verifier signs against the
- *     correct sender (otherwise the on-chain TaskManager reverts
- *     `InvalidSigner`).
+ *   - accountAddress: on-chain kernel smart-account address (= the
+ *     SIWE-verified `walletAddress` claim, NOT the JWT subject which
+ *     is a UUID). The on-chain `msg.sender` of the downstream
+ *     `subscription.purchase` UserOp. Used as the `setAccount(...)`
+ *     binding so the cofhe verifier signs against the correct sender
+ *     (otherwise the on-chain TaskManager reverts `InvalidSigner`).
+ *     Pickup B follow-up — param renamed from `userId` (which sounded
+ *     like the JWT subject) so the route layer can't accidentally
+ *     pass the UUID. The route at `encrypt-shares.ts:39` now
+ *     explicitly sources `authPayload!.walletAddress`.
  *   - tokenAddress: the RWA token the user is buying shares of. We
  *     re-validate against the catalog so a stale snapshot can't request
  *     encryption for a delisted token (the broker's selectorCap targets
@@ -26,7 +31,11 @@ import type { EncryptSharesForPurchaseResponseDto } from '../../../dto/agent/pat
  */
 
 export interface EncryptSharesForPurchaseInput {
-  readonly userId: string;
+  /** On-chain kernel smart-account address (0x-prefixed 20-byte hex,
+   *  case-tolerant — lowercased at the route layer). Renamed from
+   *  `userId` (Pickup B follow-up) to prevent the JWT-subject-vs-
+   *  kernel-address bug class from re-emerging at the route boundary. */
+  readonly accountAddress: string;
   readonly tokenAddress: string;
   readonly sharesAmount: bigint;
 }
@@ -45,20 +54,22 @@ export class EncryptSharesForPurchaseUseCase {
   async execute(
     input: EncryptSharesForPurchaseInput,
   ): Promise<EncryptSharesForPurchaseResponseDto> {
-    // 0. userId MUST be a 0x-prefixed 20-byte hex (the user's kernel
-    //    address). The JWT subject is set to this address at login —
-    //    a future auth refactor that ever stores something else (UUID,
-    //    email) would silently mis-bind the FHE setAccount and revert
-    //    on-chain `InvalidSigner`. Reject zero-address as a defensive
-    //    invariant — no legitimate kernel deploys to 0x0 (Code Reviewer
-    //    L-4, Backend Architect M-1).
-    if (!ADDRESS_HEX.test(input.userId)) {
+    // 0. accountAddress MUST be a 0x-prefixed 20-byte hex (the user's
+    //    kernel smart-account address). Sourced from the route at
+    //    `encrypt-shares.ts` via `authPayload.walletAddress` (NOT
+    //    `authPayload.userId` which is the JWT subject UUID — Pickup B
+    //    follow-up: that UUID-vs-walletAddress bug class burned an
+    //    operator-smoke iteration on 2026-05-23 with
+    //    `pathDFallbackReason: encrypt_shares_rejected`). Reject
+    //    zero-address as a defensive invariant — no legitimate kernel
+    //    deploys to 0x0 (Code Reviewer L-4, Backend Architect M-1).
+    if (!ADDRESS_HEX.test(input.accountAddress)) {
       throw ApplicationHttpError.badRequest(
-        'userId must be a 0x-prefixed 20-byte hex address (kernel address)',
+        'accountAddress must be a 0x-prefixed 20-byte hex address (kernel address)',
       );
     }
-    if (input.userId.toLowerCase() === ZERO_ADDRESS) {
-      throw ApplicationHttpError.badRequest('userId must not be the zero address');
+    if (input.accountAddress.toLowerCase() === ZERO_ADDRESS) {
+      throw ApplicationHttpError.badRequest('accountAddress must not be the zero address');
     }
     // 1. Numeric guardrails. The DTO regex limits the string shape; this
     //    enforces the semantic range — zero/negative reject (silent-
@@ -97,7 +108,7 @@ export class EncryptSharesForPurchaseUseCase {
     //    fhe-worker client timeout is preserved; any non-200 from the
     //    worker surfaces as an ApplicationHttpError(500) which the
     //    route maps cleanly.
-    const encResult = await this.fheWorker.encryptBatchForAccount(input.userId, [
+    const encResult = await this.fheWorker.encryptBatchForAccount(input.accountAddress, [
       { type: 'euint128', value: input.sharesAmount.toString() },
     ]);
 

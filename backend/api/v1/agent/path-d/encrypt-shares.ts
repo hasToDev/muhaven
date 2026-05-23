@@ -36,9 +36,21 @@ const handler = createHandler({
   operationName: 'PathDEncryptSharesForPurchase',
   schema: EncryptSharesForPurchaseRequestDtoSchema,
   execute: async (dto, _req, authPayload) => {
-    const userId = authPayload!.userId;
+    // Wave 5 Path D Pickup B follow-up — the use-case requires the
+    // ON-CHAIN KERNEL ADDRESS (= `walletAddress` claim) for the FHE
+    // `setAccount` binding, NOT the JWT subject (which is a UUID per
+    // the auth payload shape). Same UUID-vs-walletAddress bug class
+    // as `api/v1/agent/policy/state.ts` (fixed in commit `1a28618`);
+    // this route surfaced as `pathDFallbackReason: encrypt_shares_rejected`
+    // on the 2026-05-23 smoke. Lowercase here so the
+    // `setAccount(kernelAddress)` binding on the fhe-worker stays
+    // case-stable with the on-chain `msg.sender` (which the bundler
+    // sources from the kernel; case-insensitive on-chain, but the
+    // ApplicationHttpError regex check in the use-case at line 55 is
+    // case-tolerant either way).
+    const accountAddress = authPayload!.walletAddress.toLowerCase();
     const result = await container.encryptSharesForPurchase.execute({
-      userId,
+      accountAddress,
       tokenAddress: dto.tokenAddress,
       sharesAmount: BigInt(dto.sharesAmount),
     });

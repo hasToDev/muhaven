@@ -113,7 +113,7 @@ describe('EncryptSharesForPurchaseUseCase', () => {
 
   it('returns encShares + a fresh ephemeralEOA on the happy path', async () => {
     const result = await useCase.execute({
-      userId: KERNEL,
+      accountAddress: KERNEL,
       tokenAddress: TOKEN_ACTIVE,
       sharesAmount: 500n,
     });
@@ -132,28 +132,28 @@ describe('EncryptSharesForPurchaseUseCase', () => {
 
   it('mints a different ephemeralEOA on each call (no key reuse)', async () => {
     const r1 = await useCase.execute({
-      userId: KERNEL,
+      accountAddress: KERNEL,
       tokenAddress: TOKEN_ACTIVE,
       sharesAmount: 1n,
     });
     const r2 = await useCase.execute({
-      userId: KERNEL,
+      accountAddress: KERNEL,
       tokenAddress: TOKEN_ACTIVE,
       sharesAmount: 1n,
     });
     expect(r1.ephemeralEOA).not.toBe(r2.ephemeralEOA);
   });
 
-  it('rejects userId that is not a 0x-prefixed 20-byte hex address with 400', async () => {
+  it('rejects accountAddress that is not a 0x-prefixed 20-byte hex address with 400', async () => {
     await expect(
-      useCase.execute({ userId: 'not-an-address', tokenAddress: TOKEN_ACTIVE, sharesAmount: 1n }),
+      useCase.execute({ accountAddress: 'not-an-address', tokenAddress: TOKEN_ACTIVE, sharesAmount: 1n }),
     ).rejects.toMatchObject({ statusCode: 400 });
   });
 
-  it('rejects userId zero address with 400', async () => {
+  it('rejects accountAddress zero address with 400', async () => {
     await expect(
       useCase.execute({
-        userId: '0x0000000000000000000000000000000000000000',
+        accountAddress: '0x0000000000000000000000000000000000000000',
         tokenAddress: TOKEN_ACTIVE,
         sharesAmount: 1n,
       }),
@@ -162,14 +162,14 @@ describe('EncryptSharesForPurchaseUseCase', () => {
 
   it('rejects sharesAmount === 0 with 400', async () => {
     await expect(
-      useCase.execute({ userId: KERNEL, tokenAddress: TOKEN_ACTIVE, sharesAmount: 0n }),
+      useCase.execute({ accountAddress: KERNEL, tokenAddress: TOKEN_ACTIVE, sharesAmount: 0n }),
     ).rejects.toMatchObject({ statusCode: 400 });
   });
 
   it('rejects sharesAmount > uint128 max with 400', async () => {
     await expect(
       useCase.execute({
-        userId: KERNEL,
+        accountAddress: KERNEL,
         tokenAddress: TOKEN_ACTIVE,
         sharesAmount: 1n << 128n,
       }),
@@ -179,7 +179,7 @@ describe('EncryptSharesForPurchaseUseCase', () => {
   it('rejects unknown token with 404', async () => {
     await expect(
       useCase.execute({
-        userId: KERNEL,
+        accountAddress: KERNEL,
         tokenAddress: '0x0000000000000000000000000000000000000abc',
         sharesAmount: 1n,
       }),
@@ -189,7 +189,7 @@ describe('EncryptSharesForPurchaseUseCase', () => {
   it('rejects winding_down token with 409', async () => {
     await expect(
       useCase.execute({
-        userId: KERNEL,
+        accountAddress: KERNEL,
         tokenAddress: TOKEN_WINDDOWN,
         sharesAmount: 1n,
       }),
@@ -209,7 +209,7 @@ describe('EncryptSharesForPurchaseUseCase', () => {
     );
     await expect(
       sadUseCase.execute({
-        userId: KERNEL,
+        accountAddress: KERNEL,
         tokenAddress: TOKEN_ACTIVE,
         sharesAmount: 1n,
       }),
@@ -230,7 +230,7 @@ describe('EncryptSharesForPurchaseUseCase', () => {
     );
     await expect(
       useCase2.execute({
-        userId: KERNEL,
+        accountAddress: KERNEL,
         tokenAddress: TOKEN_ACTIVE,
         sharesAmount: 1n,
       }),
