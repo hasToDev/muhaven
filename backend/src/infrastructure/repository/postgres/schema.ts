@@ -998,20 +998,37 @@ export const agentScopedSessions = pgTable(
       sql`(validator_enabled_at IS NULL) = (enable_status IS NULL OR enable_status != 'enabled')`,
     ),
     /**
-     * Encrypted-blob size cap. pgcrypto adds ~50-90 bytes overhead on
-     * top of the cleartext; 8192 bytes is a generous bound for the
-     * worst-case ABI-encoded enableData under our policy count.
-     * Without this, a malformed write (or future schema drift that
-     * accepts longer cleartext) would silently grow rows past
-     * Postgres's TOAST threshold.
+     * Encrypted-blob size cap. pgcrypto adds ~80 bytes overhead on top
+     * of the cleartext (PGP packet framing + IV + auth tag).
+     *
+     * **Hot-patch 2026-05-23 — `_v2` rename forces a clean Drizzle
+     * drop+create.** The original `_size_chk` constraints rejected
+     * encrypted bytea over 8192 / 4096 bytes, but the real Wave 5
+     * policy count yields ~30KB hex cleartext (≈30KB encrypted blob)
+     * which trips the 8192 ceiling on every prod mint. Raised the
+     * cleartext bound in `ENABLE_DATA_HEX_RE` to 65536 hex (~32KB)
+     * and matched the encrypted bytea ceiling to 131072 (128KB) —
+     * gives 4× safety margin over the worst-case encrypted size.
+     *
+     * Drizzle compares CHECK constraints by NAME (mirrors the
+     * `[[feedback-drizzle-predicate-change-index-rename]]` pattern
+     * documented for partial indexes). Without the `_v2` suffix
+     * rename, the predicate change would be silently skipped on
+     * `db:push`. The `_v2` name forces a DROP + CREATE which lands
+     * the new bound cleanly.
+     *
+     * Same `_v2` rename on `enable_sig_size_chk` for the same reason
+     * — cleartext bound raised 4096 → 16384 to cover platform-
+     * authenticator attestation paths; encrypted bytea ceiling
+     * raised to 32768.
      */
     check(
-      'agent_scoped_sessions_enable_data_size_chk',
-      sql`enable_data IS NULL OR octet_length(enable_data) <= 8192`,
+      'agent_scoped_sessions_enable_data_size_chk_v2',
+      sql`enable_data IS NULL OR octet_length(enable_data) <= 131072`,
     ),
     check(
-      'agent_scoped_sessions_enable_sig_size_chk',
-      sql`enable_sig IS NULL OR octet_length(enable_sig) <= 4096`,
+      'agent_scoped_sessions_enable_sig_size_chk_v2',
+      sql`enable_sig IS NULL OR octet_length(enable_sig) <= 32768`,
     ),
     /**
      * Partial index — backs the C3 chain-indexer's per-block scan

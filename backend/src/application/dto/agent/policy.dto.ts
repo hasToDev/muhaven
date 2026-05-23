@@ -208,29 +208,40 @@ const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
 /**
  * Wave 5 Option D · Commit 2 — `enableData` shape gate.
- * Cleartext `0x` + 2–8192 hex chars (4–8194 total). Empty hex (`0x`)
- * rejected — the kernel rejects a 0-length validatorData at install
- * time, so we surface the error at the DTO boundary instead of
- * letting an empty value land in the DB.
+ * Cleartext `0x` + 2–65536 hex chars (4–65538 total).
+ *
+ * **Hot-patch 2026-05-23**: the original `{2,8192}` bound (~4KB
+ * cleartext) was sized for a small policy count. The real
+ * `SCOPED_AUTONOMOUS_PERMISSIONS` set on Wave 5 prod has ~125
+ * permissions (subscription × 2 + per-token queues × 22 + per-token
+ * snapshots × 77 + setOperator + refresh-grants ~25), yielding an
+ * ABI-encoded `getEnableData()` payload of ~15KB binary = ~30KB
+ * hex. The operator's first C2 mint hit `got 30146 chars`. Raising
+ * to 65536 hex (~32KB cleartext) gives ~2× safety margin for future
+ * permission growth (~500 selectors). Empty hex (`0x`) still
+ * rejected — kernel rejects 0-length validatorData at install.
  */
-const ENABLE_DATA_HEX_RE = /^0x[0-9a-fA-F]{2,8192}$/;
+const ENABLE_DATA_HEX_RE = /^0x[0-9a-fA-F]{2,65536}$/;
 /**
  * Wave 5 Option D · Commit 2 — `enableSig` shape gate.
- * Cleartext `0x` + 256–4096 hex chars (258–4098 total).
+ * Cleartext `0x` + 256–16384 hex chars (258–16386 total).
  *
  * Multi-agent review SecEng H-3 absorbed — the 128-char floor accepted
  * a bare 65-byte ECDSA `(r,s,v)` signature (130 hex), which is NOT the
- * shape `@zerodev/passkey-validator::signTypedData` returns. Tightened
- * to 256 hex (128 bytes) which still admits the absolute floor of a
- * WebAuthn envelope (authenticatorData ≥ 37 bytes + clientDataJSON ≥
- * 60 bytes + DER ECDSA ≥ 70 bytes ≈ 167 bytes raw; the 256-hex floor
- * is a small safety margin under that). Defense against a downgrade
- * by a malicious frontend posting a plain ECDSA blob.
+ * shape `@zerodev/passkey-validator::signTypedData` returns. The
+ * tightened 256-hex floor admits the absolute floor of a WebAuthn
+ * envelope (authenticatorData ≥ 37 bytes + clientDataJSON ≥ 60 bytes
+ * + DER ECDSA ≥ 70 bytes ≈ 167 bytes raw; the 256-hex floor is a
+ * small safety margin under that).
  *
- * The upper bound (4096 hex = 2KB) covers the largest authenticator
- * extensions / attestation paths.
+ * **Hot-patch 2026-05-23**: upper bound raised 4096 → 16384 hex
+ * (~8KB) preemptively alongside the enableData hot-patch — some
+ * platform-authenticator attestation flows can emit envelopes
+ * past 2KB; the operator hasn't hit this yet but the asymmetric
+ * bound risk (enable_data hit limit on first mint, enable_sig might
+ * on a different device) is cheap to close in the same deploy.
  */
-const ENABLE_SIG_HEX_RE = /^0x[0-9a-fA-F]{256,4096}$/;
+const ENABLE_SIG_HEX_RE = /^0x[0-9a-fA-F]{256,16384}$/;
 /** uint256 decimal — 0 alone OR a non-zero leading digit followed by ≤77 digits. */
 const UINT256_DEC_RE = /^(0|[1-9][0-9]{0,77})$/;
 const UINT256_MAX = (1n << 256n) - 1n;

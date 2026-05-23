@@ -438,7 +438,7 @@ describe('policy-scoped.helpers — buildScopedMintBody', () => {
       '0xa',                                 // 1 hex char (< 2 minimum after prefix)
       'cdab',                                // missing 0x prefix
       `0x${'g'.repeat(8)}`,                  // non-hex
-      `0x${'cd'.repeat(4097)}`,              // exceeds 8192-char cleartext ceiling
+      `0x${'cd'.repeat(32769)}`,             // exceeds 65536-char cleartext ceiling (hot-patch 2026-05-23)
     ]
     for (const bad of cases) {
       expect(() =>
@@ -447,10 +447,22 @@ describe('policy-scoped.helpers — buildScopedMintBody', () => {
     }
   })
 
+  it('accepts realistic prod-size enableData (~30KB hex — Option D hot-patch regression guard)', () => {
+    // The 2026-05-23 hot-patch raised the cleartext ceiling 8192 →
+    // 65536 hex because the real Wave 5 SCOPED_AUTONOMOUS_PERMISSIONS
+    // yields a 30KB hex payload. A future tightening that ignores
+    // the real policy count would re-introduce the production outage.
+    const body = buildScopedMintBody({
+      ...baseInput,
+      enableData: `0x${'cd'.repeat(15000)}` as `0x${string}`, // 30000 hex
+    })
+    expect(body.snapshot.enableData?.length).toBe(30002)
+  })
+
   it('throws on malformed enableSig (length out of bounds / non-hex)', () => {
     const cases: string[] = [
       `0x${'ab'.repeat(127)}`,               // 254 hex — under 256-char floor
-      `0x${'ab'.repeat(2049)}`,              // 4098 hex — over 4096 ceiling
+      `0x${'ab'.repeat(8193)}`,              // 16386 hex — over 16384 ceiling (hot-patch 2026-05-23)
       `0x${'g'.repeat(300)}`,                // non-hex
       'ababab',                              // missing 0x prefix
     ]

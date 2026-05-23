@@ -339,9 +339,13 @@ export function buildScopedMintBody(input: BuildScopedMintBodyInput): ScopedMint
   // is whatever the client sent; mixed case would break a future
   // raw-SQL audit JOIN that matches on stable case).
   const enableDataLower = input.enableData.toLowerCase() as `0x${string}`
-  if (!/^0x[0-9a-f]{2,8192}$/.test(enableDataLower)) {
+  // Hot-patch 2026-05-23 — upper bound raised 8192 → 65536. The real
+  // SCOPED_AUTONOMOUS_PERMISSIONS set on Wave 5 prod yields ~30KB hex
+  // `getEnableData()` payload. See backend `policy.dto.ts::ENABLE_DATA_HEX_RE`
+  // for the sizing rationale.
+  if (!/^0x[0-9a-f]{2,65536}$/.test(enableDataLower)) {
     throw new Error(
-      `buildScopedMintBody: enableData must be 0x-prefixed hex (2-8192 hex chars); got ${input.enableData.length} chars`,
+      `buildScopedMintBody: enableData must be 0x-prefixed hex (2-65536 hex chars); got ${input.enableData.length} chars`,
     )
   }
   const enableSigLower = input.enableSig.toLowerCase() as `0x${string}`
@@ -349,9 +353,11 @@ export function buildScopedMintBody(input: BuildScopedMintBodyInput): ScopedMint
   // is the floor of a real WebAuthn envelope. Tightened from 128 in
   // multi-agent review SecEng H-3 to reject bare-ECDSA downgrade
   // attempts (a 65-byte ECDSA = 130 hex would otherwise slip through).
-  if (!/^0x[0-9a-f]{256,4096}$/.test(enableSigLower)) {
+  // Hot-patch 2026-05-23 — upper bound raised 4096 → 16384 to cover
+  // platform-authenticator attestation paths.
+  if (!/^0x[0-9a-f]{256,16384}$/.test(enableSigLower)) {
     throw new Error(
-      `buildScopedMintBody: enableSig must be 0x-prefixed hex (256-4096 hex chars); got ${input.enableSig.length} chars`,
+      `buildScopedMintBody: enableSig must be 0x-prefixed hex (256-16384 hex chars); got ${input.enableSig.length} chars`,
     )
   }
   if (

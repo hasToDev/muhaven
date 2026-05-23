@@ -400,12 +400,33 @@ describe('MintScopedSessionDtoSchema — Option D · C2 install material', () =>
     ).toThrow();
   });
 
-  it('REJECTS enableData exceeding the 8192-char cleartext ceiling', () => {
+  it('REJECTS enableData exceeding the 65536-char cleartext ceiling', () => {
     expect(() =>
       MintScopedSessionDtoSchema.parse(
-        withInstallMaterial({ enableData: `0x${'a'.repeat(8193)}` }),
+        withInstallMaterial({
+          enableData: `0x${'a'.repeat(65537)}`,
+          enableSig: minimalEnableSig,
+          validatorNonce: 1,
+        }),
       ),
     ).toThrow();
+  });
+
+  it('accepts enableData at realistic prod size (~30KB hex, ~125 permissions)', () => {
+    // Hot-patch 2026-05-23 — the original 8192 ceiling rejected every
+    // real prod mint because SCOPED_AUTONOMOUS_PERMISSIONS yields a
+    // 30KB hex payload. This case pins the regression — a future
+    // tightening of the ceiling that ignores the real policy count
+    // would re-introduce the production outage.
+    expect(() =>
+      MintScopedSessionDtoSchema.parse(
+        withInstallMaterial({
+          enableData: `0x${'cd'.repeat(15000)}`, // 30000 hex chars
+          enableSig: minimalEnableSig,
+          validatorNonce: 1,
+        }),
+      ),
+    ).not.toThrow();
   });
 
   it('accepts enableSig at the lower bound (256 hex chars, WebAuthn-envelope floor)', () => {
@@ -440,10 +461,14 @@ describe('MintScopedSessionDtoSchema — Option D · C2 install material', () =>
     ).toThrow();
   });
 
-  it('REJECTS enableSig above the 4096-hex ceiling', () => {
+  it('REJECTS enableSig above the 16384-hex ceiling', () => {
     expect(() =>
       MintScopedSessionDtoSchema.parse(
-        withInstallMaterial({ enableSig: `0x${'ab'.repeat(2049)}` }),
+        withInstallMaterial({
+          enableData: minimalEnableData,
+          enableSig: `0x${'ab'.repeat(8193)}`, // 16386 hex
+          validatorNonce: 1,
+        }),
       ),
     ).toThrow();
   });
