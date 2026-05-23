@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-05-23
+
+### Fixed
+
+- **`tools/list.inputSchema` now exposes the per-field shape, not a
+  bare `{type:'object', additionalProperties:false}` placeholder.**
+  The 0.2.1 (and earlier) `toJsonInputSchema` was a stub: it returned
+  the object envelope with `additionalProperties:false` but no
+  `properties` block. JSON-Schema-compliant MCP hosts (Claude Code's
+  tool-call validator) interpret that combination as "no properties
+  allowed" and silently strip every argument before dispatch — every
+  call landed at the server as `{}`. Surfaced 2026-05-23 by an
+  operator-side `Buy TBILL1 $1` smoke. Fix: wire `zod-to-json-schema`
+  (`target: 'jsonSchema7'`, `$refStrategy: 'none'`,
+  `removeAdditionalStrategy: 'strict'`) so the real per-field shape
+  reaches the host. Drops the top-level `$schema` URL (host noise).
+  Added 14 unit + 48 registry-wide regression cases pinning the
+  contract per tool, plus a recursive nested-strict walker that fails
+  if a future contributor adds a nested `z.object(...)` without
+  `.strict()` (Security Engineer MED, absorbed inline).
+
+### Dependencies
+
+- **Added `zod-to-json-schema@^3.24.0`** as a runtime dep (~30KB, zero
+  transitive deps). Required by the inputSchema fix above; previously
+  the converter was a placeholder stub per the original commit's note
+  to "avoid runtime dep for hackathon scope."
+- **Bumped `zod` dep range from `^3.24.0` to `^3.25.0`** to match
+  `@modelcontextprotocol/sdk@^1.0.4`'s peer-dep declaration
+  (`zod: ^3.25 || ^4.0`). The installed tree already resolves to
+  3.25.x so prod runtime is unchanged, but the declared range avoids
+  a peer-dep warning for consumers running `npm i @muhaven/mcp` with
+  an older zod hoisted in their tree (Code Reviewer HIGH, absorbed
+  inline).
+
+### Notes
+
+- **`tool-hashes.json` does NOT need regenerating for 0.2.2.** The
+  hashed surface is the tool descriptor (name + description +
+  sensitive flag, see `descriptions.ts::hashToolDescriptor`); the
+  JSON-Schema export is downstream of that and not part of the hash.
+  `pnpm verify-tool-hashes -- --check` continues to pass against the
+  existing pin from 0.2.0.
+
 ### Added — Wave 5 Path D Slice 1 (in flight)
 
 - **Broker protocol verb `get_active_session_id`** (additive over 0.4.0).

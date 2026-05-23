@@ -26,7 +26,8 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { ZodError } from 'zod';
+import { ZodError, type ZodTypeAny } from 'zod';
+import { zodToJsonSchema } from 'zod-to-json-schema';
 import { loadMcpConfig } from './config.js';
 import { JwtSource, NoJwtAvailableError } from './auth/jwt-source.js';
 import { BackendClient, BackendError } from './clients/backend-client.js';
@@ -79,21 +80,49 @@ function resolveServerVersion(): string {
   return '0.0.0-dev';
 }
 
-interface ZodSchemaWithJsonSchema {
-  parse(input: unknown): unknown;
-}
+export function toJsonInputSchema(schema: ZodTypeAny): Record<string, unknown> {
+  // Convert the tool's zod schema to JSON Schema for the MCP host. The
+  // PRIOR implementation returned a placeholder `{type:'object',
+  // additionalProperties:false}` with NO `properties` block — combined
+  // with `additionalProperties:false`, JSON-Schema-compliant clients
+  // (Claude Code's tool-call validator) interpret that as "no properties
+  // allowed" and silently strip every argument before dispatch. Surfaced
+  // 2026-05-23 by an operator-side `Buy TBILL1 $1` smoke that landed at
+  // the server as `{}`. The fix is to actually export the per-field
+  // shape so the host knows which arguments to pass through.
+  //
+  // `zod-to-json-schema` is the canonical converter (Anthropic's MCP
+  // SDK examples + `tsx-mcp-server` template both use it). Settings:
+  //  - `target: 'jsonSchema7'` matches the MCP spec's
+  //    `tools/list.inputSchema` contract (draft-07).
+  //  - `$refStrategy: 'none'` inlines every shape so the result is a
+  //    flat object the host can read without resolving `$ref`s. Our
+  //    schemas are small + non-recursive, so inlining is cheap and
+  //    avoids cross-host `$ref` interop quirks.
+  //  - `removeAdditionalStrategy: 'strict'` is belt-and-braces for any
+  //    future schema that drops `.strict()`. Currently a no-op since
+  //    every schema in `tools/schemas.ts` is `.strict()` (so the
+  //    converter already emits `additionalProperties: false` regardless
+  //    of this option). Verified via the recursive nested-strict
+  //    walker in `__tests__/input-schema-export.test.ts`. The knob
+  //    ONLY affects `.strip()` (zod default `z.object({...})`) — not
+  //    explicit `.strict()` — so if a contributor adds a nested
+  //    `.object({...})` without `.strict()`, this option still
+  //    emits `additionalProperties: false` for that sub-tree.
+  const json = zodToJsonSchema(schema, {
+    target: 'jsonSchema7',
+    $refStrategy: 'none',
+    removeAdditionalStrategy: 'strict',
+  }) as Record<string, unknown>;
 
-function toJsonInputSchema(schema: ZodSchemaWithJsonSchema): Record<string, unknown> {
-  // Avoid a runtime dep on `zod-to-json-schema` for hackathon scope. We
-  // ship the input zod's `.parse(...)` for actual validation; the
-  // host-facing JSON schema is "object, additional properties not
-  // allowed" — accurate (every schema is `.strict()`) without being
-  // exhaustive about field-by-field shape.
-  void schema;
-  return {
-    type: 'object',
-    additionalProperties: false,
-  };
+  // `zod-to-json-schema` includes a top-level `$schema` URL. The MCP
+  // spec doesn't require it and some hosts log a noisy warning when
+  // they see it — strip on the way out.
+  if ('$schema' in json) {
+    const { $schema: _drop, ...rest } = json;
+    return rest;
+  }
+  return json;
 }
 
 async function loadPinnedToolHashes(): Promise<readonly ToolHashEntry[] | null> {
@@ -168,7 +197,7 @@ export function buildMcpServer(opts: BuildServerOptions): Server {
       tools: opts.registry.map((entry) => ({
         name: entry.descriptor.name,
         description: entry.descriptor.description,
-        inputSchema: toJsonInputSchema(entry.schema as ZodSchemaWithJsonSchema),
+        inputSchema: toJsonInputSchema(entry.schema),
       })),
     };
   });
