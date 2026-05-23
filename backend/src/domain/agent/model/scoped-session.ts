@@ -2,6 +2,28 @@ import type { Surface } from './surface.enum.js';
 import { ScopedSessionStatus } from './scoped-session-status.enum.js';
 
 /**
+ * Wave 5 Option D · Commit 2 — PermissionValidator install lifecycle.
+ * Mirrors `agent_scoped_session_enable_status` pgEnum. See schema.ts
+ * for the per-state JSDoc.
+ */
+export type ScopedSessionEnableStatus = 'pending' | 'enabled' | 'failed';
+
+export const SCOPED_SESSION_ENABLE_STATUSES: readonly ScopedSessionEnableStatus[] = [
+  'pending',
+  'enabled',
+  'failed',
+];
+
+export function isScopedSessionEnableStatus(
+  v: unknown,
+): v is ScopedSessionEnableStatus {
+  return (
+    typeof v === 'string' &&
+    (SCOPED_SESSION_ENABLE_STATUSES as readonly string[]).includes(v)
+  );
+}
+
+/**
  * Per-selector enforcement rule. Mirrors `PolicySelectorCap` in
  * `packages/mcp/src/broker/protocol.ts` (Wave 5 Path D Slice 1
  * Commit 2.A). Storage of the broker's wire shape, no transformation.
@@ -69,6 +91,41 @@ export interface ScopedSessionProps {
   mintedAt: Date;
   revokedAt: Date | null;
   expiredAt: Date | null;
+  /**
+   * Wave 5 Option D · Commit 2 — PermissionValidator install state.
+   *
+   *   - `null` for pre-C2 rows (no install material captured)
+   *   - `'pending'` for C2+ rows; flips to `'enabled'` or `'failed'`
+   *     in C3 by the chain indexer / broker callback / watchdog.
+   *
+   * Distinct from `status` (the mirror-row lifecycle). A row can be
+   * `status='active' AND enableStatus='pending'` — the dominant state
+   * between C2 mint and C3's MCP-side ENABLE-mode UserOp landing.
+   *
+   * Optional on the props (defaults to `null`) so pre-C2 call sites
+   * (existing tests, the migration use-case) continue to compile
+   * unchanged. The Pg repo's `toDomain` always populates a concrete
+   * value (`null` or one of the enum values).
+   */
+  enableStatus?: ScopedSessionEnableStatus | null;
+  /**
+   * Wall-clock UTC when the `PermissionInstalled` event observed via
+   * chain indexer or receipt log. Lockstep with `enableStatus ===
+   * 'enabled'` (DB CHECK constraint).
+   */
+  validatorEnabledAt?: Date | null;
+  /**
+   * Transaction hash that carried the validator-install UserOp. Set
+   * alongside `validatorEnabledAt`. Lowercased 0x-hex.
+   */
+  validatorEnabledTxHash?: `0x${string}` | null;
+  /**
+   * `getKernelV3Nonce(...)` value captured at mint time + embedded in
+   * the enableSig typed data. Surfaced on the install-material subroute
+   * for the C3 broker pre-check (compare to live on-chain nonce →
+   * fallback `enable_sig_stale` on mismatch). NOT encrypted at rest.
+   */
+  validatorNonce?: number | null;
 }
 
 export class ScopedSession {
@@ -89,6 +146,10 @@ export class ScopedSession {
   readonly mintedAt: Date;
   readonly revokedAt: Date | null;
   readonly expiredAt: Date | null;
+  readonly enableStatus: ScopedSessionEnableStatus | null;
+  readonly validatorEnabledAt: Date | null;
+  readonly validatorEnabledTxHash: `0x${string}` | null;
+  readonly validatorNonce: number | null;
 
   constructor(props: ScopedSessionProps) {
     this.sessionId = props.sessionId;
@@ -108,6 +169,10 @@ export class ScopedSession {
     this.mintedAt = props.mintedAt;
     this.revokedAt = props.revokedAt;
     this.expiredAt = props.expiredAt;
+    this.enableStatus = props.enableStatus ?? null;
+    this.validatorEnabledAt = props.validatorEnabledAt ?? null;
+    this.validatorEnabledTxHash = props.validatorEnabledTxHash ?? null;
+    this.validatorNonce = props.validatorNonce ?? null;
   }
 
   with(patch: Partial<ScopedSessionProps>): ScopedSession {
@@ -129,4 +194,39 @@ export class ScopedSession {
     if (this.validUntilSec <= nowSec) return false;
     return true;
   }
+}
+
+/**
+ * Wave 5 Option D · Commit 2 — install material for the C3 MCP-side
+ * MODE.ENABLE UserOp. Surfaced ONLY by the dedicated install-material
+ * subroute (`GET /policy/scoped-session/:sessionId/install-material`)
+ * which is gated on the `BROKER_CALLBACK_SERVICE_SECRET` shared secret
+ * plus a `userId` query parameter the route re-checks against the row.
+ *
+ * The default scoped-session read paths (`findById`, `findLatestActive`,
+ * `GET /policy/scoped-session`) explicitly EXCLUDE these fields — both
+ * to avoid round-tripping the encrypted bytea blob through Drizzle's
+ * default relational query API AND to enforce a least-exposure read
+ * boundary. The repository's `findInstallMaterialById` method is the
+ * sole reader path.
+ *
+ * `enableData` + `enableSig` are CLEARTEXT here — the read path applies
+ * `pgp_sym_decrypt(...)` inside the SELECT before this object exists.
+ * `validatorNonce` is not encrypted (public uint32 from `currentNonce`).
+ */
+export interface ScopedSessionInstallMaterial {
+  readonly sessionId: string;
+  readonly userId: string | null;
+  readonly surface: Surface;
+  readonly status: ScopedSessionStatus;
+  readonly signerAddress: `0x${string}`;
+  readonly permissionId: `0x${string}` | null;
+  readonly enableStatus: ScopedSessionEnableStatus | null;
+  readonly enableData: `0x${string}` | null;
+  readonly enableSig: `0x${string}` | null;
+  readonly validatorNonce: number | null;
+  readonly validatorEnabledAt: Date | null;
+  readonly validatorEnabledTxHash: `0x${string}` | null;
+  readonly validUntilSec: number;
+  readonly mintedAtSec: number;
 }

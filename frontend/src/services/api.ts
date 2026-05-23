@@ -1419,6 +1419,17 @@ export interface PolicySnapshotMintBody {
   consentTextSha256?: `0x${string}`
   /** Pickup B carrier — intentionally omitted in Pickup A. */
   permissionId?: `0x${string}`
+  /**
+   * Wave 5 Option D · Commit 2 — install material captured at mint
+   * time. Backend Zod validates shape + length; `enableData` /
+   * `enableSig` get encrypted at rest via pgcrypto (the response
+   * never carries them; install-material subroute is the sole
+   * reveal point). Optional for back-compat with Pickup-B-only
+   * clients that haven't bumped past 0.3.72.
+   */
+  enableData?: `0x${string}`
+  enableSig?: `0x${string}`
+  validatorNonce?: number
 }
 
 export interface MintScopedSessionRequest {
@@ -1447,6 +1458,16 @@ export interface ScopedSessionResponseDto {
   mintedAt: string
   revokedAt: string | null
   expiredAt: string | null
+  /**
+   * Wave 5 Option D · Commit 2 — install lifecycle fields surfaced
+   * on the standard GET response. enableData / enableSig are NEVER
+   * here — only the dedicated internal install-material subroute
+   * exposes them (gated on the broker-callback service secret).
+   */
+  enableStatus?: 'pending' | 'enabled' | 'failed' | null
+  validatorEnabledAt?: string | null
+  validatorEnabledTxHash?: `0x${string}` | null
+  validatorNonce?: number | null
 }
 
 export interface MintScopedSessionResponse {

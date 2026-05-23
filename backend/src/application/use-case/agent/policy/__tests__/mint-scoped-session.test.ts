@@ -539,4 +539,146 @@ describe('MintScopedSessionUseCase', () => {
       auditSpy.mockRestore();
     });
   });
+
+  // ────────────────────────────────────────────────────────────────────
+  // Wave 5 Option D · Commit 2 — install-material persistence + audit
+  // metadata. The mint use-case threads the new (enableData, enableSig,
+  // validatorNonce) tuple through to the repo + flips enable_status
+  // to 'pending'. The audit row carries the capture flag (NOT the
+  // signature material — that stays encrypted in the mirror).
+  // ────────────────────────────────────────────────────────────────────
+
+  describe('install material persistence (Commit 2)', () => {
+    const ENABLE_DATA = `0x${'cd'.repeat(64)}` as const;
+    // 256-hex floor (Option D · C2 SecEng H-3 downgrade defense).
+    const ENABLE_SIG = `0x${'ab'.repeat(128)}` as const;
+    const VALIDATOR_NONCE = 7;
+
+    function dtoWithInstallMaterial(): MintScopedSessionDto {
+      const dto = makeDto();
+      (dto.snapshot as Record<string, unknown>).permissionId = '0xdeadbeef';
+      (dto.snapshot as Record<string, unknown>).enableData = ENABLE_DATA;
+      (dto.snapshot as Record<string, unknown>).enableSig = ENABLE_SIG;
+      (dto.snapshot as Record<string, unknown>).validatorNonce = VALIDATOR_NONCE;
+      return dto;
+    }
+
+    it('persists enable_status=pending + validatorNonce when install material is present', async () => {
+      await seedTier(Tier.Scoped);
+      const result = await useCase.execute({
+        userId: 'u1',
+        dto: dtoWithInstallMaterial(),
+        now: NOW,
+      });
+      expect(result.session.enableStatus).toBe('pending');
+      expect(result.session.validatorNonce).toBe(VALIDATOR_NONCE);
+      // validatorEnabledAt + validatorEnabledTxHash remain NULL until
+      // the C3 chain indexer flips them.
+      expect(result.session.validatorEnabledAt).toBeNull();
+      expect(result.session.validatorEnabledTxHash).toBeNull();
+    });
+
+    it('leaves enable_status NULL when no install material is supplied (back-compat)', async () => {
+      await seedTier(Tier.Scoped);
+      const result = await useCase.execute({
+        userId: 'u1',
+        dto: makeDto(),
+        now: NOW,
+      });
+      expect(result.session.enableStatus).toBeNull();
+      expect(result.session.validatorNonce).toBeNull();
+    });
+
+    it('round-trips cleartext enableData + enableSig through the install-material lookup', async () => {
+      // The memory repo stores cleartext directly; the Pg repo does the
+      // pgcrypto round-trip via integration tests. Both surface the same
+      // ScopedSessionInstallMaterial shape through findInstallMaterialById.
+      await seedTier(Tier.Scoped);
+      await useCase.execute({
+        userId: 'u1',
+        dto: dtoWithInstallMaterial(),
+        now: NOW,
+      });
+      const material = await scopedRepo.findInstallMaterialById(
+        'session-abc-123',
+        'u1',
+      );
+      expect(material).not.toBeNull();
+      expect(material?.enableData).toBe(ENABLE_DATA);
+      expect(material?.enableSig).toBe(ENABLE_SIG);
+      expect(material?.validatorNonce).toBe(VALIDATOR_NONCE);
+      expect(material?.enableStatus).toBe('pending');
+    });
+
+    it('returns null from install-material lookup when caller userId mismatches (ownership gate)', async () => {
+      await seedTier(Tier.Scoped);
+      await useCase.execute({
+        userId: 'u1',
+        dto: dtoWithInstallMaterial(),
+        now: NOW,
+      });
+      const material = await scopedRepo.findInstallMaterialById(
+        'session-abc-123',
+        'someone-else',
+      );
+      expect(material).toBeNull();
+    });
+
+    it('lowercases enableData + enableSig at the use-case boundary', async () => {
+      // The frontend helper already lowercases at the populate boundary,
+      // but the backend re-applies for defense-in-depth — a future raw-
+      // SQL audit JOIN must not flake on case skew.
+      await seedTier(Tier.Scoped);
+      const dto = makeDto();
+      (dto.snapshot as Record<string, unknown>).permissionId = '0xdeadbeef';
+      (dto.snapshot as Record<string, unknown>).enableData = `0x${'CD'.repeat(64)}`;
+      (dto.snapshot as Record<string, unknown>).enableSig = `0x${'AB'.repeat(128)}`;
+      (dto.snapshot as Record<string, unknown>).validatorNonce = 1;
+      await useCase.execute({ userId: 'u1', dto, now: NOW });
+      const material = await scopedRepo.findInstallMaterialById(
+        'session-abc-123',
+        'u1',
+      );
+      expect(material?.enableData).toBe(`0x${'cd'.repeat(64)}`);
+      expect(material?.enableSig).toBe(`0x${'ab'.repeat(128)}`);
+    });
+
+    it('audit row carries installMaterialCaptured + validatorNonce when install material present', async () => {
+      await seedTier(Tier.Scoped);
+      await useCase.execute({
+        userId: 'u1',
+        dto: dtoWithInstallMaterial(),
+        now: NOW,
+      });
+      const page = await auditRepo.findByUserId('u1');
+      const mintRow = page.items.find(
+        (r) => r.eventType === AuditEventType.ScopedSessionMinted,
+      );
+      expect(mintRow).toBeDefined();
+      expect(mintRow?.metadata).toMatchObject({
+        installMaterialCaptured: true,
+        validatorNonce: VALIDATOR_NONCE,
+        enableStatus: 'pending',
+      });
+      // Critical: the WORM row must NOT carry the cleartext signature
+      // material — encrypt-at-rest on the mirror is meaningless if the
+      // forensic table mirrors cleartext. SecEng load-bearing.
+      const md = mintRow!.metadata as Record<string, unknown>;
+      expect(md.enableData).toBeUndefined();
+      expect(md.enableSig).toBeUndefined();
+    });
+
+    it('audit row OMITS install material fields when no install material was captured', async () => {
+      await seedTier(Tier.Scoped);
+      await useCase.execute({ userId: 'u1', dto: makeDto(), now: NOW });
+      const page = await auditRepo.findByUserId('u1');
+      const mintRow = page.items.find(
+        (r) => r.eventType === AuditEventType.ScopedSessionMinted,
+      );
+      const md = mintRow!.metadata as Record<string, unknown>;
+      expect(md.installMaterialCaptured).toBeUndefined();
+      expect(md.validatorNonce).toBeUndefined();
+      expect(md.enableStatus).toBeUndefined();
+    });
+  });
 });

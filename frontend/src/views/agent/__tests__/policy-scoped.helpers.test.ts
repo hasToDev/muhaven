@@ -276,6 +276,13 @@ describe('policy-scoped.helpers — formatPendingMhUsdc', () => {
 })
 
 describe('policy-scoped.helpers — buildScopedMintBody', () => {
+  // Wave 5 Option D · Commit 2 — install material now REQUIRED on the
+  // input. The legacy test fixtures here pre-date C2; they grow three
+  // new required fields (enableData, enableSig, validatorNonce) so the
+  // backend Zod gate at the wire also accepts them. Cleartext shapes:
+  //   - enableData: `0x` + 2..8192 hex chars
+  //   - enableSig:  `0x` + 128..4096 hex chars (WebAuthn envelope)
+  //   - validatorNonce: uint32
   const baseInput = {
     sessionId: '11111111-2222-3333-4444-555555555555',
     signerAddress: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd' as `0x${string}`,
@@ -287,6 +294,13 @@ describe('policy-scoped.helpers — buildScopedMintBody', () => {
     consentActionHash: `0x${'a'.repeat(64)}` as `0x${string}`,
     surface: 'mcp' as const,
     permissionId: '0xdeadbeef' as `0x${string}`,
+    // enableData: 128 hex chars = comfortable inside the 2..8192 bound.
+    // enableSig: 384 hex chars = ~192 bytes; clears the tightened
+    // 256-hex floor (Option D · C2 multi-agent review SecEng H-3
+    // raised the floor from 128 → 256 to reject bare-ECDSA downgrade).
+    enableData: `0x${'cd'.repeat(64)}` as `0x${string}`,
+    enableSig: `0x${'ab'.repeat(192)}` as `0x${string}`,
+    validatorNonce: 1,
   }
 
   it('builds a snapshot with mode=scoped + matching signer + sessionId', () => {
@@ -387,5 +401,91 @@ describe('policy-scoped.helpers — buildScopedMintBody', () => {
   it('locks surface to the supplied value (operator-confirmed mcp default)', () => {
     const body = buildScopedMintBody(baseInput)
     expect(body.surface).toBe('mcp')
+  })
+
+  // ────────────────────────────────────────────────────────────────────
+  // Wave 5 Option D · Commit 2 — install material on the snapshot.
+  // ────────────────────────────────────────────────────────────────────
+
+  it('THREADS enableData / enableSig / validatorNonce onto snapshot (Option D · C2)', () => {
+    // Without this, C3 MCP-side ENABLE-mode UserOp can't compose +
+    // the validator never installs on-chain. Each field is captured
+    // by `installScopedSessionKey` at mint time + paid for by one
+    // WebAuthn ceremony.
+    const body = buildScopedMintBody(baseInput)
+    expect(body.snapshot.enableData).toBe(baseInput.enableData.toLowerCase())
+    expect(body.snapshot.enableSig).toBe(baseInput.enableSig.toLowerCase())
+    expect(body.snapshot.validatorNonce).toBe(baseInput.validatorNonce)
+  })
+
+  it('lowercases mixed-case enableData + enableSig (wire byte-equality)', () => {
+    // Mirrors the permissionId lowercase contract — keeps any future
+    // raw-SQL audit JOIN deterministic across case skew.
+    const mixedEnableData = `0x${'CdAbCdAbCdAb'.repeat(11)}cdab` as `0x${string}` // 132 hex
+    const mixedEnableSig = `0x${'AbCdAbCd'.repeat(40)}` as `0x${string}` // 320 hex (clears 256-floor)
+    const body = buildScopedMintBody({
+      ...baseInput,
+      enableData: mixedEnableData,
+      enableSig: mixedEnableSig,
+    })
+    expect(body.snapshot.enableData).toBe(mixedEnableData.toLowerCase())
+    expect(body.snapshot.enableSig).toBe(mixedEnableSig.toLowerCase())
+  })
+
+  it('throws on malformed enableData (too short / non-hex / missing prefix)', () => {
+    const cases: string[] = [
+      '0x',                                  // empty payload — kernel rejects 0-byte validatorData
+      '0xa',                                 // 1 hex char (< 2 minimum after prefix)
+      'cdab',                                // missing 0x prefix
+      `0x${'g'.repeat(8)}`,                  // non-hex
+      `0x${'cd'.repeat(4097)}`,              // exceeds 8192-char cleartext ceiling
+    ]
+    for (const bad of cases) {
+      expect(() =>
+        buildScopedMintBody({ ...baseInput, enableData: bad as `0x${string}` }),
+      ).toThrow(/enableData must be 0x-prefixed hex/)
+    }
+  })
+
+  it('throws on malformed enableSig (length out of bounds / non-hex)', () => {
+    const cases: string[] = [
+      `0x${'ab'.repeat(127)}`,               // 254 hex — under 256-char floor
+      `0x${'ab'.repeat(2049)}`,              // 4098 hex — over 4096 ceiling
+      `0x${'g'.repeat(300)}`,                // non-hex
+      'ababab',                              // missing 0x prefix
+    ]
+    for (const bad of cases) {
+      expect(() =>
+        buildScopedMintBody({ ...baseInput, enableSig: bad as `0x${string}` }),
+      ).toThrow(/enableSig must be 0x-prefixed hex/)
+    }
+  })
+
+  it('REJECTS bare 65-byte ECDSA-shaped signature (downgrade defense, SecEng H-3)', () => {
+    // A naive caller posting a raw ECDSA (r,s,v) = 65 bytes = 130 hex
+    // would slip past a permissive lower bound. The 256-hex floor
+    // bounces this kind of downgrade before it ever reaches the
+    // backend Zod.
+    const bareEcdsa = `0x${'ab'.repeat(65)}` as `0x${string}` // 130 hex
+    expect(() =>
+      buildScopedMintBody({ ...baseInput, enableSig: bareEcdsa }),
+    ).toThrow(/enableSig must be 0x-prefixed hex/)
+  })
+
+  it('throws on validatorNonce out of uint32 range or non-integer', () => {
+    const cases: number[] = [-1, 4_294_967_296, 1.5, Number.NaN, Number.POSITIVE_INFINITY]
+    for (const bad of cases) {
+      expect(() =>
+        buildScopedMintBody({ ...baseInput, validatorNonce: bad }),
+      ).toThrow(/validatorNonce must be a uint32 integer/)
+    }
+  })
+
+  it('accepts the upper-bound validatorNonce (uint32 max)', () => {
+    const body = buildScopedMintBody({
+      ...baseInput,
+      validatorNonce: 4_294_967_295,
+    })
+    expect(body.snapshot.validatorNonce).toBe(4_294_967_295)
   })
 })

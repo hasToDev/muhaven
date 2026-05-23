@@ -218,6 +218,26 @@ export class MintScopedSessionUseCase {
     //    case-stable; downstream comparisons (broker.preflight signer
     //    match) are case-insensitive but a mixed-case row on disk
     //    breaks `===` checks in any future raw-SQL query.
+    //
+    //    Wave 5 Option D · Commit 2 — derive `enableStatus` +
+    //    `validatorNonce` from the DTO here (rather than inside the
+    //    repository). The repository layer stays a thin persistence
+    //    boundary; the use-case is the single source of truth for the
+    //    install-lifecycle invariant ("enable_status='pending' iff
+    //    any install-material field is non-null at mint time").
+    const installMaterial = {
+      enableData: input.dto.snapshot.enableData
+        ? (input.dto.snapshot.enableData.toLowerCase() as `0x${string}`)
+        : null,
+      enableSig: input.dto.snapshot.enableSig
+        ? (input.dto.snapshot.enableSig.toLowerCase() as `0x${string}`)
+        : null,
+      validatorNonce: input.dto.snapshot.validatorNonce ?? null,
+    };
+    const hasInstallMaterial =
+      installMaterial.enableData !== null ||
+      installMaterial.enableSig !== null ||
+      installMaterial.validatorNonce !== null;
     const session = new ScopedSession({
       sessionId: input.dto.snapshot.sessionId,
       userId: input.userId,
@@ -248,6 +268,10 @@ export class MintScopedSessionUseCase {
       mintedAt: now,
       revokedAt: null,
       expiredAt: null,
+      enableStatus: hasInstallMaterial ? 'pending' : null,
+      validatorEnabledAt: null,
+      validatorEnabledTxHash: null,
+      validatorNonce: installMaterial.validatorNonce,
     });
 
     // 5b. Race-safe create. The 2a sweep + 2b dedup are best-effort —
@@ -268,8 +292,17 @@ export class MintScopedSessionUseCase {
     //    `.driverError.code`) instead of reading the top-level `.code`
     //    directly. Defends against a future Drizzle major-version bump
     //    that wraps pg errors in `DrizzleQueryError`.
+    //
+    //    Wave 5 Option D · Commit 2 — pass the install material through
+    //    to the repository. The Pg repo encrypts enableData / enableSig
+    //    via pgcrypto before INSERT; the memory repo stores cleartext.
+    //    `enableStatus` was already set on the domain entity above; the
+    //    repo's job is purely persistence (NOT derivation).
     try {
-      await this.scopedRepo.create(session);
+      await this.scopedRepo.create(
+        session,
+        hasInstallMaterial ? installMaterial : undefined,
+      );
     } catch (err) {
       if (isPgUniqueViolation(err)) {
         // Re-query to surface the actual existing row's sessionId. The
@@ -310,6 +343,20 @@ export class MintScopedSessionUseCase {
           mintedAtSec: session.mintedAtSec,
           ...(session.consentActionHash
             ? { consentActionHash: session.consentActionHash }
+            : {}),
+          // Wave 5 Option D · Commit 2 — install-material capture flag
+          // for the forensic chain. We do NOT log the enableSig / enableData
+          // values into the WORM table (encrypted at rest precisely so DB
+          // readers can't pre-empt the install + revoke window); we log
+          // ONLY the presence + the validatorNonce + the resulting
+          // enableStatus. C3 paired audit row `ValidatorInstalled`
+          // (chain-indexer emission) joins by sessionId for the full chain.
+          ...(hasInstallMaterial
+            ? {
+                installMaterialCaptured: true,
+                validatorNonce: installMaterial.validatorNonce,
+                enableStatus: 'pending' as const,
+              }
             : {}),
         },
         now,

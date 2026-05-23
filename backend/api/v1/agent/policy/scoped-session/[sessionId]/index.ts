@@ -1,19 +1,19 @@
 import {
   RevokeScopedSessionParamsSchema,
   toScopedSessionDto,
-} from '../../../../../src/application/dto/agent/policy.dto.js';
-import { RevokeScopedSessionUseCase } from '../../../../../src/application/use-case/agent/policy/revoke-scoped-session.use-case.js';
-import { container } from '../../../../../src/infrastructure/container.js';
+} from '../../../../../../src/application/dto/agent/policy.dto.js';
+import { RevokeScopedSessionUseCase } from '../../../../../../src/application/use-case/agent/policy/revoke-scoped-session.use-case.js';
+import { container } from '../../../../../../src/infrastructure/container.js';
 import {
   sendResponse,
   type AuthenticatedRequest,
-} from '../../../../../src/interface/handler-factory.js';
-import { withAuth } from '../../../../../src/interface/middleware/with-auth.js';
-import { withCors } from '../../../../../src/interface/middleware/with-cors.js';
-import { withScope } from '../../../../../src/interface/middleware/with-scope.js';
-import { Response } from '../../../../../src/interface/response.js';
-import { ApplicationHttpError } from '../../../../../src/core/errors.js';
-import { getLogger } from '../../../../../src/core/logger.js';
+} from '../../../../../../src/interface/handler-factory.js';
+import { withAuth } from '../../../../../../src/interface/middleware/with-auth.js';
+import { withCors } from '../../../../../../src/interface/middleware/with-cors.js';
+import { withScope } from '../../../../../../src/interface/middleware/with-scope.js';
+import { Response } from '../../../../../../src/interface/response.js';
+import { ApplicationHttpError } from '../../../../../../src/core/errors.js';
+import { getLogger } from '../../../../../../src/core/logger.js';
 import { ZodError } from 'zod';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 

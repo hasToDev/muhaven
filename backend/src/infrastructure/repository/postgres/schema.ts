@@ -14,8 +14,30 @@ import {
   primaryKey,
   foreignKey,
   check,
+  customType,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
+
+/**
+ * Wave 5 Option D · Commit 2 — `bytea` custom type for the pgcrypto-
+ * encrypted columns `agent_scoped_sessions.enable_data` /
+ * `enable_sig`. node-postgres returns bytea as `Buffer`; Drizzle's
+ * built-in pg-core types don't ship a first-class `bytea` helper, so
+ * `customType` is the canonical wiring.
+ *
+ * Storage shape: `pgp_sym_encrypt(cleartext_text, key) :: bytea`. The
+ * repository never round-trips Buffers directly — writes go through
+ * `encryptedTextOrNull` (which expands to a `pgp_sym_encrypt(...)`
+ * SQL fragment), reads go through a separate raw-SELECT path that
+ * applies `pgp_sym_decrypt(...)`. Default relational `findFirst` calls
+ * use Drizzle's `columns: { enableData: false, enableSig: false }`
+ * exclusion to keep the encrypted blobs out of the default response.
+ */
+export const bytea = customType<{ data: Buffer; driverData: Buffer; default: false }>({
+  dataType() {
+    return 'bytea';
+  },
+});
 
 export const escrowStatusEnum = pgEnum('escrow_status', [
   'PENDING',
@@ -681,6 +703,37 @@ export const agentScopedSessionStatusEnum = pgEnum(
   ['active', 'revoked', 'expired'],
 );
 
+/**
+ * Wave 5 Option D · Commit 2 — PermissionValidator install lifecycle on
+ * the Kernel v3.1 chain side.
+ *
+ *   - `pending`  — mint ceremony captured enableData + enableSig +
+ *                  validatorNonce; the validator is NOT yet installed
+ *                  on-chain. C3's MCP-side ENABLE-mode UserOp fires the
+ *                  first install on the next Path D buy.
+ *   - `enabled`  — `PermissionInstalled(bytes4 permission, uint32 nonce)`
+ *                  event observed by the chain indexer (C3); or, as
+ *                  fast-path, the broker callback re-verified a tx
+ *                  receipt log against the same ABI. The chain indexer
+ *                  is AUTHORITATIVE; broker callback is best-effort
+ *                  optimization. `validator_enabled_at` and
+ *                  `validator_enabled_tx_hash` populate alongside.
+ *   - `failed`   — 60-block watchdog (C3) flips `pending` → `failed`
+ *                  when no `PermissionInstalled` event lands within the
+ *                  window. Operator alert fires + user must re-walk
+ *                  the ceremony.
+ *
+ * Distinct from `agent_scoped_session_status` — that column tracks the
+ * mirror-row lifecycle (active / revoked / expired); this one tracks
+ * the on-chain validator-install state. A row can be `status='active'`
+ * AND `enable_status='pending'` simultaneously (mint landed, install
+ * UserOp not yet fired — the dominant state until C3 ships).
+ */
+export const agentScopedSessionEnableStatusEnum = pgEnum(
+  'agent_scoped_session_enable_status',
+  ['pending', 'enabled', 'failed'],
+);
+
 export const agentScopedSessions = pgTable(
   'agent_scoped_sessions',
   {
@@ -745,6 +798,77 @@ export const agentScopedSessions = pgTable(
     mintedAt: timestamp('minted_at').notNull().defaultNow(),
     revokedAt: timestamp('revoked_at'),
     expiredAt: timestamp('expired_at'),
+    // ──────────────────────────────────────────────────────────────────
+    // Wave 5 Option D · Commit 2 — install-material capture for the
+    // MCP-side MODE.ENABLE UserOp (C3). All columns NULL-first so the
+    // declarative push lands cleanly against the populated prod table
+    // (pre-C2 rows have no install material; the in-force schema gate
+    // is the application-layer DTO).
+    // ──────────────────────────────────────────────────────────────────
+    /**
+     * `permissionValidator.getEnableData(accountAddress)` output — ABI-
+     * encoded `(policy[], signer)` payload that the kernel's plugin-
+     * manager unpacks during install. Cleartext shape: `0x` + 2-8192
+     * hex chars (depends on policy count). Encrypted at rest via
+     * pgcrypto `pgp_sym_encrypt(...)`. The repository's default
+     * `findFirst` calls explicitly exclude this column; only the
+     * dedicated install-material subroute returns it (decrypted) via
+     * a separate raw-SQL select wrapped in `pgp_sym_decrypt(...)`.
+     */
+    enableData: bytea('enable_data'),
+    /**
+     * `passkey.signTypedData(getPluginsEnableTypedData(...))` output —
+     * WebAuthn envelope (~256-1024 bytes hex), authorising the
+     * PermissionValidator install under the SUDO validator (the
+     * passkey). Encrypted at rest, same shape contract as `enableData`.
+     *
+     * Strictly bound to `(account_address, validator_nonce, permission_id)`
+     * via the kernel V3.1 `getPluginsEnableTypedData` typedData domain.
+     * A leaked enableSig is single-use against a single permissionId;
+     * the threat motivating encrypt-at-rest is a malicious-DB-reader
+     * pre-empting the user's install + revoke window (SecEng T-1).
+     */
+    enableSig: bytea('enable_sig'),
+    /**
+     * The on-chain `currentNonce(accountAddress)` value read at mint
+     * time via `getKernelV3Nonce(...)`. Embedded in the typed data the
+     * passkey signed — the MCP-side ENABLE-mode UserOp (C3) must use
+     * exactly this nonce or the kernel rejects the install with
+     * `AA23 InvalidValidator` / typedData mismatch. A future buy after
+     * the kernel's validator nonce advanced surfaces as `enable_sig_stale`
+     * (C3 fallback) and the user re-walks the ceremony.
+     *
+     * Stored as `bigint` (int8) with `mode: 'number'` to match the
+     * `valid_until_sec` precedent; uint32 ceiling enforced via CHECK.
+     */
+    validatorNonce: bigint('validator_nonce', { mode: 'number' }),
+    /**
+     * PermissionValidator install lifecycle. See enum JSDoc above.
+     *
+     * NO column-level default — the use-case (`MintScopedSessionUseCase`)
+     * is the single source-of-truth for the derivation
+     * ("install material captured → 'pending', else NULL"). A schema
+     * default would back-fill the C1-recovery row with `'pending'`
+     * during `db:push` (Drizzle's ALTER TABLE ADD COLUMN with default
+     * back-fills existing rows), violating the "pre-C2 rows are pure
+     * NULL" invariant. Multi-agent review BE Arch M-1 absorbed.
+     */
+    enableStatus: agentScopedSessionEnableStatusEnum('enable_status'),
+    /**
+     * UTC timestamp from the on-chain `PermissionInstalled` event /
+     * receipt log when the validator install landed. NULL while
+     * `enable_status != 'enabled'`; populated alongside the enum flip.
+     * Lockstep enforced via CHECK `(validator_enabled_at IS NULL) =
+     * (enable_status IS NULL OR enable_status != 'enabled')`.
+     */
+    validatorEnabledAt: timestamp('validator_enabled_at'),
+    /**
+     * The transaction hash that carried the MODE.ENABLE UserOp whose
+     * receipt emitted `PermissionInstalled`. Forensic anchor for
+     * incident-response queries ("which tx installed this scope?").
+     * Lowercased 0x-hex (CHECK enforces shape).
+     */
+    validatorEnabledTxHash: text('validator_enabled_tx_hash'),
   },
   (t) => [
     /**
@@ -836,6 +960,72 @@ export const agentScopedSessions = pgTable(
     ),
     check('agent_scoped_sessions_valid_until_sec_chk', sql`valid_until_sec > 0`),
     check('agent_scoped_sessions_minted_at_sec_chk', sql`minted_at_sec > 0`),
+    // ──────────────────────────────────────────────────────────────────
+    // Wave 5 Option D · Commit 2 — install-material gates.
+    // ──────────────────────────────────────────────────────────────────
+    /**
+     * `validator_nonce` is the on-chain `currentNonce` (uint32). NULL
+     * for pre-C2 rows and any future client that doesn't supply the
+     * field. Range gate doubles as defense-in-depth: a malicious POST
+     * with a `Number.MAX_SAFE_INTEGER`-shaped value would otherwise
+     * round-trip via Drizzle `mode: 'number'` int8.
+     */
+    check(
+      'agent_scoped_sessions_validator_nonce_chk',
+      sql`validator_nonce IS NULL OR (validator_nonce >= 0 AND validator_nonce <= 4294967295)`,
+    ),
+    /**
+     * `validator_enabled_tx_hash` must be a lowercased 32-byte 0x-hex
+     * when present. Matches `agent_scoped_sessions_consent_action_hash_chk`
+     * and the consent / signer regexes elsewhere on this table.
+     */
+    check(
+      'agent_scoped_sessions_validator_enabled_tx_hash_chk',
+      sql`validator_enabled_tx_hash IS NULL OR validator_enabled_tx_hash ~ '^0x[0-9a-f]{64}$'`,
+    ),
+    /**
+     * Lockstep invariant — the timestamp populates IFF the enum flips
+     * to `enabled`. C3 wires both columns together inside a single
+     * UPDATE; the CHECK closes the operator-error window where one
+     * leg is updated without the other.
+     *
+     * Note: `enable_status IS NULL` matches the `validator_enabled_at
+     * IS NULL` side of the equality because pre-C2 rows have both as
+     * NULL (the column itself was added in this commit).
+     */
+    check(
+      'agent_scoped_sessions_enable_status_at_lockstep_chk',
+      sql`(validator_enabled_at IS NULL) = (enable_status IS NULL OR enable_status != 'enabled')`,
+    ),
+    /**
+     * Encrypted-blob size cap. pgcrypto adds ~50-90 bytes overhead on
+     * top of the cleartext; 8192 bytes is a generous bound for the
+     * worst-case ABI-encoded enableData under our policy count.
+     * Without this, a malformed write (or future schema drift that
+     * accepts longer cleartext) would silently grow rows past
+     * Postgres's TOAST threshold.
+     */
+    check(
+      'agent_scoped_sessions_enable_data_size_chk',
+      sql`enable_data IS NULL OR octet_length(enable_data) <= 8192`,
+    ),
+    check(
+      'agent_scoped_sessions_enable_sig_size_chk',
+      sql`enable_sig IS NULL OR octet_length(enable_sig) <= 4096`,
+    ),
+    /**
+     * Partial index — backs the C3 chain-indexer's per-block scan
+     * "find pending rows that may have been enabled" + the 60-block
+     * watchdog "find pending rows older than threshold". The
+     * `minted_at` leading order column makes the watchdog's
+     * range-scan sargable; the partial predicate keeps the active +
+     * pending working set small (revoked / expired / enabled rows
+     * stay on disk but out of this index). BE MED-4 from the R2
+     * Option D plan absorbed.
+     */
+    index('agent_scoped_sessions_pending_enable_v1')
+      .on(t.mintedAt)
+      .where(sql`enable_status = 'pending' AND status = 'active'`),
   ],
 );
 

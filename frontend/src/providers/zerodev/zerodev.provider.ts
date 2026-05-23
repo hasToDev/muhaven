@@ -14,6 +14,9 @@ import {
   createKernelAccountClient,
   createZeroDevPaymasterClient,
   constants,
+  getKernelV3Nonce,
+  getActionSelector,
+  getPluginsEnableTypedData,
 } from '@zerodev/sdk';
 import type { KernelAccountClient } from '@zerodev/sdk';
 import {
@@ -28,6 +31,7 @@ import {
   createPublicClient,
   createWalletClient,
   http,
+  zeroAddress,
   type Hex,
   type PublicClient,
 } from 'viem';
@@ -320,6 +324,11 @@ export class ZeroDevProvider implements IWalletProvider {
     opts: InstallScopedSessionInput,
   ): Promise<ScopedSessionInstallResult | null> {
     if (!this.kernelClient?.account) return null;
+    if (!this.webAuthnKeyRef) {
+      throw new Error(
+        'installScopedSessionKey: passkey reference missing — reconnect wallet first',
+      );
+    }
     if (opts.ttlSec <= 0) {
       throw new Error('installScopedSessionKey: ttlSec must be a positive integer');
     }
@@ -330,7 +339,7 @@ export class ZeroDevProvider implements IWalletProvider {
       throw new Error('installScopedSessionKey: maxPerOpUsd6 must be > 0');
     }
 
-    const smartAccountAddress = this.kernelClient.account.address;
+    const smartAccountAddress = this.kernelClient.account.address as `0x${string}`;
     const { record } = generateSessionRecord(smartAccountAddress, opts.ttlSec);
     const signer = privateKeyToAccount(record.privateKey);
 
@@ -381,13 +390,81 @@ export class ZeroDevProvider implements IWalletProvider {
     // required — see `@zerodev/permissions/toPermissionValidator.ts:71-89`.
     const permissionId = permissionValidator.getIdentifier() as `0x${string}`;
 
+    // ────────────────────────────────────────────────────────────────
+    // Wave 5 Option D · Commit 2 — capture the on-chain install material.
+    //
+    // The captured tuple { enableData, enableSig, validatorNonce } is what
+    // the C3 MCP-side MODE.ENABLE UserOp re-uses to install this
+    // PermissionValidator on first Path D buy. Capturing it here at mint
+    // time means the broker can install the validator without a second
+    // passkey ceremony from the dashboard — the dashboard pays for the
+    // WebAuthn ceremony ONCE and that signature stays valid until the
+    // kernel's validator nonce advances.
+    //
+    // Three steps:
+    //   1. Read the on-chain `currentNonce(accountAddress)` via
+    //      getKernelV3Nonce. The kernel's plugin manager uses this
+    //      nonce as the typed-data domain salt; mismatch on submit →
+    //      kernel revert.
+    //   2. Build the EIP-712 typed data via getPluginsEnableTypedData
+    //      with action = { selector: kernel.execute, address: zero }.
+    //      This is byte-for-byte the same envelope the kernel SDK
+    //      builds internally on the auto-enable path — the layout was
+    //      verified against `@zerodev/sdk/_cjs/.../
+    //      getPluginsEnableTypedData.js` line-by-line during the R2
+    //      Option D plan review.
+    //   3. Sign with the passkey validator's signTypedData. This
+    //      triggers ONE WebAuthn ceremony — the user has already done
+    //      the 5-tap confirm-token ceremony, so one more tap during
+    //      the mint is the right UX cost for "no further passkey
+    //      ceremonies on Path D buys."
+    //
+    // enableData is a pure function over the validator (no chain hit).
+    // ────────────────────────────────────────────────────────────────
+    const passkeyValidator = await toPasskeyValidator(publicClient, {
+      webAuthnKey: this.webAuthnKeyRef,
+      entryPoint: ENTRY_POINT,
+      kernelVersion: KERNEL_VERSION,
+      validatorContractVersion: PasskeyValidatorContractVersion.V0_0_3_PATCHED,
+    });
+
+    const validatorNonce = await getKernelV3Nonce(publicClient, smartAccountAddress);
+
+    const action = {
+      selector: getActionSelector(ENTRY_POINT.version),
+      address: zeroAddress,
+    };
+
+    const enableTypedData = await getPluginsEnableTypedData({
+      accountAddress: smartAccountAddress,
+      chainId: arbitrumSepolia.id,
+      kernelVersion: KERNEL_VERSION,
+      action,
+      validator: permissionValidator,
+      validatorNonce,
+    });
+
+    // WebAuthn ceremony — keep ensureFocus so the prompt isn't
+    // suppressed by an out-of-focus window.
+    await WindowHelper.ensureFocus();
+    const enableSig = (await passkeyValidator.signTypedData(
+      enableTypedData,
+    )) as `0x${string}`;
+
+    const enableData = (await permissionValidator.getEnableData(
+      smartAccountAddress,
+    )) as `0x${string}`;
+
     return {
       signerAddress: signer.address as `0x${string}`,
       signerPrivateKey: record.privateKey,
       permissionId,
       mintedAtSec: Math.floor(Date.now() / 1000),
       validUntilSec: record.expiresAt,
-      smartAccountAddress: smartAccountAddress as `0x${string}`,
+      smartAccountAddress,
+      enableData,
+      enableSig,
+      validatorNonce,
     };
   }
 

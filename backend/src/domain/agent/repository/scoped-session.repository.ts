@@ -1,5 +1,20 @@
-import type { ScopedSession } from '../model/scoped-session.js';
+import type {
+  ScopedSession,
+  ScopedSessionInstallMaterial,
+} from '../model/scoped-session.js';
 import type { Surface } from '../model/surface.enum.js';
+
+/**
+ * Wave 5 Option D · Commit 2 — install-material write payload. The
+ * mint use-case passes cleartext to the repo; the Pg repo's `create`
+ * wraps both `enableData` and `enableSig` in `pgp_sym_encrypt(...)`
+ * before INSERT. `null` skips the column (NULL-first default).
+ */
+export interface ScopedSessionInstallMaterialWrite {
+  readonly enableData: `0x${string}` | null;
+  readonly enableSig: `0x${string}` | null;
+  readonly validatorNonce: number | null;
+}
 
 /**
  * Repository interface for `agent_scoped_sessions` (Wave 5 Path D
@@ -17,8 +32,37 @@ export interface IScopedSessionRepository {
    * (`MintScopedSessionUseCase`) is responsible for the active-dedup
    * check via `findLatestActive` before calling this — the DB-level
    * conflict catches the race that the in-memory check missed.
+   *
+   * `installMaterial` (Wave 5 Option D · Commit 2) carries the optional
+   * `enableData` + `enableSig` + `validatorNonce` captured at mint time
+   * by the frontend. The Pg implementation encrypts the first two via
+   * `pgp_sym_encrypt(...)` before INSERT; memory implementation stores
+   * them verbatim. `null` fields skip the column write (NULL-first
+   * default). `enableStatus` is set to `'pending'` by the implementation
+   * when ANY install material field is non-null, else NULL.
    */
-  create(session: ScopedSession): Promise<void>;
+  create(
+    session: ScopedSession,
+    installMaterial?: ScopedSessionInstallMaterialWrite,
+  ): Promise<void>;
+
+  /**
+   * Wave 5 Option D · Commit 2 — fetch the encrypted install material
+   * for a session, decrypted at the SQL layer via pgcrypto. Returns
+   * `null` when the session does not exist OR when the user does not
+   * own it (caller passes `userId` for the ownership check; defense-
+   * in-depth on top of the route-layer service-secret gate).
+   *
+   * Surfaces ONLY through the install-material subroute; the default
+   * scoped-session reads continue to redact enable_data / enable_sig.
+   * Throws `MissingEncryptionKeyError` from `pgcrypto.ts` when the
+   * `OPTION_D_C2_ENCRYPTION_KEY` env var is unset — the route maps
+   * that to a 503.
+   */
+  findInstallMaterialById(
+    sessionId: string,
+    userId: string,
+  ): Promise<ScopedSessionInstallMaterial | null>;
 
   /**
    * Lookup by primary key. Returns `null` if absent. Does NOT filter on

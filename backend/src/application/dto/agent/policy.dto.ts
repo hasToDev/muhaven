@@ -9,6 +9,8 @@ import type { AgentAuditEvent } from '../../../domain/agent/model/agent-audit-ev
 import type {
   ScopedSession,
   ScopedSelectorCap,
+  ScopedSessionEnableStatus,
+  ScopedSessionInstallMaterial,
 } from '../../../domain/agent/model/scoped-session.js';
 import type { ScopedSessionStatus } from '../../../domain/agent/model/scoped-session-status.enum.js';
 
@@ -203,6 +205,32 @@ const HEX_4_BYTE_RE = /^0x[0-9a-fA-F]{8}$/;
 const HEX_20_BYTE_RE = /^0x[0-9a-fA-F]{40}$/;
 const HEX_32_BYTE_RE = /^0x[0-9a-fA-F]{64}$/;
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+/**
+ * Wave 5 Option D · Commit 2 — `enableData` shape gate.
+ * Cleartext `0x` + 2–8192 hex chars (4–8194 total). Empty hex (`0x`)
+ * rejected — the kernel rejects a 0-length validatorData at install
+ * time, so we surface the error at the DTO boundary instead of
+ * letting an empty value land in the DB.
+ */
+const ENABLE_DATA_HEX_RE = /^0x[0-9a-fA-F]{2,8192}$/;
+/**
+ * Wave 5 Option D · Commit 2 — `enableSig` shape gate.
+ * Cleartext `0x` + 256–4096 hex chars (258–4098 total).
+ *
+ * Multi-agent review SecEng H-3 absorbed — the 128-char floor accepted
+ * a bare 65-byte ECDSA `(r,s,v)` signature (130 hex), which is NOT the
+ * shape `@zerodev/passkey-validator::signTypedData` returns. Tightened
+ * to 256 hex (128 bytes) which still admits the absolute floor of a
+ * WebAuthn envelope (authenticatorData ≥ 37 bytes + clientDataJSON ≥
+ * 60 bytes + DER ECDSA ≥ 70 bytes ≈ 167 bytes raw; the 256-hex floor
+ * is a small safety margin under that). Defense against a downgrade
+ * by a malicious frontend posting a plain ECDSA blob.
+ *
+ * The upper bound (4096 hex = 2KB) covers the largest authenticator
+ * extensions / attestation paths.
+ */
+const ENABLE_SIG_HEX_RE = /^0x[0-9a-fA-F]{256,4096}$/;
 /** uint256 decimal — 0 alone OR a non-zero leading digit followed by ≤77 digits. */
 const UINT256_DEC_RE = /^(0|[1-9][0-9]{0,77})$/;
 const UINT256_MAX = (1n << 256n) - 1n;
@@ -280,6 +308,37 @@ export const MintScopedSessionDtoSchema = z
          *  absent → Path C deep-link fallback. Tighten to required
          *  when all known clients are Pickup B+. */
         permissionId: z.string().regex(HEX_4_BYTE_RE).optional(),
+        /**
+         * Wave 5 Option D · Commit 2 — captured install material. The
+         * frontend mint ceremony reads `validatorNonce` via
+         * `getKernelV3Nonce`, `enableData` via
+         * `permissionValidator.getEnableData(accountAddress)`, and
+         * `enableSig` via passkey-signed
+         * `getPluginsEnableTypedData(...)`. All three are `.optional()`
+         * on the DTO because:
+         *
+         *   - Pre-C2 frontends (legacy stage, hand-curled POSTs) don't
+         *     supply them → mint still succeeds, `enable_status`
+         *     stays NULL, the mirror row degrades cleanly to Path C
+         *     deep-link via the existing `no_active_session_key`
+         *     fallback chain.
+         *   - The strict-required gate moves to C3 / later when every
+         *     known client is on the C2 wire shape.
+         *
+         * Shape-validated via regex AND length-bounded (the regex
+         * already enforces the length, but Zod's separate refine gives
+         * a clearer error message). `validatorNonce` is bounded to
+         * uint32 (kernel V3.1 `currentNonce` is uint32; > uint32 would
+         * round-trip incorrectly through Drizzle's `mode: 'number'`).
+         */
+        enableData: z.string().regex(ENABLE_DATA_HEX_RE).optional(),
+        enableSig: z.string().regex(ENABLE_SIG_HEX_RE).optional(),
+        validatorNonce: z
+          .number()
+          .int()
+          .min(0)
+          .max(4_294_967_295)
+          .optional(),
       })
       .strict(),
     /** User-intent USDC ceiling in 6-decimal base. Distinct from the
@@ -304,6 +363,27 @@ export const MintScopedSessionDtoSchema = z
       return true;
     },
     { message: 'selectorCaps contains duplicate selectors' },
+  )
+  .refine(
+    (input) => {
+      // Wave 5 Option D · Commit 2 — install-material trio is
+      // all-or-none. A partial capture (e.g. enableSig without
+      // enableData) lands a half-broken row that C3's MCP-side
+      // ENABLE-mode UserOp can't compose; better to bounce at the
+      // wire than persist a structurally-orphaned mirror entry.
+      // Multi-agent review SecEng M-2 + Codex L-3 absorbed.
+      const fields = [
+        input.snapshot.enableData,
+        input.snapshot.enableSig,
+        input.snapshot.validatorNonce,
+      ];
+      const presentCount = fields.filter((v) => v !== undefined).length;
+      return presentCount === 0 || presentCount === 3;
+    },
+    {
+      message:
+        'install material (enableData, enableSig, validatorNonce) must be all-present or all-absent — partial captures rejected (Option D · C2).',
+    },
   )
   .refine(
     (input) => {
@@ -380,7 +460,81 @@ export interface ScopedSessionDto {
   mintedAt: string;
   revokedAt: string | null;
   expiredAt: string | null;
+  /**
+   * Wave 5 Option D · Commit 2 — install lifecycle fields. NULL on
+   * pre-C2 rows + on rows that didn't capture install material at
+   * mint. enableData + enableSig are NEVER on this DTO (encrypt-at-
+   * rest, redacted from default GET responses); the install-material
+   * subroute is the sole reveal point.
+   */
+  enableStatus: ScopedSessionEnableStatus | null;
+  validatorEnabledAt: string | null;
+  validatorEnabledTxHash: string | null;
+  validatorNonce: number | null;
 }
+
+/**
+ * Wave 5 Option D · Commit 2 — internal install-material wire shape.
+ * Returned ONLY by the dedicated install-material subroute
+ * (`GET /policy/scoped-session/:sessionId/install-material`) which
+ * is gated on the `BROKER_CALLBACK_SERVICE_SECRET` shared secret.
+ *
+ * `enableData` / `enableSig` are pgcrypto-decrypted server-side
+ * before this DTO is constructed; both are cleartext 0x-prefixed hex.
+ */
+export interface ScopedSessionInstallMaterialDto {
+  sessionId: string;
+  userId: string | null;
+  surface: Surface;
+  status: ScopedSessionStatus;
+  signerAddress: string;
+  permissionId: string | null;
+  enableStatus: ScopedSessionEnableStatus | null;
+  enableData: string | null;
+  enableSig: string | null;
+  validatorNonce: number | null;
+  validatorEnabledAt: string | null;
+  validatorEnabledTxHash: string | null;
+  validUntilSec: number;
+  mintedAtSec: number;
+}
+
+export function toScopedSessionInstallMaterialDto(
+  m: ScopedSessionInstallMaterial,
+): ScopedSessionInstallMaterialDto {
+  return {
+    sessionId: m.sessionId,
+    userId: m.userId,
+    surface: m.surface,
+    status: m.status,
+    signerAddress: m.signerAddress,
+    permissionId: m.permissionId,
+    enableStatus: m.enableStatus,
+    enableData: m.enableData,
+    enableSig: m.enableSig,
+    validatorNonce: m.validatorNonce,
+    validatorEnabledAt: m.validatorEnabledAt?.toISOString() ?? null,
+    validatorEnabledTxHash: m.validatorEnabledTxHash,
+    validUntilSec: m.validUntilSec,
+    mintedAtSec: m.mintedAtSec,
+  };
+}
+
+/**
+ * Wave 5 Option D · Commit 2 — query schema for the install-material
+ * route. `sessionId` comes via path-param routing; `userId` is the
+ * separate query parameter the route layer also re-checks against the
+ * SIWE-tier ownership rule the repo layer enforces.
+ */
+export const GetInstallMaterialQuerySchema = z
+  .object({
+    userId: z.string().min(1).max(128),
+  })
+  .strict();
+
+export type GetInstallMaterialQuery = z.infer<
+  typeof GetInstallMaterialQuerySchema
+>;
 
 export function toScopedSelectorCapDto(c: ScopedSelectorCap): ScopedSelectorCapDto {
   return {
@@ -410,5 +564,12 @@ export function toScopedSessionDto(session: ScopedSession): ScopedSessionDto {
     mintedAt: session.mintedAt.toISOString(),
     revokedAt: session.revokedAt?.toISOString() ?? null,
     expiredAt: session.expiredAt?.toISOString() ?? null,
+    // Wave 5 Option D · Commit 2 — install lifecycle fields. enableData
+    // + enableSig deliberately omitted (encrypt-at-rest, install-
+    // material subroute is the sole reveal point).
+    enableStatus: session.enableStatus,
+    validatorEnabledAt: session.validatorEnabledAt?.toISOString() ?? null,
+    validatorEnabledTxHash: session.validatorEnabledTxHash,
+    validatorNonce: session.validatorNonce,
   };
 }

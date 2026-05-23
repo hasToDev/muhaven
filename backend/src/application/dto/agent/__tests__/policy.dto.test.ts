@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  GetInstallMaterialQuerySchema,
   GetScopedSessionQuerySchema,
   MintScopedSessionDtoSchema,
   RevokeScopedSessionParamsSchema,
@@ -330,5 +331,230 @@ describe('GetScopedSessionQuerySchema', () => {
 
   it('REJECTS missing surface (required field)', () => {
     expect(() => GetScopedSessionQuerySchema.parse({})).toThrow();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Wave 5 Option D · Commit 2 — install-material wire validation.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('MintScopedSessionDtoSchema — Option D · C2 install material', () => {
+  const minimalEnableData = `0x${'cd'.repeat(64)}`; // 128 hex (well inside 2-8192 bound)
+  // SecEng H-3 raised the enableSig lower bound from 128 → 256 hex
+  // to reject bare 65-byte ECDSA downgrades.
+  const minimalEnableSig = `0x${'ab'.repeat(128)}`; // 256 hex (clears 256-floor)
+
+  function withInstallMaterial(extras: Record<string, unknown>): Record<string, unknown> {
+    return {
+      ...validBody(),
+      snapshot: {
+        ...validSnapshot(),
+        permissionId: VALID_PERMISSION_ID,
+        ...extras,
+      },
+    };
+  }
+
+  it('accepts a snapshot WITHOUT install material (back-compat with pre-C2 clients)', () => {
+    // The `.optional()` gate is load-bearing — legacy frontends + hand-
+    // curled POSTs continue to mint successfully; the row lands with
+    // NULL enable_data / enable_sig + NULL enable_status, and the
+    // existing fallback chain degrades to Path C deep-link.
+    const body = validBody();
+    expect(() => MintScopedSessionDtoSchema.parse(body)).not.toThrow();
+  });
+
+  it('accepts a snapshot WITH all three install material fields', () => {
+    expect(() =>
+      MintScopedSessionDtoSchema.parse(
+        withInstallMaterial({
+          enableData: minimalEnableData,
+          enableSig: minimalEnableSig,
+          validatorNonce: 0,
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  it('REJECTS enableData missing 0x prefix', () => {
+    expect(() =>
+      MintScopedSessionDtoSchema.parse(
+        withInstallMaterial({ enableData: 'cd'.repeat(64) }),
+      ),
+    ).toThrow();
+  });
+
+  it('REJECTS enableData with non-hex chars', () => {
+    expect(() =>
+      MintScopedSessionDtoSchema.parse(
+        withInstallMaterial({ enableData: `0x${'gg'.repeat(64)}` }),
+      ),
+    ).toThrow();
+  });
+
+  it('REJECTS enableData empty payload (0x with zero hex chars)', () => {
+    // Kernel rejects 0-byte validatorData at install — fail fast at
+    // the DTO boundary so we don't waste a mirror row + UserOp gas.
+    expect(() =>
+      MintScopedSessionDtoSchema.parse(withInstallMaterial({ enableData: '0x' })),
+    ).toThrow();
+  });
+
+  it('REJECTS enableData exceeding the 8192-char cleartext ceiling', () => {
+    expect(() =>
+      MintScopedSessionDtoSchema.parse(
+        withInstallMaterial({ enableData: `0x${'a'.repeat(8193)}` }),
+      ),
+    ).toThrow();
+  });
+
+  it('accepts enableSig at the lower bound (256 hex chars, WebAuthn-envelope floor)', () => {
+    expect(() =>
+      MintScopedSessionDtoSchema.parse(
+        withInstallMaterial({
+          enableData: minimalEnableData,
+          enableSig: minimalEnableSig,
+          validatorNonce: 1,
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  it('REJECTS enableSig below the 256-hex floor (downgrade defense)', () => {
+    expect(() =>
+      MintScopedSessionDtoSchema.parse(
+        withInstallMaterial({ enableSig: `0x${'ab'.repeat(127)}` }),
+      ),
+    ).toThrow();
+  });
+
+  it('REJECTS bare 65-byte ECDSA-shaped enableSig (SecEng H-3 downgrade defense)', () => {
+    // Plain ECDSA (r,s,v) = 65 bytes = 130 hex. Under the C2 invariant
+    // the SUDO validator is always passkey-validator → enableSig must
+    // be a WebAuthn envelope. Tightened floor bounces this shape at
+    // the wire.
+    expect(() =>
+      MintScopedSessionDtoSchema.parse(
+        withInstallMaterial({ enableSig: `0x${'ab'.repeat(65)}` }),
+      ),
+    ).toThrow();
+  });
+
+  it('REJECTS enableSig above the 4096-hex ceiling', () => {
+    expect(() =>
+      MintScopedSessionDtoSchema.parse(
+        withInstallMaterial({ enableSig: `0x${'ab'.repeat(2049)}` }),
+      ),
+    ).toThrow();
+  });
+
+  it('accepts validatorNonce at uint32 bounds (0 and 2^32-1)', () => {
+    // The all-or-none refine requires enableData + enableSig present
+    // alongside any validatorNonce value; bounds check supplies all three.
+    expect(() =>
+      MintScopedSessionDtoSchema.parse(
+        withInstallMaterial({
+          enableData: minimalEnableData,
+          enableSig: minimalEnableSig,
+          validatorNonce: 0,
+        }),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      MintScopedSessionDtoSchema.parse(
+        withInstallMaterial({
+          enableData: minimalEnableData,
+          enableSig: minimalEnableSig,
+          validatorNonce: 4_294_967_295,
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  it('REJECTS validatorNonce > uint32 max (with full install material to isolate the range gate)', () => {
+    expect(() =>
+      MintScopedSessionDtoSchema.parse(
+        withInstallMaterial({
+          enableData: minimalEnableData,
+          enableSig: minimalEnableSig,
+          validatorNonce: 4_294_967_296,
+        }),
+      ),
+    ).toThrow();
+  });
+
+  it('REJECTS validatorNonce non-integer or negative (with full install material to isolate the integer gate)', () => {
+    expect(() =>
+      MintScopedSessionDtoSchema.parse(
+        withInstallMaterial({
+          enableData: minimalEnableData,
+          enableSig: minimalEnableSig,
+          validatorNonce: 1.5,
+        }),
+      ),
+    ).toThrow();
+    expect(() =>
+      MintScopedSessionDtoSchema.parse(
+        withInstallMaterial({
+          enableData: minimalEnableData,
+          enableSig: minimalEnableSig,
+          validatorNonce: -1,
+        }),
+      ),
+    ).toThrow();
+  });
+
+  it('REJECTS partial install material (enableSig alone, missing enableData + validatorNonce)', () => {
+    // SecEng M-2 + Codex L-3 — the trio must be all-or-none. A partial
+    // capture lands a half-broken row C3 can't compose against.
+    expect(() =>
+      MintScopedSessionDtoSchema.parse(
+        withInstallMaterial({ enableSig: minimalEnableSig }),
+      ),
+    ).toThrow(/install material .* must be all-present or all-absent/i);
+  });
+
+  it('REJECTS partial install material (enableData + enableSig, missing validatorNonce)', () => {
+    expect(() =>
+      MintScopedSessionDtoSchema.parse(
+        withInstallMaterial({
+          enableData: minimalEnableData,
+          enableSig: minimalEnableSig,
+        }),
+      ),
+    ).toThrow(/install material .* must be all-present or all-absent/i);
+  });
+
+  it('REJECTS unknown snapshot fields under the strict guard (still strict with C2 additions)', () => {
+    // Defense against a future bug where the strict() gate gets lost
+    // in a refactor — any extra field that isn't in the schema should
+    // bounce, including a typo of one of the install-material fields.
+    expect(() =>
+      MintScopedSessionDtoSchema.parse(
+        withInstallMaterial({ enableDatum: minimalEnableData }),
+      ),
+    ).toThrow();
+  });
+});
+
+describe('GetInstallMaterialQuerySchema — Option D · C2', () => {
+  it('accepts a non-empty userId', () => {
+    expect(
+      GetInstallMaterialQuerySchema.parse({ userId: 'user-abc-123' }),
+    ).toEqual({ userId: 'user-abc-123' });
+  });
+
+  it('REJECTS empty userId', () => {
+    expect(() => GetInstallMaterialQuerySchema.parse({ userId: '' })).toThrow();
+  });
+
+  it('REJECTS missing userId', () => {
+    expect(() => GetInstallMaterialQuerySchema.parse({})).toThrow();
+  });
+
+  it('REJECTS userId over 128 chars (defense-in-depth on the FK length)', () => {
+    expect(() =>
+      GetInstallMaterialQuerySchema.parse({ userId: 'a'.repeat(129) }),
+    ).toThrow();
   });
 });

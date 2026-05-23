@@ -1,7 +1,13 @@
-import { ScopedSession } from '../../../domain/agent/model/scoped-session.js';
+import {
+  ScopedSession,
+  type ScopedSessionInstallMaterial,
+} from '../../../domain/agent/model/scoped-session.js';
 import { ScopedSessionStatus } from '../../../domain/agent/model/scoped-session-status.enum.js';
 import type { Surface } from '../../../domain/agent/model/surface.enum.js';
-import type { IScopedSessionRepository } from '../../../domain/agent/repository/scoped-session.repository.js';
+import type {
+  IScopedSessionRepository,
+  ScopedSessionInstallMaterialWrite,
+} from '../../../domain/agent/repository/scoped-session.repository.js';
 
 /**
  * Wave 5 Path D Slice 2 Commit 2.A — in-memory scoped-session repo for
@@ -15,8 +21,22 @@ import type { IScopedSessionRepository } from '../../../domain/agent/repository/
  */
 export class MemoryScopedSessionRepository implements IScopedSessionRepository {
   private readonly store = new Map<string, ScopedSession>();
+  /**
+   * Wave 5 Option D · Commit 2 — install material lives in a sidecar map
+   * keyed by sessionId so the public `ScopedSession` shape doesn't grow
+   * encryption-bearing fields. The Pg repo encrypts via pgcrypto; the
+   * memory repo stores cleartext verbatim (the test path uses this
+   * directly to assert the round-trip).
+   */
+  private readonly installMaterial = new Map<
+    string,
+    ScopedSessionInstallMaterialWrite & { userIdAtMint: string | null }
+  >();
 
-  async create(session: ScopedSession): Promise<void> {
+  async create(
+    session: ScopedSession,
+    installMaterial?: ScopedSessionInstallMaterialWrite,
+  ): Promise<void> {
     if (this.store.has(session.sessionId)) {
       throw new Error(`scoped session ${session.sessionId} already exists`);
     }
@@ -41,7 +61,48 @@ export class MemoryScopedSessionRepository implements IScopedSessionRepository {
         throw err;
       }
     }
+    // Wave 5 Option D · Commit 2 — the use-case already populated
+    // `enableStatus` + `validatorNonce` on the domain entity. The
+    // repo's job here is purely persistence; we DO NOT re-derive.
+    // enableData + enableSig live in a sidecar (the memory equivalent
+    // of the Pg repo's encrypted columns) keyed by sessionId. The
+    // surface route paths get the public ScopedSession; the
+    // install-material route reads the sidecar.
     this.store.set(session.sessionId, session);
+    if (installMaterial) {
+      this.installMaterial.set(session.sessionId, {
+        enableData: installMaterial.enableData,
+        enableSig: installMaterial.enableSig,
+        validatorNonce: installMaterial.validatorNonce,
+        userIdAtMint: session.userId,
+      });
+    }
+  }
+
+  async findInstallMaterialById(
+    sessionId: string,
+    userId: string,
+  ): Promise<ScopedSessionInstallMaterial | null> {
+    const session = this.store.get(sessionId);
+    if (!session) return null;
+    if (session.userId !== userId) return null;
+    const mat = this.installMaterial.get(sessionId);
+    return {
+      sessionId: session.sessionId,
+      userId: session.userId,
+      surface: session.surface,
+      status: session.status,
+      signerAddress: session.signerAddress,
+      permissionId: session.permissionId,
+      enableStatus: session.enableStatus,
+      enableData: mat?.enableData ?? null,
+      enableSig: mat?.enableSig ?? null,
+      validatorNonce: session.validatorNonce,
+      validatorEnabledAt: session.validatorEnabledAt,
+      validatorEnabledTxHash: session.validatorEnabledTxHash,
+      validUntilSec: session.validUntilSec,
+      mintedAtSec: session.mintedAtSec,
+    };
   }
 
   async findById(sessionId: string): Promise<ScopedSession | null> {

@@ -410,6 +410,279 @@ describeIfPg('PgScopedSessionRepository (real postgres)', () => {
     });
   });
 
+  // ────────────────────────────────────────────────────────────────────
+  // Wave 5 Option D · Commit 2 — pgcrypto encrypt-at-rest + install-
+  // material lifecycle. These cover the only contract that can't be
+  // exercised against the memory repo: the bytea/encryption round-trip,
+  // the partial-index lookup, the lockstep CHECK, and the size
+  // CHECK constraints.
+  // ────────────────────────────────────────────────────────────────────
+
+  describe('Option D · C2 install material — pgcrypto + lifecycle', () => {
+    const ENABLE_DATA = `0x${'cd'.repeat(64)}`;
+    // 256-hex floor (Option D · C2 SecEng H-3 downgrade defense).
+    const ENABLE_SIG = `0x${'ab'.repeat(128)}`;
+    const VALIDATOR_NONCE = 42;
+
+    beforeAll(async () => {
+      // Test-suite encryption key. Distinct from any operator-facing
+      // secret pattern so a future cross-secret regression in this
+      // suite can't accidentally collide with a real prod env. The
+      // 'f'.repeat(64) pattern doesn't collide with any of the
+      // other operator secret slots either (they're 32-byte random
+      // hex per ops convention).
+      process.env.OPTION_D_C2_ENCRYPTION_KEY = 'f'.repeat(64);
+      // Invalidate the env-singleton so the new key is observed by
+      // subsequent `requireEncryptionKey()` calls. Multi-agent
+      // review Codex M-5 absorbed (test-cache leak path).
+      const { resetEnvCacheForTesting } = await import('../../../../core/config.js');
+      resetEnvCacheForTesting();
+    });
+
+    it('ensures pgcrypto is loaded (test prerequisite)', async () => {
+      // If pgcrypto isn't installed we should fail loud here with a
+      // clear remediation message, not later inside an opaque SQL error.
+      const result = await db.execute(
+        sql`SELECT octet_length(pgp_sym_encrypt('ping', 'k')) > 0 AS ok`,
+      );
+      const rows = (result as unknown as { rows: Array<{ ok: boolean }> }).rows;
+      expect(rows[0]?.ok).toBe(true);
+    });
+
+    it('encrypts enable_data + enable_sig at rest (raw bytea ≠ cleartext)', async () => {
+      const session = makeSession({
+        permissionId: '0xdeadbeef',
+        enableStatus: 'pending',
+        validatorNonce: VALIDATOR_NONCE,
+      });
+      await repo.create(session, {
+        enableData: ENABLE_DATA as `0x${string}`,
+        enableSig: ENABLE_SIG as `0x${string}`,
+        validatorNonce: VALIDATOR_NONCE,
+      });
+
+      // Raw SELECT bypassing repo decryption — the column MUST contain
+      // pgcrypto-wrapped bytes, not the cleartext hex string. If a
+      // future refactor accidentally writes cleartext, this test
+      // captures the regression at the bytea boundary.
+      const raw = await db.execute(sql`
+        SELECT
+          enable_data,
+          enable_sig,
+          octet_length(enable_data) AS data_size,
+          octet_length(enable_sig) AS sig_size
+        FROM agent_scoped_sessions
+        WHERE session_id = ${session.sessionId}
+      `);
+      const rawRows = (raw as unknown as {
+        rows: Array<{ enable_data: Buffer; enable_sig: Buffer; data_size: number; sig_size: number }>;
+      }).rows;
+      const row = rawRows[0]!;
+      expect(row.enable_data).toBeInstanceOf(Buffer);
+      expect(row.enable_sig).toBeInstanceOf(Buffer);
+      // Bytes must NOT contain the cleartext hex (`cdcdcd...`).
+      expect(row.enable_data.toString('utf8')).not.toContain('cdcdcd');
+      expect(row.enable_sig.toString('utf8')).not.toContain('ababab');
+      // Encrypted blob has a small overhead but stays under our CHECK
+      // size ceilings (8192 / 4096 bytes).
+      expect(row.data_size).toBeGreaterThan(0);
+      expect(row.data_size).toBeLessThanOrEqual(8192);
+      expect(row.sig_size).toBeGreaterThan(0);
+      expect(row.sig_size).toBeLessThanOrEqual(4096);
+    });
+
+    it('decrypts back to cleartext via findInstallMaterialById', async () => {
+      const session = makeSession({
+        permissionId: '0xdeadbeef',
+        enableStatus: 'pending',
+        validatorNonce: VALIDATOR_NONCE,
+      });
+      await repo.create(session, {
+        enableData: ENABLE_DATA as `0x${string}`,
+        enableSig: ENABLE_SIG as `0x${string}`,
+        validatorNonce: VALIDATOR_NONCE,
+      });
+
+      const material = await repo.findInstallMaterialById(session.sessionId, U1);
+      expect(material).not.toBeNull();
+      expect(material?.enableData).toBe(ENABLE_DATA);
+      expect(material?.enableSig).toBe(ENABLE_SIG);
+      expect(material?.validatorNonce).toBe(VALIDATOR_NONCE);
+      expect(material?.enableStatus).toBe('pending');
+    });
+
+    it('returns null from findInstallMaterialById on user mismatch (defense-in-depth ownership)', async () => {
+      const session = makeSession({
+        permissionId: '0xdeadbeef',
+        enableStatus: 'pending',
+        validatorNonce: VALIDATOR_NONCE,
+      });
+      await repo.create(session, {
+        enableData: ENABLE_DATA as `0x${string}`,
+        enableSig: ENABLE_SIG as `0x${string}`,
+        validatorNonce: VALIDATOR_NONCE,
+      });
+      // Other user owns nothing in this row.
+      expect(await repo.findInstallMaterialById(session.sessionId, U2)).toBeNull();
+    });
+
+    it('default findById + findLatestActive do NOT carry enableData / enableSig (least-exposure read)', async () => {
+      const session = makeSession({
+        permissionId: '0xdeadbeef',
+        enableStatus: 'pending',
+        validatorNonce: VALIDATOR_NONCE,
+      });
+      await repo.create(session, {
+        enableData: ENABLE_DATA as `0x${string}`,
+        enableSig: ENABLE_SIG as `0x${string}`,
+        validatorNonce: VALIDATOR_NONCE,
+      });
+      const byId = await repo.findById(session.sessionId);
+      expect(byId).not.toBeNull();
+      // Public ScopedSession model has no enableData/enableSig fields.
+      // Verify the lifecycle fields ARE on the model + the redacted
+      // ones are NOT (structural check via in operator).
+      expect(byId?.enableStatus).toBe('pending');
+      expect(byId?.validatorNonce).toBe(VALIDATOR_NONCE);
+      expect(byId && 'enableData' in (byId as object)).toBe(false);
+      expect(byId && 'enableSig' in (byId as object)).toBe(false);
+
+      const latest = await repo.findLatestActive(U1, Surface.MCP, NOW_SEC);
+      expect(latest?.enableStatus).toBe('pending');
+      expect(latest?.validatorNonce).toBe(VALIDATOR_NONCE);
+    });
+
+    it('accepts a mint WITHOUT install material — enable_status stays NULL (back-compat)', async () => {
+      const session = makeSession();
+      await repo.create(session);
+      const loaded = await repo.findById(session.sessionId);
+      expect(loaded?.enableStatus).toBeNull();
+      expect(loaded?.validatorNonce).toBeNull();
+    });
+
+    it('validator_nonce CHECK rejects values > uint32 max', async () => {
+      // Raw INSERT bypassing the use-case so the CHECK is the last line.
+      await expect(
+        db.insert(agentScopedSessions).values({
+          sessionId: 'session-nonce-fail',
+          userId: U1,
+          surface: Surface.MCP,
+          status: ScopedSessionStatus.Active,
+          signerAddress: '0xaaaa000000000000000000000000000000000001',
+          targetContracts: ['0xbbbb000000000000000000000000000000000002'],
+          selectorCaps: [{ selector: '0xdeadbeef', capArgIndex: 2, maxAmount: '1' }],
+          maxPerOpUsd6: '0',
+          totalSpentUsd6: '0',
+          validUntilSec: NOW_SEC + 3600,
+          mintedAtSec: NOW_SEC,
+          validatorNonce: 4_294_967_296, // uint32 max + 1
+        }),
+      ).rejects.toMatchObject({ code: '23514' });
+    });
+
+    it('lockstep CHECK rejects (validator_enabled_at != NULL && enable_status != enabled)', async () => {
+      // Hand-INSERT a row where validatorEnabledAt is non-null but
+      // enable_status is 'pending' — the CHECK must reject. C3's
+      // chain-indexer flip path won't hit this because it UPDATEs both
+      // columns together; this test gates the schema invariant.
+      await expect(
+        db.insert(agentScopedSessions).values({
+          sessionId: 'session-lockstep-fail',
+          userId: U1,
+          surface: Surface.MCP,
+          status: ScopedSessionStatus.Active,
+          signerAddress: '0xaaaa000000000000000000000000000000000001',
+          targetContracts: ['0xbbbb000000000000000000000000000000000002'],
+          selectorCaps: [{ selector: '0xdeadbeef', capArgIndex: 2, maxAmount: '1' }],
+          maxPerOpUsd6: '0',
+          totalSpentUsd6: '0',
+          validUntilSec: NOW_SEC + 3600,
+          mintedAtSec: NOW_SEC,
+          enableStatus: 'pending',
+          validatorEnabledAt: NOW,
+        }),
+      ).rejects.toMatchObject({ code: '23514' });
+    });
+
+    it('validator_enabled_tx_hash CHECK rejects non-hex / uppercase / wrong-length values', async () => {
+      // Spread across separate rows so each violation is independent.
+      const cases: Array<{ label: string; txHash: string }> = [
+        { label: 'uppercase hex', txHash: '0x' + 'A'.repeat(64) },
+        { label: 'too short', txHash: '0xdeadbeef' },
+        { label: 'missing 0x', txHash: 'a'.repeat(64) },
+      ];
+      let i = 0;
+      for (const c of cases) {
+        i += 1;
+        await expect(
+          db.insert(agentScopedSessions).values({
+            sessionId: `session-txhash-fail-${i}`,
+            userId: U1,
+            surface: Surface.MCP,
+            status: ScopedSessionStatus.Active,
+            signerAddress: '0xaaaa000000000000000000000000000000000001',
+            targetContracts: ['0xbbbb000000000000000000000000000000000002'],
+            selectorCaps: [{ selector: '0xdeadbeef', capArgIndex: 2, maxAmount: '1' }],
+            maxPerOpUsd6: '0',
+            totalSpentUsd6: '0',
+            validUntilSec: NOW_SEC + 3600,
+            mintedAtSec: NOW_SEC,
+            // For the "enabled" path the lockstep CHECK requires
+            // validator_enabled_at non-null AND enable_status='enabled',
+            // so the txhash CHECK is the only relevant failure path.
+            enableStatus: 'enabled',
+            validatorEnabledAt: NOW,
+            validatorEnabledTxHash: c.txHash,
+          }),
+        ).rejects.toMatchObject({ code: '23514' });
+      }
+    });
+
+    it('partial pending-enable index returns ONLY rows where enable_status=pending AND status=active', async () => {
+      // Insert two rows: one pending+active, one pending+revoked. The
+      // partial index gates on BOTH predicates; an EXPLAIN over the
+      // pending-active SELECT must use the index (we don't assert plan
+      // shape here — just that the query returns the expected row set).
+      const sessionPendingActive = makeSession({
+        sessionId: 'session-pending-active',
+        permissionId: '0xdeadbeef',
+        enableStatus: 'pending',
+        validatorNonce: 1,
+      });
+      await repo.create(sessionPendingActive, {
+        enableData: ENABLE_DATA as `0x${string}`,
+        enableSig: ENABLE_SIG as `0x${string}`,
+        validatorNonce: 1,
+      });
+      const sessionRevoked = makeSession({
+        sessionId: 'session-pending-revoked',
+        surface: Surface.HavenBot,
+        permissionId: '0xdeadbeef',
+        enableStatus: 'pending',
+        validatorNonce: 2,
+      });
+      await repo.create(sessionRevoked, {
+        enableData: ENABLE_DATA as `0x${string}`,
+        enableSig: ENABLE_SIG as `0x${string}`,
+        validatorNonce: 2,
+      });
+      await repo.revoke('session-pending-revoked', NOW);
+
+      // Raw query mimicking the C3 chain-indexer's "find pending rows
+      // older than threshold" predicate.
+      const rows = await db.execute(sql`
+        SELECT session_id
+        FROM agent_scoped_sessions
+        WHERE enable_status = 'pending' AND status = 'active'
+        ORDER BY session_id
+      `);
+      const sessionIds = (rows as unknown as {
+        rows: Array<{ session_id: string }>;
+      }).rows.map((r) => r.session_id);
+      expect(sessionIds).toEqual(['session-pending-active']);
+    });
+  });
+
   describe('FK lifecycle (onDelete: SET NULL)', () => {
     it('deleting the user nulls scoped_session.user_id; the row survives for audit-replay', async () => {
       // GDPR-style user deletion. Per DBO-H4 fix, FK is

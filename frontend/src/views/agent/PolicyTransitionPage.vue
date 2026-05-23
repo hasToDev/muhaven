@@ -707,6 +707,14 @@ async function mintScopedSession(consentActionHash: `0x${string}`): Promise<void
     // lowercases + shape-asserts (`^0x[0-9a-f]{8}$`) so we don't need
     // to normalize here. R1 multi-agent review M-3 absorbed.
     permissionId: installed.permissionId,
+    // Wave 5 Option D · Commit 2 — capture install material so the
+    // MCP-side MODE.ENABLE UserOp (C3) can install the validator
+    // on-chain without a second passkey ceremony. The provider's
+    // installScopedSessionKey already triggered ONE WebAuthn ceremony
+    // to sign the typed data; the broker re-uses that signature.
+    enableData: installed.enableData,
+    enableSig: installed.enableSig,
+    validatorNonce: installed.validatorNonce,
   })
 
   try {

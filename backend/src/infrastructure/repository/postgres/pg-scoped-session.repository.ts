@@ -1,13 +1,23 @@
-import { and, desc, eq, gt, lte } from 'drizzle-orm';
-import { ScopedSession, type ScopedSelectorCap } from '../../../domain/agent/model/scoped-session.js';
+import { and, desc, eq, gt, lte, sql } from 'drizzle-orm';
+import {
+  ScopedSession,
+  isScopedSessionEnableStatus,
+  type ScopedSelectorCap,
+  type ScopedSessionEnableStatus,
+  type ScopedSessionInstallMaterial,
+} from '../../../domain/agent/model/scoped-session.js';
 import {
   ScopedSessionStatus,
   isScopedSessionStatus,
 } from '../../../domain/agent/model/scoped-session-status.enum.js';
 import type { Surface } from '../../../domain/agent/model/surface.enum.js';
-import type { IScopedSessionRepository } from '../../../domain/agent/repository/scoped-session.repository.js';
+import type {
+  IScopedSessionRepository,
+  ScopedSessionInstallMaterialWrite,
+} from '../../../domain/agent/repository/scoped-session.repository.js';
 import { agentScopedSessions } from './schema.js';
 import type { Db } from './db.js';
+import { encryptedTextOrNull, requireEncryptionKey } from './pgcrypto.js';
 
 /**
  * Wave 5 Path D Slice 2 Commit 2.A — Postgres scoped-session mirror
@@ -34,7 +44,35 @@ import type { Db } from './db.js';
 export class PgScopedSessionRepository implements IScopedSessionRepository {
   constructor(private readonly db: Db) {}
 
-  async create(session: ScopedSession): Promise<void> {
+  async create(
+    session: ScopedSession,
+    installMaterial?: ScopedSessionInstallMaterialWrite,
+  ): Promise<void> {
+    // Wave 5 Option D · Commit 2 — encrypt enableData / enableSig via
+    // pgcrypto. `encryptedTextOrNull` returns a `pgp_sym_encrypt(...)`
+    // SQL fragment Drizzle interpolates as a column value; `null`
+    // input → `null` output (column stays NULL).
+    //
+    // The cast through `unknown` then to the column type is necessary
+    // because Drizzle's `.values()` type doesn't model SQL-fragment
+    // values for bytea columns out of the box; the runtime path is
+    // standard parameter binding via the `sql` template tag.
+    //
+    // `enableStatus` + `validatorNonce` are NOT derived here — the
+    // use-case (`MintScopedSessionUseCase`) already populates them
+    // on `session` based on the install-material presence. The repo
+    // stays a thin persistence boundary.
+    // Explicit null check rather than truthiness — defends against a
+    // future DTO change that accepts `'0x'` (currently rejected by
+    // Zod) silently bypassing encryption. Multi-agent review CR H-2.
+    const enableDataValue =
+      installMaterial?.enableData != null
+        ? encryptedTextOrNull(installMaterial.enableData)
+        : null;
+    const enableSigValue =
+      installMaterial?.enableSig != null
+        ? encryptedTextOrNull(installMaterial.enableSig)
+        : null;
     await this.db.insert(agentScopedSessions).values({
       sessionId: session.sessionId,
       userId: session.userId,
@@ -60,12 +98,28 @@ export class PgScopedSessionRepository implements IScopedSessionRepository {
       mintedAt: session.mintedAt,
       revokedAt: session.revokedAt,
       expiredAt: session.expiredAt,
+      // Wave 5 Option D · Commit 2 install-material columns.
+      enableData: enableDataValue as unknown as Buffer | null,
+      enableSig: enableSigValue as unknown as Buffer | null,
+      validatorNonce: session.validatorNonce,
+      enableStatus: session.enableStatus,
+      validatorEnabledAt: session.validatorEnabledAt,
+      validatorEnabledTxHash: session.validatorEnabledTxHash,
     });
   }
 
   async findById(sessionId: string): Promise<ScopedSession | null> {
+    // Wave 5 Option D · Commit 2 — explicit `columns: { ... }` exclusion
+    // of the pgcrypto-encrypted blobs. Drizzle's `false` entries are
+    // EXCLUSION filters when other columns are unspecified — every
+    // remaining column is included by default. Two-pronged defense:
+    // (a) keeps the encrypted bytea out of the default response so a
+    // maintainer can't accidentally surface it through a `findFirst`
+    // refactor, (b) reduces the per-row payload (the encrypted blob
+    // can be 1-2KB).
     const row = await this.db.query.agentScopedSessions.findFirst({
       where: eq(agentScopedSessions.sessionId, sessionId),
+      columns: { enableData: false, enableSig: false },
     });
     return row ? this.toDomain(row) : null;
   }
@@ -92,8 +146,107 @@ export class PgScopedSessionRepository implements IScopedSessionRepository {
         gt(agentScopedSessions.validUntilSec, nowSec),
       ),
       orderBy: [desc(agentScopedSessions.mintedAt), agentScopedSessions.sessionId],
+      // Wave 5 Option D · Commit 2 — see `findById` JSDoc for the
+      // rationale on the exclusion filter.
+      columns: { enableData: false, enableSig: false },
     });
     return row ? this.toDomain(row) : null;
+  }
+
+  async findInstallMaterialById(
+    sessionId: string,
+    userId: string,
+  ): Promise<ScopedSessionInstallMaterial | null> {
+    // Wave 5 Option D · Commit 2 — install-material read path. Uses
+    // a raw SELECT so we can compose `pgp_sym_decrypt(...)` directly
+    // in the projection (Drizzle's relational API doesn't easily
+    // model derived columns).
+    //
+    // Defense-in-depth ownership check: the route-layer service-secret
+    // gate proves the CALLER is the MCP server, not who the row
+    // belongs to. We re-check `user_id = ${userId}` here so a
+    // service-secret holder can't peek at OTHER users' install
+    // material by varying the sessionId.
+    //
+    // `MissingEncryptionKeyError` from `requireEncryptionKey` propagates
+    // — the route maps it to 503.
+    const key = requireEncryptionKey();
+    const result = await this.db.execute(sql<{
+      session_id: string;
+      user_id: string | null;
+      surface: string;
+      status: string;
+      signer_address: string;
+      permission_id: string | null;
+      enable_status: string | null;
+      enable_data_cleartext: string | null;
+      enable_sig_cleartext: string | null;
+      validator_nonce: number | null;
+      validator_enabled_at: Date | null;
+      validator_enabled_tx_hash: string | null;
+      valid_until_sec: number;
+      minted_at_sec: number;
+    }>`
+      SELECT
+        session_id,
+        user_id,
+        surface,
+        status,
+        signer_address,
+        permission_id,
+        enable_status,
+        CASE
+          WHEN enable_data IS NULL THEN NULL
+          ELSE pgp_sym_decrypt(enable_data, ${key}::text)::text
+        END AS enable_data_cleartext,
+        CASE
+          WHEN enable_sig IS NULL THEN NULL
+          ELSE pgp_sym_decrypt(enable_sig, ${key}::text)::text
+        END AS enable_sig_cleartext,
+        validator_nonce,
+        validator_enabled_at,
+        validator_enabled_tx_hash,
+        valid_until_sec,
+        minted_at_sec
+      FROM agent_scoped_sessions
+      WHERE session_id = ${sessionId}
+        AND user_id = ${userId}
+      LIMIT 1
+    `);
+    const rows = (result as unknown as { rows: Array<Record<string, unknown>> }).rows;
+    if (!rows || rows.length === 0) return null;
+    const row = rows[0]!;
+    if (!isScopedSessionStatus(row.status)) {
+      throw new Error(
+        `pg-scoped-session: install-material row ${row.session_id} has invalid status ${row.status}`,
+      );
+    }
+    const enableStatus = row.enable_status;
+    if (enableStatus !== null && !isScopedSessionEnableStatus(enableStatus)) {
+      throw new Error(
+        `pg-scoped-session: install-material row ${row.session_id} has invalid enable_status ${enableStatus}`,
+      );
+    }
+    return {
+      sessionId: row.session_id as string,
+      userId: (row.user_id as string | null) ?? null,
+      surface: row.surface as Surface,
+      status: row.status,
+      signerAddress: row.signer_address as `0x${string}`,
+      permissionId: (row.permission_id as `0x${string}` | null) ?? null,
+      enableStatus: enableStatus as ScopedSessionEnableStatus | null,
+      enableData: (row.enable_data_cleartext as `0x${string}` | null) ?? null,
+      enableSig: (row.enable_sig_cleartext as `0x${string}` | null) ?? null,
+      validatorNonce:
+        row.validator_nonce === null || row.validator_nonce === undefined
+          ? null
+          : Number(row.validator_nonce),
+      validatorEnabledAt: (row.validator_enabled_at as Date | null) ?? null,
+      validatorEnabledTxHash:
+        (row.validator_enabled_tx_hash as `0x${string}` | null) ?? null,
+      validUntilSec: Number(row.valid_until_sec),
+      mintedAtSec: Number(row.minted_at_sec),
+    };
   }
 
   async revoke(sessionId: string, now: Date): Promise<ScopedSession | null> {
@@ -188,7 +341,16 @@ export class PgScopedSessionRepository implements IScopedSessionRepository {
     return rows.length;
   }
 
-  private toDomain(row: typeof agentScopedSessions.$inferSelect): ScopedSession {
+  /**
+   * Wave 5 Option D · Commit 2 — `toDomain` accepts the post-`columns:
+   * { enableData: false, enableSig: false }` shape that omits the
+   * encrypted bytea columns. The shape is `Omit<...inferSelect, 'enableData' | 'enableSig'>`;
+   * captured here as a structural type so the install-material path can
+   * use a different mapper without overloading `toDomain` itself.
+   */
+  private toDomain(
+    row: Omit<typeof agentScopedSessions.$inferSelect, 'enableData' | 'enableSig'>,
+  ): ScopedSession {
     // Defense-in-depth at the read boundary. Scalar columns are gated by
     // schema CHECK constraints (`schema.ts:agent_scoped_sessions_*_chk`)
     // + Drizzle enum types; mismatch at insert time is impossible
@@ -224,6 +386,16 @@ export class PgScopedSessionRepository implements IScopedSessionRepository {
         `pg-scoped-session: row ${row.sessionId} selector_caps is not an array`,
       );
     }
+    // Wave 5 Option D · Commit 2 — validate the new enable_status enum
+    // at the read boundary too. Drizzle types it as the pgEnum union,
+    // but defense-in-depth catches a hand-INSERT bypassing the column
+    // type (mirrors the existing status check on line above).
+    const enableStatusRaw = row.enableStatus;
+    if (enableStatusRaw !== null && !isScopedSessionEnableStatus(enableStatusRaw)) {
+      throw new Error(
+        `pg-scoped-session: row ${row.sessionId} has invalid enable_status ${enableStatusRaw}`,
+      );
+    }
     return new ScopedSession({
       sessionId: row.sessionId,
       userId: row.userId, // nullable since 2026-05-22: FK onDelete:'set null'
@@ -251,6 +423,18 @@ export class PgScopedSessionRepository implements IScopedSessionRepository {
       mintedAt: row.mintedAt,
       revokedAt: row.revokedAt ?? null,
       expiredAt: row.expiredAt ?? null,
+      // Wave 5 Option D · Commit 2 install-material lifecycle fields.
+      // `enableData` + `enableSig` are NEVER on the default `ScopedSession`
+      // (only on the install-material model); the schema's encrypted
+      // bytea columns are excluded from the SELECT projection above.
+      enableStatus: enableStatusRaw as ScopedSessionEnableStatus | null,
+      validatorEnabledAt: row.validatorEnabledAt ?? null,
+      validatorEnabledTxHash:
+        (row.validatorEnabledTxHash as `0x${string}` | null) ?? null,
+      validatorNonce:
+        row.validatorNonce === null || row.validatorNonce === undefined
+          ? null
+          : Number(row.validatorNonce),
     });
   }
 }

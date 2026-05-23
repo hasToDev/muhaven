@@ -286,6 +286,46 @@ const EnvSchema = z.object({
   // authenticated callers alike.
   OPTION_D_C1_MIGRATION_SECRET: z.string().min(16).optional(),
 
+  // Wave 5 Option D · Commit 2 — pgcrypto symmetric key for
+  // `agent_scoped_sessions.enable_data` + `enable_sig` column-level
+  // encrypt-at-rest. 64 hex chars (32 bytes), generated per-deploy via
+  // `openssl rand -hex 32`. The same key encrypts AND decrypts; rotation
+  // requires a coordinated re-encrypt of every populated row (handled by
+  // an ops script — out of C2 scope).
+  //
+  // Optional because pre-C2 boots never had this key; the repository's
+  // encrypted-write path throws loud if the key is missing AND a write
+  // attempts to populate enableData / enableSig. Reads degrade cleanly
+  // when the key is missing (the install-material subroute returns
+  // 503 instead of leaking a partial response).
+  //
+  // SecEng follow-through (R2 Option D plan): cross-secret blast-radius
+  // separation against every other operator-facing secret on this
+  // surface — handled in the superRefine below.
+  OPTION_D_C2_ENCRYPTION_KEY: z
+    .string()
+    .regex(
+      /^[0-9a-fA-F]{64}$/,
+      'OPTION_D_C2_ENCRYPTION_KEY must be 64 hex chars (32 bytes; generate via `openssl rand -hex 32`).',
+    )
+    .optional(),
+
+  // Wave 5 Option D · Commit 2 — service-to-service shared secret for
+  // the broker callback + install-material subroutes
+  // (`GET  /api/v1/agent/policy/scoped-session/:sessionId/install-material`
+  // ` POST /api/v1/agent/policy/scoped-session/:sessionId/validator-enabled` — C3).
+  //
+  // Both subroutes are internal-only — the MCP server (install-material
+  // consumer) and the broker daemon (validator-enabled producer) hold
+  // this secret. Browser clients NEVER see it; user-driven flows go
+  // through the standard SIWE-JWT path on the sibling endpoints.
+  //
+  // Optional because the consumer wiring lands in C3; pre-C3 boots can
+  // leave this unset and the subroutes return 503 to every caller
+  // (including authenticated ones). Min 16 chars matches
+  // `withServiceSecret` middleware's floor.
+  BROKER_CALLBACK_SERVICE_SECRET: z.string().min(16).optional(),
+
   // ── Wave 5 Q3 (step 4) — daily yield-distribution cron ─────────────
   // Master toggle — default false so the cron is opt-in. Operator
   // flips this to true AFTER setting YIELD_CRON_PRIVATE_KEY +
@@ -412,6 +452,51 @@ const EnvSchema = z.object({
       });
     }
   }
+
+  // Wave 5 Option D · Commit 2 — broker callback service secret must
+  // not collide with any other operator-facing secret. Same blast-
+  // radius separation reasoning as the C1 migration secret block above.
+  if (env.BROKER_CALLBACK_SERVICE_SECRET) {
+    const otherSecrets: Array<readonly [string, string | undefined]> = [
+      ['ORACLE_INGEST_SERVICE_SECRET', env.ORACLE_INGEST_SERVICE_SECRET],
+      ['OPERATOR_ALERT_TEST_SECRET', env.OPERATOR_ALERT_TEST_SECRET],
+      ['TELEGRAM_BOT_SERVICE_SECRET', env.TELEGRAM_BOT_SERVICE_SECRET],
+      ['OPTION_D_C1_MIGRATION_SECRET', env.OPTION_D_C1_MIGRATION_SECRET],
+    ];
+    for (const [name, value] of otherSecrets) {
+      if (value && env.BROKER_CALLBACK_SERVICE_SECRET === value) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['BROKER_CALLBACK_SERVICE_SECRET'],
+          message: `BROKER_CALLBACK_SERVICE_SECRET must differ from ${name} (blast-radius separation, Option D · C2).`,
+        });
+      }
+    }
+  }
+
+  // Wave 5 Option D · Commit 2 — encryption key must not collide with
+  // any operator-facing secret. The key isn't an HTTP credential, but a
+  // re-used hex string indicates the operator paste-error class that
+  // the rest of the cross-secret block defends against. Loud-fail at
+  // boot.
+  if (env.OPTION_D_C2_ENCRYPTION_KEY) {
+    const otherSecrets: Array<readonly [string, string | undefined]> = [
+      ['ORACLE_INGEST_SERVICE_SECRET', env.ORACLE_INGEST_SERVICE_SECRET],
+      ['OPERATOR_ALERT_TEST_SECRET', env.OPERATOR_ALERT_TEST_SECRET],
+      ['TELEGRAM_BOT_SERVICE_SECRET', env.TELEGRAM_BOT_SERVICE_SECRET],
+      ['OPTION_D_C1_MIGRATION_SECRET', env.OPTION_D_C1_MIGRATION_SECRET],
+      ['BROKER_CALLBACK_SERVICE_SECRET', env.BROKER_CALLBACK_SERVICE_SECRET],
+    ];
+    for (const [name, value] of otherSecrets) {
+      if (value && env.OPTION_D_C2_ENCRYPTION_KEY === value) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['OPTION_D_C2_ENCRYPTION_KEY'],
+          message: `OPTION_D_C2_ENCRYPTION_KEY must differ from ${name} (key/credential isolation, Option D · C2).`,
+        });
+      }
+    }
+  }
 });
 
 export type Env = z.infer<typeof EnvSchema>;
@@ -423,4 +508,21 @@ export function getEnv(): Env {
     _env = EnvSchema.parse(process.env);
   }
   return _env;
+}
+
+/**
+ * Wave 5 Option D · Commit 2 — TEST-ONLY env-cache reset.
+ *
+ * The env schema is parsed exactly once per process (cached in `_env`)
+ * so production code paths never re-parse on hot calls. Integration
+ * tests that need to mutate `process.env` between suites (e.g.
+ * `OPTION_D_C2_ENCRYPTION_KEY` for the pgcrypto-roundtrip suite) must
+ * call this AFTER mutating env to invalidate the cache. Multi-agent
+ * review Codex M-5 absorbed.
+ *
+ * NOT for production callers. If a non-test path needs env reloads,
+ * the call site is mis-architected — env should be set once at boot.
+ */
+export function resetEnvCacheForTesting(): void {
+  _env = null;
 }

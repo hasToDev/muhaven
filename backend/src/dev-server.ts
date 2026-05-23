@@ -12,6 +12,7 @@ import {
   YieldDistributionCron,
 } from './infrastructure/blockchain/index.js';
 import { getDb, getPool } from './infrastructure/repository/postgres/db.js';
+import { ensurePgcryptoExtension } from './infrastructure/repository/postgres/pgcrypto.js';
 import { SettleFromEventUseCase } from './application/use-case/checkout/settle-from-event.use-case.js';
 import { TokenRegistryHandler } from './infrastructure/blockchain/token-registry-handler.js';
 import { ProcessEscrowEventUseCase } from './application/use-case/webhook/process-escrow-event.use-case.js';
@@ -170,6 +171,30 @@ async function main() {
   const routes = sortRoutes(scanRoutes(API_DIR));
   const port = Number(process.env.PORT) || 3000;
 
+  // Wave 5 Option D · Commit 2 — bootstrap pgcrypto BEFORE the HTTP
+  // listener opens. If we run `CREATE EXTENSION` after `server.listen`,
+  // a request that lands during the ~50-500ms window between listen
+  // and extension-create hits the encrypted-write path while
+  // `pgp_sym_encrypt` is undefined → `42883 function does not exist`
+  // → 500. Multi-agent review BE Arch H-1 absorbed.
+  //
+  // The bootstrap is idempotent (`IF NOT EXISTS`) and fast — a
+  // ~10ms penalty on cold boot is cheaper than the race-induced
+  // first-mint failure.
+  const bootEnv = getEnv();
+  if (bootEnv.DB_PROVIDER === 'postgres' && bootEnv.OPTION_D_C2_ENCRYPTION_KEY) {
+    try {
+      await ensurePgcryptoExtension((q) => getDb().execute(q));
+      console.log('[pgcrypto] CREATE EXTENSION IF NOT EXISTS pgcrypto — OK');
+    } catch (err) {
+      console.warn(
+        '[pgcrypto] CREATE EXTENSION failed — Scoped session install-material writes will throw; reads return 503. ' +
+          'Operator must run `bash scripts/sql/install-pgcrypto-homelab.sh` (or grant CREATEDB/superuser to the muhaven role).',
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
   const server = createServer(async (rawReq: IncomingMessage, rawRes: ServerResponse) => {
     const parsed = new URL(rawReq.url ?? '/', `http://localhost:${port}`);
     const pathname = parsed.pathname;
@@ -258,7 +283,11 @@ async function main() {
     console.log('');
   });
 
-  const env = getEnv();
+  // `env` already resolved as `bootEnv` above — reuse to keep the
+  // schema parse single-shot. Schema validation (including the
+  // cross-secret superRefine for OPTION_D_C2_ENCRYPTION_KEY +
+  // BROKER_CALLBACK_SERVICE_SECRET) fires at the first getEnv() call.
+  const env = bootEnv;
   const backgroundShutdown: Array<() => void> = [];
 
   // Start Wave 3.5 NAV writer cron if enabled. Only runs when all four

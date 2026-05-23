@@ -247,6 +247,19 @@ export interface BuildScopedMintBodyInput {
    * `^0x[0-9a-f]{8}$` (lowercased + 4-byte).
    */
   permissionId: `0x${string}`
+  /**
+   * Wave 5 Option D · Commit 2 — install material captured by the
+   * frontend mint ceremony. All three fields are passed through
+   * verbatim onto `snapshot.enableData` / `snapshot.enableSig` /
+   * `snapshot.validatorNonce`. The backend encrypts enableData and
+   * enableSig via pgcrypto before persist; the cleartext passes the
+   * wire (HTTPS protects in transit). The helper lower-cases the hex
+   * values internally + shape-asserts so a malformed value fails fast
+   * at the populate boundary.
+   */
+  enableData: `0x${string}`
+  enableSig: `0x${string}`
+  validatorNonce: number
 }
 
 /**
@@ -278,6 +291,15 @@ export interface ScopedMintBodyShape {
     consentActionHash?: `0x${string}`
     consentTextSha256?: `0x${string}`
     permissionId?: `0x${string}`
+    /**
+     * Wave 5 Option D · Commit 2 — install material on the snapshot.
+     * Server-side `MintScopedSessionDtoSchema` validates `^0x[0-9a-fA-F]
+     * {2,8192}$` / `^0x[0-9a-fA-F]{128,4096}$` and the uint32 nonce
+     * bound. The helper passes through verbatim after lower-casing.
+     */
+    enableData?: `0x${string}`
+    enableSig?: `0x${string}`
+    validatorNonce?: number
   }
   maxPerOpUsd6: string
   surface: 'havenbot' | 'mcp' | 'openclaw' | 'checkout'
@@ -310,6 +332,37 @@ export function buildScopedMintBody(input: BuildScopedMintBodyInput): ScopedMint
       `buildScopedMintBody: permissionId must be 0x-prefixed 4-byte hex; got ${input.permissionId.length} chars`,
     )
   }
+  // Wave 5 Option D · Commit 2 — lowercase + shape-assert install
+  // material at the populate boundary. The backend's Zod gate accepts
+  // mixed-case 0x-hex, but lowering here keeps the wire shape byte-
+  // equal with the encrypted-bytea round-trip (post-decrypt cleartext
+  // is whatever the client sent; mixed case would break a future
+  // raw-SQL audit JOIN that matches on stable case).
+  const enableDataLower = input.enableData.toLowerCase() as `0x${string}`
+  if (!/^0x[0-9a-f]{2,8192}$/.test(enableDataLower)) {
+    throw new Error(
+      `buildScopedMintBody: enableData must be 0x-prefixed hex (2-8192 hex chars); got ${input.enableData.length} chars`,
+    )
+  }
+  const enableSigLower = input.enableSig.toLowerCase() as `0x${string}`
+  // Wave 5 Option D · Commit 2 — lower bound 256 hex chars (~128 bytes)
+  // is the floor of a real WebAuthn envelope. Tightened from 128 in
+  // multi-agent review SecEng H-3 to reject bare-ECDSA downgrade
+  // attempts (a 65-byte ECDSA = 130 hex would otherwise slip through).
+  if (!/^0x[0-9a-f]{256,4096}$/.test(enableSigLower)) {
+    throw new Error(
+      `buildScopedMintBody: enableSig must be 0x-prefixed hex (256-4096 hex chars); got ${input.enableSig.length} chars`,
+    )
+  }
+  if (
+    !Number.isInteger(input.validatorNonce) ||
+    input.validatorNonce < 0 ||
+    input.validatorNonce > 4_294_967_295
+  ) {
+    throw new Error(
+      `buildScopedMintBody: validatorNonce must be a uint32 integer; got ${input.validatorNonce}`,
+    )
+  }
   return {
     snapshot: {
       sessionId: input.sessionId,
@@ -327,6 +380,9 @@ export function buildScopedMintBody(input: BuildScopedMintBodyInput): ScopedMint
       mintedAtSec: input.mintedAtSec,
       consentActionHash: input.consentActionHash,
       permissionId: permissionIdLower,
+      enableData: enableDataLower,
+      enableSig: enableSigLower,
+      validatorNonce: input.validatorNonce,
     },
     maxPerOpUsd6: input.maxPerOpUsd6.toString(),
     surface: input.surface,

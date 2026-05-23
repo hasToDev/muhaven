@@ -107,4 +107,36 @@ export interface ScopedSessionInstallResult {
    *  the PermissionValidator. Same as the user's existing kernel. Surfaced so
    *  the modal can render it next to the signerAddress without re-deriving. */
   smartAccountAddress: `0x${string}`;
+  /**
+   * Wave 5 Option D · Commit 2 — install material captured at mint time
+   * so the C3 MCP-side MODE.ENABLE UserOp can compose the on-chain
+   * validator-install without a second passkey ceremony from the
+   * dashboard.
+   *
+   * `enableData` is `permissionValidator.getEnableData(accountAddress)`
+   * — ABI-encoded `(policy[], signer)` payload the kernel unpacks.
+   * Pure function over the validator, no on-chain state required.
+   *
+   * `enableSig` is the passkey-signed
+   * `getPluginsEnableTypedData({accountAddress, chainId, kernelVersion:
+   * '0.3.1', action: KERNEL_EXECUTE_ACTION, validator: permissionValidator,
+   * validatorNonce})` envelope. WebAuthn-shaped (~256-1024 bytes hex)
+   * because the SUDO validator on every MuHaven account is
+   * `@zerodev/passkey-validator`. Triggers exactly ONE WebAuthn
+   * ceremony during the mint flow.
+   *
+   * `validatorNonce` is the result of `getKernelV3Nonce(publicClient,
+   * accountAddress)` at the moment the enableSig was signed. C3's
+   * broker pre-check compares this to the live on-chain `currentNonce`
+   * before submitting the MODE.ENABLE UserOp — mismatch → fallback
+   * `enable_sig_stale`, re-walk the ceremony.
+   *
+   * All three are tightly bound: changing any of them invalidates the
+   * enableSig. The backend mirror stores them encrypted-at-rest via
+   * pgcrypto so a DB read leak can't pre-empt the user's install +
+   * revoke window.
+   */
+  enableData: `0x${string}`;
+  enableSig: `0x${string}`;
+  validatorNonce: number;
 }
