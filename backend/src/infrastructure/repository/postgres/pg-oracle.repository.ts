@@ -136,25 +136,95 @@ export class PgOracleRepository implements IOracleRepository {
       orderBy: [desc(oracleSnapshots.snapshotAt)],
     });
     if (!row) return null;
-    return {
-      ticker: row.ticker,
-      snapshotAt: row.snapshotAt,
-      source: row.source,
-      navDollar: row.navDollar ?? null,
-      priceDollar: row.priceDollar ?? null,
-      apy7Day: row.apy7Day ?? null,
-      apy30Day: row.apy30Day ?? null,
-      dailyYieldRate: row.dailyYieldRate ?? null,
-      yieldToMaturityPercent: row.yieldToMaturityPercent ?? null,
-      dailyYieldDistributedDollar: row.dailyYieldDistributedDollar ?? null,
-      hypothetical10kPerformance: row.hypothetical10kPerformance ?? null,
-      totalSupplyToken: row.totalSupplyToken ?? null,
-      totalAssetValueDollar: row.totalAssetValueDollar ?? null,
-      marketValueDollar: row.marketValueDollar ?? null,
-      holdingAddressesCount: row.holdingAddressesCount ?? null,
-      top5HolderConcentration: row.top5HolderConcentration ?? null,
-      rwaxyzUpdatedAt: row.rwaxyzUpdatedAt ?? null,
-    };
+    return rowToOracleSnapshotRead(row);
+  }
+
+  async findLatestSnapshotsByTickers(
+    tickers: readonly string[],
+  ): Promise<Map<string, OracleSnapshotRead>> {
+    // Empty input → no DB roundtrip (also avoids passing a 0-length
+    // array to `ANY($1)` which some drivers reject as "cannot determine
+    // type of empty array").
+    if (tickers.length === 0) return new Map();
+
+    // Dedupe + lowercase the input so a caller passing both 'CETES'
+    // and 'cetes' doesn't double the param payload.
+    const lowered = Array.from(new Set(tickers.map((t) => t.toLowerCase())));
+
+    // Mirrors `findMetadataList`'s DISTINCT-ON shape. Single round-trip
+    // collapses what was 9 parallel `findFirst` calls in
+    // `GetTokensUseCase`'s fallback path — relieves pg pool pressure
+    // under concurrent `/api/v1/tokens` + MCP read.tokens load.
+    const result = await this.db.execute<{
+      ticker: string;
+      snapshot_at: Date | string;
+      source: string;
+      nav_dollar: string | null;
+      price_dollar: string | null;
+      apy_7_day: string | null;
+      apy_30_day: string | null;
+      daily_yield_rate: string | null;
+      yield_to_maturity_percent: string | null;
+      daily_yield_distributed_dollar: string | null;
+      hypothetical_10k_performance: string | null;
+      total_supply_token: string | null;
+      total_asset_value_dollar: string | null;
+      market_value_dollar: string | null;
+      holding_addresses_count: number | null;
+      top_5_holder_concentration: string | null;
+      rwaxyz_updated_at: Date | string | null;
+    }>(sql`
+      SELECT DISTINCT ON (lower(ticker))
+        ticker,
+        snapshot_at,
+        source,
+        nav_dollar,
+        price_dollar,
+        apy_7_day,
+        apy_30_day,
+        daily_yield_rate,
+        yield_to_maturity_percent,
+        daily_yield_distributed_dollar,
+        hypothetical_10k_performance,
+        total_supply_token,
+        total_asset_value_dollar,
+        market_value_dollar,
+        holding_addresses_count,
+        top_5_holder_concentration,
+        rwaxyz_updated_at
+      FROM oracle_snapshots
+      WHERE lower(ticker) = ANY(${lowered}::text[])
+      ORDER BY lower(ticker), snapshot_at DESC
+    `);
+
+    const out = new Map<string, OracleSnapshotRead>();
+    for (const r of result.rows) {
+      out.set(r.ticker.toLowerCase(), {
+        ticker: r.ticker,
+        snapshotAt: r.snapshot_at instanceof Date ? r.snapshot_at : new Date(r.snapshot_at),
+        source: r.source,
+        navDollar: r.nav_dollar,
+        priceDollar: r.price_dollar,
+        apy7Day: r.apy_7_day,
+        apy30Day: r.apy_30_day,
+        dailyYieldRate: r.daily_yield_rate,
+        yieldToMaturityPercent: r.yield_to_maturity_percent,
+        dailyYieldDistributedDollar: r.daily_yield_distributed_dollar,
+        hypothetical10kPerformance: r.hypothetical_10k_performance,
+        totalSupplyToken: r.total_supply_token,
+        totalAssetValueDollar: r.total_asset_value_dollar,
+        marketValueDollar: r.market_value_dollar,
+        holdingAddressesCount: r.holding_addresses_count,
+        top5HolderConcentration: r.top_5_holder_concentration,
+        rwaxyzUpdatedAt:
+          r.rwaxyz_updated_at == null
+            ? null
+            : r.rwaxyz_updated_at instanceof Date
+              ? r.rwaxyz_updated_at
+              : new Date(r.rwaxyz_updated_at),
+      });
+    }
+    return out;
   }
 
   async findMetadataList(): Promise<TokenListItem[]> {
@@ -463,4 +533,28 @@ function dedupeTimeseries(
     seen.set(key, p);
   }
   return Array.from(seen.values());
+}
+
+type OracleSnapshotRow = typeof oracleSnapshots.$inferSelect;
+
+function rowToOracleSnapshotRead(row: OracleSnapshotRow): OracleSnapshotRead {
+  return {
+    ticker: row.ticker,
+    snapshotAt: row.snapshotAt,
+    source: row.source,
+    navDollar: row.navDollar ?? null,
+    priceDollar: row.priceDollar ?? null,
+    apy7Day: row.apy7Day ?? null,
+    apy30Day: row.apy30Day ?? null,
+    dailyYieldRate: row.dailyYieldRate ?? null,
+    yieldToMaturityPercent: row.yieldToMaturityPercent ?? null,
+    dailyYieldDistributedDollar: row.dailyYieldDistributedDollar ?? null,
+    hypothetical10kPerformance: row.hypothetical10kPerformance ?? null,
+    totalSupplyToken: row.totalSupplyToken ?? null,
+    totalAssetValueDollar: row.totalAssetValueDollar ?? null,
+    marketValueDollar: row.marketValueDollar ?? null,
+    holdingAddressesCount: row.holdingAddressesCount ?? null,
+    top5HolderConcentration: row.top5HolderConcentration ?? null,
+    rwaxyzUpdatedAt: row.rwaxyzUpdatedAt ?? null,
+  };
 }

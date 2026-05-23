@@ -8,6 +8,7 @@ const useCase = new GetTokenByAddressUseCase(
   container.rwaTokenRepo,
   container.navHistoryRepo,
   container.userRepo,
+  container.oracleRepo,
 );
 
 const handler = createGetHandler({

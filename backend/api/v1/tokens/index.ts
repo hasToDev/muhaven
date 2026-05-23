@@ -13,6 +13,7 @@ const getTokensUseCase = new GetTokensUseCase(
   container.rwaTokenRepo,
   container.navHistoryRepo,
   container.userRepo,
+  container.oracleRepo,
 );
 const createTokenUseCase = new CreateTokenUseCase(container.rwaTokenRepo);
 

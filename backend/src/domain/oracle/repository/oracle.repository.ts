@@ -59,6 +59,24 @@ export interface IOracleRepository {
   findLatestSnapshot(ticker: string): Promise<OracleSnapshotRead | null>;
 
   /**
+   * Wave 5 — bulk-form of `findLatestSnapshot` for the NAV-source
+   * split fallback (bug #7, `development/DEV_WAVE_5/NAV_SOURCE_SPLIT.md`).
+   * Returns a `Map` keyed by `lower(ticker)` so callers can lookup
+   * regardless of the input case. Tickers without any snapshot are
+   * absent from the map (NOT `null`-valued). Empty input → empty map
+   * without a DB roundtrip.
+   *
+   * Why this exists separately from `findLatestSnapshot`: `GetTokensUseCase`
+   * was fanning out ~9 parallel `findFirst` calls per `/api/v1/tokens`
+   * request, which under modest concurrent load (dashboard + MCP poll)
+   * could exhaust the default Pg connection pool. One `DISTINCT ON`
+   * query collapses the fanout to a single round-trip.
+   */
+  findLatestSnapshotsByTickers(
+    tickers: readonly string[],
+  ): Promise<Map<string, OracleSnapshotRead>>;
+
+  /**
    * Range-filtered chart series. Returns the points sorted by `date`
    * ascending. Empty array when no series matches.
    */

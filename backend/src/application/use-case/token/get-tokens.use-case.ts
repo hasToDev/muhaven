@@ -1,8 +1,10 @@
 import type { IRwaTokenRepository } from '../../../domain/token-registry/repository/rwa-token.repository.js';
 import type { INavHistoryRepository } from '../../../domain/nav-history/repository/nav-history.repository.js';
 import type { IUserRepository } from '../../../domain/auth/repository/user.repository.js';
+import type { IOracleRepository } from '../../../domain/oracle/repository/oracle.repository.js';
 import type { RwaToken } from '../../../domain/token-registry/model/rwa-token.js';
 import type { NavSnapshot } from '../../../domain/nav-history/model/nav-snapshot.js';
+import { navSnapshotFromOracleSnapshot } from '../../../domain/nav-history/mapper/from-oracle-snapshot.js';
 import type { TokenResponseDto, LatestNavDto } from '../../dto/token/token-response.dto.js';
 
 function navToDto(snapshot: NavSnapshot): LatestNavDto {
@@ -73,17 +75,41 @@ export class GetTokensUseCase {
     private readonly tokenRepo: IRwaTokenRepository,
     private readonly navRepo?: INavHistoryRepository,
     private readonly userRepo?: IUserRepository,
+    private readonly oracleRepo?: IOracleRepository,
   ) {}
 
   async execute(): Promise<{ tokens: TokenResponseDto[] }> {
     const tokens = await this.tokenRepo.findAll();
 
-    // Build address → latest NAV lookup
+    // Build address → latest NAV lookup. Primary source is the legacy
+    // on-chain `token_nav_history` (populated by `nav-publisher` from
+    // on-chain oracle reads). Tokens onboarded via the Wave 5 Q1
+    // rwa.xyz ingest pipeline only have rows in `oracle_snapshots`, so
+    // for tokens that miss the primary path we fall back to a SINGLE
+    // bulk oracle query (`findLatestSnapshotsByTickers`) — see
+    // `NAV_SOURCE_SPLIT.md` bug #7. The bulk shape is load-bearing for
+    // pg-pool pressure under concurrent `/api/v1/tokens` load (DBO
+    // review, 2026-05-23).
     const navMap = new Map<string, NavSnapshot>();
     if (this.navRepo) {
       const navSnapshots = await this.navRepo.findLatestForAllTokens();
       for (const snap of navSnapshots) {
         navMap.set(snap.tokenAddress, snap);
+      }
+    }
+
+    if (this.oracleRepo) {
+      const missing = tokens.filter((t) => !navMap.has(t.address));
+      if (missing.length > 0) {
+        const snapshots = await this.oracleRepo.findLatestSnapshotsByTickers(
+          missing.map((t) => t.symbol),
+        );
+        for (const token of missing) {
+          const snap = snapshots.get(token.symbol.toLowerCase());
+          if (!snap) continue;
+          const synthesized = navSnapshotFromOracleSnapshot(token.address, snap);
+          if (synthesized) navMap.set(token.address, synthesized);
+        }
       }
     }
 
@@ -106,6 +132,7 @@ export class GetTokenByAddressUseCase {
     private readonly tokenRepo: IRwaTokenRepository,
     private readonly navRepo?: INavHistoryRepository,
     private readonly userRepo?: IUserRepository,
+    private readonly oracleRepo?: IOracleRepository,
   ) {}
 
   async execute(address: string): Promise<TokenResponseDto | null> {
@@ -115,6 +142,14 @@ export class GetTokenByAddressUseCase {
     let latestNav: NavSnapshot | null = null;
     if (this.navRepo) {
       latestNav = await this.navRepo.findLatestByToken(address);
+    }
+
+    // NAV-source split fallback (parity with GetTokensUseCase). Uses
+    // the singular `findLatestSnapshot` because this path resolves
+    // exactly one token — no fanout to collapse.
+    if (!latestNav && this.oracleRepo) {
+      const snap = await this.oracleRepo.findLatestSnapshot(token.symbol);
+      if (snap) latestNav = navSnapshotFromOracleSnapshot(token.address, snap);
     }
 
     let issuerDisplayName: string | null = null;
