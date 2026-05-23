@@ -32,10 +32,26 @@ async function initializeCofhe(): Promise<void> {
 async function doInitialize(): Promise<void> {
   try {
     const { createCofheConfig, createCofheClient } = await import('@cofhe/sdk/node');
-    const { arbSepolia } = await import('@cofhe/sdk/chains');
+    const { getChainById } = await import('@cofhe/sdk/chains');
+
+    // 2026-05-23: bumped @cofhe/sdk 0.4.0 → 0.5.1 (CLAUDE.md project
+    // standard; every other consumer is on 0.5.1). The 0.4.0
+    // initialization path read `SubtleCrypto.generateKey(...).keyPair`
+    // which is undefined under Node's WebCrypto shim, throwing
+    // `TypeError: Cannot read properties of undefined (reading
+    // 'keyPair')` from `GenerateSealingKey` and silently flipping
+    // `cofheClient` to null → every encrypt downstream returned 500
+    // `CoFHE client not initialized`. The 0.5.x `environment: 'node'`
+    // flag selects the Node-native sealing-key generation path and
+    // mirrors backend `node-cofhe-client.ts:68-71`'s working pattern.
+    const chain = getChainById(421614); // Arb Sepolia — only chain wired today
+    if (!chain) {
+      throw new Error('No CoFHE chain configuration found for chainId 421614');
+    }
 
     const config = createCofheConfig({
-      supportedChains: [arbSepolia],
+      environment: 'node',
+      supportedChains: [chain],
     });
 
     cofheClient = createCofheClient(config);
