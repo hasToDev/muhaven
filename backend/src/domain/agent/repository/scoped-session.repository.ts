@@ -95,4 +95,34 @@ export interface IScopedSessionRepository {
     beforeSec: number,
     now: Date,
   ): Promise<number>;
+
+  /**
+   * Wave 5 Option D · Commit 1 — one-shot bulk revoke. Flips EVERY
+   * `status='active'` row (regardless of `valid_until_sec`) to
+   * `'revoked'` with `revoked_at = now`, returning the affected
+   * domain entities so the migration use-case can emit one audit
+   * row per affected session.
+   *
+   * Distinct from `markExpired` (which targets time-expired actives)
+   * AND from `revoke(sessionId, ...)` (per-row, user-driven). This
+   * variant exists solely for the migration use-case
+   * `RevokeAllPreOptionDScopedSessionsUseCase`. Idempotent — re-run
+   * on an empty active set returns an empty array.
+   *
+   * **Includes CASCADE-orphaned rows.** Rows whose `userId` is NULL
+   * (FK `onDelete:'set null'` after user deletion — see
+   * `schema.ts::agentScopedSessions.userId` for the schema invariant)
+   * ARE returned to the caller. The use-case layer is responsible
+   * for handling them (audit emission requires a userId, so they're
+   * surfaced via a separate `skippedOrphanedUserIds` field on the
+   * result). This cross-layer invariant is load-bearing — a future
+   * repo-side "filter rows with userId IS NOT NULL" optimisation
+   * would silently strip orphan flips from the use-case's accounting
+   * (BA-HIGH-4, multi-agent review 2026-05-23).
+   *
+   * **Caution**: touches every active row in the table. Reserved for
+   * operator-driven one-shot scripts; per-request callers MUST NOT
+   * use this method.
+   */
+  revokeAllActive(now: Date): Promise<ScopedSession[]>;
 }

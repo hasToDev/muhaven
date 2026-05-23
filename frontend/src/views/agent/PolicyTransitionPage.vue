@@ -287,7 +287,7 @@ const scopedFormFailure = computed<string | null>(() => {
     || ttlSecInput.value < SCOPED_MIN_TTL_SEC
     || ttlSecInput.value > SCOPED_MAX_TTL_SEC
   ) {
-    return `TTL must be between ${SCOPED_MIN_TTL_SEC}s (5 min) and ${SCOPED_MAX_TTL_SEC}s (24h).`
+    return `TTL must be between ${SCOPED_MIN_TTL_SEC}s (5 min) and ${SCOPED_MAX_TTL_SEC}s (8h).`
   }
   return null
 })

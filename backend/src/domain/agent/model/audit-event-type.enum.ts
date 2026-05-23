@@ -39,6 +39,31 @@ export const AuditEventType = {
   ScopedSessionRevoked: 'scoped_session_revoked',
   /** Lazy expiry sweep (cron, future Slice) flips a past-valid-until row. */
   ScopedSessionExpired: 'scoped_session_expired',
+  /**
+   * Wave 5 Option D · Commit 1 — one-shot operator-driven revoke of
+   * every active Scoped session that was minted under the pre-D1
+   * narrow CallPolicy (`subscription.purchase`-only).
+   *
+   * After D-1 broadens the on-chain envelope to mirror the legacy
+   * session-key allowlist (minus `muHavenToken.transfer`), the
+   * `permissionId` derived from `keccak256(policies+signer)` changes:
+   * pre-D1 rows have a narrow permissionId, post-D1 rows have a
+   * broad permissionId. Leaving the pre-D1 rows active would let the
+   * broker keep signing under the OLD policy AND let the MCP server
+   * pick up the stale snapshot on auto-sync. The migration use-case
+   * (`RevokeAllPreOptionDScopedSessionsUseCase`) flips every active
+   * row to `status='revoked'` + emits one of these audit rows per
+   * affected row. Operator + user re-walk the ceremony to mint a
+   * fresh session bound to the broader policy.
+   *
+   * Distinguished from `ScopedSessionRevoked` (user-initiated DELETE)
+   * for forensic clarity: a "this session was forcibly retired due
+   * to a server-side policy change" event is a different signal from
+   * "the user clicked revoke". Audit queries that pair mint↔revoke
+   * by surface/sessionId still correlate, but the `event_type`
+   * column distinguishes the cause.
+   */
+  ScopedSessionRevokedByPolicyMigration: 'scoped_session_revoked_by_policy_migration',
 } as const;
 
 export type AuditEventType = (typeof AuditEventType)[keyof typeof AuditEventType];
@@ -59,4 +84,5 @@ export const AUDIT_EVENT_TYPE_VALUES: readonly AuditEventType[] = [
   AuditEventType.ScopedSessionMinted,
   AuditEventType.ScopedSessionRevoked,
   AuditEventType.ScopedSessionExpired,
+  AuditEventType.ScopedSessionRevokedByPolicyMigration,
 ] as const;

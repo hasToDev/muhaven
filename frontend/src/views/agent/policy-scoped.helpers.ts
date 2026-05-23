@@ -14,11 +14,22 @@ import { toFunctionSelector } from 'viem'
  *  helpers stay free of cyclic imports against the API surface. */
 type TierLiteral = 'advisory' | 'confirm-per-action' | 'policy-bound' | 'scoped' | 'paused'
 
-/** Scoped tier TTL bounds (per `development/DEV_WAVE_5/PATH_D_PLAN.md`
- *  Slice 1). The backend `MintScopedSessionDtoSchema` enforces
- *  `validUntilSec > now` + ±5 min `mintedAtSec` skew separately. */
+/** Scoped tier TTL bounds.
+ *
+ *  **Wave 5 Option D · Commit 1 (D-3): ceiling tightened from 24h → 8h.**
+ *  Rationale (R2 SecEng review): the Scoped envelope is broadened in
+ *  the same commit (D-1) to mirror the legacy session-key allowlist
+ *  MINUS `muHavenToken.transfer`. With the on-chain CallPolicy now
+ *  covering purchase + redeem + queued sell + claim + setOperator +
+ *  refresh*, the blast radius under broker compromise grows; the TTL
+ *  reduction keeps the time-bounded risk envelope compatible with the
+ *  Slice 1 cumulative-cap defense.
+ *
+ *  The backend `MintScopedSessionDtoSchema` enforces `validUntilSec >
+ *  now` + ±5 min `mintedAtSec` skew separately; the 8h ceiling is the
+ *  UI-side guard, surfaced before the network hop. */
 export const SCOPED_MIN_TTL_SEC = 300        // 5 min
-export const SCOPED_MAX_TTL_SEC = 86_400     // 24h Slice 1 ceiling
+export const SCOPED_MAX_TTL_SEC = 28_800     // 8h Option D ceiling (was 24h pre-D3)
 export const SCOPED_DEFAULT_TTL_SEC = 14_400 // 4h
 
 /** `subscription.purchase(address, InEuint128, uint128 maxSharesHint, address)`
@@ -189,13 +200,17 @@ export function formatTtlLabel(sec: number): string {
 
 /** Curated TTL choices the Scoped form's segmented control offers.
  *  Single source of truth — Vue page reads + `formatTtlLabel` resolves
- *  against the SAME array. */
+ *  against the SAME array.
+ *
+ *  Wave 5 Option D · Commit 1 (D-3): dropped 12h + 24h options; added
+ *  30 min + 8h. Default remains 4h. See `SCOPED_MAX_TTL_SEC` JSDoc for
+ *  the ceiling-reduction rationale. */
 export const SCOPED_TTL_CHOICES: ReadonlyArray<{ sec: number; label: string }> = [
-  { sec: 300, label: '5 min' },
+  { sec: SCOPED_MIN_TTL_SEC, label: '5 min' },
+  { sec: 1_800, label: '30 min' },
   { sec: 3_600, label: '1 hour' },
   { sec: SCOPED_DEFAULT_TTL_SEC, label: '4 hours' },
-  { sec: 43_200, label: '12 hours' },
-  { sec: SCOPED_MAX_TTL_SEC, label: '24 hours' },
+  { sec: SCOPED_MAX_TTL_SEC, label: '8 hours' },
 ]
 
 /**

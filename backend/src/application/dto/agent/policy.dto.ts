@@ -12,6 +12,20 @@ import type {
 } from '../../../domain/agent/model/scoped-session.js';
 import type { ScopedSessionStatus } from '../../../domain/agent/model/scoped-session-status.enum.js';
 
+/**
+ * Wave 5 Option D · Commit 1 (D-3) — Scoped tier TTL ceiling (seconds).
+ *
+ * MUST equal `frontend/src/views/agent/policy-scoped.helpers.ts::
+ * SCOPED_MAX_TTL_SEC`. Both surfaces enforce the same value; the
+ * frontend is the UX gate, the backend is the trust boundary against
+ * non-dashboard clients (MCP, havenbot, openclaw, checkout, hand-curl).
+ *
+ * SecEng-HIGH-1 (multi-agent review 2026-05-23) — having a server-side
+ * source-of-truth closes a 3× blast-radius gap under broker compromise.
+ * A future revision MUST update both sites in lockstep.
+ */
+export const SCOPED_MAX_TTL_SEC = 28_800;
+
 const tierSchema = z.enum(TIER_VALUES as readonly [Tier, ...Tier[]]);
 const surfaceSchema = z.enum(SURFACE_VALUES as readonly [Surface, ...Surface[]]);
 const actionIdSchema = z.union([
@@ -290,6 +304,26 @@ export const MintScopedSessionDtoSchema = z
       return true;
     },
     { message: 'selectorCaps contains duplicate selectors' },
+  )
+  .refine(
+    (input) => {
+      // Wave 5 Option D · Commit 1 (D-3) — server-side TTL ceiling.
+      // The frontend `policy-scoped.helpers.ts::SCOPED_MAX_TTL_SEC`
+      // caps Scoped sessions at 28_800s (8h), but the dashboard is
+      // not the only client; MCP / havenbot / openclaw / checkout
+      // surfaces or a custom script can POST directly. SecEng-HIGH-1
+      // in the multi-agent review (2026-05-23) flagged that a
+      // malicious / compromised client can otherwise mint a 24h+
+      // session and grow the broker-compromise blast radius 3×.
+      // The chain CallPolicy's `toTimestampPolicy(validUntil)`
+      // accepts whatever value the frontend passes — so the backend
+      // mirror MUST be the source-of-truth ceiling.
+      const ttlSec = input.snapshot.validUntilSec - input.snapshot.mintedAtSec;
+      return ttlSec > 0 && ttlSec <= SCOPED_MAX_TTL_SEC;
+    },
+    {
+      message: `snapshot TTL (validUntilSec - mintedAtSec) must be in (0, ${SCOPED_MAX_TTL_SEC}] seconds (Option D · D-3 ceiling).`,
+    },
   );
 
 export type MintScopedSessionDto = z.infer<typeof MintScopedSessionDtoSchema>;

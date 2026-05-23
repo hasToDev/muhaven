@@ -28,10 +28,6 @@ import {
   createPublicClient,
   createWalletClient,
   http,
-  toFunctionSelector,
-  keccak256,
-  toHex,
-  type Address,
   type Hex,
   type PublicClient,
 } from 'viem';
@@ -39,19 +35,6 @@ import { signMessage as viemSignMessage } from 'viem/actions';
 import { arbitrumSepolia } from 'viem/chains';
 import { entryPoint07Address } from 'viem/account-abstraction';
 import { WindowHelper } from '@/helpers/WindowHelper';
-import { addresses as CONTRACTS, v35Addresses } from '@/contracts/addresses';
-import {
-  yieldDistributorAbi,
-  muhavenEscrowAbi,
-  pusdcAbi,
-  muHavenTokenAbi,
-} from '@/contracts/abis';
-import {
-  muhavenSubscriptionAbi,
-  redemptionQueueAbi,
-  yieldSnapshotAbi,
-  muHavenStableAbi,
-} from '@muhaven/sdk';
 import {
   generateSessionRecord,
   loadSessionRecord,
@@ -60,9 +43,17 @@ import {
   signerFromRecord,
   isRecordValid,
   expirySecondsRemaining,
-  setSessionPermsVersion,
   type SessionKeyRecord,
 } from '../session-key';
+// Wave 5 Option D · Commit 1 (D-1) — extract the on-chain CallPolicy
+// allowlists into their own pure module so the Scoped-tier validator
+// (broad ex-transfer) and the legacy session-key validator (broader)
+// build from a shared source-of-truth.
+import {
+  SESSION_PERMISSIONS,
+  SCOPED_AUTONOMOUS_PERMISSIONS,
+  isCallInSessionScope as isCallInSessionScopeFromModule,
+} from './scoped-permissions';
 
 const ENTRY_POINT = { address: entryPoint07Address, version: '0.7' as const };
 const KERNEL_VERSION = constants.KERNEL_V3_1;
@@ -120,298 +111,11 @@ function getRpcUrl(): string {
   return import.meta.env.VITE_RPC_URL || 'https://sepolia-rollup.arbitrum.io/rpc';
 }
 
-// Dedicated single-entry ABI for `MuHavenToken.transfer(address,InEuint128,address)`
-// — the Wave 3.5 overload per ADR-021. The full `muHavenTokenAbi` carries
-// both the Wave 3 and Wave 3.5 transfer signatures, which would make
-// `toCallPolicy`'s selector inference ambiguous. Constraining the scope to
-// the new ephemeralEOA-bearing overload also means a stale frontend that
-// somehow falls back to the legacy 2-arg path would correctly miss session
-// scope and bounce to the passkey kernel.
-const muHavenTokenTransferV35Abi = [
-  {
-    name: 'transfer',
-    type: 'function',
-    stateMutability: 'nonpayable',
-    inputs: [
-      { name: 'to', type: 'address' },
-      {
-        name: 'encryptedAmount',
-        type: 'tuple',
-        components: [
-          { name: 'ctHash', type: 'uint256' },
-          { name: 'securityZone', type: 'uint8' },
-          { name: 'utype', type: 'uint8' },
-          { name: 'signature', type: 'bytes' },
-        ],
-      },
-      { name: 'ephemeralEOA', type: 'address' },
-    ],
-    outputs: [],
-  },
-] as const;
-
-const ZERO_ADDR = '0x0000000000000000000000000000000000000000';
-
-function nonZero<T extends { target: string }>(perms: readonly T[]): T[] {
-  return perms.filter((p) => p.target.toLowerCase() !== ZERO_ADDR);
-}
-
-/**
- * Collapse permissions that share the same `(target, selector)` to a single
- * entry. The deployed `CallPolicy` contracts (notably V0_0_4 at
- * `0x9a52283276A0ec8740DF50bF01B28A80D880eaf2`) reject duplicate
- * `(target, selector)` pairs at install time with `revert("duplicate
- * permissionHash")`. Duplicates are easy to introduce by accident in our
- * env: when the same `YieldSnapshot` proxy serves multiple RWA tokens
- * (e.g. staging maps both TBILL1 and GOLD1 to the same snapshot
- * address), the `Object.values(yieldSnapshots).map(...)` expansion
- * yields N identical entries. Without this dedupe, every session-key
- * install reverts AA23 on the first userOp and falls back to the passkey
- * kernel — silently regressing the prompt budget. We compute the
- * selector from the entry's abi + functionName since we may be called
- * before `SESSION_SCOPE_KEYS` is initialised.
- */
-function dedupePermissions<
-  T extends { target: string; abi: readonly any[]; functionName: string },
->(perms: readonly T[]): T[] {
-  const seen = new Set<string>();
-  const out: T[] = [];
-  for (const perm of perms) {
-    const abiItem = (perm.abi as readonly any[]).find(
-      (item) => item.type === 'function' && item.name === perm.functionName,
-    );
-    if (!abiItem) {
-      throw new Error(`dedupePermissions: missing ABI for ${perm.functionName}`);
-    }
-    const selector = toFunctionSelector(abiItem).toLowerCase();
-    const key = `${perm.target.toLowerCase()}:${selector}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(perm);
-  }
-  return out;
-}
-
-/**
- * The narrow allowlist the session validator is scoped to.
- *
- * Wave 3 (legacy) flows: issuer distribute + investor escrow redeem +
- * PUSDC operator setup.
- *
- * Wave 3.5 (atomic + queued + pull-yield) flows: investor purchase /
- * redeem / queued submit+claim / yield claim, plus P2P transfer per
- * ADR-021's ephemeralEOA-bearing transfer overload.
- *
- * RedemptionQueue + YieldSnapshot are deployed per-token, so we expand
- * each map at module-load time. Any address still defaulting to
- * `0x0000…0000` (Wave 3.5 not yet onboarded for that env) is filtered
- * out — including a zero target would let the policy match unrelated
- * Wave 3 calls to address(0).
- *
- * Any UserOp targeting a contract/function outside this set will be
- * rejected by the policy — `isCallInSessionScope` short-circuits the
- * session install in that case so we don't trigger an enableSig prompt
- * for a guaranteed-failing UserOp.
- */
-const queuePermissions = nonZero(
-  Object.values(v35Addresses.queues).flatMap((queueAddr) => [
-    { target: queueAddr, functionName: 'submit', abi: redemptionQueueAbi, valueLimit: 0n },
-    { target: queueAddr, functionName: 'claim', abi: redemptionQueueAbi, valueLimit: 0n },
-  ]),
-);
-
-const snapshotPermissions = nonZero(
-  Object.values(v35Addresses.yieldSnapshots).flatMap((snapAddr) => [
-    { target: snapAddr, functionName: 'claimYield', abi: yieldSnapshotAbi, valueLimit: 0n },
-    // Wave 3.5 issuer-side distribution (Phase 9.A · /distribute Wave-3.5
-    // rewrite). Replaces the script-only path. Same proxy is reused
-    // across multiple RWA tokens on staging — `dedupePermissions` collapses
-    // collisions for proxies appearing under multiple keys.
-    { target: snapAddr, functionName: 'openEpoch', abi: yieldSnapshotAbi, valueLimit: 0n },
-    { target: snapAddr, functionName: 'snapshotBatch', abi: yieldSnapshotAbi, valueLimit: 0n },
-    { target: snapAddr, functionName: 'finalizeSnapshot', abi: yieldSnapshotAbi, valueLimit: 0n },
-    { target: snapAddr, functionName: 'fundEpoch', abi: yieldSnapshotAbi, valueLimit: 0n },
-    // Phase 9.A audit-handle follow-up — cross-session decrypt for the
-    // YieldClaimed audit handle. Lets investors re-stamp ACL on a
-    // historical claim handle via session-key (no passkey prompt) when
-    // they revisit /activity in a new browser session. Mirror of the
-    // MuHavenStable.refreshAuditGrant + MuHavenToken.refreshAuditGrant
-    // entries elsewhere in this file.
-    { target: snapAddr, functionName: 'refreshAuditGrant', abi: yieldSnapshotAbi, valueLimit: 0n },
-    // Phase 9.C / L2 follow-up — re-stamp issuer's L2 ACL grant on
-    // encTotalSupply onto a fresh ephemeralEOA. Frontend calls this
-    // before decrypt-from-chain to satisfy the cofhe permit's eph-
-    // signer ACL check (kernels can't sign permits per ADR-009).
-    { target: snapAddr, functionName: 'refreshSnapshotSupplyGrant', abi: yieldSnapshotAbi, valueLimit: 0n },
-  ]),
-);
-
-// Issuer-side mhUSDC operator approval — required so YieldSnapshot can
-// pull mhUSDC from the issuer during fundEpoch. One-shot per (issuer,
-// snapshotProxy) pair until expiry. Without this entry, the operator-
-// approval tx falls back to the passkey kernel mid-distribution and
-// breaks the silent-flow rhythm of the wizard.
-const stableOperatorPermissions = nonZero([
-  {
-    target: v35Addresses.muHavenStable,
-    functionName: 'setOperator',
-    abi: muHavenStableAbi,
-    valueLimit: 0n,
-  },
-]);
-
-const subscriptionPermissions = nonZero([
-  {
-    target: v35Addresses.subscription,
-    functionName: 'purchase',
-    abi: muhavenSubscriptionAbi,
-    valueLimit: 0n,
-  },
-  {
-    target: v35Addresses.subscription,
-    functionName: 'redeem',
-    abi: muhavenSubscriptionAbi,
-    valueLimit: 0n,
-  },
-]);
-
-// Self-service ACL refresh primitives (ADR-042 + Phase 7.5 mirror). These
-// don't move funds — they only re-grant FHE decrypt access on the caller's
-// own balance handle to a passed `ephemeralEOA`. Without them in scope,
-// the first decrypt-after-page-reload (when the in-memory ephemeral EOA
-// regenerates against a stale on-chain ACL) bounces to the passkey kernel
-// for what should be a silent UX path. Strictly weaker than the purchase /
-// redeem / transfer entries already in scope.
-//
-// Wave 3.5 onboards each RWA as its own MuHavenToken proxy (TBILL1, GOLD1,
-// …), so we expand `refreshDecryptGrant` per per-token contract. The
-// per-token map is derived from `treasuries` (or queues / yieldSnapshots —
-// same key set: the JSON map keys are the per-token MuHavenToken
-// addresses). Without this expansion, a portfolio decrypt on TBILL1 / GOLD1
-// can't refresh its grant via the session key — falls back to the passkey
-// kernel, and two parallel `Promise.all` decrypts race two concurrent
-// WebAuthn ceremonies that abort each other.
-const perTokenRwaAddresses = Object.keys(v35Addresses.treasuries) as Address[];
-const refreshGrantPermissions = nonZero([
-  // Wave 3 single-token surface (back-compat with `MPrivacyProofPanel`).
-  {
-    target: CONTRACTS.muHavenToken,
-    functionName: 'refreshDecryptGrant',
-    abi: muHavenTokenAbi,
-    valueLimit: 0n,
-  },
-  // Per-RWA Wave 3.5 token contracts (TBILL1, GOLD1, …).
-  ...perTokenRwaAddresses.map((addr) => ({
-    target: addr,
-    functionName: 'refreshDecryptGrant' as const,
-    abi: muHavenTokenAbi,
-    valueLimit: 0n,
-  })),
-  // Phase 9.A · Option Z follow-up — Transfer audit-handle re-grant for
-  // /activity cross-session decrypts on per-RWA tokens. Each RWA needs
-  // its own entry because `refreshAuditGrant` is gated by the token
-  // contract's own ACL state.
-  ...perTokenRwaAddresses.map((addr) => ({
-    target: addr,
-    functionName: 'refreshAuditGrant' as const,
-    abi: muHavenTokenAbi,
-    valueLimit: 0n,
-  })),
-  {
-    target: v35Addresses.muHavenStable,
-    functionName: 'refreshDecryptGrant',
-    abi: muHavenStableAbi,
-    valueLimit: 0n,
-  },
-  // Phase 9.A · Option Z follow-up — mhUSDC historical audit-handle
-  // re-grant for cross-session Wrap/Unwrap decrypts on /activity.
-  {
-    target: v35Addresses.muHavenStable,
-    functionName: 'refreshAuditGrant',
-    abi: muHavenStableAbi,
-    valueLimit: 0n,
-  },
-]);
-
-// Raw permissions list. Multiple per-token expansions can collide on
-// `(target, selector)` if two tokens share the same queue / snapshot
-// proxy — that's normal, e.g. staging's YieldSnapshot is one proxy
-// shared across all RWA tokens. `dedupePermissions` below collapses
-// such collisions so the CallPolicy contract doesn't revert at install
-// with `duplicate permissionHash`.
-const RAW_SESSION_PERMISSIONS = [
-  // Wave 3 legacy
-  { target: CONTRACTS.yieldDistributor, functionName: 'startDistribution', abi: yieldDistributorAbi, valueLimit: 0n },
-  { target: CONTRACTS.yieldDistributor, functionName: 'setEscrowIds', abi: yieldDistributorAbi, valueLimit: 0n },
-  { target: CONTRACTS.yieldDistributor, functionName: 'processBatch', abi: yieldDistributorAbi, valueLimit: 0n },
-  { target: CONTRACTS.muhavenEscrow, functionName: 'batchCreate', abi: muhavenEscrowAbi, valueLimit: 0n },
-  { target: CONTRACTS.muhavenEscrow, functionName: 'redeem', abi: muhavenEscrowAbi, valueLimit: 0n },
-  { target: CONTRACTS.muhavenEscrow, functionName: 'redeemMultiple', abi: muhavenEscrowAbi, valueLimit: 0n },
-  { target: CONTRACTS.pusdc, functionName: 'setOperator', abi: pusdcAbi, valueLimit: 0n },
-  // Wave 3.5 — P2P transfer (ephemeralEOA overload)
-  {
-    target: CONTRACTS.muHavenToken,
-    functionName: 'transfer',
-    abi: muHavenTokenTransferV35Abi,
-    valueLimit: 0n,
-  },
-  // Wave 3.5 — Subscription / Queues / Snapshots (any may be empty when
-  // the env has not yet onboarded Wave 3.5 contracts)
-  ...subscriptionPermissions,
-  ...queuePermissions,
-  ...snapshotPermissions,
-  ...stableOperatorPermissions,
-  ...refreshGrantPermissions,
-];
-
-const SESSION_PERMISSIONS = dedupePermissions(RAW_SESSION_PERMISSIONS);
-
-/**
- * Pre-computed `${target}:${selector}` pairs for every entry in
- * SESSION_PERMISSIONS. Used by sendUserOperation to gate the session-kernel
- * path — calls outside this set skip the session install/retry entirely and
- * go straight to the passkey kernel. Without the gate every out-of-scope
- * UserOp triggers an unnecessary passkey prompt for the enableSig + a
- * guaranteed-failing bundler roundtrip before the fallback runs.
- */
-const SESSION_SCOPE_KEYS = new Set<string>(
-  SESSION_PERMISSIONS.map((perm) => {
-    const abiItem = (perm.abi as readonly any[]).find(
-      (item) => item.type === 'function' && item.name === perm.functionName,
-    );
-    if (!abiItem) throw new Error(`SESSION_PERMISSIONS: missing ABI for ${perm.functionName}`);
-    const selector = toFunctionSelector(abiItem).toLowerCase();
-    return `${perm.target.toLowerCase()}:${selector}`;
-  }),
-);
-
-/**
- * Stable fingerprint of the currently-installed session policy. Embedded
- * in the sessionStorage key (see `session-key.ts::storageKey`) so that
- * any source-side change to `SESSION_PERMISSIONS` (target add / remove,
- * function add / remove) auto-invalidates older cached records — forcing
- * `installSessionKey` to mint a fresh validator install whose on-chain
- * CallPolicy matches what the local code thinks is in scope. Without
- * this guard, a session installed under a previous policy survives the
- * code change but silently AA23-reverts on any newly-added permission
- * (the on-chain validator state is bound at install time, not re-read
- * on every userOp).
- *
- * 8 hex chars = 32 bits of stable fingerprint; collision probability
- * across our < 100 permission combinations is negligible.
- */
-const SESSION_PERMS_FINGERPRINT = keccak256(
-  toHex([...SESSION_SCOPE_KEYS].sort().join('|')),
-).slice(2, 10);
-setSessionPermsVersion(SESSION_PERMS_FINGERPRINT);
-
-function isCallInSessionScope(call: Call): boolean {
-  const data = (call.data ?? '0x') as Hex;
-  if (data.length < 10) return false;
-  const selector = data.slice(0, 10).toLowerCase();
-  const target = (call.to as string).toLowerCase();
-  return SESSION_SCOPE_KEYS.has(`${target}:${selector}`);
-}
+// Wave 5 Option D · Commit 1 — `isCallInSessionScope` re-exported from
+// `./scoped-permissions` for the in-tab legacy session-key gate. Other
+// allowlist constants flow in via the import block at the top of this
+// file.
+const isCallInSessionScope = isCallInSessionScopeFromModule;
 
 export class ZeroDevProvider implements IWalletProvider {
   private kernelClient: KernelAccountClient | null = null;
@@ -633,20 +337,31 @@ export class ZeroDevProvider implements IWalletProvider {
     const publicClient = buildPublicClient();
     const sessionSigner = await toECDSASigner({ signer });
 
-    // Narrow Scoped-tier policy: `subscription.purchase` only. `valueLimit:
-    // 0n` mirrors the legacy session-key wiring — UserOps through this
-    // validator are non-payable. Per-arg `maxSharesHint` cap is enforced
-    // broker-side (RD-5); on-chain CallPolicy only gates target+selector.
+    // Wave 5 Option D · Commit 1 (D-1) — broad ex-transfer CallPolicy.
+    //
+    // Slice 1 shipped a deliberately-narrow Scoped envelope
+    // (`subscription.purchase` only) because the broker only supported
+    // `purchase`. That decision baked the permissionId to a tight
+    // (target, selector) set; any later feature (sell, queued claim,
+    // yield claim) would have mismatched the permissionId and forced
+    // every Scoped user to re-walk the ceremony + re-paste broker keys.
+    //
+    // Option D broadens the on-chain envelope to mirror the legacy
+    // session-key allowlist MINUS `muHavenToken.transfer`. The broker's
+    // per-selector `maxAmount` cap remains the narrow off-chain
+    // defense; the on-chain CallPolicy is the broad envelope.
+    //
+    // SecEng T-2: `transfer` is permanently EXCLUDED because a leaked
+    // session-key + compromised broker can sign UserOps without further
+    // passkey ceremony, and `transfer` has no uint-denominated cap
+    // argument the on-chain CallPolicy can bound — including it would
+    // permit an attacker to drain RWA holdings. See
+    // `frontend/src/providers/zerodev/scoped-permissions.ts` file-level
+    // JSDoc + memory
+    // `[[feedback-legacy-session-key-allowlist-as-scoped-source-of-truth]]`.
     const scopedCallPolicy = toCallPolicy({
       policyVersion: CallPolicyVersion.V0_0_4,
-      permissions: [
-        {
-          target: v35Addresses.subscription,
-          functionName: 'purchase',
-          abi: muhavenSubscriptionAbi,
-          valueLimit: 0n,
-        },
-      ] as any,
+      permissions: [...SCOPED_AUTONOMOUS_PERMISSIONS] as any,
     });
 
     const scopedTimestampPolicy = toTimestampPolicy({

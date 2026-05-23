@@ -116,4 +116,23 @@ export class MemoryScopedSessionRepository implements IScopedSessionRepository {
     }
     return count;
   }
+
+  async revokeAllActive(now: Date): Promise<ScopedSession[]> {
+    // Wave 5 Option D · Commit 1 — mirror the Pg variant: flip every
+    // active row (regardless of `valid_until_sec`) to revoked, return
+    // the affected entities. Iteration order isn't load-bearing for
+    // the use-case; the migration emits audit rows by iterating the
+    // returned array.
+    const affected: ScopedSession[] = [];
+    for (const [sessionId, session] of this.store) {
+      if (session.status !== ScopedSessionStatus.Active) continue;
+      const revoked = session.with({
+        status: ScopedSessionStatus.Revoked,
+        revokedAt: now,
+      });
+      this.store.set(sessionId, revoked);
+      affected.push(revoked);
+    }
+    return affected;
+  }
 }

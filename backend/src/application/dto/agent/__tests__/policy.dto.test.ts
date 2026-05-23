@@ -24,6 +24,9 @@ const VALID_SUBSCRIPTION = '0xbbbb000000000000000000000000000000000002';
 const VALID_HASH32 = '0x' + 'a'.repeat(64);
 const VALID_PERMISSION_ID = '0xdeadbeef';
 
+// Option D · Commit 1 (D-3) — TTL ceiling 28_800s enforced server-side.
+// Pre-D3 fixture used a 1-billion-second delta which now trips the
+// new superRefine. Use a 4h delta (canonical default Scoped TTL).
 function validSnapshot(): Record<string, unknown> {
   return {
     sessionId: 'session-abc-123',
@@ -33,8 +36,8 @@ function validSnapshot(): Record<string, unknown> {
     selectorCaps: [
       { selector: VALID_SELECTOR, capArgIndex: 2, maxAmount: '1000000' },
     ],
-    validUntilSec: 2_000_000_000,
     mintedAtSec: 1_000_000_000,
+    validUntilSec: 1_000_000_000 + 14_400, // +4h (default Scoped TTL)
   };
 }
 
@@ -219,6 +222,35 @@ describe('MintScopedSessionDtoSchema', () => {
   it('REJECTS mintedAtSec <= 0', () => {
     const body = validBody();
     (body.snapshot as Record<string, unknown>).mintedAtSec = -1;
+    expect(() => MintScopedSessionDtoSchema.parse(body)).toThrow();
+  });
+
+  it('Option D · D-3 — REJECTS TTL > 28_800s (8h ceiling, SecEng-HIGH-1)', () => {
+    const body = validBody();
+    const snap = body.snapshot as Record<string, unknown>;
+    snap.mintedAtSec = 1_000_000_000;
+    // 28_801s — just over the ceiling. Server-side enforcement is
+    // load-bearing because non-dashboard clients (MCP, havenbot,
+    // etc.) can bypass the frontend's 8h picker.
+    snap.validUntilSec = 1_000_000_000 + 28_801;
+    expect(() => MintScopedSessionDtoSchema.parse(body)).toThrow(
+      /Option D · D-3 ceiling/,
+    );
+  });
+
+  it('Option D · D-3 — ACCEPTS TTL exactly at the 28_800s ceiling', () => {
+    const body = validBody();
+    const snap = body.snapshot as Record<string, unknown>;
+    snap.mintedAtSec = 1_000_000_000;
+    snap.validUntilSec = 1_000_000_000 + 28_800;
+    expect(() => MintScopedSessionDtoSchema.parse(body)).not.toThrow();
+  });
+
+  it('Option D · D-3 — REJECTS TTL ≤ 0 (validUntilSec <= mintedAtSec)', () => {
+    const body = validBody();
+    const snap = body.snapshot as Record<string, unknown>;
+    snap.mintedAtSec = 1_000_000_000;
+    snap.validUntilSec = 1_000_000_000; // delta = 0
     expect(() => MintScopedSessionDtoSchema.parse(body)).toThrow();
   });
 

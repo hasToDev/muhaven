@@ -515,6 +515,13 @@ export const agentAuditEventTypeEnum = pgEnum('agent_audit_event_type', [
   'scoped_session_minted',
   'scoped_session_revoked',
   'scoped_session_expired',
+  // Wave 5 Option D · Commit 1 — operator-driven one-shot revoke of
+  // pre-D1 narrow-CallPolicy Scoped sessions. See
+  // `audit-event-type.enum.ts::ScopedSessionRevokedByPolicyMigration`
+  // JSDoc for the rationale + the use-case that emits it.
+  // Adding an unused enum value is harmless; the migration use-case
+  // emits one row per affected `agent_scoped_sessions` row at run time.
+  'scoped_session_revoked_by_policy_migration',
 ]);
 
 export const agentUserState = pgTable(

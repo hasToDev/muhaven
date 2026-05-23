@@ -16,18 +16,28 @@ import {
 } from '../policy-scoped.helpers'
 
 describe('policy-scoped.helpers — TTL bounds', () => {
-  it('bounds match the brief (300s..86400s, default 14400s)', () => {
+  it('bounds match Option D · Commit 1 D-3 (300s..28800s, default 14400s)', () => {
     // Backend Zod schema has no explicit TTL bound — it enforces
     // `validUntilSec > now` only. These UI-side limits surface a
-    // structurally-invalid TTL before the network hop. If a future
-    // change drops these to inconsistent values, the user can mint a
-    // 1-second or 1-week session and the operator finds out via 422
-    // mid-ceremony.
+    // structurally-invalid TTL before the network hop. The D-3
+    // ceiling reduction (24h → 8h) shipped alongside the D-1 CallPolicy
+    // broadening: a broader on-chain envelope is balanced by a
+    // shorter time-bound under broker compromise.
     expect(SCOPED_MIN_TTL_SEC).toBe(300)
-    expect(SCOPED_MAX_TTL_SEC).toBe(86_400)
+    expect(SCOPED_MAX_TTL_SEC).toBe(28_800)
     expect(SCOPED_DEFAULT_TTL_SEC).toBe(14_400)
     expect(SCOPED_DEFAULT_TTL_SEC).toBeGreaterThan(SCOPED_MIN_TTL_SEC)
     expect(SCOPED_DEFAULT_TTL_SEC).toBeLessThan(SCOPED_MAX_TTL_SEC)
+  })
+
+  it('REGRESSION GUARD — Option D ceiling stays at 8h until the next plan revision', () => {
+    // A future contributor "tidying" the constants must not silently
+    // restore the 24h ceiling; the threat-model balance with the D-1
+    // broadened CallPolicy + Slice 5 cumulative cap was reviewed
+    // explicitly at this value. See development/DEV_WAVE_5/DEV_LOG.md
+    // Option D · Commit 1 entry.
+    expect(SCOPED_MAX_TTL_SEC).not.toBe(86_400)
+    expect(SCOPED_MAX_TTL_SEC).toBeLessThanOrEqual(28_800)
   })
 })
 
@@ -186,20 +196,31 @@ describe('policy-scoped.helpers — formatTier', () => {
 })
 
 describe('policy-scoped.helpers — formatTtlLabel + SCOPED_TTL_CHOICES', () => {
-  it('exposes the curated five-window set', () => {
+  it('exposes the Option D · D-3 curated five-window set (5m / 30m / 1h / 4h / 8h)', () => {
     expect(SCOPED_TTL_CHOICES.map((c) => c.sec)).toEqual([
-      300, 3_600, 14_400, 43_200, 86_400,
+      300, 1_800, 3_600, 14_400, 28_800,
     ])
   })
 
   it.each<[number, string]>([
     [300, '5 min'],
+    [1_800, '30 min'],
     [3_600, '1 hour'],
     [14_400, '4 hours'],
-    [43_200, '12 hours'],
-    [86_400, '24 hours'],
+    [28_800, '8 hours'],
   ])('formats canonical %ss → %s', (sec, expected) => {
     expect(formatTtlLabel(sec)).toBe(expected)
+  })
+
+  it('REGRESSION GUARD — 24h + 12h options NOT exposed by the curated set', () => {
+    // The Option D · D-3 narrowing dropped 12h + 24h. A future
+    // contributor restoring them would silently relax the threat-
+    // model bound documented in `SCOPED_MAX_TTL_SEC`. The picker
+    // still falls through to `${sec}s` for off-list values, so a
+    // direct deep-link with `?ttl=86400` still surfaces the value,
+    // but the curated set must not list them as first-class options.
+    expect(SCOPED_TTL_CHOICES.find((c) => c.sec === 43_200)).toBeUndefined()
+    expect(SCOPED_TTL_CHOICES.find((c) => c.sec === 86_400)).toBeUndefined()
   })
 
   it('falls through to "${sec}s" for off-list values (R2 fresh-CR M-3)', () => {

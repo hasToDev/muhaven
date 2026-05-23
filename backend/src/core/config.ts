@@ -274,6 +274,18 @@ const EnvSchema = z.object({
   // them surface as a silent 503 in prod.
   OPERATOR_ALERT_TEST_SECRET: z.string().min(16).optional(),
 
+  // Wave 5 Option D · Commit 1 — shared service secret for the one-
+  // shot operator-driven Scoped-session policy-migration endpoint
+  // (`POST /api/v1/operator/option-d-c1-revoke-all-active-scoped-sessions`).
+  // Min 16 chars matches `withServiceSecret` floor. Dedicated env
+  // (NOT `OPERATOR_ALERT_TEST_SECRET`, NOT
+  // `TELEGRAM_BOT_SERVICE_SECRET`) so a leak on one operator surface
+  // doesn't compromise the migration endpoint — blast-radius
+  // separation. Optional because most boots don't run the migration;
+  // when unset the route returns 503 to unauthenticated and
+  // authenticated callers alike.
+  OPTION_D_C1_MIGRATION_SECRET: z.string().min(16).optional(),
+
   // ── Wave 5 Q3 (step 4) — daily yield-distribution cron ─────────────
   // Master toggle — default false so the cron is opt-in. Operator
   // flips this to true AFTER setting YIELD_CRON_PRIVATE_KEY +
@@ -360,6 +372,45 @@ const EnvSchema = z.object({
       message:
         'OPERATOR_ALERT_TEST_SECRET must differ from ORACLE_INGEST_SERVICE_SECRET (blast-radius separation per Wave 5 Q3 plan A1)',
     });
+  }
+  // Wave 5 Option D · Commit 1 — same blast-radius pattern. The
+  // migration endpoint is operator-driven, but a re-used secret would
+  // mean an `ORACLE_INGEST_SERVICE_SECRET` or `OPERATOR_ALERT_TEST_SECRET`
+  // leak grants access to a bulk-revoke surface. Loud-fail at boot.
+  if (env.OPTION_D_C1_MIGRATION_SECRET) {
+    if (
+      env.ORACLE_INGEST_SERVICE_SECRET &&
+      env.OPTION_D_C1_MIGRATION_SECRET === env.ORACLE_INGEST_SERVICE_SECRET
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['OPTION_D_C1_MIGRATION_SECRET'],
+        message:
+          'OPTION_D_C1_MIGRATION_SECRET must differ from ORACLE_INGEST_SERVICE_SECRET (blast-radius separation, Option D · C1).',
+      });
+    }
+    if (
+      env.OPERATOR_ALERT_TEST_SECRET &&
+      env.OPTION_D_C1_MIGRATION_SECRET === env.OPERATOR_ALERT_TEST_SECRET
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['OPTION_D_C1_MIGRATION_SECRET'],
+        message:
+          'OPTION_D_C1_MIGRATION_SECRET must differ from OPERATOR_ALERT_TEST_SECRET (blast-radius separation, Option D · C1).',
+      });
+    }
+    if (
+      env.TELEGRAM_BOT_SERVICE_SECRET &&
+      env.OPTION_D_C1_MIGRATION_SECRET === env.TELEGRAM_BOT_SERVICE_SECRET
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['OPTION_D_C1_MIGRATION_SECRET'],
+        message:
+          'OPTION_D_C1_MIGRATION_SECRET must differ from TELEGRAM_BOT_SERVICE_SECRET (blast-radius separation, Option D · C1).',
+      });
+    }
   }
 });
 

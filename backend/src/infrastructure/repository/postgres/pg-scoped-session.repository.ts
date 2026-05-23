@@ -135,6 +135,28 @@ export class PgScopedSessionRepository implements IScopedSessionRepository {
     return rows.length;
   }
 
+  async revokeAllActive(now: Date): Promise<ScopedSession[]> {
+    // Wave 5 Option D · Commit 1 — bulk-flip every active row,
+    // returning the full row payload so the use-case can emit one
+    // `ScopedSessionRevokedByPolicyMigration` audit row per affected
+    // session with stable forensic anchors (userId, surface,
+    // signerAddress, permissionId).
+    //
+    // Single statement with RETURNING * — atomic per-row, no race
+    // with concurrent per-row revokes (those land on `status='active'`
+    // too, so the WHERE clause naturally orders any concurrent
+    // user-driven revoke before/after this bulk update).
+    const rows = await this.db
+      .update(agentScopedSessions)
+      .set({
+        status: ScopedSessionStatus.Revoked,
+        revokedAt: now,
+      })
+      .where(eq(agentScopedSessions.status, ScopedSessionStatus.Active))
+      .returning();
+    return rows.map((row) => this.toDomain(row));
+  }
+
   async markExpiredForUserSurface(
     userId: string,
     surface: Surface,

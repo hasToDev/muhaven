@@ -136,6 +136,7 @@ import { CommitCreateCheckoutUseCase } from '../application/use-case/checkout/co
 import { GetPolicyStateUseCase } from '../application/use-case/agent/policy/get-policy-state.use-case.js';
 import { ConfirmTokenService } from '../application/use-case/agent/policy/confirm-token.service.js';
 import { AppendAuditEventUseCase } from '../application/use-case/agent/policy/append-audit-event.use-case.js';
+import { RevokeAllPreOptionDScopedSessionsUseCase } from '../application/use-case/agent/policy/revoke-all-pre-option-d-scoped-sessions.use-case.js';
 import { PauseAgentUseCase } from '../application/use-case/agent/policy/pause-agent.use-case.js';
 // Wave 5 Path D Slice 1 Commit 3.5 — backend encrypt-shares mediation
 // for MCP autonomous-buy. See dto/agent/path-d.dto.ts.
@@ -838,6 +839,21 @@ function getAppendAuditEvent(): AppendAuditEventUseCase {
   return _appendAuditEvent;
 }
 
+// Wave 5 Option D · Commit 1 — one-shot migration use-case. Wired here
+// as a singleton so the internal route handler can hold a stable
+// reference; the use-case itself is stateless aside from the injected
+// repo + audit-emission singleton, but the singleton getter keeps the
+// container's shape consistent with the other use-cases.
+let _revokeAllPreOptionDScopedSessions: RevokeAllPreOptionDScopedSessionsUseCase | null = null;
+function getRevokeAllPreOptionDScopedSessions(): RevokeAllPreOptionDScopedSessionsUseCase {
+  if (_revokeAllPreOptionDScopedSessions) return _revokeAllPreOptionDScopedSessions;
+  _revokeAllPreOptionDScopedSessions = new RevokeAllPreOptionDScopedSessionsUseCase(
+    getAgentRepos().scopedSessionRepo,
+    getAppendAuditEvent(),
+  );
+  return _revokeAllPreOptionDScopedSessions;
+}
+
 let _commitCreateCheckout: CommitCreateCheckoutUseCase | null = null;
 function getCommitCreateCheckout(): CommitCreateCheckoutUseCase {
   if (_commitCreateCheckout) return _commitCreateCheckout;
@@ -972,6 +988,14 @@ export const container = {
   // emission site.
   get appendAuditEvent() {
     return getAppendAuditEvent();
+  },
+  // Wave 5 Option D · Commit 1 — exposed for the operator-secret-gated
+  // `POST /api/v1/operator/option-d-c1-revoke-all-active-scoped-sessions`
+  // route that the migration shell script `scripts/sql/option-d-c1-migration.sh`
+  // curls. Co-located with `alert-test.ts` under the `/v1/operator`
+  // surface; auth via `withServiceSecret({envVar: 'OPTION_D_C1_MIGRATION_SECRET'})`.
+  get revokeAllPreOptionDScopedSessions() {
+    return getRevokeAllPreOptionDScopedSessions();
   },
   get openclawIntentRepo() {
     return getAgentRepos().openclawIntentRepo;
