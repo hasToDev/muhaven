@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] — 2026-05-23
+
+### Fixed
+
+- **`BundlerClient` now sends an `Origin` header on every RPC.** ZeroDev
+  bundler URLs gate access via an IP+domain allowlist; browser requests
+  from `https://muhaven.app` pass because the project's allowlist
+  accepts that domain, but Node `fetch` (the MCP server's transport)
+  sends no `Origin` by default and so hit a `403 "Neither IP nor domain
+  is on the allowlist"` on every `eth_call` / `eth_gasPrice`. The MCP
+  server then surfaced this as `pathDFallbackReason:
+  bundler_setup_failed` and degraded to Path C. Fix: stamp `Origin:
+  <MUHAVEN_DASHBOARD_URL>` on every bundler RPC (defaults to
+  `https://muhaven.app`, threaded through from
+  `buildMcpServer({ dashboardBaseUrl })`). Mirrors how ethers.js + viem
+  stamp default Origins against EVM RPC providers; surfaces a single
+  knob (`MUHAVEN_DASHBOARD_URL`) for operators on a custom domain.
+  Diagnosed 2026-05-23 via direct curl reproduction (bare → 403; with
+  `Origin: https://muhaven.app` → `result: 0x66eee`).
+
+  Added 3 regression tests pinning the contract (Origin sent when set;
+  omitted when undefined; omitted when explicitly empty for test
+  injection).
+
 ## [0.2.2] — 2026-05-23
 
 ### Fixed

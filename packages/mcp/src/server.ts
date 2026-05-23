@@ -321,6 +321,12 @@ export async function runMcpStdioCli(opts: RunMcpStdioCliOptions = {}): Promise<
         endpoint: config.bundlerUrl,
         requestTimeoutMs: config.bundlerTimeoutMs,
         expectedChainId: config.chainId,
+        // Wave 5 Path D 0.2.3 — Origin defaults to the dashboard URL
+        // so ZeroDev's domain-allowlist accepts the MCP server's RPC
+        // traffic. The dashboard URL is the natural match because it's
+        // also the SIWE / passkey origin the project already trusts
+        // for browser-side traffic.
+        originHeader: config.dashboardBaseUrl,
       })
     : undefined;
   const baseRegistry = selectRegistry(config.readOnly);

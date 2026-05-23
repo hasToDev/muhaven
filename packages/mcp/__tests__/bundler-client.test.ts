@@ -637,3 +637,62 @@ describe('BundlerClient.getFeeData', () => {
     await expect(client.getFeeData()).rejects.toMatchObject({ code: 'invalid_response' });
   });
 });
+
+describe('BundlerClient.originHeader (ZeroDev allowlist defense)', () => {
+  // Regression — 2026-05-23 smoke surfaced ZeroDev bundler URLs returning
+  // 403 "Neither IP nor domain is on the allowlist" against the MCP
+  // server's Node-fetch traffic. Browser requests from
+  // `https://muhaven.app` pass because the project's allowlist accepts
+  // that domain; Node `fetch` sends no Origin by default. The fix sends
+  // an Origin header matching the dashboard URL on every bundler RPC.
+
+  it('sends `Origin: <originHeader>` on every RPC when set', async () => {
+    const capturedOrigins: (string | null)[] = [];
+    const fetchImpl = makeMockFetch(async (req) => {
+      capturedOrigins.push(req.headers.get('origin'));
+      return jsonResponse({ jsonrpc: '2.0', id: 1, result: '0x66eee' });
+    });
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      originHeader: 'https://muhaven.app',
+      expectedChainId: 421614,
+      fetchImpl,
+    });
+    await client.assertChainId();
+    await client.getFeeData();
+    expect(capturedOrigins).toEqual(['https://muhaven.app', 'https://muhaven.app']);
+  });
+
+  it('omits the Origin header when not configured', async () => {
+    let capturedOrigin: string | null | undefined;
+    const fetchImpl = makeMockFetch(async (req) => {
+      capturedOrigin = req.headers.get('origin');
+      return jsonResponse({ jsonrpc: '2.0', id: 1, result: '0x66eee' });
+    });
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      fetchImpl,
+      // originHeader intentionally absent — pre-0.2.3 behaviour
+    });
+    await client.getFeeData();
+    expect(capturedOrigin).toBeNull();
+  });
+
+  it('omits the Origin header when explicitly set to empty string', async () => {
+    let capturedOrigin: string | null | undefined;
+    const fetchImpl = makeMockFetch(async (req) => {
+      capturedOrigin = req.headers.get('origin');
+      return jsonResponse({ jsonrpc: '2.0', id: 1, result: '0x66eee' });
+    });
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      originHeader: '',
+      fetchImpl,
+    });
+    await client.getFeeData();
+    expect(capturedOrigin).toBeNull();
+  });
+});

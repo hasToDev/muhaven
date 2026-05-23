@@ -171,6 +171,24 @@ export interface BundlerClientOptions {
   /** Expected chain id (Arb Sepolia = 421614). When set, `assertChainId()`
    *  refuses to proceed if the bundler reports a different chain. */
   readonly expectedChainId?: number;
+  /**
+   * Wave 5 Path D 0.2.3 — `Origin` header sent on every bundler RPC.
+   *
+   * Why: ZeroDev's bundler URLs gate access via an IP+domain allowlist.
+   * Browser requests from `https://muhaven.app` pass because the
+   * project's allowlist includes that domain; Node `fetch` (the MCP
+   * server's transport) sends no `Origin` header by default and so
+   * hits a 403 "Neither IP nor domain is on the allowlist". Sending
+   * an `Origin` matching the project's allowlisted domain unblocks
+   * the MCP server without requiring an operator-side ZeroDev
+   * dashboard edit. Mirrors how ethers.js + viem's HTTP transports
+   * stamp a default `Origin` against EVM RPC providers.
+   *
+   * Defaults to `https://muhaven.app` at the call site
+   * (`server.ts::buildMcpServer`) — operators on a custom dashboard
+   * URL override via `MUHAVEN_DASHBOARD_URL`.
+   */
+  readonly originHeader?: string;
   /** Inject for tests. */
   readonly fetchImpl?: typeof fetch;
 }
@@ -410,9 +428,21 @@ export class BundlerClient {
     const timer = setTimeout(() => ctrl.abort(), this.options.requestTimeoutMs);
     let res: Response;
     try {
+      // The `Origin` header is the load-bearing piece for ZeroDev's
+      // domain-allowlist (see `BundlerClientOptions.originHeader`
+      // JSDoc). Omitted only if the caller explicitly disables it via
+      // `originHeader: ''` — empty string falls through to the bare
+      // headers shape, matching ethers.js's behaviour for tests.
+      const headers: Record<string, string> = {
+        'content-type': 'application/json',
+        accept: 'application/json',
+      };
+      if (this.options.originHeader) {
+        headers['origin'] = this.options.originHeader;
+      }
       res = await this.fetchImpl(this.options.endpoint, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        headers,
         body,
         signal: ctrl.signal,
       });
