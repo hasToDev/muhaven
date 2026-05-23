@@ -97,7 +97,21 @@ export interface BrokerRuntimeConfig {
 
 const DEFAULT_BACKEND_URL = 'https://api.muhaven.app';
 const DEFAULT_DASHBOARD_URL = 'https://muhaven.app';
-const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
+/**
+ * Backend-API request timeout. Bumped from 15s → 75s in 0.2.5 to
+ * accommodate the cold-start FHE encrypt path: the very first
+ * `/api/v1/agent/path-d/encrypt-shares` after fhe-worker container
+ * boot runs the CoFHE verifier-signature handshake which can cost
+ * ~25s. The original 15s default cut every cold-start request at the
+ * MCP layer with `timeout` → mapped to `encrypt_shares_server_error`
+ * even though the backend completed the encrypt 10s later.
+ *
+ * Operators on warm/local setups can still tighten via
+ * `MUHAVEN_REQUEST_TIMEOUT_MS`. Subsequent encrypts after warm-up
+ * are sub-second; the 75s ceiling is defensive headroom, not the
+ * expected steady-state latency.
+ */
+const DEFAULT_REQUEST_TIMEOUT_MS = 75_000;
 const DEFAULT_BROKER_TIMEOUT_MS = 5_000;
 const DEFAULT_BROKER_MAX_BYTES = 64 * 1024;
 const DEFAULT_JWT_CACHE_TTL_SEC = 30;

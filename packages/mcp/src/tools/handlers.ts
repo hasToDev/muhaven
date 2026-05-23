@@ -149,15 +149,36 @@ const SUBSCRIPTION_PURCHASE_ABI = parseAbi([
 ]);
 
 /**
- * Worst-case placeholder signature for the `pm_sponsorUserOperation`
- * pre-sign UserOp. Same length as the real Kernel v3.1 post-enable
- * session-key signature (1 byte prefix + 20 bytes validator + 65 bytes
- * ECDSA = 86 bytes). Non-zero high-entropy bytes so the paymaster's
- * simulator computes realistic verification gas (a zero-byte signature
- * gas-estimates as if the cheaper sudo-validator path will run).
+ * Worst-case placeholder signature for the `zd_sponsorUserOperation`
+ * pre-sign UserOp. MUST match the EXACT length of the real Kernel
+ * v3.1 post-enable PermissionValidator signature that
+ * `buildKernelSessionKeySignature` produces:
+ *
+ *   byte 0       — `0xff` (PermissionValidator's "use root permission" sentinel)
+ *   bytes 1..65  — 65-byte ECDSA (r, s, v)
+ *   = 66 bytes total = `0x` + 132 hex chars
+ *
+ * History: 0.2.4 and earlier shipped an 86-byte placeholder (the old
+ * ENABLE-mode signature shape: 1 byte prefix + 20 bytes validator + 65
+ * bytes ECDSA). That's the wrong length for the post-enable
+ * PermissionValidator flow we actually use, so the paymaster's
+ * simulator decoded a 86-byte blob as if it were 66, the validator
+ * reverted with `AA23 reverted`, and `zd_sponsorUserOperation`
+ * returned an rpc_error → MCP mapped to `paymaster_rejected`.
+ * Fixed 2026-05-23 by matching the kernel-encoder's documented shape.
+ *
+ * Byte-0 sentinel is `0xff` (matches the real signature's "use root
+ * permission" prefix); the remaining 65 bytes are non-zero high-
+ * entropy so the paymaster's simulator computes realistic
+ * verification gas (a zero-byte signature gas-estimates as if the
+ * cheaper sudo-validator path will run).
  */
-const PLACEHOLDER_SIGNATURE: `0x${string}` =
-  ('0x' + 'fe'.repeat(86)) as `0x${string}`;
+// Exported for the regression test that pins the byte-length invariant
+// (132 hex chars after `0x` = 66 bytes — must match the post-enable
+// PermissionValidator shape, not the pre-0.2.5 86-byte enable-mode
+// shape that triggered AA23 reverted in paymaster simulation).
+export const PLACEHOLDER_SIGNATURE: `0x${string}` =
+  ('0xff' + 'fe'.repeat(65)) as `0x${string}`;
 
 export type ToolResult<T> =
   | { ok: true; data: T }
@@ -1945,6 +1966,7 @@ export async function positionBuy(
   //     was actually submitted but the receipt didn't land in time)
   //   - 'unconfigured' → bundler/broker not set; skip Path D silently
   let pathDFallbackReason: PathDFallbackReason | undefined;
+  let pathDFallbackDetail: string | undefined;
   let pathDSubmittedUserOpHash: `0x${string}` | undefined;
   const pathD = await attemptPathD(
     { shares, tokenAddress: token.address as `0x${string}`, tokenSymbol: token.symbol },
@@ -1955,6 +1977,18 @@ export async function positionBuy(
   }
   if (pathD.kind === 'fallback') {
     pathDFallbackReason = pathD.reason;
+    // 0.2.5 — also surface the structured fallback `message` to the LLM
+    // echo. Pre-0.2.5 only the `reason` code was echoed; the underlying
+    // bundler / paymaster / broker error message was dropped. Every
+    // Path D smoke that surfaced a new gate (bundler_setup_failed,
+    // paymaster_rejected, encrypt_shares_server_error) required curl
+    // repro to find the actual error class. With the detail in the
+    // echo, future fallback iterations carry enough context for the
+    // LLM (and a human reading the trace) to self-diagnose. Sanitized
+    // server-side already where untrusted input crosses the boundary
+    // (e.g. bundler RPC error messages run through
+    // `sanitizeRpcMessageForLlmContext`).
+    pathDFallbackDetail = pathD.message;
     if (pathD.submittedUserOpHash) {
       pathDSubmittedUserOpHash = pathD.submittedUserOpHash;
     }
@@ -1989,6 +2023,7 @@ export async function positionBuy(
       effectiveNotionalUsd6: effectiveNotionalUsd6.toString(),
       navUsd6: navUsd6.toString(),
       ...(pathDFallbackReason ? { pathDFallbackReason } : {}),
+      ...(pathDFallbackDetail ? { pathDFallbackDetail } : {}),
       ...(pathDSubmittedUserOpHash ? { pathDSubmittedUserOpHash } : {}),
     },
   });

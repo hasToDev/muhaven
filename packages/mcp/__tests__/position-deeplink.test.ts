@@ -1071,6 +1071,9 @@ describe('positionBuy — Path D probe (Wave 5 Slice 1 Commit 3)', () => {
     expect(result.ok).toBe(true);
     if (result.ok && 'echo' in result.data) {
       expect(result.data.echo.pathDFallbackReason).toBe('version_too_old');
+      // 0.2.5 — also surface the structured detail message so future
+      // gate-debugging is self-diagnosing without curl repro.
+      expect(result.data.echo.pathDFallbackDetail).toMatch(/version_too_old|0\.3\.0|0\.4\.0/);
       // Path C URL still returned — single-affordance fallback.
       expect(result.data.dashboardUrl).toContain('/trade');
     }

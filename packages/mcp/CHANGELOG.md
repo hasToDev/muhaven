@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5] — 2026-05-23
+
+### Fixed
+
+- **`PLACEHOLDER_SIGNATURE` size 86 bytes → 66 bytes** to match the
+  real Kernel v3.1 PermissionValidator signature shape that
+  `buildKernelSessionKeySignature` produces:
+
+      byte 0       — 0xff (PermissionValidator "use root permission" sentinel)
+      bytes 1..65  — 65-byte ECDSA
+      = 66 bytes total
+
+  Pre-0.2.5 the placeholder was 86 bytes — the OLD enable-mode shape
+  (1 byte prefix + 20 bytes validator + 65 bytes ECDSA). The paymaster
+  simulated the validator with the wrong-length signature, the
+  validator reverted with `AA23 reverted`, and
+  `zd_sponsorUserOperation` returned rpc_error → MCP mapped to
+  `paymaster_rejected`. This is the load-bearing piece that 0.2.4 did
+  NOT close.
+
+### Added
+
+- **`pathDFallbackDetail` in the `muhaven.position.buy` echo.** Every
+  Path D fallback (`bundler_setup_failed`, `paymaster_rejected`,
+  `encrypt_shares_server_error`, etc.) now carries the underlying
+  error message in addition to the structured reason code. Pre-0.2.5
+  the message was dropped → every new gate required curl repro to
+  find the actual error class (cost ~2 publish cycles during the
+  2026-05-23 smoke). Future fallback iterations are self-diagnosing.
+  Untrusted-network input (bundler RPC error messages) is sanitized
+  server-side before crossing into the echo (existing
+  `sanitizeRpcMessageForLlmContext` boundary).
+
+### Changed
+
+- **`DEFAULT_REQUEST_TIMEOUT_MS` 15s → 75s.** The cold-start FHE
+  encrypt at `/api/v1/agent/path-d/encrypt-shares` costs ~25s on
+  first call after fhe-worker container boot (CoFHE verifier-
+  signature handshake). The 15s default cut the MCP-side fetch
+  before the backend's reply arrived → spurious
+  `encrypt_shares_server_error`. Operators on warm setups can
+  tighten via `MUHAVEN_REQUEST_TIMEOUT_MS`. Subsequent encrypts
+  after warm-up are sub-second; the 75s ceiling is defensive
+  headroom, not steady-state latency.
+
 ## [0.2.4] — 2026-05-23
 
 ### Fixed
