@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7] — 2026-05-23
+
+### Added
+
+- **Startup banner (always on).** `runMcpStdioCli` writes one stderr
+  line at boot with the running version + verbose mode:
+
+      [muhaven-mcp] starting @muhaven/mcp@0.2.7 (verbose=off)
+
+  Multiple smoke iterations have been ambiguous about whether
+  `npm i -g @muhaven/mcp@<v>` actually updated the global binary
+  picked up by Claude Code (the subprocess only re-spawns on FULL
+  Claude Code restart, not `/mcp reconnect`). One stderr line at boot
+  makes the version mismatch impossible to miss.
+
+- **Verbose paymaster/bundler logging (`MUHAVEN_MCP_VERBOSE=1`).**
+  Gated env var that emits two stderr lines per bundler RPC:
+
+      [muhaven-mcp] [bundler→] zd_sponsorUserOperation id=N body={...}
+      [muhaven-mcp] [bundler←] zd_sponsorUserOperation id=N resp={...}
+
+  Bodies truncated at 2KB; covers happy-path, http_error, timeout,
+  non-JSON, network failures. Add `"MUHAVEN_MCP_VERBOSE": "1"` to the
+  `.mcp.json` env block when triaging a `pathDFallbackReason` —
+  removes the need for curl repro entirely.
+
+### Fixed
+
+- **Stale `pm_sponsorUserOperation` label in the
+  `paymaster_rejected` fallback message** (0.2.4 leftover). The
+  actual method call has been `zd_sponsorUserOperation` since 0.2.4,
+  but the error message label still said `pm_*`. No functional
+  impact — just a confusing log string when the gate fires.
+
 ## [0.2.6] — 2026-05-23
 
 ### Fixed

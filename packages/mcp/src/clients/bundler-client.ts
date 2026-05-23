@@ -473,6 +473,23 @@ export class BundlerClient {
   private async rpc(method: string, params: readonly unknown[]): Promise<unknown> {
     const id = this.nextRpcId++;
     const body = JSON.stringify({ jsonrpc: '2.0', id, method, params });
+    // 0.2.7 — verbose request/response logging gated on
+    // `MUHAVEN_MCP_VERBOSE`. Lands on stderr (Claude Code captures
+    // MCP subprocess stderr to its session log; visible via the host
+    // log dir or `--debug` mode). Default off to keep normal smokes
+    // quiet; flip on when triaging a `pathDFallbackReason` to see the
+    // exact wire payloads being exchanged.
+    const verbose = process.env.MUHAVEN_MCP_VERBOSE === '1';
+    if (verbose) {
+      // Cap the dump so a 30KB UserOp doesn't drown the log. The
+      // method + first ~2KB of params is enough to pinpoint shape
+      // issues (chainId, entryPointAddress, userOp.sender / nonce /
+      // signature / callData[..32].
+      const bodyDump = body.length > 2048 ? body.slice(0, 2048) + '…(truncated)' : body;
+      process.stderr.write(
+        `[muhaven-mcp] [bundler→] ${method} id=${id} body=${bodyDump}\n`,
+      );
+    }
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), this.options.requestTimeoutMs);
     let res: Response;
@@ -498,7 +515,15 @@ export class BundlerClient {
     } catch (err) {
       clearTimeout(timer);
       if ((err as Error).name === 'AbortError') {
+        if (verbose) {
+          process.stderr.write(`[muhaven-mcp] [bundler✗] ${method} id=${id} timeout\n`);
+        }
         throw new BundlerClientError('timeout', `bundler ${method} timed out`);
+      }
+      if (verbose) {
+        process.stderr.write(
+          `[muhaven-mcp] [bundler✗] ${method} id=${id} network err=${err instanceof Error ? err.message : String(err)}\n`,
+        );
       }
       throw new BundlerClientError(
         'network',
@@ -516,6 +541,11 @@ export class BundlerClient {
       } catch {
         // ignore
       }
+      if (verbose) {
+        process.stderr.write(
+          `[muhaven-mcp] [bundler✗] ${method} id=${id} HTTP ${res.status} body=${text}\n`,
+        );
+      }
       throw new BundlerClientError(
         'http_error',
         `bundler ${method} → HTTP ${res.status}: ${text}`,
@@ -525,10 +555,20 @@ export class BundlerClient {
     try {
       parsed = await res.json();
     } catch (err) {
+      if (verbose) {
+        process.stderr.write(
+          `[muhaven-mcp] [bundler✗] ${method} id=${id} non-JSON err=${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      }
       throw new BundlerClientError(
         'invalid_response',
         `bundler ${method} returned non-JSON: ${err instanceof Error ? err.message : String(err)}`,
       );
+    }
+    if (verbose) {
+      const respDump = JSON.stringify(parsed);
+      const trunc = respDump.length > 2048 ? respDump.slice(0, 2048) + '…(truncated)' : respDump;
+      process.stderr.write(`[muhaven-mcp] [bundler←] ${method} id=${id} resp=${trunc}\n`);
     }
     if (typeof parsed !== 'object' || parsed === null) {
       throw new BundlerClientError(

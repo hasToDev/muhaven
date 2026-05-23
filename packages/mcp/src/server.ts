@@ -288,6 +288,16 @@ export interface RunMcpStdioCliOptions {
 export async function runMcpStdioCli(opts: RunMcpStdioCliOptions = {}): Promise<void> {
   const config = loadMcpConfig();
 
+  // 0.2.7 — always-on startup banner so the operator (and Claude Code
+  // logs) can confirm exactly which MCP version booted. Multiple
+  // smoke iterations have been ambiguous about whether `npm i -g`
+  // actually updated the global binary (Claude Code restart picks up
+  // the new bytes only on a FULL restart, not /mcp reconnect). One
+  // stderr line at boot makes the version drift impossible to miss.
+  process.stderr.write(
+    `[muhaven-mcp] starting @muhaven/mcp@${SERVER_VERSION} (verbose=${process.env.MUHAVEN_MCP_VERBOSE === '1' ? 'on' : 'off'})\n`,
+  );
+
   const pinned = await loadPinnedToolHashes();
   const verify = verifyToolHashes(pinned);
   if (!verify.ok) {

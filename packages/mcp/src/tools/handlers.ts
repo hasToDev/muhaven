@@ -1675,7 +1675,7 @@ async function attemptPathD(
     return {
       kind: 'fallback',
       reason: 'paymaster_rejected',
-      message: `pm_sponsorUserOperation rejected${detail}: ${safeMsg}`,
+      message: `zd_sponsorUserOperation rejected${detail}: ${safeMsg}`,
     };
   }
 

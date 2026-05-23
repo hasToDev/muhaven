@@ -13,7 +13,7 @@
  *  - Non-JSON body → invalid_response
  *  - Receipt shape validation (rejects missing fields)
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   BundlerClient,
   BundlerClientError,
@@ -699,6 +699,80 @@ describe('BundlerClient.getFeeData', () => {
       fetchImpl,
     });
     await expect(client.getFeeData()).rejects.toMatchObject({ code: 'invalid_response' });
+  });
+});
+
+describe('BundlerClient verbose logging (MUHAVEN_MCP_VERBOSE)', () => {
+  // 0.2.7 — every bundler RPC writes one request line + one response
+  // line to stderr when MUHAVEN_MCP_VERBOSE=1. Default-off so normal
+  // smokes stay quiet; flip on for triage to see exact wire payloads
+  // instead of curl repro.
+  let originalVerbose: string | undefined;
+  let stderrCalls: string[] = [];
+  const originalWrite = process.stderr.write.bind(process.stderr);
+
+  beforeEach(() => {
+    originalVerbose = process.env.MUHAVEN_MCP_VERBOSE;
+    stderrCalls = [];
+    // Cast through unknown to satisfy the overloaded write signature.
+    (process.stderr.write as unknown) = (chunk: unknown) => {
+      stderrCalls.push(String(chunk));
+      return true;
+    };
+  });
+
+  afterEach(() => {
+    process.stderr.write = originalWrite;
+    if (originalVerbose === undefined) delete process.env.MUHAVEN_MCP_VERBOSE;
+    else process.env.MUHAVEN_MCP_VERBOSE = originalVerbose;
+  });
+
+  it('emits request + response lines when MUHAVEN_MCP_VERBOSE=1', async () => {
+    process.env.MUHAVEN_MCP_VERBOSE = '1';
+    const fetchImpl = makeMockFetch(async () =>
+      jsonResponse({ jsonrpc: '2.0', id: 1, result: '0x66eee' }),
+    );
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      expectedChainId: 421614,
+      fetchImpl,
+    });
+    await client.assertChainId();
+    const joined = stderrCalls.join('');
+    expect(joined).toMatch(/\[bundler→\] eth_chainId/);
+    expect(joined).toMatch(/\[bundler←\] eth_chainId/);
+    expect(joined).toContain('0x66eee');
+  });
+
+  it('stays silent when MUHAVEN_MCP_VERBOSE is unset', async () => {
+    delete process.env.MUHAVEN_MCP_VERBOSE;
+    const fetchImpl = makeMockFetch(async () =>
+      jsonResponse({ jsonrpc: '2.0', id: 1, result: '0x66eee' }),
+    );
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      expectedChainId: 421614,
+      fetchImpl,
+    });
+    await client.assertChainId();
+    expect(stderrCalls.join('')).not.toMatch(/\[bundler/);
+  });
+
+  it('logs http_error responses when verbose', async () => {
+    process.env.MUHAVEN_MCP_VERBOSE = '1';
+    const fetchImpl = makeMockFetch(
+      async () => new Response('not found', { status: 404 }),
+    );
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      expectedChainId: 421614,
+      fetchImpl,
+    });
+    await expect(client.getFeeData()).rejects.toBeInstanceOf(BundlerClientError);
+    expect(stderrCalls.join('')).toMatch(/HTTP 404/);
   });
 });
 
