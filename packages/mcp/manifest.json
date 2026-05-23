@@ -3,7 +3,7 @@
   "manifest_version": "0.2",
   "name": "muhaven-mcp",
   "display_name": "MuHaven (RWA portfolio)",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "Confidential RWA portfolio management on Fhenix CoFHE. Read your encrypted balances, propose yield claims and policy changes — all signing happens in a sibling broker daemon, the LLM never sees your private key.",
   "long_description": "MuHaven MCP exposes 24 tools across read.* / position.* / policy.* / issuer.* / governance.* groups for managing real-world asset (RWA) tokens with FHE-encrypted balances. Authentication uses a one-time device-code ceremony (run `muhaven-broker login`); subsequent tool calls fetch the JWT from the broker over a Unix socket. Position / governance tools deep-link to the dashboard for passkey signing — they NEVER auto-submit to a bundler. The companion `muhaven-broker` daemon must be running before tools can be invoked. See README for setup.",
   "author": {

@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.9] — 2026-05-23
+
+### Added
+
+- **`pathDDecodedCall` in the position.buy echo on Path D fallback.**
+  When the bundler trace contains a `zd_sponsorUserOperation` event,
+  the handler now decodes the userOp.callData inline and surfaces:
+
+      pathDDecodedCall: {
+        sender: '0x<kernel>',
+        kernelExecuteMode: '0x<32 bytes>',
+        kernelExecuteTarget: '0x<addr>',          // should == MuHavenSubscription
+        kernelExecuteValue: '0',
+        innerSelector: '0xd29b624b',              // purchase(...)
+        innerPurchaseTokenArg: '0x<addr>',        // the RWA token (MuHavenToken)
+        innerPurchaseMaxSharesHint: '14',
+        innerPurchaseEphemeralEOA: '0x<addr>',
+        expectedSubscriptionAddress: '0x<addr>',  // MCP env wiring
+        kernelExecuteTargetMatchesSubscription: true|false,
+        interpretation: 'kernel.execute target matches MuHavenSubscription. ...',
+      }
+
+  Lets the LLM read at-a-glance which contract the kernel was about
+  to call (kernel.execute target) vs which RWA token the inner
+  purchase() carries — the two are commonly confused (the inner
+  purchase's first arg IS the token address, but the kernel.execute
+  target should be the subscription).
+
+  The `interpretation` field branches on three cases:
+    1. target == expected subscription → "shape is correct; AA23 is
+       downstream of validator signature decode; check
+       muhaven.policy.session_key_status."
+    2. target == inner purchase.token → "kernel is dispatching to
+       the token instead of the subscription — code bug."
+    3. Anything else → "unexpected third-address dispatch."
+
+- **`decodeKernelExecuteSingleCall` exported from
+  `clients/kernel-encoder.ts`.** Sibling to the existing encoder;
+  reuses the same KERNEL_EXECUTE_ABI + single-call default mode.
+  Returns `null` on unsupported modes (batch / delegate / try) so
+  the diagnostic emits a clear gap instead of garbage.
+
+- **`scripts/decode-userop-trace.ts`** — standalone CLI that takes
+  the raw `pathDBundlerTrace` JSON via stdin and prints the same
+  decode + cross-check. Useful when triaging against an older MCP
+  version that doesn't ship `pathDDecodedCall`, or for offline
+  analysis from a saved trace.
+
 ## [0.2.8] — 2026-05-23
 
 ### Added

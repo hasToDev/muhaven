@@ -18,7 +18,7 @@
  *    MUST NOT auto-retry 4xx.
  */
 
-import { encodeFunctionData, parseAbi, toFunctionSelector } from 'viem';
+import { decodeFunctionData, encodeFunctionData, parseAbi, toFunctionSelector } from 'viem';
 import { getUserOperationHash } from 'viem/account-abstraction';
 import type { BackendClient } from '../clients/backend-client.js';
 import { BackendError } from '../clients/backend-client.js';
@@ -31,6 +31,7 @@ import {
   buildKernelSessionKeySignature,
   composeKernelV3NonceKey,
   encodeKernelExecuteSingleCall,
+  decodeKernelExecuteSingleCall,
 } from '../clients/kernel-encoder.js';
 import {
   authRequiredPayload,
@@ -1279,6 +1280,190 @@ async function syncSnapshotFromMirror(
   return { kind: 'ok', sessionId: activeId };
 }
 
+/**
+ * 0.2.9 — Structured decode of the kernel.execute + inner purchase()
+ * payload included in the position.buy echo when Path D falls back.
+ * The trace from 0.2.8 carries the full sponsor request body; this
+ * surface lifts the key fields into a flat shape the LLM can read
+ * without bytecode unpacking.
+ *
+ * Two top-line questions a Path D debugger asks:
+ *   1. What target did kernel.execute(...) dispatch to?
+ *      (Should == MuHavenSubscription per `MUHAVEN_SUBSCRIPTION_ADDRESS`)
+ *   2. What token did the inner purchase(...) carry as arg0?
+ *      (Should == the user-facing RWA token, e.g. CETES MuHavenToken)
+ *
+ * The `kernelExecuteTargetMatchesSubscription` boolean lets the LLM
+ * branch on the most common bug (target/token swapped) without
+ * needing to know either address by heart. The full addresses are
+ * included so the operator can spot non-obvious mismatches.
+ */
+interface PathDDecodedCall {
+  /** UserOp.sender (the user's kernel smart-account address). */
+  readonly sender: string;
+  /** kernel.execute mode word (32 bytes). All-zero == single-call default. */
+  readonly kernelExecuteMode: string;
+  /** Target the kernel will CALL — should be `MuHavenSubscription`. */
+  readonly kernelExecuteTarget: string;
+  /** Native-value wei the kernel will pass (always 0 for ERC-20/fhERC-20). */
+  readonly kernelExecuteValue: string;
+  /** First 10 hex chars of the inner callData (= selector). */
+  readonly innerSelector: string;
+  /**
+   * arg0 of `purchase(...)` — the RWA `MuHavenToken` (e.g. CETES proxy).
+   * Decoded only when `innerSelector` matches the purchase selector
+   * exactly; falls back to `undefined` when the inner call is a
+   * different shape (which is itself a strong diagnostic signal).
+   */
+  readonly innerPurchaseTokenArg?: string;
+  /** arg2 of `purchase(...)` — the plaintext share-count ceiling. */
+  readonly innerPurchaseMaxSharesHint?: string;
+  /** arg3 of `purchase(...)` — the ACL-grant ephemeral EOA. */
+  readonly innerPurchaseEphemeralEOA?: string;
+  /** The address the MCP env (`MUHAVEN_SUBSCRIPTION_ADDRESS`) is currently
+   *  wired to. Lets the LLM/operator spot env-vs-trace drift. */
+  readonly expectedSubscriptionAddress?: string;
+  /**
+   * Boolean shortcut for the most common shape bug — kernel.execute
+   * target is the RWA token contract instead of the subscription.
+   * `true` == matches expected, `false` == swap detected, `undefined`
+   * == couldn't decode (mode != single-call default, or shape parse
+   * failed).
+   */
+  readonly kernelExecuteTargetMatchesSubscription?: boolean;
+  /** Human-readable interpretation of the mismatch — null when fine. */
+  readonly interpretation: string;
+}
+
+const PURCHASE_SELECTOR_LOWER = SUBSCRIPTION_PURCHASE_SELECTOR.toLowerCase();
+
+/**
+ * Inspect the bundler trace for the `zd_sponsorUserOperation` event,
+ * extract its userOp.callData, decode the kernel.execute envelope +
+ * the inner purchase, and produce a flat structured summary suitable
+ * for inclusion in the position.buy echo. Returns `undefined` when
+ * the trace doesn't contain a sponsor event with a decodable body
+ * (e.g. fallback fired BEFORE the sponsor call).
+ */
+function buildPathDDecodedCall(
+  trace: readonly BundlerTraceEvent[],
+  deps: ToolDeps,
+): PathDDecodedCall | undefined {
+  const sponsorEvent = trace.find((e) => e.method === 'zd_sponsorUserOperation');
+  if (!sponsorEvent) return undefined;
+
+  let req: {
+    params?: [
+      {
+        chainId?: number;
+        userOp?: {
+          sender?: string;
+          callData?: string;
+        };
+        entryPointAddress?: string;
+      },
+    ];
+  };
+  try {
+    req = JSON.parse(sponsorEvent.requestBody);
+  } catch {
+    return undefined;
+  }
+
+  const userOp = req.params?.[0]?.userOp;
+  if (!userOp || typeof userOp.callData !== 'string' || !userOp.callData.startsWith('0x')) {
+    return undefined;
+  }
+  const sender = userOp.sender ?? '<missing>';
+
+  const decoded = decodeKernelExecuteSingleCall(userOp.callData as `0x${string}`);
+  if (!decoded) {
+    return {
+      sender,
+      kernelExecuteMode: '<undecodable>',
+      kernelExecuteTarget: '<undecodable>',
+      kernelExecuteValue: '<undecodable>',
+      innerSelector: '<undecodable>',
+      interpretation:
+        'kernel.execute callData could not be decoded as single-call default mode. The mode word is non-zero or the executionCalldata layout is unexpected. Manual decode required.',
+    };
+  }
+
+  const innerSelector = decoded.innerCallData.slice(0, 10).toLowerCase();
+  let innerPurchaseTokenArg: string | undefined;
+  let innerPurchaseMaxSharesHint: string | undefined;
+  let innerPurchaseEphemeralEOA: string | undefined;
+  if (innerSelector === PURCHASE_SELECTOR_LOWER) {
+    try {
+      const inner = decodeFunctionData({
+        abi: SUBSCRIPTION_PURCHASE_ABI,
+        data: decoded.innerCallData,
+      });
+      const [tokenArg, , maxSharesHint, ephemeralEOA] = inner.args as [
+        string,
+        unknown,
+        bigint,
+        string,
+      ];
+      innerPurchaseTokenArg = tokenArg;
+      innerPurchaseMaxSharesHint = maxSharesHint.toString();
+      innerPurchaseEphemeralEOA = ephemeralEOA;
+    } catch {
+      // shape mismatch — leave undefined; the raw selector + inner
+      // bytes are still in the trace
+    }
+  }
+
+  const expectedSubscriptionAddress = deps.subscriptionAddress?.toLowerCase();
+  const kernelTargetLower = decoded.target.toLowerCase();
+  let kernelExecuteTargetMatchesSubscription: boolean | undefined;
+  let interpretation: string;
+  if (expectedSubscriptionAddress === undefined) {
+    interpretation =
+      `kernel.execute target=${decoded.target}; inner purchase token=${innerPurchaseTokenArg ?? '<unknown>'}; ` +
+      `MUHAVEN_SUBSCRIPTION_ADDRESS not wired on this MCP server — cannot cross-check.`;
+  } else if (kernelTargetLower === expectedSubscriptionAddress) {
+    kernelExecuteTargetMatchesSubscription = true;
+    interpretation =
+      `kernel.execute target matches MuHavenSubscription (${decoded.target}). ` +
+      `Inner purchase token = ${innerPurchaseTokenArg ?? '<unknown>'}. The shape is correct; the AA23 ` +
+      `revert is downstream of the validator's signature decode — likely either an on-chain ` +
+      `signer-vs-installed-permission mismatch, a target/selector not in the on-chain policy, ` +
+      `or a cap-arg breach. Check muhaven.policy.session_key_status for the installed permission state.`;
+  } else if (
+    innerPurchaseTokenArg !== undefined &&
+    kernelTargetLower === innerPurchaseTokenArg.toLowerCase()
+  ) {
+    kernelExecuteTargetMatchesSubscription = false;
+    interpretation =
+      `kernel.execute target = ${decoded.target} = the RWA MuHavenToken (purchase.token arg0). ` +
+      `Expected MuHavenSubscription (${deps.subscriptionAddress}). The kernel is dispatching ` +
+      `purchase() to the token contract instead of the subscription — token doesn't have a ` +
+      `purchase() selector, so fallback returns empty revert data (= AA23 reverted 0x). ` +
+      `This is a code-side bug in the kernel.execute target wiring.`;
+  } else {
+    kernelExecuteTargetMatchesSubscription = false;
+    interpretation =
+      `kernel.execute target = ${decoded.target} — NEITHER the expected MuHavenSubscription ` +
+      `(${deps.subscriptionAddress}) NOR the inner purchase.token arg (${innerPurchaseTokenArg ?? '<none>'}). ` +
+      `This is an unexpected third-address dispatch; inspect deps.subscriptionAddress env wiring.`;
+  }
+
+  return {
+    sender,
+    kernelExecuteMode: decoded.mode,
+    kernelExecuteTarget: decoded.target,
+    kernelExecuteValue: decoded.value.toString(),
+    innerSelector,
+    innerPurchaseTokenArg,
+    innerPurchaseMaxSharesHint,
+    innerPurchaseEphemeralEOA,
+    expectedSubscriptionAddress: deps.subscriptionAddress,
+    kernelExecuteTargetMatchesSubscription,
+    interpretation,
+  };
+}
+
 async function attemptPathD(
   args: {
     /** Cleartext share count the LLM proposed. Already passed the
@@ -1991,6 +2176,7 @@ export async function positionBuy(
   let pathDFallbackDetail: string | undefined;
   let pathDSubmittedUserOpHash: `0x${string}` | undefined;
   let pathDBundlerTrace: readonly BundlerTraceEvent[] | undefined;
+  let pathDDecodedCall: PathDDecodedCall | undefined;
   const pathD = await attemptPathD(
     { shares, tokenAddress: token.address as `0x${string}`, tokenSymbol: token.symbol },
     deps,
@@ -2016,6 +2202,15 @@ export async function positionBuy(
       const trace = deps.bundler.drainTrace();
       if (trace.length > 0) {
         pathDBundlerTrace = trace;
+        // 0.2.9 — decode the kernel.execute + inner purchase from the
+        // sponsor RPC's request body and include the structured
+        // result in the echo. Lets the LLM read at a glance which
+        // contract the kernel was about to call (kernel.execute
+        // target) vs which token the inner purchase() targets — the
+        // two are commonly confused (the inner purchase's first arg
+        // IS the token address, but the kernel.execute target should
+        // be the MuHavenSubscription contract).
+        pathDDecodedCall = buildPathDDecodedCall(trace, deps);
       }
     }
   }
@@ -2052,6 +2247,7 @@ export async function positionBuy(
       ...(pathDFallbackDetail ? { pathDFallbackDetail } : {}),
       ...(pathDSubmittedUserOpHash ? { pathDSubmittedUserOpHash } : {}),
       ...(pathDBundlerTrace ? { pathDBundlerTrace } : {}),
+      ...(pathDDecodedCall ? { pathDDecodedCall } : {}),
     },
   });
 }

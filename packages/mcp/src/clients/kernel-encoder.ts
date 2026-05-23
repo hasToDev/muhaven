@@ -45,7 +45,7 @@
  * surface a version drift earlier by re-hashing on the broker side.
  */
 
-import { concatHex, encodeFunctionData, encodePacked, pad, parseAbi, type Hex } from 'viem';
+import { concatHex, decodeFunctionData, encodeFunctionData, encodePacked, pad, parseAbi, type Hex } from 'viem';
 
 export const KERNEL_EXECUTE_ABI = parseAbi([
   'function execute(bytes32 mode, bytes calldata executionCalldata)',
@@ -85,6 +85,64 @@ export function encodeKernelExecuteSingleCall(
     functionName: 'execute',
     args: [KERNEL_V3_SINGLE_CALL_MODE_DEFAULT, executionCalldata],
   });
+}
+
+/**
+ * 0.2.9 — sibling DECODER for diagnostic purposes. Given the bytes
+ * `userOp.callData` carries (i.e. what `encodeKernelExecuteSingleCall`
+ * produced), unpack:
+ *
+ *   - `mode` (32-byte exec-mode word, returned for human inspection)
+ *   - the inner CALL's `target`, `value`, and inner `callData`
+ *
+ * For the single-call default mode we ship today, the
+ * executionCalldata is `abi.encodePacked(target20, value32, callData)`
+ * — exactly what `encodeKernelExecuteSingleCall` writes.
+ *
+ * Returns `null` when the input is malformed or when the mode is NOT
+ * single-call default — surfaces nicely as an absent diagnostic field
+ * instead of a thrown error inside the Path D fallback echo path.
+ */
+export interface DecodedKernelExecuteSingleCall {
+  readonly mode: Hex;
+  readonly target: `0x${string}`;
+  readonly value: bigint;
+  readonly innerCallData: `0x${string}`;
+}
+
+export function decodeKernelExecuteSingleCall(
+  data: `0x${string}`,
+): DecodedKernelExecuteSingleCall | null {
+  // The outer encoding is `execute(bytes32 mode, bytes executionCalldata)`
+  // — standard ABI. Selector + (32 bytes mode + 32-byte offset to bytes
+  // + bytes-length + padded bytes). Reuse the same KERNEL_EXECUTE_ABI
+  // the encoder uses; viem's `decodeFunctionData` does the heavy lift.
+  let decoded;
+  try {
+    decoded = decodeFunctionData({ abi: KERNEL_EXECUTE_ABI, data });
+  } catch {
+    return null;
+  }
+  const [mode, executionCalldata] = decoded.args as [Hex, Hex];
+  // Only the all-zero single-call default mode has the packed inner
+  // shape we know. Other modes (batch, delegate, try-mode) need
+  // different parsers — return null so the diagnostic emits a clear
+  // "mode not decodable" gap instead of garbage.
+  if (mode !== KERNEL_V3_SINGLE_CALL_MODE_DEFAULT) {
+    return null;
+  }
+  // executionCalldata layout (single-call default): 20 bytes target,
+  // 32 bytes value, then the inner callData. Minimum legitimate
+  // length is 20+32 = 52 bytes (= `0x` + 104 hex chars) when the
+  // inner callData is empty.
+  const ec = executionCalldata.slice(2); // drop `0x`
+  if (ec.length < 20 * 2 + 32 * 2) {
+    return null;
+  }
+  const target = (`0x${ec.slice(0, 40)}`) as `0x${string}`;
+  const value = BigInt(`0x${ec.slice(40, 40 + 64)}`);
+  const innerCallData = (`0x${ec.slice(40 + 64)}`) as `0x${string}`;
+  return { mode, target, value, innerCallData };
 }
 
 /**
