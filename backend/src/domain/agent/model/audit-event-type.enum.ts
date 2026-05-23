@@ -26,6 +26,17 @@ export const AuditEventType = {
   /** ZeroDev session-key validator install/uninstall (R-6) */
   ValidatorInstalled: 'validator_installed',
   ValidatorUninstalled: 'validator_uninstalled',
+  /**
+   * Wave 5 Option D Commit 3 — emitted by `ValidatorEnableWatchdog`
+   * when a pending Scoped session crossed the stale threshold without
+   * a `PermissionInstalled` event arriving. Sibling to
+   * `ValidatorInstalled`; ensures the forensic audit chain has both
+   * sides of the install lifecycle. Symmetric audit emission was a
+   * multi-agent review (SW Arch M-4) catch — previously the watchdog
+   * flipped rows to `'failed'` via the repo directly, leaving the
+   * audit table one-sided (success-only).
+   */
+  ValidatorInstallFailed: 'validator_install_failed',
   /** KYC revocation webhook received — drives T-5 cascade */
   KycRevocationReceived: 'kyc_revocation_received',
   /** Risk Q&A complete — gate for ConfirmPerAction → PolicyBound */
@@ -79,6 +90,7 @@ export const AUDIT_EVENT_TYPE_VALUES: readonly AuditEventType[] = [
   AuditEventType.PermitRevoked,
   AuditEventType.ValidatorInstalled,
   AuditEventType.ValidatorUninstalled,
+  AuditEventType.ValidatorInstallFailed,
   AuditEventType.KycRevocationReceived,
   AuditEventType.RiskQuestionnaireComplete,
   AuditEventType.ScopedSessionMinted,

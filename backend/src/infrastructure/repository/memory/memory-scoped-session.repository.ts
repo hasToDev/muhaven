@@ -232,16 +232,14 @@ export class MemoryScopedSessionRepository implements IScopedSessionRepository {
     txHash: `0x${string}`,
     now: Date,
   ): Promise<ScopedSession | null> {
+    // Mirror the Pg repo's strict semantics (multi-agent review API
+    // Tester H-1): return `null` when the row was NOT in `'pending'`
+    // — including the `'enabled'` race-winner case AND the watchdog-
+    // already-flipped-to-`'failed'` case. The use-case re-reads to
+    // distinguish them.
     const existing = this.store.get(sessionId);
     if (!existing) return null;
-    if (existing.enableStatus === 'enabled') {
-      // Idempotent — race winner; return existing unchanged.
-      return existing;
-    }
-    if (existing.enableStatus !== 'pending') {
-      // Failed / null — refuse to flip.
-      return null;
-    }
+    if (existing.enableStatus !== 'pending') return null;
     const updated = existing.with({
       enableStatus: 'enabled',
       validatorEnabledAt: now,

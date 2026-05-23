@@ -1898,6 +1898,19 @@ async function attemptPathD(
           'mirror row is orphaned (userId=null after FK CASCADE SET NULL) — re-mint required',
       };
     }
+    // Multi-agent review (API Tester H-3): validate userId MCP-side
+    // BEFORE the GET so a malformed mirror payload doesn't produce
+    // confusing 404s downstream (the backend uniform-404 posture
+    // can't distinguish "row missing" from "userId invalid"). Same
+    // regex the backend Zod uses + the same broker SESSION_ID_RE
+    // shape — keeps the boundaries consistent.
+    if (typeof userId !== 'string' || userId.length === 0 || userId.length > 128) {
+      return {
+        kind: 'fallback',
+        reason: 'install_material_malformed',
+        message: `mirror row userId failed local validation (length=${typeof userId === 'string' ? userId.length : 0})`,
+      };
+    }
     let raw: InstallMaterialResponse;
     try {
       raw = await deps.backend.getServiceSecret<InstallMaterialResponse>(
@@ -2256,16 +2269,29 @@ async function attemptPathD(
     // The inner action descriptor for our case: the kernel's own
     // `execute(bytes32 mode, bytes calldata)` selector + the kernel
     // address itself. No inner hook (no hook in our snapshot today).
+    //
+    // ⚠ Multi-agent review (AI Engineer M-2): `action.address` IS the
+    // action TARGET (per `@zerodev/sdk::getEncodedPluginsData`). For
+    // `kernel.execute` the target is the kernel — which is the same
+    // value as `accountAddress` ONLY because kernel.execute is a self-
+    // call from the EntryPoint. A future Path D variant that wraps a
+    // non-kernel-self action (e.g., a direct ERC-7579 module call)
+    // would set `action.address` to the MODULE, NOT the kernel. To
+    // prevent a refactor from silently miswiring, we bind a distinctly-
+    // named local that asserts equality with `accountAddress` at this
+    // call site only. Drift would surface at the byte-equality test
+    // (`__tests__/kernel-encoder.test.ts` fixtures).
     const kernelExecuteSelector = toFunctionSelector(
       KERNEL_EXECUTE_ABI[0]!,
     ).toLowerCase() as `0x${string}`;
+    const kernelExecuteActionTarget: `0x${string}` = accountAddress;
     finalSignature = wrapEnableModeSignature({
       enableData: installMaterial.enableData! as `0x${string}`,
       enableSig: installMaterial.enableSig! as `0x${string}`,
       userOpSignature: wrappedSessionKeySig,
       action: {
         selector: kernelExecuteSelector,
-        address: accountAddress,
+        address: kernelExecuteActionTarget,
       },
     });
   }

@@ -20,8 +20,10 @@
  * threshold window. Both run together in prod.
  */
 
+import { AuditEventType } from '../../domain/agent/model/audit-event-type.enum.js';
 import type { IScopedSessionRepository } from '../../domain/agent/repository/scoped-session.repository.js';
 import type { ScopedSession } from '../../domain/agent/model/scoped-session.js';
+import type { AppendAuditEventUseCase } from '../../application/use-case/agent/policy/append-audit-event.use-case.js';
 import { getLogger } from '../../core/logger.js';
 import type { Logger } from 'pino';
 import type { IOperatorAlertTransport } from '../operator/operator-alert-transport.js';
@@ -41,6 +43,17 @@ export class ValidatorEnableWatchdog {
   constructor(
     private readonly scopedRepo: IScopedSessionRepository,
     private readonly alertTransport: IOperatorAlertTransport,
+    /**
+     * Wave 5 Option D Commit 3 (multi-agent review SW Arch M-4) —
+     * watchdog emits `AuditEventType.ValidatorInstallFailed` per
+     * flipped row so the audit trail has symmetric coverage of the
+     * install lifecycle (success → `ValidatorInstalled` from the
+     * use-case; failure → `ValidatorInstallFailed` from here).
+     * Without this, the audit table was one-sided (success-only),
+     * which broke `since X show every install attempt's outcome`
+     * replay queries.
+     */
+    private readonly appendAudit: AppendAuditEventUseCase,
     private readonly config: ValidatorEnableWatchdogConfig,
   ) {
     this.logger = getLogger().child({ poller: 'validator-enable-watchdog' });
@@ -81,6 +94,7 @@ export class ValidatorEnableWatchdog {
           const result = await this.scopedRepo.markValidatorFailed(row.sessionId);
           if (result) {
             flipped++;
+            await this.emitFailedAudit(result, now);
             await this.emitStaleAlert(result, now);
           }
         } catch (err) {
@@ -102,6 +116,52 @@ export class ValidatorEnableWatchdog {
       this.running = false;
     }
     return { flipped };
+  }
+
+  private async emitFailedAudit(
+    session: ScopedSession,
+    now: Date,
+  ): Promise<void> {
+    if (!session.userId) {
+      // Orphaned row (FK SET NULL after user deletion). Mirrors the
+      // MarkScopedSessionValidatorEnabledUseCase orphan posture —
+      // persist the row flip + log structurally, skip the audit
+      // (the audit row needs a userId to be queryable forensically).
+      this.logger.warn(
+        {
+          sessionId: session.sessionId,
+          orphanMirrorRow: true,
+        },
+        'ValidatorInstallFailed flip on orphaned session row — audit skipped',
+      );
+      return;
+    }
+    try {
+      const ageMs = now.getTime() - session.mintedAt.getTime();
+      await this.appendAudit.execute({
+        userId: session.userId,
+        surface: session.surface,
+        eventType: AuditEventType.ValidatorInstallFailed,
+        metadata: {
+          sessionId: session.sessionId,
+          permissionId: session.permissionId,
+          signerAddressPrefix: session.signerAddress.slice(0, 10),
+          mintedAt: session.mintedAt.toISOString(),
+          staleMs: ageMs,
+          source: 'watchdog',
+        },
+        now,
+      });
+    } catch (err) {
+      this.logger.error(
+        {
+          err: err instanceof Error ? err.message : String(err),
+          sessionId: session.sessionId,
+          orphanMirrorRow: true,
+        },
+        'ValidatorInstallFailed audit emission failed — mirror row flipped, audit missing',
+      );
+    }
   }
 
   private async emitStaleAlert(

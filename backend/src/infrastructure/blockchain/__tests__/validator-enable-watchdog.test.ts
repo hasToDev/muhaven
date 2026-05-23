@@ -4,9 +4,12 @@ beforeAll(() => {
   process.env.JWT_SECRET ??= 'test-secret-that-is-at-least-32-chars-long';
 });
 
+import { AuditEventType } from '../../../domain/agent/model/audit-event-type.enum.js';
 import { ScopedSession } from '../../../domain/agent/model/scoped-session.js';
 import { ScopedSessionStatus } from '../../../domain/agent/model/scoped-session-status.enum.js';
 import { Surface } from '../../../domain/agent/model/surface.enum.js';
+import { AppendAuditEventUseCase } from '../../../application/use-case/agent/policy/append-audit-event.use-case.js';
+import { MemoryAgentAuditRepository } from '../../repository/memory/memory-agent-audit.repository.js';
 import { MemoryScopedSessionRepository } from '../../repository/memory/memory-scoped-session.repository.js';
 import { ValidatorEnableWatchdog } from '../validator-enable-watchdog.js';
 import type {
@@ -58,12 +61,16 @@ function seed(
 describe('ValidatorEnableWatchdog', () => {
   let repo: MemoryScopedSessionRepository;
   let alert: StubAlertTransport;
+  let auditRepo: MemoryAgentAuditRepository;
+  let appendAudit: AppendAuditEventUseCase;
   let watchdog: ValidatorEnableWatchdog;
 
   beforeEach(() => {
     repo = new MemoryScopedSessionRepository();
     alert = new StubAlertTransport();
-    watchdog = new ValidatorEnableWatchdog(repo, alert, {
+    auditRepo = new MemoryAgentAuditRepository();
+    appendAudit = new AppendAuditEventUseCase(auditRepo);
+    watchdog = new ValidatorEnableWatchdog(repo, alert, appendAudit, {
       staleThresholdSec: 720, // 12 minutes
       batchLimit: 10,
     });
@@ -125,6 +132,30 @@ describe('ValidatorEnableWatchdog', () => {
     expect(row?.enableStatus).toBe('failed');
   });
 
+  it('emits ValidatorInstallFailed audit per flipped row', async () => {
+    seed(repo, { sessionId: 'audited-1' });
+    seed(repo, { sessionId: 'audited-2', userId: 'u2' });
+    const result = await watchdog.tickOnce(new Date('2026-05-23T20:30:00.000Z'));
+    expect(result.flipped).toBe(2);
+    const u1Audits = await auditRepo.findByUserId('u1', { limit: 10 });
+    const u2Audits = await auditRepo.findByUserId('u2', { limit: 10 });
+    expect(u1Audits.items).toHaveLength(1);
+    expect(u2Audits.items).toHaveLength(1);
+    expect(u1Audits.items[0]!.eventType).toBe(AuditEventType.ValidatorInstallFailed);
+    expect(u1Audits.items[0]!.metadata).toMatchObject({
+      sessionId: 'audited-1',
+      source: 'watchdog',
+    });
+  });
+
+  it('skips audit emission for orphaned rows (userId=null)', async () => {
+    seed(repo, { sessionId: 'orphan', userId: null });
+    const result = await watchdog.tickOnce(new Date('2026-05-23T20:30:00.000Z'));
+    expect(result.flipped).toBe(1);
+    const audits = await auditRepo.findByUserId('u1', { limit: 10 });
+    expect(audits.items).toHaveLength(0);
+  });
+
   it('respects batchLimit', async () => {
     for (let i = 0; i < 5; i++) {
       seed(repo, {
@@ -133,7 +164,7 @@ describe('ValidatorEnableWatchdog', () => {
         mintedAt: new Date(`2026-05-23T20:0${i}:00.000Z`),
       });
     }
-    const limited = new ValidatorEnableWatchdog(repo, alert, {
+    const limited = new ValidatorEnableWatchdog(repo, alert, appendAudit, {
       staleThresholdSec: 720,
       batchLimit: 2,
     });

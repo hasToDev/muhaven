@@ -134,11 +134,26 @@ export class MarkScopedSessionValidatorEnabledUseCase {
     );
     if (!flipped) {
       // The pre-check said `pending` but the UPDATE matched 0 rows —
-      // another writer flipped between our read and write. Re-read,
-      // surface as already-enabled when it's `enabled`, else 409.
+      // another writer flipped between our read and write. Re-read +
+      // discriminate three sub-cases (multi-agent review API Tester
+      // H-1: previously the repo's `findById` fallback silently
+      // returned the post-watchdog `'failed'` row and the use-case
+      // emitted a misleading `ValidatorInstalled` audit over it).
       const after = await this.scopedRepo.findById(input.sessionId);
       if (after?.enableStatus === 'enabled') {
+        // Chain-indexer or broker-callback raced ahead and flipped
+        // first. Idempotent no-op; no second audit.
         return { session: after, flipped: false };
+      }
+      if (after?.enableStatus === 'failed') {
+        // Watchdog beat us with a failed flip — receipt arrived
+        // after the watchdog's stale window. Audit truthfully
+        // (no `ValidatorInstalled` for a row that never installed).
+        throw new ApplicationHttpError(
+          409,
+          'watchdog flipped row to failed before receipt arrived; re-mint required',
+          'enable_already_failed_race',
+        );
       }
       throw new ApplicationHttpError(
         409,

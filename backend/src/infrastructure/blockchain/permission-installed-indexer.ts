@@ -213,11 +213,39 @@ export class PermissionInstalledIndexer {
     // Find the matching mirror row. The kernel address (emitter) is
     // `lg.address`. Today the repo lookup is by permissionId alone
     // (see Pg repo JSDoc); we pass the emitter as the disambiguator
-    // for future schema growth.
-    const session = await this.scopedRepo.findByPermissionIdAndAccountAddress(
-      permissionId.toLowerCase() as `0x${string}`,
-      lg.address.toLowerCase() as `0x${string}`,
-    );
+    // for future schema growth. The repo THROWS on multi-match
+    // (permissionId collision across two kernels — improbable but
+    // possible in the 4-byte permissionId namespace ~4.3B); we
+    // catch + alert + SKIP rather than retry forever (multi-agent
+    // review API Tester M-1 — without this catch the OUTER catch
+    // wedged the indexer behind a colliding pair until operator
+    // intervention).
+    let session;
+    try {
+      session = await this.scopedRepo.findByPermissionIdAndAccountAddress(
+        permissionId.toLowerCase() as `0x${string}`,
+        lg.address.toLowerCase() as `0x${string}`,
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.startsWith('permissionId collision')) {
+        this.logger.error(
+          {
+            permissionId: permissionId.toLowerCase(),
+            kernelAddress: lg.address.toLowerCase(),
+            txHash: lg.transactionHash.toLowerCase(),
+            blockNumber: lg.blockNumber.toString(),
+            collisionDetail: msg,
+          },
+          'permissionId collision detected — skipping log, advancing cursor; operator triage required',
+        );
+        // Skip this log + advance cursor so the indexer doesn't
+        // re-process the same collision every tick.
+        return false;
+      }
+      // Unrecognised throw from the repo — retry next tick.
+      throw err;
+    }
     if (!session) {
       // PermissionInstalled emitted by a kernel we don't track. Common
       // — every dashboard-mediated install fires this event too; our

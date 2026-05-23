@@ -254,8 +254,16 @@ export class BrokerOutbound {
         lastError: 'callback_unconfigured',
       });
     }
-    // SecEng-MED-3 dedup: per-(sessionId,txHash) in-flight folding.
-    const dedupKey = `${args.sessionId}:${args.txHash.toLowerCase()}`;
+    // SecEng-MED-3 dedup: per-(sessionId, txHash, accountAddress)
+    // in-flight folding. Including `accountAddress` defends against
+    // an IPC peer that crafts two notify calls with the same
+    // (sessionId, txHash) but different `accountAddress` — the
+    // backend route's emitter-vs-accountAddress cross-check would
+    // reject one, but only AFTER both are queued. Including the
+    // address in the dedup key forces the second call to spawn a
+    // separate loop, where its 422 surfaces cleanly to the operator
+    // log channel.
+    const dedupKey = `${args.sessionId}:${args.txHash.toLowerCase()}:${args.accountAddress.toLowerCase()}`;
     const existing = this.inflightCallbacks.get(dedupKey);
     if (existing) {
       this.log('info', 'validator-enabled callback already in flight — folded', {

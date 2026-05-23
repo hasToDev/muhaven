@@ -7,6 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-05-23
+
+### Added
+
+- **Wave 5 Option D Commit 3 — MCP-side MODE.ENABLE UserOp pipeline.**
+  Closes the `paymaster_rejected → AA23 reverted 0x` smoke gap by
+  installing the PermissionValidator atomically with the first Path D
+  buy. On a freshly-minted Scoped session (`enable_status='pending'`
+  on the backend mirror), `position.buy` now:
+  - Fetches install material (`enableData` + `enableSig` +
+    `validatorNonce`) from the backend's
+    `GET /agent/policy/scoped-session/:id/install-material` subroute,
+    gated by `BROKER_CALLBACK_SERVICE_SECRET`.
+  - Calls the broker daemon's NEW `current_nonce` IPC verb to read the
+    kernel's live `currentNonce()` and pre-checks it against the
+    stored `validatorNonce`; mismatch surfaces as fallback
+    `enable_sig_stale` with a re-mint remediation.
+  - Composes the UserOp with `composeKernelV3NonceKey({mode:'enable'})`
+    (byte 0 of the 24-byte composite flips `0x00` → `0x01`) AND
+    wraps the 66-byte session-key signature with NEW
+    `wrapEnableModeSignature(...)` — a byte-exact mirror of
+    `@zerodev/sdk::getEncodedPluginsData`. The byte-equality is
+    pinned by 5 regression fixtures importing the canonical SDK as a
+    `devDep` (test-only — `@zerodev/sdk` is NOT in the runtime
+    bundle).
+  - After receipt, calls the broker daemon's NEW
+    `notify_userop_landed` IPC verb so the broker can POST the
+    backend's `validator-enabled` callback route. The chain indexer
+    is the authoritative source-of-truth; the callback is a fast-path
+    optimization.
+- **Broker protocol bump 0.4.0 → 0.5.0.** Additive surface only —
+  legacy 0.4.0 callers continue to work. New verbs: `current_nonce`,
+  `notify_userop_landed`. New optional `enableData`/`enableSig`/
+  `validatorNonce` on `PolicySnapshotWire` with an all-or-none
+  refinement. New error codes: `chain_rpc_failed`, `callback_unconfigured`.
+- **Broker daemon outbound egress (narrow, operator-approved
+  threat-model relaxation).** Until C3 the broker had ZERO outbound
+  channels; C3 adds exactly TWO via the NEW `BrokerOutbound` module:
+  - Chain RPC `eth_call` to `MUHAVEN_BROKER_RPC_URL` (fallback
+    `MUHAVEN_BUNDLER_URL`) for `kernel.currentNonce()` reads.
+  - HTTPS POST to backend's `validator-enabled` route with
+    `BROKER_CALLBACK_SERVICE_SECRET` bearer, exponential 5s/15s/60s/5m
+    backoff (`MUHAVEN_BROKER_ORIGIN` header per the ZeroDev
+    allowlist gotcha codified in earlier commits).
+  - Per-(sessionId, txHash, accountAddress) in-process dedup folds
+    flood IPC into a single retry loop.
+- New fallback codes on `position.buy` Path D probe:
+  `install_material_unavailable`, `install_material_malformed`,
+  `enable_sig_stale`, `validator_install_failed_re_walk_required`,
+  `broker_chain_rpc_failed`.
+- New broker config knobs: `MUHAVEN_BROKER_RPC_URL`,
+  `BROKER_CALLBACK_SERVICE_SECRET`, `MUHAVEN_BROKER_ORIGIN`.
+
+### Changed
+
+- `composeKernelV3NonceKey` now accepts a `mode: 'default'|'enable'`
+  parameter. Default-omitted = `'default'` (backwards-compatible
+  with 0.2.x callers).
+- `BackendClient` gains a `getServiceSecret(path, secret, query?)`
+  method (refactored `exchange` to share `runFetch`). Used only by
+  the install-material subroute.
+- `daemon.ts` JSDoc header rewrites the "zero-egress" invariant to
+  document the C3 narrow outbound channels load-bearingly.
+
+### Notes
+
+- 28 files changed, +4029 / -20 LOC.
+- 18 new unit tests (5 byte-equality fixtures + 8 use-case + 6
+  watchdog + 6 indexer + 12 protocol parser + 5 daemon).
+- @muhaven/mcp 0.3.0 publish requires `npm publish` after
+  `pnpm clean && pnpm build && pnpm test`.
+
 ## [0.2.9] — 2026-05-23
 
 ### Added

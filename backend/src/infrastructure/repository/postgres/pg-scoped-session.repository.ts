@@ -370,11 +370,22 @@ export class PgScopedSessionRepository implements IScopedSessionRepository {
     now: Date,
   ): Promise<ScopedSession | null> {
     // Idempotent flip: WHERE clause requires `enable_status='pending'`
-    // so concurrent racers (chain indexer vs broker callback) resolve
-    // at the predicate — one updates, the other returns no rows.
+    // so concurrent racers (chain indexer vs broker callback vs
+    // watchdog) resolve at the predicate — one updates, the others
+    // return no rows.
     //
     // CHECK `(validator_enabled_at IS NULL) = (enable_status IS NULL OR
     // enable_status != 'enabled')` enforces the column-pair invariant.
+    //
+    // Returns `null` when 0 rows updated (predicate didn't match — the
+    // row was either NEVER `'pending'` OR was flipped to another
+    // state by a concurrent writer). Callers MUST handle null by
+    // re-reading + branching on the post-update state — emitting a
+    // `ValidatorInstalled` audit over a `failed` row is a real bug
+    // multi-agent review caught (API Tester H-1). The previous
+    // implementation's `findById` fallback masked this race by
+    // returning the post-watchdog `failed` row as if it were the
+    // success row.
     const rows = await this.db
       .update(agentScopedSessions)
       .set({
@@ -390,13 +401,7 @@ export class PgScopedSessionRepository implements IScopedSessionRepository {
       )
       .returning();
     const row = rows[0];
-    if (!row) {
-      // Idempotent fallback: when the row was already `enabled` (race
-      // winner already flipped it), return the existing row so the
-      // caller can emit a no-op response.
-      return this.findById(sessionId);
-    }
-    return this.toDomain(row);
+    return row ? this.toDomain(row) : null;
   }
 
   async markValidatorFailed(

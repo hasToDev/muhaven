@@ -516,6 +516,7 @@ async function main() {
     const watchdog = new ValidatorEnableWatchdog(
       container.scopedSessionRepo,
       container.operatorAlertTransport,
+      container.appendAuditEvent,
       {
         staleThresholdSec: env.VALIDATOR_ENABLE_WATCHDOG_STALE_SEC,
         batchLimit: env.VALIDATOR_ENABLE_WATCHDOG_BATCH_LIMIT,

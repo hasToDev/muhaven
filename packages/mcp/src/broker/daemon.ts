@@ -1,14 +1,26 @@
 /**
  * `muhaven-broker` daemon — the single-purpose process that holds the
- * session-key private half AND the device-flow JWT, exposing only IPC
- * primitives for `sign_hash` + `store_jwt` / `get_jwt` / `clear_jwt`.
+ * session-key private half AND the device-flow JWT, exposing IPC
+ * primitives for `sign_hash` + `store_jwt` / `get_jwt` / `clear_jwt` +
+ * the Wave 5 Path D policy + UserOp signing surface.
  *
  * Design constraints (ranked):
  *  1. Never speak TCP. Reachable only via local socket / named pipe.
- *  2. Never reach out to the network. No fetch, no RPC, no bundler —
- *     even after ADR-3 the broker remains zero-egress; the *MCP server*
- *     speaks HTTPS to the backend and hands the JWT to the broker for
- *     storage via `store_jwt`.
+ *  2. **Outbound network egress is NARROW (Wave 5 Option D Commit 3
+ *     relaxation, operator-approved at handoff)**. The broker has
+ *     EXACTLY two outbound channels — both via the `BrokerOutbound`
+ *     module (`./outbound.ts`):
+ *       (a) chain RPC `eth_call` to the configured `MUHAVEN_BROKER_RPC_URL`
+ *           (fallback `MUHAVEN_BUNDLER_URL`) for `kernel.currentNonce()`
+ *           reads, gating the MODE.ENABLE pre-check;
+ *       (b) HTTPS POST to the backend's `validator-enabled` route,
+ *           gated by `BROKER_CALLBACK_SERVICE_SECRET`.
+ *     NO other outbound capability. NO bundler `eth_sendUserOperation`,
+ *     NO `eth_call` against non-`currentNonce` selectors, NO non-
+ *     backend HTTPS destinations. The JWT keystore + the IPC-mediated
+ *     `sign_hash` / `sign_userop` paths remain zero-egress.
+ *     See `./protocol.ts` JSDoc (top) for the threat-model rationale
+ *     + `./outbound.ts` JSDoc (top) for the per-channel contracts.
  *  3. Peer access is enforced by filesystem permissions on POSIX (parent
  *     dir 0700 / socket file 0600). Windows named pipe inherits the
  *     creating user's ACL by default.
