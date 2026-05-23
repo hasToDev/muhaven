@@ -3,53 +3,68 @@
  *
  * `PLACEHOLDER_SIGNATURE` is the signature stuffed into the
  * `zd_sponsorUserOperation` request's `userOp.signature` field so the
- * paymaster's validator simulator computes realistic verification gas.
- * It MUST match the EXACT byte-length of the real Kernel v3.1
- * PermissionValidator signature shape that `buildKernelSessionKeySignature`
- * produces:
+ * paymaster's PermissionValidator simulator skips real ecrecover (it
+ * recognizes the CRAFTED dummy pattern) and gas-estimates the
+ * verification cost path realistically.
  *
- *     byte 0       — 0xff (PermissionValidator "use root permission" sentinel)
- *     bytes 1..65  — 65-byte ECDSA
- *     = 66 bytes total = `0x` + 132 hex chars
+ * Source contract: `@zerodev/permissions::toPermissionValidator.js`
+ *   getStubSignature: () => concat(["0xff", signer.getDummySignature()])
+ * Where ECDSA signers return `@zerodev/sdk/constants::DUMMY_ECDSA_SIG`.
  *
- * Pre-0.2.5 the placeholder was 86 bytes — the OLD enable-mode shape
- * (1 byte prefix + 20 bytes validator + 65 bytes ECDSA). The paymaster's
- * validator simulator decoded the wrong-length signature, the
- * validator reverted with `AA23 reverted`, and
- * `zd_sponsorUserOperation` returned rpc_error → MCP mapped to
- * `paymaster_rejected` and Path C fallback. This test pins the shape
- * so a future shape-drift fails loud at test time.
+ * Pre-0.2.6 regressions (each surfaced as `paymaster_rejected`):
+ *  - 0.2.4: 86-byte placeholder (wrong LENGTH — enable-mode shape)
+ *  - 0.2.5: 66-byte but random `0xfe`-filled trailing bytes — validator
+ *           ecrecovers a garbage address → AA23 revert
+ *  - 0.2.6 (current): exact @zerodev DUMMY_ECDSA_SIG bytes
  */
 
 import { describe, expect, it } from 'vitest';
 import { PLACEHOLDER_SIGNATURE } from '../src/tools/handlers.js';
 
-describe('PLACEHOLDER_SIGNATURE — Kernel v3.1 PermissionValidator shape', () => {
+// Exact value copied from `@zerodev/sdk/constants::DUMMY_ECDSA_SIG`
+// (verified 2026-05-23 against installed @zerodev/sdk@5.5.10).
+// The 65-byte ECDSA dummy; the PermissionValidator's stub-sig
+// wrapper prepends a `0xff` routing byte → 66-byte total.
+const ZERODEV_DUMMY_ECDSA_SIG =
+  '0xfffffffffffffffffffffffffffffff0000000000000000000000000000000007aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1c';
+
+describe('PLACEHOLDER_SIGNATURE — @zerodev/permissions::getStubSignature() exact bytes', () => {
   it('is exactly 66 bytes (132 hex chars + 0x prefix)', () => {
-    // 0x (2) + 66 bytes × 2 hex chars (132) = 134 total length.
     expect(PLACEHOLDER_SIGNATURE).toHaveLength(134);
-    // Defense-in-depth — pin the byte length too in case the literal
-    // gets accidentally regenerated via a different formula.
-    const hexBody = PLACEHOLDER_SIGNATURE.slice(2);
-    expect(hexBody).toHaveLength(132);
-    expect(hexBody.length / 2).toBe(66);
+    expect(PLACEHOLDER_SIGNATURE.slice(2)).toHaveLength(132);
+    expect(PLACEHOLDER_SIGNATURE.slice(2).length / 2).toBe(66);
   });
 
   it('starts with 0xff (PermissionValidator "use root permission" sentinel)', () => {
-    // byte 0 of the real Kernel v3.1 sig is the routing byte. Matching
-    // it in the placeholder means the validator's structural parse
-    // takes the same branch during simulation as it would post-sign,
-    // so the paymaster's gas estimate covers the actual code path.
     expect(PLACEHOLDER_SIGNATURE.slice(0, 4).toLowerCase()).toBe('0xff');
   });
 
-  it('has high-entropy non-zero bytes after the prefix', () => {
-    // A zero-padded signature gas-estimates as if the cheaper sudo-
-    // validator path will run. Non-zero bytes force the paymaster to
-    // simulate the full ECDSA-recovery cost path.
-    const remaining = PLACEHOLDER_SIGNATURE.slice(4);
-    expect(remaining).not.toMatch(/^0+$/);
-    // First byte after 0xff prefix should be non-zero.
-    expect(remaining.slice(0, 2)).not.toBe('00');
+  it('trailing 65 bytes match @zerodev/sdk::DUMMY_ECDSA_SIG byte-for-byte', () => {
+    // Drop the `0xff` routing prefix from PLACEHOLDER (=> 65 bytes),
+    // drop the `0x` prefix from the dummy constant (=> 65 bytes),
+    // compare lowercased.
+    const trailing65 = PLACEHOLDER_SIGNATURE.slice(4); // skip "0xff"
+    const dummyBody = ZERODEV_DUMMY_ECDSA_SIG.slice(2); // skip "0x"
+    expect(trailing65.toLowerCase()).toBe(dummyBody.toLowerCase());
+  });
+
+  it('ends with the v=0x1c recovery byte (per DUMMY_ECDSA_SIG)', () => {
+    // ECDSA `v` is the last byte. ZeroDev's dummy uses `0x1c` (= 28).
+    // This is what makes the simulator's recovery path take the same
+    // gas branch as a real signature would.
+    expect(PLACEHOLDER_SIGNATURE.slice(-2).toLowerCase()).toBe('1c');
+  });
+
+  it('s-component uses the magic 7aa...a pattern (NOT random entropy — the 0.2.5 bug)', () => {
+    // The s-component (bytes 33..64 of the 65-byte ECDSA) is
+    // `7aaaaa...aaa` — a crafted pattern the validator's simulation
+    // path checks for. The 0.2.5 regression filled this region with
+    // `0xfe` bytes which the validator tried to ecrecover against.
+    // Position in hex chars: `0x` (2) + `ff` (2) + r (64) = offset 68;
+    // s spans 64 chars.
+    const sBytes = PLACEHOLDER_SIGNATURE.slice(68, 68 + 64);
+    expect(sBytes.toLowerCase()).toMatch(/^7a+/);
+    // And specifically: NOT the 0.2.5 broken pattern.
+    expect(sBytes.toLowerCase()).not.toMatch(/^fe+/);
   });
 });

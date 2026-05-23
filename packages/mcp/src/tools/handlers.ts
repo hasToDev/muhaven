@@ -149,36 +149,52 @@ const SUBSCRIPTION_PURCHASE_ABI = parseAbi([
 ]);
 
 /**
- * Worst-case placeholder signature for the `zd_sponsorUserOperation`
- * pre-sign UserOp. MUST match the EXACT length of the real Kernel
- * v3.1 post-enable PermissionValidator signature that
- * `buildKernelSessionKeySignature` produces:
+ * Stub signature for the `zd_sponsorUserOperation` pre-sign UserOp.
  *
- *   byte 0       — `0xff` (PermissionValidator's "use root permission" sentinel)
- *   bytes 1..65  — 65-byte ECDSA (r, s, v)
- *   = 66 bytes total = `0x` + 132 hex chars
+ * MUST be the EXACT bytes that `@zerodev/permissions::toPermissionValidator`
+ * uses for `getStubSignature()` — the PermissionValidator's
+ * `validateUserOp` simulation path recognizes this CRAFTED pattern as
+ * "this is a stub, skip ecrecover" and gas-estimates as if a real
+ * ECDSA-recovery would run, without actually trying to recover a
+ * signer that won't match the bound session-key.
  *
- * History: 0.2.4 and earlier shipped an 86-byte placeholder (the old
- * ENABLE-mode signature shape: 1 byte prefix + 20 bytes validator + 65
- * bytes ECDSA). That's the wrong length for the post-enable
- * PermissionValidator flow we actually use, so the paymaster's
- * simulator decoded a 86-byte blob as if it were 66, the validator
- * reverted with `AA23 reverted`, and `zd_sponsorUserOperation`
- * returned an rpc_error → MCP mapped to `paymaster_rejected`.
- * Fixed 2026-05-23 by matching the kernel-encoder's documented shape.
+ * Shape (66 bytes = `0x` + 132 hex chars):
+ *   byte 0       — `0xff` (PermissionValidator "use root permission" sentinel)
+ *   bytes 1..32  — r = 0xffffffffffffffffffffffffffffff0000000000000000000000000000000000
+ *   bytes 33..64 — s = 0x7aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+ *   byte 65      — v = 0x1c
  *
- * Byte-0 sentinel is `0xff` (matches the real signature's "use root
- * permission" prefix); the remaining 65 bytes are non-zero high-
- * entropy so the paymaster's simulator computes realistic
- * verification gas (a zero-byte signature gas-estimates as if the
- * cheaper sudo-validator path will run).
+ * Source: `@zerodev/sdk/constants::DUMMY_ECDSA_SIG` (the 65-byte
+ * ECDSA part) + `@zerodev/permissions/toPermissionValidator::getStubSignature`
+ * which prepends the `0xff` PermissionValidator routing byte:
+ *   concat(["0xff", signer.getDummySignature()])
+ *
+ * History (regression trail leading to this commit):
+ *  - 0.2.4 and earlier: 86-byte placeholder (`'0x' + 'fe'.repeat(86)`)
+ *    — wrong LENGTH (old enable-mode shape).
+ *  - 0.2.5: 66-byte placeholder (`'0xff' + 'fe'.repeat(65)`) — right
+ *    length + right `0xff` prefix, but the trailing 65 bytes were
+ *    random high-entropy `0xfe...` instead of the crafted DUMMY_ECDSA_SIG
+ *    pattern. The PermissionValidator decodes them as a real ECDSA
+ *    (r, s, v) and tries to ecrecover; recovers a garbage address;
+ *    validation reverts → AA23 reverted at the paymaster simulator
+ *    → `zd_sponsorUserOperation` returns rpc_error → MCP maps to
+ *    `paymaster_rejected`.
+ *  - 0.2.6 (this): exact bytes from @zerodev's DUMMY_ECDSA_SIG. The
+ *    pattern is structured so r is at the high-end of secp256k1's
+ *    field (`fff...f00...0` mask), s is the "magic" `7aa...aa`, v is
+ *    `0x1c`. ZeroDev's PermissionValidator simulation path checks for
+ *    this exact pattern (or similar fingerprints) and skips the
+ *    ecrecover step.
  */
-// Exported for the regression test that pins the byte-length invariant
-// (132 hex chars after `0x` = 66 bytes — must match the post-enable
-// PermissionValidator shape, not the pre-0.2.5 86-byte enable-mode
-// shape that triggered AA23 reverted in paymaster simulation).
+const ZERODEV_DUMMY_ECDSA_SIG =
+  '0xfffffffffffffffffffffffffffffff0000000000000000000000000000000007aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1c';
+
+// Exported for the regression test that pins the exact byte sequence.
+// MUST NOT drift from @zerodev/permissions::getStubSignature output;
+// a drift here re-opens the AA23 paymaster_rejected gate.
 export const PLACEHOLDER_SIGNATURE: `0x${string}` =
-  ('0xff' + 'fe'.repeat(65)) as `0x${string}`;
+  (`0xff${ZERODEV_DUMMY_ECDSA_SIG.slice(2)}`) as `0x${string}`;
 
 export type ToolResult<T> =
   | { ok: true; data: T }

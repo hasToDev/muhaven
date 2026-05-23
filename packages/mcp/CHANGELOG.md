@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6] — 2026-05-23
+
+### Fixed
+
+- **`PLACEHOLDER_SIGNATURE` uses exact `@zerodev/sdk::DUMMY_ECDSA_SIG`
+  bytes** — NOT random `0xfe`-filled high-entropy bytes (the 0.2.5
+  regression). Per `@zerodev/permissions::toPermissionValidator.js`,
+  the canonical stub signature for paymaster simulation is:
+
+      concat(["0xff", signer.getDummySignature()])
+            ↓                ↓
+      "use root permission"  DUMMY_ECDSA_SIG = "0xfffffff...7aa...aaa...1c"
+
+  The DUMMY_ECDSA_SIG is a CRAFTED 65-byte pattern (r is high-end of
+  secp256k1's field, s is `7aa...aaa`, v is `0x1c`) that the
+  PermissionValidator's `validateUserOp` simulation path recognizes
+  as a stub and skips real ecrecover. 0.2.5 had the right length (66
+  bytes) and the right `0xff` prefix, but filled the trailing 65
+  bytes with random `0xfe` — the validator ecrecovers them as if
+  real, gets a garbage address that doesn't match the bound session-
+  key, reverts with `AA23` → paymaster returns rpc_error → MCP maps
+  to `paymaster_rejected`.
+
+  The new `pathDFallbackDetail` echo (0.2.5) made this trivially
+  diagnosable on the very next smoke iteration — the surfaced
+  message was `zd_sponsorUserOperation → HTTP 400 → AA23 reverted`
+  which pinned the validator-revert layer.
+
+  Verified 2026-05-23 against `@zerodev/sdk@5.5.10`'s
+  `_cjs/constants.js::DUMMY_ECDSA_SIG` and
+  `@zerodev/permissions/_cjs/toPermissionValidator.js::getStubSignature`.
+
+  Regression tests pin: byte length (66), `0xff` prefix, trailing
+  65-byte byte-for-byte match against DUMMY_ECDSA_SIG, v=0x1c,
+  s-component magic pattern (rejecting the 0.2.5 `0xfe`-filled
+  shape).
+
 ## [0.2.5] — 2026-05-23
 
 ### Fixed
