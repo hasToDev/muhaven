@@ -6,9 +6,46 @@
  * (Windows). Each request is a single JSON object; each response is a
  * single JSON object. No request pipelining, no streaming.
  *
- * **Protocol version 0.4.0** — additive bump from 0.3.0 for Wave 5
- * Path D Slice 1. Adds the policy-snapshot subsystem so the broker can
- * enforce scope + per-op spend cap BEFORE signing a UserOp:
+ * **Protocol version 0.5.0** — additive bump from 0.4.0 for Wave 5
+ * Option D Commit 3. Adds the PermissionValidator install lifecycle so
+ * the broker can compose a MODE.ENABLE UserOp on the first Path D buy
+ * after a freshly-minted Scoped session (installs the validator on-chain
+ * atomically with the inner call). Three additive surfaces:
+ *  - `current_nonce` — read-side IPC verb. Broker does `eth_call` against
+ *    the kernel's `currentNonce()` view via its configured chain RPC.
+ *    MCP server compares the returned uint32 with the mirror's stored
+ *    `validatorNonce`; mismatch surfaces as fallback `enable_sig_stale`
+ *    (kernel nonce drifted between mint + first buy → stored enableSig
+ *    is over a stale typed-data digest).
+ *  - `notify_userop_landed` — write-side IPC verb. MCP server invokes
+ *    this after receipt-arrival to hand the broker the on-chain
+ *    `PermissionInstalled` receipt details. Broker posts the receipt
+ *    to the backend's `validator-enabled` route over its configured
+ *    HTTPS egress (R2 design call: broker carries
+ *    `BROKER_CALLBACK_SERVICE_SECRET`; MCP carries the bundler + RPC
+ *    URLs only). Exponential backoff retry 5s/15s/60s/5m, max 1h.
+ *    The backend chain indexer is the authoritative source-of-truth
+ *    (subscribes to `PermissionInstalled` events independently); this
+ *    callback is the fast-path optimization.
+ *  - `PolicySnapshotWire` gains optional `enableData`, `enableSig`, and
+ *    `validatorNonce`. Backwards-compatible: snapshots without these
+ *    are treated as already-enabled validator (the legacy posture
+ *    before C3). New snapshots from C2+ frontends carry all three;
+ *    broker plumbs them through to the MCP for the MODE.ENABLE wrap.
+ *
+ * **Threat-model relaxation (R2 design call)**: in C3 the broker gains
+ * limited outbound egress (chain RPC `eth_call` + HTTPS to the
+ * backend's `validator-enabled` route). The original zero-egress
+ * invariant (lethal-trifecta split) is narrowed: the broker still
+ * holds NO read-side secrets the network peer cares about (the chain
+ * RPC is public; the backend callback is gated on a shared secret the
+ * broker holds + asserts in-bound). Documented in
+ * `development/DEV_WAVE_5/DEV_LOG.md` C3 entry as a load-bearing
+ * decision the operator made at handoff.
+ *
+ * **Protocol version 0.4.0** (history) — Wave 5 Path D Slice 1. Adds
+ * the policy-snapshot subsystem so the broker can enforce scope +
+ * per-op spend cap BEFORE signing a UserOp:
  *  - `sign_userop` — like `sign_hash` but carries the structured inner
  *    call (target + callData) so the broker validates against the active
  *    policy snapshot before delegating to the signer. The MCP server
@@ -73,7 +110,7 @@
  *    cannot exhaust broker memory by sending an unbounded JSON blob.
  */
 
-export const BROKER_PROTOCOL_VERSION = '0.4.0';
+export const BROKER_PROTOCOL_VERSION = '0.5.0';
 
 // ---------- requests ----------
 
@@ -183,6 +220,60 @@ export interface BrokerGetActiveSessionIdRequest {
 }
 
 /**
+ * Wave 5 Option D Commit 3 — read the kernel's `currentNonce()` view
+ * via the broker's chain RPC. The MCP server uses this to gate the
+ * MODE.ENABLE composition path: mirror's stored `validatorNonce` must
+ * still match the on-chain nonce (the enableSig was signed over the
+ * typed-data digest that pinned the nonce; if the kernel's nonce has
+ * advanced since mint, the digest no longer matches and the on-chain
+ * validator rejects the install).
+ *
+ * Returns a uint32. Broker daemon enforces the range; MCP-side caller
+ * compares to the mirror's stored value as a numeric equality check.
+ */
+export interface BrokerCurrentNonceRequest {
+  readonly type: 'current_nonce';
+  /** Kernel/smart-account address. The kernel's `currentNonce()` is
+   *  a view-only method on the account itself (not the EntryPoint). */
+  readonly accountAddress: `0x${string}`;
+}
+
+/**
+ * Wave 5 Option D Commit 3 — MCP server notifies broker that a
+ * MODE.ENABLE UserOp has settled on-chain. Broker forwards the receipt
+ * to the backend's `validator-enabled` route over HTTPS (using its
+ * pre-configured `BROKER_CALLBACK_SERVICE_SECRET` + `BROKER_BACKEND_BASE_URL`).
+ *
+ * The IPC return is FIRE-AND-FORGET: the broker queues the callback +
+ * acks immediately. The retry loop (5s/15s/60s/5m, max 1h)
+ * runs in the broker's background; failures are operator-visible via
+ * the daemon's log channel only (the MCP server does not block on
+ * the broker's egress).
+ *
+ * Idempotent on the chain-indexer side — the backend route re-verifies
+ * the receipt; the chain indexer is the authoritative source of truth.
+ */
+export interface BrokerNotifyUseropLandedRequest {
+  readonly type: 'notify_userop_landed';
+  readonly sessionId: string;
+  /** Address of the kernel that owns the installed PermissionValidator.
+   *  Backend uses (account_address, permission_id) to look up the mirror
+   *  row to flip. */
+  readonly accountAddress: `0x${string}`;
+  /** 0x-prefixed 4-byte permissionId, lower-cased. */
+  readonly permissionId: `0x${string}`;
+  /** Tx hash carrying the install. Backend re-verifies via
+   *  `eth_getTransactionReceipt` before flipping the enum. */
+  readonly txHash: `0x${string}`;
+  /** Block number containing the receipt — telemetry / forensics. */
+  readonly blockNumber: number;
+  /** Log index of the matched `PermissionInstalled` event within the
+   *  tx's logs array. Backend's log-decode pass uses this to pick the
+   *  exact log instead of scanning the whole receipt. */
+  readonly logIndex: number;
+}
+
+/**
  * Per-selector enforcement rule. The broker matches `innerCall`'s
  * selector against `selector`, then — if `capArgIndex` is not null —
  * decodes the 32-byte word at that index after the 4-byte selector and
@@ -286,6 +377,31 @@ export interface PolicySnapshotWire {
    * (additive optional field, no protocol version bump).
    */
   readonly permissionId?: `0x${string}`;
+  /**
+   * Wave 5 Option D Commit 3 — install material for the MODE.ENABLE
+   * UserOp. `enableData` is the validator-install payload built by the
+   * frontend at mint time (`permissionValidator.getEnableData(...)`).
+   * Variable size — real-world Wave 5 policy sets produce ~30KB hex.
+   * Optional in the wire shape; absence = treat as already-enabled
+   * (legacy posture; MCP composes MODE.DEFAULT directly).
+   */
+  readonly enableData?: `0x${string}`;
+  /**
+   * Wave 5 Option D Commit 3 — WebAuthn-shaped passkey signature over
+   * `getPluginsEnableTypedData(...)`. 256-1024 bytes hex; ZeroDev's
+   * passkey-validator emits a structured envelope (NOT a bare 65-byte
+   * ECDSA). Optional; paired with `enableData` (both present or both
+   * absent — broker daemon enforces; see `parsePolicySnapshot`).
+   */
+  readonly enableSig?: `0x${string}`;
+  /**
+   * Wave 5 Option D Commit 3 — `currentNonce()` value the kernel
+   * returned at mint time. The MCP server's broker pre-check compares
+   * this to the LIVE on-chain nonce (via the broker's new
+   * `current_nonce` IPC verb) — mismatch surfaces as fallback
+   * `enable_sig_stale`. Optional; uint32 range.
+   */
+  readonly validatorNonce?: number;
 }
 
 // ---------- responses ----------
@@ -396,6 +512,25 @@ export interface BrokerGetActiveSessionIdResponse {
   readonly sessionId: string | null;
 }
 
+export interface BrokerCurrentNonceResponse {
+  readonly type: 'current_nonce';
+  /** uint32 returned by the kernel's `currentNonce()` view. */
+  readonly nonce: number;
+  /** Mirror of the request — defends against the broker accidentally
+   *  serving a cached response for a different account. The caller
+   *  compares this to its request input before trusting `nonce`. */
+  readonly accountAddress: `0x${string}`;
+}
+
+export interface BrokerNotifyUseropLandedResponse {
+  readonly type: 'notify_userop_landed';
+  /** Always `true` once the callback is queued. The broker queues
+   *  fire-and-forget; failures surface in the broker's log channel
+   *  only. */
+  readonly queued: true;
+  readonly sessionId: string;
+}
+
 export interface BrokerErrorResponse {
   readonly type: 'error';
   readonly code: BrokerErrorCode;
@@ -416,7 +551,16 @@ export type BrokerErrorCode =
   | 'scope_violation'
   | 'max_spend_exceeded'
   // Wave 5 Path D Slice 5 — rate limiting (enum reserved; not enforced yet)
-  | 'rate_limited';
+  | 'rate_limited'
+  // Wave 5 Option D Commit 3 — chain RPC + callback config faults
+  /** Broker's chain RPC `eth_call` failed (network, malformed reply,
+   *  RPC error). MCP-side caller falls back to Path C with a clear
+   *  "broker chain RPC unreachable" remediation message. */
+  | 'chain_rpc_failed'
+  /** Broker hasn't been configured with the callback secret or backend
+   *  base URL — `notify_userop_landed` is a no-op IPC verb in this
+   *  posture (the chain indexer remains the safety net). */
+  | 'callback_unconfigured';
 
 export type BrokerRequest =
   | BrokerHelloRequest
@@ -428,7 +572,9 @@ export type BrokerRequest =
   | BrokerStorePolicySnapshotRequest
   | BrokerGetPolicySnapshotRequest
   | BrokerClearPolicySnapshotRequest
-  | BrokerGetActiveSessionIdRequest;
+  | BrokerGetActiveSessionIdRequest
+  | BrokerCurrentNonceRequest
+  | BrokerNotifyUseropLandedRequest;
 
 export type BrokerResponse =
   | BrokerHelloResponse
@@ -441,12 +587,33 @@ export type BrokerResponse =
   | BrokerGetPolicySnapshotResponse
   | BrokerClearPolicySnapshotResponse
   | BrokerGetActiveSessionIdResponse
+  | BrokerCurrentNonceResponse
+  | BrokerNotifyUseropLandedResponse
   | BrokerErrorResponse;
 
 const HASH_HEX_RE = /^0x[0-9a-fA-F]{64}$/;
 const ADDRESS_HEX_RE = /^0x[0-9a-fA-F]{40}$/;
 const SELECTOR_HEX_RE = /^0x[0-9a-fA-F]{8}$/;
 const HEX_PREFIXED_RE = /^0x[0-9a-fA-F]*$/;
+/**
+ * Wave 5 Option D Commit 3 — install-material hex bounds.
+ *
+ * `enableData` upper bound is **65536 hex chars** (32_768 bytes
+ * cleartext) — same ceiling the backend's Zod schema enforces after the
+ * 2026-05-23 hot-patch raising it 8192 → 65536 to fit the real prod
+ * policy count (~30KB hex). Floor is 4 hex chars (2 bytes) to admit
+ * future minimal validators; below that is structurally meaningless.
+ *
+ * `enableSig` is the WebAuthn-shaped envelope from the passkey
+ * validator. Floor 256 hex chars = 128 bytes (the C2 lesson: 128-floor
+ * admits a bare 65-byte ECDSA, which would be a downgrade attack
+ * vector — ZeroDev passkey-validator always emits ≥256-byte
+ * envelopes). Ceiling 16384 hex chars (8192 bytes) matches the backend
+ * Zod ceiling.
+ */
+const ENABLE_DATA_HEX_RE = /^0x[0-9a-fA-F]{2,65536}$/;
+const ENABLE_SIG_HEX_RE = /^0x[0-9a-fA-F]{256,16384}$/;
+const UINT32_MAX = 0xffff_ffff;
 const JWT_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const UINT256_DEC_RE = /^(0|[1-9][0-9]{0,77})$/;
@@ -609,6 +776,61 @@ function parsePolicySnapshot(raw: unknown): PolicySnapshotWire | { error: string
   if (!isOptionalPermissionId(obj.permissionId)) {
     return { error: 'snapshot.permissionId must be a 0x-prefixed 4-byte hex when provided' };
   }
+  // Install material is optional, but all-or-none: snapshots without
+  // any of the three fields are legacy / already-enabled posture;
+  // snapshots with at least one are partial captures the broker
+  // refuses (the C2 lesson — partial captures land structurally-broken
+  // rows downstream consumers can't compose against).
+  const enableData = obj.enableData;
+  const enableSig = obj.enableSig;
+  const validatorNonce = obj.validatorNonce;
+  const installPresent = [enableData, enableSig, validatorNonce].filter(
+    (v) => v !== undefined,
+  ).length;
+  if (installPresent !== 0 && installPresent !== 3) {
+    return {
+      error:
+        'snapshot.{enableData,enableSig,validatorNonce} must be all-present or all-absent (Option D Commit 3 install-material trio)',
+    };
+  }
+  if (enableData !== undefined) {
+    if (typeof enableData !== 'string' || !ENABLE_DATA_HEX_RE.test(enableData)) {
+      return {
+        error:
+          'snapshot.enableData must be a 0x-prefixed hex string of 2..65536 chars when provided',
+      };
+    }
+  }
+  if (enableSig !== undefined) {
+    if (typeof enableSig !== 'string' || !ENABLE_SIG_HEX_RE.test(enableSig)) {
+      return {
+        error:
+          'snapshot.enableSig must be a 0x-prefixed hex string of 256..16384 chars (WebAuthn envelope) when provided',
+      };
+    }
+  }
+  if (validatorNonce !== undefined) {
+    if (
+      typeof validatorNonce !== 'number' ||
+      !Number.isInteger(validatorNonce) ||
+      validatorNonce < 0 ||
+      validatorNonce > UINT32_MAX
+    ) {
+      return {
+        error: 'snapshot.validatorNonce must be an integer in [0, 2^32-1] when provided',
+      };
+    }
+  }
+  // Install material requires a permissionId in the same snapshot —
+  // without it the MCP server has no way to compose the
+  // PermissionValidator nonce-key, so MODE.ENABLE can't proceed
+  // anyway. Reject early with a clear pairing error.
+  if (installPresent === 3 && obj.permissionId === undefined) {
+    return {
+      error:
+        'snapshot install material requires permissionId in the same snapshot',
+    };
+  }
   return {
     sessionId: obj.sessionId,
     mode: 'scoped',
@@ -628,6 +850,15 @@ function parsePolicySnapshot(raw: unknown): PolicySnapshotWire | { error: string
     ...(obj.permissionId === undefined
       ? {}
       : { permissionId: (obj.permissionId as string).toLowerCase() as `0x${string}` }),
+    ...(enableData === undefined
+      ? {}
+      : { enableData: (enableData as string).toLowerCase() as `0x${string}` }),
+    ...(enableSig === undefined
+      ? {}
+      : { enableSig: (enableSig as string).toLowerCase() as `0x${string}` }),
+    ...(validatorNonce === undefined
+      ? {}
+      : { validatorNonce: validatorNonce as number }),
   };
 }
 
@@ -837,6 +1068,82 @@ export function parseBrokerRequest(line: string): BrokerRequest | BrokerErrorRes
     }
     case 'get_active_session_id':
       return { type: 'get_active_session_id' };
+    case 'current_nonce': {
+      if (!isAddressHex(obj.accountAddress)) {
+        return {
+          type: 'error',
+          code: 'invalid_request',
+          message: 'current_nonce.accountAddress must be a 0x-prefixed 20-byte hex',
+        };
+      }
+      return {
+        type: 'current_nonce',
+        accountAddress: (obj.accountAddress as string).toLowerCase() as `0x${string}`,
+      };
+    }
+    case 'notify_userop_landed': {
+      if (!isSessionIdShape(obj.sessionId)) {
+        return {
+          type: 'error',
+          code: 'invalid_request',
+          message: 'notify_userop_landed.sessionId must be 1-128 chars [A-Za-z0-9_-]',
+        };
+      }
+      if (!isAddressHex(obj.accountAddress)) {
+        return {
+          type: 'error',
+          code: 'invalid_request',
+          message: 'notify_userop_landed.accountAddress must be a 0x-prefixed 20-byte hex',
+        };
+      }
+      if (!isSelectorHex(obj.permissionId)) {
+        return {
+          type: 'error',
+          code: 'invalid_request',
+          message: 'notify_userop_landed.permissionId must be a 0x-prefixed 4-byte hex',
+        };
+      }
+      if (!isHashHex(obj.txHash)) {
+        return {
+          type: 'error',
+          code: 'invalid_request',
+          message: 'notify_userop_landed.txHash must be a 0x-prefixed 32-byte hex',
+        };
+      }
+      if (
+        typeof obj.blockNumber !== 'number' ||
+        !Number.isFinite(obj.blockNumber) ||
+        !Number.isInteger(obj.blockNumber) ||
+        obj.blockNumber < 0
+      ) {
+        return {
+          type: 'error',
+          code: 'invalid_request',
+          message: 'notify_userop_landed.blockNumber must be a non-negative integer',
+        };
+      }
+      if (
+        typeof obj.logIndex !== 'number' ||
+        !Number.isFinite(obj.logIndex) ||
+        !Number.isInteger(obj.logIndex) ||
+        obj.logIndex < 0
+      ) {
+        return {
+          type: 'error',
+          code: 'invalid_request',
+          message: 'notify_userop_landed.logIndex must be a non-negative integer',
+        };
+      }
+      return {
+        type: 'notify_userop_landed',
+        sessionId: obj.sessionId,
+        accountAddress: (obj.accountAddress as string).toLowerCase() as `0x${string}`,
+        permissionId: (obj.permissionId as string).toLowerCase() as `0x${string}`,
+        txHash: (obj.txHash as string).toLowerCase() as `0x${string}`,
+        blockNumber: obj.blockNumber as number,
+        logIndex: obj.logIndex as number,
+      };
+    }
     default:
       return {
         type: 'error',

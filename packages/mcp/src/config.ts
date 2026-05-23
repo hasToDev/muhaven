@@ -68,6 +68,20 @@ export interface McpRuntimeConfig {
    * `MUHAVEN_ENTRY_POINT`.
    */
   entryPointAddress: `0x${string}`;
+  /**
+   * Wave 5 Option D Commit 3 — shared secret the MCP server presents
+   * as `Authorization: Bearer <secret>` when calling the backend's
+   * install-material subroute (`GET .../scoped-session/:id/install-
+   * material`). Same secret the broker daemon uses for its outbound
+   * validator-enabled callback (the backend's `with-service-secret`
+   * middleware accepts only one value per env var).
+   *
+   * Optional: when unset, the MCP server cannot fetch install-material
+   * and Path D's MODE.ENABLE branch is unreachable. The Path D
+   * fallback chain returns `install_material_unavailable` so the LLM
+   * has a clear remediation message ("operator: set BROKER_CALLBACK_SERVICE_SECRET").
+   */
+  brokerCallbackServiceSecret: string | undefined;
 }
 
 export interface BrokerRuntimeConfig {
@@ -93,6 +107,38 @@ export interface BrokerRuntimeConfig {
   backendBaseUrl: string;
   /** Effective dashboard URL paired with backendBaseUrl. */
   dashboardBaseUrl: string;
+  /**
+   * Wave 5 Option D Commit 3 — chain RPC URL the broker uses to read
+   * `kernel.currentNonce()` via `eth_call` during the MODE.ENABLE
+   * pre-check. Optional: when undefined, `current_nonce` IPC returns
+   * `chain_rpc_failed`. Defaults from `MUHAVEN_BROKER_RPC_URL` (broker-
+   * specific) with fallback to `MUHAVEN_BUNDLER_URL` (shared with the
+   * MCP server; ZeroDev bundlers also serve `eth_call`). Operator can
+   * pin a dedicated read-only RPC via `MUHAVEN_BROKER_RPC_URL` to keep
+   * the broker's egress surface narrower than the MCP server's.
+   *
+   * NOTE: this is the first network-egress capability the broker has
+   * been given — see protocol.ts JSDoc on the threat-model relaxation.
+   */
+  chainRpcUrl?: string;
+  /**
+   * Wave 5 Option D Commit 3 — service secret the broker uses to POST
+   * to the backend's `validator-enabled` route. Optional: when
+   * undefined, `notify_userop_landed` returns `callback_unconfigured`
+   * (chain indexer is still the authoritative safety net).
+   *
+   * Sourced from `BROKER_CALLBACK_SERVICE_SECRET`. Held by the broker
+   * (not the MCP server) to keep the secret outside the LLM-controlled
+   * subprocess.
+   */
+  callbackServiceSecret?: string;
+  /**
+   * Wave 5 Option D Commit 3 — `Origin` header the broker stamps on
+   * outbound bundler / RPC calls. ZeroDev bundlers reject bare Node
+   * fetches with 403 (per [[feedback-zerodev-bundler-origin-header]]).
+   * Defaults to `dashboardBaseUrl`.
+   */
+  outboundOriginHeader?: string;
 }
 
 const DEFAULT_BACKEND_URL = 'https://api.muhaven.app';
@@ -295,6 +341,25 @@ export function loadMcpConfig(env: NodeJS.ProcessEnv = process.env): McpRuntimeC
     entryPointAddress = entryPointAddressRaw.toLowerCase() as `0x${string}`;
   }
 
+  // Wave 5 Option D Commit 3 — shared secret for the install-material
+  // GET subroute. Same env var the broker daemon uses; the MCP server
+  // is the second holder per the operator's handoff. Optional — when
+  // unset, Path D's MODE.ENABLE branch is unreachable and the
+  // attemptPathD chain falls back with `install_material_unavailable`.
+  const brokerCallbackServiceSecretRaw = readEnv(
+    'BROKER_CALLBACK_SERVICE_SECRET',
+    env,
+  );
+  let brokerCallbackServiceSecret: string | undefined;
+  if (brokerCallbackServiceSecretRaw !== undefined) {
+    if (brokerCallbackServiceSecretRaw.length < 16) {
+      throw new Error(
+        'BROKER_CALLBACK_SERVICE_SECRET must be at least 16 characters (matches backend with-service-secret middleware floor)',
+      );
+    }
+    brokerCallbackServiceSecret = brokerCallbackServiceSecretRaw;
+  }
+
   return {
     backendBaseUrl,
     dashboardBaseUrl,
@@ -309,6 +374,7 @@ export function loadMcpConfig(env: NodeJS.ProcessEnv = process.env): McpRuntimeC
     chainId,
     subscriptionAddress,
     entryPointAddress,
+    brokerCallbackServiceSecret,
   };
 }
 
@@ -351,6 +417,36 @@ export function loadBrokerConfig(env: NodeJS.ProcessEnv = process.env): BrokerRu
     DEFAULT_DASHBOARD_URL,
   );
 
+  // Wave 5 Option D Commit 3 — chain RPC + backend callback. Both
+  // optional: the broker degrades cleanly when either is unset
+  // (the chain indexer is the authoritative safety net for
+  // `enable_status` flips; the MCP server falls back to Path C when
+  // it can't pre-check the validator nonce). `MUHAVEN_BROKER_RPC_URL`
+  // is preferred (lets the operator pin a narrower RPC than the
+  // bundler URL); `MUHAVEN_BUNDLER_URL` is the back-compat fallback
+  // since ZeroDev bundlers also serve `eth_call`.
+  const chainRpcUrlRaw =
+    readEnv('MUHAVEN_BROKER_RPC_URL', env) ?? readEnv('MUHAVEN_BUNDLER_URL', env);
+  const chainRpcUrl =
+    chainRpcUrlRaw === undefined
+      ? undefined
+      : resolvePublicUrlEnv(
+          'MUHAVEN_BROKER_RPC_URL',
+          chainRpcUrlRaw,
+          chainRpcUrlRaw,
+        );
+  const callbackServiceSecretRaw = readEnv('BROKER_CALLBACK_SERVICE_SECRET', env);
+  let callbackServiceSecret: string | undefined;
+  if (callbackServiceSecretRaw !== undefined) {
+    if (callbackServiceSecretRaw.length < 16) {
+      throw new Error(
+        'BROKER_CALLBACK_SERVICE_SECRET must be at least 16 characters (matches backend with-service-secret middleware floor)',
+      );
+    }
+    callbackServiceSecret = callbackServiceSecretRaw;
+  }
+  const outboundOriginHeader = readEnv('MUHAVEN_BROKER_ORIGIN', env) ?? dashboardBaseUrl;
+
   return {
     endpoint,
     sessionKeyHex,
@@ -358,5 +454,8 @@ export function loadBrokerConfig(env: NodeJS.ProcessEnv = process.env): BrokerRu
     requestTimeoutMs,
     backendBaseUrl,
     dashboardBaseUrl,
+    chainRpcUrl,
+    callbackServiceSecret,
+    outboundOriginHeader,
   };
 }

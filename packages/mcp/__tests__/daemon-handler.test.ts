@@ -850,4 +850,153 @@ describe('handleBrokerRequest', () => {
     expect(res.type).toBe('error');
     if (res.type === 'error') expect(res.code).toBe('internal');
   });
+
+  // ── Wave 5 Option D Commit 3 — current_nonce + notify_userop_landed ──
+
+  it('current_nonce returns chain_rpc_failed when no outbound wired', async () => {
+    const res = await handleBrokerRequest(
+      {
+        type: 'current_nonce',
+        accountAddress: '0x' + 'a'.repeat(40) as `0x${string}`,
+      },
+      signer,
+      keystore,
+      undefined,
+      {},
+      undefined,
+      undefined, // no outbound
+    );
+    expect(res.type).toBe('error');
+    if (res.type === 'error') expect(res.code).toBe('chain_rpc_failed');
+  });
+
+  it('current_nonce returns the outbound module result on success', async () => {
+    const { BrokerOutbound } = await import('../src/broker/outbound.js');
+    const outbound = new BrokerOutbound({
+      chainRpcUrl: 'https://stub-rpc.example/',
+      backendBaseUrl: 'https://api.example/',
+      outboundOriginHeader: 'https://example/',
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            // 7 encoded as uint32 = 32-byte left-padded `0x...00000007`
+            result: '0x' + '00'.repeat(28) + '00000007',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+    });
+    const res = await handleBrokerRequest(
+      {
+        type: 'current_nonce',
+        accountAddress: '0x' + 'a'.repeat(40) as `0x${string}`,
+      },
+      signer,
+      keystore,
+      undefined,
+      {},
+      undefined,
+      outbound,
+    );
+    expect(res.type).toBe('current_nonce');
+    if (res.type === 'current_nonce') {
+      expect(res.nonce).toBe(7);
+    }
+  });
+
+  it('current_nonce surfaces chain_rpc_failed on fetch failure', async () => {
+    const { BrokerOutbound } = await import('../src/broker/outbound.js');
+    const outbound = new BrokerOutbound({
+      chainRpcUrl: 'https://stub-rpc.example/',
+      backendBaseUrl: 'https://api.example/',
+      outboundOriginHeader: 'https://example/',
+      fetchImpl: async () => {
+        throw new Error('ECONNREFUSED');
+      },
+    });
+    const res = await handleBrokerRequest(
+      {
+        type: 'current_nonce',
+        accountAddress: '0x' + 'a'.repeat(40) as `0x${string}`,
+      },
+      signer,
+      keystore,
+      undefined,
+      {},
+      undefined,
+      outbound,
+    );
+    expect(res.type).toBe('error');
+    if (res.type === 'error') expect(res.code).toBe('chain_rpc_failed');
+  });
+
+  it('notify_userop_landed returns callback_unconfigured when secret unset', async () => {
+    const { BrokerOutbound } = await import('../src/broker/outbound.js');
+    const outbound = new BrokerOutbound({
+      chainRpcUrl: 'https://stub-rpc.example/',
+      backendBaseUrl: 'https://api.example/',
+      // callbackServiceSecret missing
+      outboundOriginHeader: 'https://example/',
+    });
+    const res = await handleBrokerRequest(
+      {
+        type: 'notify_userop_landed',
+        sessionId: 'sess_xyz',
+        accountAddress: '0x' + 'a'.repeat(40) as `0x${string}`,
+        permissionId: '0xdeadbeef',
+        txHash: '0x' + '1'.repeat(64) as `0x${string}`,
+        blockNumber: 100,
+        logIndex: 0,
+      },
+      signer,
+      keystore,
+      undefined,
+      {},
+      undefined,
+      outbound,
+    );
+    expect(res.type).toBe('error');
+    if (res.type === 'error') expect(res.code).toBe('callback_unconfigured');
+  });
+
+  it('notify_userop_landed acks immediately (fire-and-forget) when configured', async () => {
+    const { BrokerOutbound } = await import('../src/broker/outbound.js');
+    let postCount = 0;
+    const outbound = new BrokerOutbound({
+      chainRpcUrl: 'https://stub-rpc.example/',
+      backendBaseUrl: 'https://api.example/',
+      callbackServiceSecret: 'x'.repeat(32),
+      outboundOriginHeader: 'https://example/',
+      fetchImpl: async () => {
+        postCount++;
+        return new Response('{"ok":true}', { status: 200 });
+      },
+    });
+    const res = await handleBrokerRequest(
+      {
+        type: 'notify_userop_landed',
+        sessionId: 'sess_xyz',
+        accountAddress: '0x' + 'a'.repeat(40) as `0x${string}`,
+        permissionId: '0xdeadbeef',
+        txHash: '0x' + '1'.repeat(64) as `0x${string}`,
+        blockNumber: 100,
+        logIndex: 0,
+      },
+      signer,
+      keystore,
+      undefined,
+      {},
+      undefined,
+      outbound,
+    );
+    expect(res.type).toBe('notify_userop_landed');
+    if (res.type === 'notify_userop_landed') {
+      expect(res.queued).toBe(true);
+      expect(res.sessionId).toBe('sess_xyz');
+    }
+    // Let the fire-and-forget POST settle on the microtask queue.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(postCount).toBeGreaterThanOrEqual(1);
+  });
 });

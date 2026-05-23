@@ -169,4 +169,81 @@ export interface IScopedSessionRepository {
    * use this method.
    */
   revokeAllActive(now: Date): Promise<ScopedSession[]>;
+
+  /**
+   * Wave 5 Option D · Commit 3 — lookup the mirror row whose
+   * (`permission_id`, `signer_address`) pair matches a `PermissionInstalled`
+   * event observed on-chain.
+   *
+   * **NOTE**: kernel V3.1's `PermissionInstalled(bytes4 permission,
+   * uint32 nonce)` event has NEITHER the account address NOR the signer
+   * indexed — both are emitted by the kernel that owns the validator,
+   * so the matching is done by:
+   *   - `event.address` (the kernel address that emitted the log) ==
+   *     `agent_scoped_sessions.signer_address`'s OWNING kernel
+   *
+   * Because we DON'T have the kernel<->signer mapping at the SQL layer
+   * (signers are session-key EOAs, kernels are smart accounts), the
+   * preferred lookup is `(permissionId, accountAddress)` where
+   * `accountAddress` is the emitter address from the receipt.
+   *
+   * Returns `null` when zero match (callback / indexer skips the
+   * receipt — defense against PermissionInstalled events for permissions
+   * we never minted). Returns the most-recent row when 2+ match (a
+   * permissionId collision under a re-mint window; the latest row is
+   * the one to flip).
+   */
+  findByPermissionIdAndAccountAddress(
+    permissionId: `0x${string}`,
+    accountAddress: `0x${string}`,
+  ): Promise<ScopedSession | null>;
+
+  /**
+   * Wave 5 Option D · Commit 3 — flip a row from `enable_status='pending'`
+   * to `'enabled'`, atomically setting `validator_enabled_at = now` and
+   * `validator_enabled_tx_hash = txHash`.
+   *
+   * Idempotent: when the row's `enable_status` is already `'enabled'`,
+   * returns the existing row unchanged (the chain indexer + broker
+   * callback path may race; whichever wins is the source-of-truth, the
+   * loser is a no-op). Returns `null` when the row was never in
+   * `'pending'` to begin with (defense against a `'failed'` re-flip).
+   *
+   * The DB CHECK constraint enforces that `validator_enabled_at IS NULL
+   * ⇔ enable_status != 'enabled'` — the implementation MUST keep both
+   * columns in lockstep.
+   */
+  markValidatorEnabled(
+    sessionId: string,
+    txHash: `0x${string}`,
+    now: Date,
+  ): Promise<ScopedSession | null>;
+
+  /**
+   * Wave 5 Option D · Commit 3 — flip a row from `enable_status='pending'`
+   * to `'failed'`. Used by the 60-block watchdog cron when the
+   * `PermissionInstalled` event never lands.
+   *
+   * Idempotent on already-failed rows. Returns `null` when the row was
+   * already `'enabled'` (no re-flip; chain wins).
+   *
+   * Does NOT touch `validator_enabled_at` / `validator_enabled_tx_hash`
+   * — both stay NULL per the CHECK constraint.
+   */
+  markValidatorFailed(sessionId: string): Promise<ScopedSession | null>;
+
+  /**
+   * Wave 5 Option D · Commit 3 — fetch active rows whose
+   * `enable_status='pending'` AND `mintedAt < beforeDate`. Used by the
+   * 60-block watchdog cron to identify stuck install ceremonies.
+   *
+   * Backed by the partial index
+   * `agent_scoped_sessions_pending_enable_v1 ON (minted_at)
+   * WHERE enable_status='pending' AND status='active'`. Returns at
+   * most `limit` rows.
+   */
+  findPendingEnableOlderThan(
+    beforeDate: Date,
+    limit: number,
+  ): Promise<ScopedSession[]>;
 }

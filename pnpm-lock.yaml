@@ -203,6 +203,9 @@ importers:
       '@types/node':
         specifier: ^22.0.0
         version: 22.7.5
+      '@zerodev/sdk':
+        specifier: ^5.5.10
+        version: 5.5.10(viem@2.48.1(typescript@5.9.3)(zod@3.25.76))
       rimraf:
         specifier: ^5.0.0
         version: 5.0.10
@@ -7306,6 +7309,11 @@ snapshots:
       '@zerodev/sdk': 5.5.10(viem@2.48.1(typescript@5.9.3)(zod@4.3.6))
       '@zerodev/webauthn-key': 5.5.0(viem@2.48.1(typescript@5.9.3)(zod@4.3.6))
       viem: 2.48.1(typescript@5.9.3)(zod@4.3.6)
+
+  '@zerodev/sdk@5.5.10(viem@2.48.1(typescript@5.9.3)(zod@3.25.76))':
+    dependencies:
+      semver: 7.7.4
+      viem: 2.48.1(typescript@5.9.3)(zod@3.25.76)
 
   '@zerodev/sdk@5.5.10(viem@2.48.1(typescript@5.9.3)(zod@4.3.6))':
     dependencies:

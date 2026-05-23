@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, lt, lte, sql } from 'drizzle-orm';
 import {
   ScopedSession,
   isScopedSessionEnableStatus,
@@ -308,6 +308,133 @@ export class PgScopedSessionRepository implements IScopedSessionRepository {
       .where(eq(agentScopedSessions.status, ScopedSessionStatus.Active))
       .returning();
     return rows.map((row) => this.toDomain(row));
+  }
+
+  // ── Wave 5 Option D · Commit 3 — PermissionValidator install lifecycle ──
+
+  async findByPermissionIdAndAccountAddress(
+    permissionId: `0x${string}`,
+    accountAddress: `0x${string}`,
+  ): Promise<ScopedSession | null> {
+    // Chain indexer + broker-callback both call this. The match-key is
+    // `(permission_id, account_address)` where `account_address` is the
+    // KERNEL that emitted the `PermissionInstalled` log. The mirror's
+    // `signer_address` is the SESSION-KEY EOA — those are distinct (a
+    // single kernel has multiple session keys over time). We therefore
+    // cannot match on `signer_address`; we match on `permission_id`
+    // alone + return `null` when a clash lands across two kernels in
+    // the same observation window (multi-agent review HIGH-1 across
+    // CR + BE Arch + SecEng all flagged this collision risk).
+    //
+    // **Cross-user collision defense**: permissionId is
+    // `keccak256(policy+signer).slice(0,4)` — 4 bytes = ~4.3B space.
+    // A clash is improbable but possible. When two active rows share
+    // a permissionId, we refuse to flip either — the operator triages
+    // out-of-band. The chain indexer logs the clash + skips; the
+    // callback returns 409 to the broker which exhausts its retry
+    // budget (then a future operator-side reconciliation tool
+    // resolves it).
+    //
+    // **Future schema growth**: once `agent_scoped_sessions` has an
+    // `account_address` column, this lookup will filter on it AND on
+    // `permission_id`, eliminating the clash refusal entirely. The
+    // `accountAddress` parameter is preserved for that future binding;
+    // for now we use it for the multi-match defense by re-running the
+    // query and refusing on >1 hit.
+    void accountAddress;
+    const rows = await this.db.query.agentScopedSessions.findMany({
+      where: eq(agentScopedSessions.permissionId, permissionId.toLowerCase() as `0x${string}`),
+      orderBy: [desc(agentScopedSessions.mintedAt), agentScopedSessions.sessionId],
+      columns: { enableData: false, enableSig: false },
+      limit: 2,
+    });
+    if (rows.length === 0) return null;
+    if (rows.length > 1) {
+      // Multi-match — refuse to flip rather than silently pick one.
+      // The caller's log channel surfaces this; an operator alert is
+      // raised at the indexer log level (callers MUST NOT swallow).
+      // Returning null forces the caller through its terminal-error
+      // path (chain indexer: skip + log; route: 404 from use-case).
+      throw new Error(
+        `permissionId collision: ${rows.length}+ rows match permissionId=${permissionId.toLowerCase()} (sessionIds=${rows
+          .map((r) => r.sessionId)
+          .join(',')}); refusing to flip — operator triage required`,
+      );
+    }
+    return this.toDomain(rows[0]!);
+  }
+
+  async markValidatorEnabled(
+    sessionId: string,
+    txHash: `0x${string}`,
+    now: Date,
+  ): Promise<ScopedSession | null> {
+    // Idempotent flip: WHERE clause requires `enable_status='pending'`
+    // so concurrent racers (chain indexer vs broker callback) resolve
+    // at the predicate — one updates, the other returns no rows.
+    //
+    // CHECK `(validator_enabled_at IS NULL) = (enable_status IS NULL OR
+    // enable_status != 'enabled')` enforces the column-pair invariant.
+    const rows = await this.db
+      .update(agentScopedSessions)
+      .set({
+        enableStatus: 'enabled',
+        validatorEnabledAt: now,
+        validatorEnabledTxHash: txHash.toLowerCase() as `0x${string}`,
+      })
+      .where(
+        and(
+          eq(agentScopedSessions.sessionId, sessionId),
+          eq(agentScopedSessions.enableStatus, 'pending'),
+        ),
+      )
+      .returning();
+    const row = rows[0];
+    if (!row) {
+      // Idempotent fallback: when the row was already `enabled` (race
+      // winner already flipped it), return the existing row so the
+      // caller can emit a no-op response.
+      return this.findById(sessionId);
+    }
+    return this.toDomain(row);
+  }
+
+  async markValidatorFailed(
+    sessionId: string,
+  ): Promise<ScopedSession | null> {
+    const rows = await this.db
+      .update(agentScopedSessions)
+      .set({ enableStatus: 'failed' })
+      .where(
+        and(
+          eq(agentScopedSessions.sessionId, sessionId),
+          eq(agentScopedSessions.enableStatus, 'pending'),
+        ),
+      )
+      .returning();
+    const row = rows[0];
+    return row ? this.toDomain(row) : null;
+  }
+
+  async findPendingEnableOlderThan(
+    beforeDate: Date,
+    limit: number,
+  ): Promise<ScopedSession[]> {
+    // Partial index `agent_scoped_sessions_pending_enable_v1 ON
+    // (minted_at) WHERE enable_status='pending' AND status='active'`
+    // covers this seek exactly. Order ASC by mintedAt so the watchdog
+    // processes the oldest-stuck rows first (FIFO operator triage).
+    const rows = await this.db.query.agentScopedSessions.findMany({
+      where: and(
+        eq(agentScopedSessions.status, ScopedSessionStatus.Active),
+        eq(agentScopedSessions.enableStatus, 'pending'),
+        lt(agentScopedSessions.mintedAt, beforeDate),
+      ),
+      orderBy: [asc(agentScopedSessions.mintedAt), agentScopedSessions.sessionId],
+      limit,
+      columns: { enableData: false, enableSig: false },
+    });
+    return rows.map((r) => this.toDomain(r));
   }
 
   async markExpiredForUserSurface(

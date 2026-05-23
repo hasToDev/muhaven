@@ -45,7 +45,17 @@
  * surface a version drift earlier by re-hashing on the broker side.
  */
 
-import { concatHex, decodeFunctionData, encodeFunctionData, encodePacked, pad, parseAbi, type Hex } from 'viem';
+import {
+  concatHex,
+  decodeFunctionData,
+  encodeAbiParameters,
+  encodeFunctionData,
+  encodePacked,
+  pad,
+  parseAbi,
+  parseAbiParameters,
+  type Hex,
+} from 'viem';
 
 export const KERNEL_EXECUTE_ABI = parseAbi([
   'function execute(bytes32 mode, bytes calldata executionCalldata)',
@@ -217,11 +227,18 @@ export function buildKernelSessionKeySignature(
 
 /**
  * Kernel v3.1 validator mode byte. `0x00` = DEFAULT (run the installed
- * validator); `0x01` = ENABLE (validator carries enable-sig payload —
- * NOT supported by this commit). From `@zerodev/sdk/constants.ts`'s
+ * validator); `0x01` = ENABLE (carries the validator-install payload
+ * inside the signature; on-chain kernel splits + installs the validator
+ * atomically with the inner call). From `@zerodev/sdk/constants.ts`'s
  * `VALIDATOR_MODE` enum.
+ *
+ * Wave 5 Option D Commit 3 enabled the ENABLE branch — the MCP server
+ * composes the first Path D UserOp on a freshly-minted Scoped session
+ * in ENABLE mode so the PermissionValidator install + the buy land in
+ * a single tx. Subsequent buys use DEFAULT.
  */
 const VALIDATOR_MODE_DEFAULT: Hex = '0x00' as Hex;
+const VALIDATOR_MODE_ENABLE: Hex = '0x01' as Hex;
 
 /**
  * Kernel v3.1 validator-type byte. `0x02` = PERMISSION (use the
@@ -255,6 +272,8 @@ const PERMISSION_ID_HEX_RE = /^0x[0-9a-fA-F]{8}$/;
  * InvalidSigner` on-chain (because the broker's session-key signature
  * doesn't match the passkey-validator's installed pubkey).
  */
+export type ValidatorMode = 'default' | 'enable';
+
 export function composeKernelV3NonceKey(args: {
   /**
    * 4-byte permissionId from `@zerodev/permissions::getPermissionId()`.
@@ -267,6 +286,19 @@ export function composeKernelV3NonceKey(args: {
   /** Customary 2-byte key for batched UserOps. Slice 1 always 0n
    *  (defaulted when omitted by the only caller at handlers.ts). */
   readonly customKey?: bigint;
+  /**
+   * Wave 5 Option D Commit 3 — `'enable'` flips byte 0 of the composite
+   * from `0x00` (DEFAULT) to `0x01` (ENABLE). Used for the FIRST UserOp
+   * after a Scoped session is minted: the validator install payload is
+   * wrapped into the signature via `wrapEnableModeSignature`, the
+   * kernel splits it on-chain, installs the PermissionValidator, then
+   * executes the inner call atomically. Subsequent UserOps use
+   * `'default'`. Bytes 1..23 are identical between the two modes — only
+   * the leading byte changes. (Source: `@zerodev/sdk` `_cjs/accounts/
+   * utils/toKernelPluginManager.js` — the mode byte is the leading
+   * byte of `getEncodedNonce`.)
+   */
+  readonly mode?: ValidatorMode;
 }): bigint {
   if (!PERMISSION_ID_HEX_RE.test(args.permissionId)) {
     throw new Error(
@@ -283,9 +315,10 @@ export function composeKernelV3NonceKey(args: {
   // `pad(getIdentifier(), { size: 20, dir: 'right' })` in the kernel SDK).
   const paddedPermissionId = pad(args.permissionId, { size: 20, dir: 'right' });
   const customKeyHex = pad(`0x${customKey.toString(16)}` as Hex, { size: 2 });
+  const modeByte = args.mode === 'enable' ? VALIDATOR_MODE_ENABLE : VALIDATOR_MODE_DEFAULT;
   const composite = pad(
     concatHex([
-      VALIDATOR_MODE_DEFAULT,
+      modeByte,
       VALIDATOR_TYPE_PERMISSION,
       paddedPermissionId,
       customKeyHex,
@@ -294,3 +327,170 @@ export function composeKernelV3NonceKey(args: {
   );
   return BigInt(composite);
 }
+
+// ── Wave 5 Option D Commit 3 — MODE.ENABLE signature wrapper ────────
+
+/**
+ * Selector byte for the inner call type. `0xFF` = DELEGATE_CALL per
+ * `@zerodev/sdk/constants.ts::CALL_TYPE`. This is what the canonical
+ * `getEncodedPluginsData` writes alongside the `selectorInitData` /
+ * `hookInitData` ABI pair (per the SDK's TODO comment in source).
+ *
+ * The CALL_TYPE byte is encoded as an ABI `bytes` (variable-length)
+ * — NOT a single byte — to match `parseAbiParameters('bytes
+ * selectorInitData, bytes hookInitData')`. The viem `encodeAbiParameters`
+ * passes `'0xff'` through unchanged (single-byte bytes value) once the
+ * canonical SDK has put it in that ABI envelope.
+ */
+const CALL_TYPE_DELEGATE_CALL: Hex = '0xFF' as Hex;
+
+/**
+ * Wave 5 Option D Commit 3 — wrap the ECDSA UserOp signature with the
+ * PermissionValidator's enable-mode envelope.
+ *
+ * **BYTE-EXACT mirror of `@zerodev/sdk` `accounts/kernel/utils/plugins/
+ * ep0_7/getEncodedPluginsData.ts`** (verified against the deployed source
+ * in `frontend/node_modules/@zerodev/sdk/accounts/kernel/utils/plugins/
+ * ep0_7/getEncodedPluginsData.ts`). The layout is:
+ *
+ *   concat([
+ *     hookAddress20bytes,                           // raw 20 bytes
+ *     abi.encode(
+ *       bytes validatorData,                       // = enableData
+ *       bytes hookData,                            // = hook?.getEnableData() ?? '0x'
+ *       bytes selectorData,                        // concat below
+ *       bytes enableSig,                           // = WebAuthn envelope
+ *       bytes userOpSig                            // = our wrapped ECDSA
+ *     )
+ *   ])
+ *
+ *   selectorData = concat([
+ *     action.selector,                              // 4 bytes
+ *     action.address,                               // 20 bytes
+ *     action.hook?.address ?? zeroAddress,          // 20 bytes
+ *     abi.encode(
+ *       bytes selectorInitData,                    // = '0xFF' (CALL_TYPE.DELEGATE_CALL)
+ *       bytes hookInitData                         // = '0x0000'
+ *     )
+ *   ])
+ *
+ * **Why a hand-reimplementation here** instead of `import { getEncoded-
+ * PluginsData } from '@zerodev/sdk'`: the SDK pulls in viem-account-
+ * abstraction internals + signers + permission-validator surface, all of
+ * which are out-of-scope for the MCP server (no signing keys, no wallet
+ * UI). The byte-equality regression test in `kernel-encoder.test.ts`
+ * imports the canonical SDK as a devDep and asserts identical output for
+ * 5 fixtures — that's the anti-drift gate per
+ * `[[feedback-ai-engineer-catches-zerodev-shape-drift]]`.
+ *
+ * **`userOpSig` is the FULL wrapped session-key signature** (66 bytes:
+ * `0xff` PermissionValidator sentinel + 65 bytes ECDSA). Pass the output
+ * of `buildKernelSessionKeySignature({ecdsaSignature: brokerSig})` here,
+ * NOT the raw 65-byte ECDSA. The on-chain validator parses MODE.ENABLE
+ * by stripping the envelope first then running the same validation path
+ * a MODE.DEFAULT signature would have run.
+ */
+export interface WrapEnableModeSignatureInput {
+  /**
+   * `enableData` from `permissionValidator.getEnableData(accountAddress)`
+   * — captured by the frontend at mint time and re-surfaced via the C2
+   * install-material subroute. Variable size: real-world Wave 5 policy
+   * sets produce ~30KB hex.
+   */
+  readonly enableData: `0x${string}`;
+  /**
+   * `enableSig` from the user's passkey signing the
+   * `getPluginsEnableTypedData(...)` payload. ZeroDev passkey-validator
+   * emits a WebAuthn-shaped envelope (256-1024 bytes hex). NOT a bare
+   * 65-byte ECDSA sig.
+   */
+  readonly enableSig: `0x${string}`;
+  /**
+   * The wrapped 66-byte session-key signature (`0xff` sentinel +
+   * 65-byte ECDSA). Use `buildKernelSessionKeySignature(...)` to produce
+   * this from the broker's ECDSA output BEFORE passing it here.
+   */
+  readonly userOpSignature: `0x${string}`;
+  /**
+   * Optional executor hook. `undefined` for our case (no hook); the
+   * encoder emits the zero address for both the leading bytes20 and the
+   * inside `action.hook?.address` slot.
+   */
+  readonly hookAddress?: `0x${string}`;
+  /**
+   * `hook?.getEnableData()`. `'0x'` when no hook. Carried as a separate
+   * field so a future hook-using caller can plug in without rewriting
+   * the wrapper.
+   */
+  readonly hookData?: `0x${string}`;
+  /**
+   * Inner action selector + address. For the Path D UserOp this is the
+   * kernel.execute selector + the kernel address itself.
+   */
+  readonly action: {
+    readonly selector: `0x${string}`;
+    readonly address: `0x${string}`;
+    /** Inner action's optional hook. Mirrors `Action.hook?.address` on
+     *  the SDK side. Undefined for our case. */
+    readonly hookAddress?: `0x${string}`;
+  };
+}
+
+const ZERO_ADDRESS_HEX: `0x${string}` = '0x0000000000000000000000000000000000000000';
+
+export function wrapEnableModeSignature(input: WrapEnableModeSignatureInput): `0x${string}` {
+  // selectorData: the inner-action descriptor the on-chain kernel uses
+  // to bind the install to the call it executes atomically. 4 + 20 + 20
+  // bytes of raw concatenation, then a 2-tuple `(bytes selectorInitData,
+  // bytes hookInitData)` ABI-encoded tail.
+  const selectorData = concatHex([
+    input.action.selector,
+    input.action.address,
+    input.action.hookAddress ?? ZERO_ADDRESS_HEX,
+    encodeAbiParameters(
+      parseAbiParameters('bytes selectorInitData, bytes hookInitData'),
+      [CALL_TYPE_DELEGATE_CALL, '0x0000'],
+    ),
+  ]);
+
+  // The 5-field outer abi.encode is what the validator's MODE.ENABLE
+  // decoder unpacks. The leading 20 bytes (hook address) live OUTSIDE
+  // this ABI envelope per the source.
+  const abiEncoded = encodeAbiParameters(
+    parseAbiParameters(
+      'bytes validatorData, bytes hookData, bytes selectorData, bytes enableSig, bytes userOpSig',
+    ),
+    [
+      input.enableData,
+      input.hookData ?? '0x',
+      selectorData,
+      input.enableSig,
+      input.userOpSignature,
+    ],
+  );
+
+  return concatHex([input.hookAddress ?? ZERO_ADDRESS_HEX, abiEncoded]);
+}
+
+/**
+ * Wave 5 Option D Commit 3 — Kernel v3.1 `currentNonce()` ABI used by
+ * the MCP server's broker pre-check (read on-chain validator nonce →
+ * compare to mirror's `validatorNonce` → fallback `enable_sig_stale` on
+ * mismatch). Source:
+ * `@zerodev/sdk/accounts/kernel/abi/kernel_v_3_1/KernelAccountAbi.ts:44-50`.
+ * Returns `uint32`.
+ */
+export const KERNEL_V3_CURRENT_NONCE_ABI = parseAbi([
+  'function currentNonce() view returns (uint32)',
+]);
+
+/**
+ * Wave 5 Option D Commit 3 — `PermissionInstalled(bytes4 permission,
+ * uint32 nonce)` event ABI. Indexer + backend broker-callback route
+ * decode the receipt's logs against this. Source:
+ * `@zerodev/sdk/accounts/kernel/abi/kernel_v_3_1/KernelAccountAbi.ts:604-620`.
+ * Both args are NON-INDEXED.
+ */
+export const KERNEL_V3_PERMISSION_INSTALLED_ABI = parseAbi([
+  'event PermissionInstalled(bytes4 permission, uint32 nonce)',
+]);

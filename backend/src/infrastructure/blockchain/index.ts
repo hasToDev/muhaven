@@ -26,3 +26,12 @@ export {
   yieldSnapshotTaxAbi,
   tokenRegistryEventsAbi,
 } from './tax-event-abis.js';
+export {
+  PermissionInstalledIndexer,
+  type PermissionInstalledIndexerConfig,
+  type PermissionInstalledIndexerStatus,
+} from './permission-installed-indexer.js';
+export {
+  ValidatorEnableWatchdog,
+  type ValidatorEnableWatchdogConfig,
+} from './validator-enable-watchdog.js';

@@ -18,7 +18,13 @@
  *    MUST NOT auto-retry 4xx.
  */
 
-import { decodeFunctionData, encodeFunctionData, parseAbi, toFunctionSelector } from 'viem';
+import {
+  decodeFunctionData,
+  encodeFunctionData,
+  parseAbi,
+  toEventSelector,
+  toFunctionSelector,
+} from 'viem';
 import { getUserOperationHash } from 'viem/account-abstraction';
 import type { BackendClient } from '../clients/backend-client.js';
 import { BackendError } from '../clients/backend-client.js';
@@ -32,6 +38,8 @@ import {
   composeKernelV3NonceKey,
   encodeKernelExecuteSingleCall,
   decodeKernelExecuteSingleCall,
+  wrapEnableModeSignature,
+  KERNEL_EXECUTE_ABI,
 } from '../clients/kernel-encoder.js';
 import {
   authRequiredPayload,
@@ -115,6 +123,16 @@ export interface ToolDeps {
    * deployment).
    */
   entryPointAddress?: `0x${string}`;
+  /**
+   * Wave 5 Option D Commit 3 — shared service secret used to fetch
+   * install material from the backend's `GET .../install-material`
+   * subroute (gated on `BROKER_CALLBACK_SERVICE_SECRET`). Undefined
+   * → Path D's MODE.ENABLE branch returns fallback
+   * `install_material_unavailable` and degrades to Path C with a
+   * clear operator-action remediation. Held by the MCP server per
+   * the operator's C3 handoff.
+   */
+  brokerCallbackServiceSecret?: string;
 }
 
 /**
@@ -478,7 +496,33 @@ export type PathDFallbackReason =
   | 'bundler_receipt_timeout'
   /** Catch-all for `broker_error` codes we don't have a typed branch
    *  for (e.g. `internal`, future unknowns). */
-  | 'broker_internal';
+  | 'broker_internal'
+  // ── Wave 5 Option D Commit 3 — MODE.ENABLE branch ──
+  /** Backend mirror reports `enable_status='pending'` but the MCP
+   *  server isn't holding `BROKER_CALLBACK_SERVICE_SECRET`. Without
+   *  it, the install-material subroute is unreachable. Operator
+   *  remediation: set the env var + restart the MCP. */
+  | 'install_material_unavailable'
+  /** Mirror row has `enable_status` set but the install-material
+   *  subroute returned 404 (row vanished mid-flow) OR malformed
+   *  payload (enableData/enableSig missing despite enable_status=
+   *  'pending'). Re-walking the dashboard ceremony repairs it. */
+  | 'install_material_malformed'
+  /** Live `kernel.currentNonce()` value advanced past the
+   *  `validatorNonce` captured at mint time. The captured enableSig
+   *  was over a typed-data digest that pinned the nonce; the kernel
+   *  now rejects the install signature. Re-walk the dashboard
+   *  ceremony to mint a fresh session with a current-nonce binding. */
+  | 'enable_sig_stale'
+  /** Mirror row has `enable_status='failed'` (the 60-block watchdog
+   *  ran out of patience). Re-walking the dashboard ceremony mints
+   *  a fresh session. */
+  | 'validator_install_failed_re_walk_required'
+  /** Broker's `current_nonce` IPC verb returned `chain_rpc_failed`
+   *  (broker has no chain RPC configured, or the RPC call failed).
+   *  Operator remediation: set MUHAVEN_BROKER_RPC_URL on the broker
+   *  daemon (or check chain connectivity). */
+  | 'broker_chain_rpc_failed';
 
 /**
  * Wave 5 Path D Slice 1 (Commit 3) — Path D success shape. Returned when
@@ -831,6 +875,14 @@ interface ScopedSessionMirrorDto {
   readonly sessionId: string;
   readonly mode: 'scoped';
   /**
+   * Wave 5 Option D Commit 3 — userId is needed by the C3 install-
+   * material subroute as a query parameter (defense-in-depth on the
+   * ownership re-check). Optional on the wire for back-compat with
+   * pre-C2 backends that didn't surface it. Null after the FK CASCADE
+   * SET NULL (orphan row); the MCP refuses to install on orphans.
+   */
+  readonly userId?: string | null;
+  /**
    * Defense-in-depth (AI Engineer MED-1 pre-Codex pass): the MCP
    * re-validates `status === 'active'` before installing the snapshot
    * into the broker keystore, mirroring the same defensive posture as
@@ -854,10 +906,42 @@ interface ScopedSessionMirrorDto {
   readonly mintedAtSec: number;
   readonly consentActionHash: string | null;
   readonly consentTextSha256: string | null;
+  /**
+   * Wave 5 Option D Commit 3 — `enable_status` mirror field. Carried
+   * to drive the MCP-side MODE.ENABLE branching:
+   *  - `'pending'` → fetch install-material from C2 subroute + MODE.ENABLE
+   *  - `'enabled'` → MODE.DEFAULT (validator already installed)
+   *  - `'failed'`  → fallback `validator_install_failed_re_walk_required`
+   *  - `null`      → legacy pre-C2 row, behave as MODE.DEFAULT
+   */
+  readonly enableStatus?: 'pending' | 'enabled' | 'failed' | null;
+  /**
+   * Wave 5 Option D Commit 3 — `validator_nonce` mirror field. Stored
+   * at mint time; used to gate the MODE.ENABLE pre-check (live
+   * `currentNonce()` MUST still match). Optional on the wire for
+   * pre-C2 row back-compat.
+   */
+  readonly validatorNonce?: number | null;
 }
 
 interface ScopedSessionMirrorResponse {
   readonly session: ScopedSessionMirrorDto | null;
+}
+
+/**
+ * Wave 5 Option D Commit 3 — install-material response shape from the
+ * C2 subroute. Mirrors `ScopedSessionInstallMaterialDto`.
+ */
+interface InstallMaterialResponse {
+  readonly installMaterial: {
+    readonly sessionId: string;
+    readonly userId: string | null;
+    readonly enableStatus: 'pending' | 'enabled' | 'failed' | null;
+    readonly enableData: string | null;
+    readonly enableSig: string | null;
+    readonly validatorNonce: number | null;
+    readonly permissionId: string | null;
+  };
 }
 
 /**
@@ -1672,6 +1756,14 @@ async function attemptPathD(
   //    signature). The PERMISSION ID we need for the nonce-key composite
   //    comes from `snapshot.permissionId` instead.
   let accountAddress: `0x${string}`;
+  let mirrorEnableStatus:
+    | 'pending'
+    | 'enabled'
+    | 'failed'
+    | null
+    | undefined;
+  let mirrorValidatorNonce: number | null | undefined;
+  let mirrorSessionRow: ScopedSessionMirrorDto | null = null;
   try {
     const stateDto = (await deps.backend.get('/api/v1/agent/policy/state', {
       surface: 'mcp',
@@ -1694,6 +1786,30 @@ async function attemptPathD(
     };
   }
 
+  // 6a. Wave 5 Option D Commit 3 — read the mirror row to learn
+  //     `enable_status` + `validator_nonce`. The broker snapshot may
+  //     have been minted before C2 (no install material in the file-
+  //     backed snapshot), so we re-read the mirror authoritatively.
+  //     `findLatestActive` is per-(userId, surface) — the mirror entry
+  //     is the same row whose snapshot we already validated above.
+  try {
+    const mirror = await deps.backend.get<ScopedSessionMirrorResponse>(
+      '/api/v1/agent/policy/scoped-session',
+      { surface: 'mcp' },
+    );
+    if (mirror?.session) {
+      mirrorSessionRow = mirror.session;
+      mirrorEnableStatus = mirror.session.enableStatus ?? null;
+      mirrorValidatorNonce = mirror.session.validatorNonce ?? null;
+    }
+  } catch (err) {
+    // Mirror re-read is best-effort. A failure here drops us back to
+    // the legacy MODE.DEFAULT path. If MODE.ENABLE is needed, the
+    // downstream `paymaster_rejected → AA23 reverted` failure will
+    // expose the missing install. We log via the error message; the
+    // LLM gets enough context to escalate.
+  }
+
   // 6b. Read `permissionId` from the snapshot. Without it we can't
   //     compose the Kernel v3.1 nonce-key composite, and the bundler
   //     would read the SUDO-validator nonce slot → AA24 InvalidSigner
@@ -1709,6 +1825,166 @@ async function attemptPathD(
     };
   }
   const permissionId = snapshot.permissionId;
+
+  // 6c. Wave 5 Option D Commit 3 — branch on enable_status. If
+  //     `'pending'`, we'll compose a MODE.ENABLE UserOp; if `'enabled'`
+  //     or `null` (legacy pre-C2 row), MODE.DEFAULT; if `'failed'`,
+  //     fallback with a re-walk remediation.
+  if (mirrorEnableStatus === 'failed') {
+    return {
+      kind: 'fallback',
+      reason: 'validator_install_failed_re_walk_required',
+      message:
+        'previous Scoped session validator install was flagged failed by the watchdog — re-walk /agent/policy/transition to mint a fresh session',
+    };
+  }
+  const needsEnable = mirrorEnableStatus === 'pending';
+  // Defense-in-depth: the mirror row's signerAddress + permissionId
+  // MUST match the broker snapshot's. The broker snapshot is signer-
+  // checked above (step 3b); we re-check the mirror row separately
+  // because the mirror is fetched via a SEPARATE backend call that
+  // could in principle return a different row if the backend
+  // mirror-select regressed. CR M-2 (self-review).
+  if (
+    needsEnable &&
+    mirrorSessionRow &&
+    mirrorSessionRow.signerAddress.toLowerCase() !==
+      snapshot.signerAddress.toLowerCase()
+  ) {
+    return {
+      kind: 'fallback',
+      reason: 'signer_mismatch',
+      message: `mirror row signer ${mirrorSessionRow.signerAddress} disagrees with broker snapshot signer ${snapshot.signerAddress} — refusing install`,
+    };
+  }
+  if (
+    needsEnable &&
+    mirrorSessionRow?.permissionId &&
+    mirrorSessionRow.permissionId.toLowerCase() !== permissionId.toLowerCase()
+  ) {
+    return {
+      kind: 'fallback',
+      reason: 'install_material_malformed',
+      message: `mirror row permissionId ${mirrorSessionRow.permissionId} disagrees with broker snapshot permissionId ${permissionId} — refusing install`,
+    };
+  }
+  let installMaterial: InstallMaterialResponse['installMaterial'] | null = null;
+  if (needsEnable) {
+    if (!deps.brokerCallbackServiceSecret) {
+      return {
+        kind: 'fallback',
+        reason: 'install_material_unavailable',
+        message:
+          'mirror reports enable_status=pending but the MCP server is not holding BROKER_CALLBACK_SERVICE_SECRET — set the env var + restart the MCP to install the validator on first Path D buy',
+      };
+    }
+    if (!mirrorSessionRow?.sessionId) {
+      return {
+        kind: 'fallback',
+        reason: 'install_material_malformed',
+        message:
+          'mirror reports enable_status=pending but no sessionId was carried back — backend response shape regressed',
+      };
+    }
+    // The install-material subroute requires a userId param. The
+    // mirror DTO carries userId; without it the call returns 404
+    // (intentional uniform response).
+    const userId = mirrorSessionRow.userId;
+    if (!userId) {
+      return {
+        kind: 'fallback',
+        reason: 'install_material_malformed',
+        message:
+          'mirror row is orphaned (userId=null after FK CASCADE SET NULL) — re-mint required',
+      };
+    }
+    let raw: InstallMaterialResponse;
+    try {
+      raw = await deps.backend.getServiceSecret<InstallMaterialResponse>(
+        `/api/v1/agent/policy/scoped-session/${encodeURIComponent(
+          mirrorSessionRow.sessionId,
+        )}/install-material`,
+        deps.brokerCallbackServiceSecret,
+        { userId },
+      );
+    } catch (err) {
+      if (err instanceof BackendError && err.status === 404) {
+        return {
+          kind: 'fallback',
+          reason: 'install_material_malformed',
+          message:
+            'install-material subroute returned 404 — row vanished mid-flow OR ownership re-check failed; re-walk the ceremony',
+        };
+      }
+      return {
+        kind: 'fallback',
+        reason: 'install_material_malformed',
+        message: `install-material lookup failed (${typedErrorCode(err)})`,
+      };
+    }
+    if (
+      !raw?.installMaterial ||
+      !raw.installMaterial.enableData ||
+      !raw.installMaterial.enableSig ||
+      raw.installMaterial.validatorNonce == null ||
+      raw.installMaterial.permissionId == null
+    ) {
+      return {
+        kind: 'fallback',
+        reason: 'install_material_malformed',
+        message:
+          'install-material subroute returned partial payload (enable_data / enable_sig / validator_nonce / permission_id) — re-walk the ceremony',
+      };
+    }
+    if (
+      raw.installMaterial.permissionId.toLowerCase() !== permissionId.toLowerCase()
+    ) {
+      return {
+        kind: 'fallback',
+        reason: 'install_material_malformed',
+        message: `install-material permissionId ${raw.installMaterial.permissionId} disagrees with broker snapshot permissionId ${permissionId} — re-walk the ceremony`,
+      };
+    }
+    installMaterial = raw.installMaterial;
+
+    // Wave 5 Option D Commit 3 — broker pre-check. Compare the live
+    // on-chain `currentNonce()` with the validatorNonce captured at
+    // mint time. Mismatch → fallback `enable_sig_stale` (the
+    // enableSig pins the nonce; advancing it on-chain invalidates the
+    // typed-data signature). The broker daemon does the eth_call via
+    // its configured RPC.
+    //
+    // **Known race**: a second `position.buy` invoked within the
+    // chain-indexer poll window (~8s after a successful MODE.ENABLE
+    // install) sees a stale `mirror.enable_status='pending'` AND a
+    // live `currentNonce()` that has advanced by 1 (post-install).
+    // This branch correctly surfaces `enable_sig_stale` for that
+    // race. User remediation: wait a few seconds + retry; the
+    // chain indexer / broker callback will flip the mirror to
+    // `enabled` and the second buy will use MODE.DEFAULT.
+    try {
+      const liveNonce = await deps.broker.currentNonce(accountAddress);
+      const minted =
+        installMaterial.validatorNonce ?? mirrorValidatorNonce ?? null;
+      if (minted !== null && liveNonce.nonce !== minted) {
+        return {
+          kind: 'fallback',
+          reason: 'enable_sig_stale',
+          message: `kernel.currentNonce() advanced ${minted} → ${liveNonce.nonce} since mint; stored enableSig is over a stale typed-data digest — re-mint the Scoped session`,
+        };
+      }
+    } catch (err) {
+      if (err instanceof BrokerClientError && err.brokerCode === 'chain_rpc_failed') {
+        return {
+          kind: 'fallback',
+          reason: 'broker_chain_rpc_failed',
+          message:
+            'broker daemon currentNonce IPC returned chain_rpc_failed — set MUHAVEN_BROKER_RPC_URL on the broker (or MUHAVEN_BUNDLER_URL fallback) and restart',
+        };
+      }
+      return mapBrokerCallFailure(err, 'current_nonce', 'broker_internal');
+    }
+  }
 
   // 7. Backend-mediated FHE encryption of the share amount. The MCP
   //    server never imports @cofhe/sdk (operator pre-decision); the
@@ -1827,7 +2103,14 @@ async function attemptPathD(
   let nonce: bigint;
   let feeData: { maxFeePerGas: `0x${string}`; maxPriorityFeePerGas: `0x${string}` };
   try {
-    const nonceKey = composeKernelV3NonceKey({ permissionId });
+    // Wave 5 Option D Commit 3 — mode 'enable' flips byte 0 of the
+    // composite to 0x01 when this is the FIRST Path D UserOp after
+    // mint. The kernel splits + installs the validator atomically
+    // with the inner call. Subsequent buys use MODE.DEFAULT.
+    const nonceKey = composeKernelV3NonceKey({
+      permissionId,
+      mode: needsEnable ? 'enable' : 'default',
+    });
     nonce = await deps.bundler.getNonce(accountAddress, entryPointAddress, nonceKey);
     feeData = await deps.bundler.getFeeData();
   } catch (err) {
@@ -1957,6 +2240,35 @@ async function attemptPathD(
   //     broker's `sign_userop` did EIP-191 personal-sign over
   //     `userOpHash` (`signer.signRawMessage`) — that envelope matches
   //     what the on-chain validator's `ecrecover` expects.
+  //
+  //     Wave 5 Option D Commit 3 — when MODE.ENABLE is in flight, we
+  //     ALSO wrap the 66-byte session-key signature with the byte-
+  //     exact `getEncodedPluginsData` envelope (hookAddr20 +
+  //     abi.encode(validatorData, hookData, selectorData, enableSig,
+  //     userOpSig)). The kernel splits the envelope on-chain, installs
+  //     the validator using the enableData + enableSig, then validates
+  //     the inner call with the unwrapped userOpSig.
+  const wrappedSessionKeySig = buildKernelSessionKeySignature({
+    ecdsaSignature: brokerSig,
+  });
+  let finalSignature: `0x${string}` = wrappedSessionKeySig;
+  if (needsEnable && installMaterial) {
+    // The inner action descriptor for our case: the kernel's own
+    // `execute(bytes32 mode, bytes calldata)` selector + the kernel
+    // address itself. No inner hook (no hook in our snapshot today).
+    const kernelExecuteSelector = toFunctionSelector(
+      KERNEL_EXECUTE_ABI[0]!,
+    ).toLowerCase() as `0x${string}`;
+    finalSignature = wrapEnableModeSignature({
+      enableData: installMaterial.enableData! as `0x${string}`,
+      enableSig: installMaterial.enableSig! as `0x${string}`,
+      userOpSignature: wrappedSessionKeySig,
+      action: {
+        selector: kernelExecuteSelector,
+        address: accountAddress,
+      },
+    });
+  }
   const signedUserOpWire = {
     sender: accountAddress,
     nonce: partial.nonce,
@@ -1970,7 +2282,7 @@ async function attemptPathD(
     paymasterVerificationGasLimit: sponsored.paymasterVerificationGasLimit,
     paymasterPostOpGasLimit: sponsored.paymasterPostOpGasLimit,
     paymasterData: sponsored.paymasterData,
-    signature: buildKernelSessionKeySignature({ ecdsaSignature: brokerSig }),
+    signature: finalSignature,
   };
 
   // 15. Submit + sanity-check the returned hash. A mismatch here is a
@@ -2004,6 +2316,60 @@ async function attemptPathD(
   //     15s Slice 1 acceptance budget.
   try {
     const receipt = await deps.bundler.waitForReceipt(userOpHash, { timeoutMs: 12_000 });
+    // Wave 5 Option D Commit 3 — if this UserOp carried the
+    // MODE.ENABLE envelope, notify the broker so it can POST the
+    // validator-enabled callback to the backend (fast-path
+    // optimization; the chain indexer is the authoritative path).
+    // Fire-and-forget at the IPC layer; failures don't block the
+    // tool result.
+    if (needsEnable && activeId) {
+      try {
+        // The receipt's PermissionInstalled log carries the
+        // permissionId + nonce. We re-decode locally to extract the
+        // logIndex (the broker IPC needs it for forwarding). On
+        // decode failure (event missing → install reverted on-chain
+        // but the receipt was a success status?), we skip the
+        // callback — the chain indexer + watchdog handle the rest.
+        let permissionLogIndex = 0;
+        try {
+          // Best-effort search; receipt structure varies between
+          // viem versions. The wrapper guards against shape drift.
+          const r = receipt.receipt as unknown as {
+            logs?: { address?: string; topics?: string[]; logIndex?: number }[];
+          };
+          if (Array.isArray(r.logs)) {
+            const PERMISSION_INSTALLED_TOPIC0 = toEventSelector(
+              'PermissionInstalled(bytes4,uint32)',
+            ).toLowerCase();
+            for (const l of r.logs) {
+              if (
+                l.topics?.[0]?.toLowerCase() === PERMISSION_INSTALLED_TOPIC0 &&
+                l.address?.toLowerCase() === accountAddress.toLowerCase()
+              ) {
+                permissionLogIndex = l.logIndex ?? 0;
+                break;
+              }
+            }
+          }
+        } catch {
+          // Defensive — keep permissionLogIndex=0 and proceed.
+        }
+        await deps.broker.notifyUseropLanded({
+          sessionId: activeId,
+          accountAddress,
+          permissionId,
+          txHash: receipt.receipt.transactionHash as `0x${string}`,
+          blockNumber: Number(
+            (receipt.receipt as unknown as { blockNumber?: bigint | number })
+              .blockNumber ?? 0,
+          ),
+          logIndex: permissionLogIndex,
+        });
+      } catch {
+        // Broker IPC failure is non-fatal — the chain indexer is the
+        // authoritative source of truth. The buy itself succeeded.
+      }
+    }
     return {
       kind: 'ok',
       data: {

@@ -13,11 +13,13 @@ import { connect, type Socket } from 'node:net';
 import {
   BROKER_PROTOCOL_VERSION,
   type BrokerClearPolicySnapshotResponse,
+  type BrokerCurrentNonceResponse,
   type BrokerErrorCode,
   type BrokerGetActiveSessionIdResponse,
   type BrokerGetJwtResponse,
   type BrokerGetPolicySnapshotResponse,
   type BrokerHelloResponse,
+  type BrokerNotifyUseropLandedResponse,
   type BrokerResponse,
   type BrokerSignHashResponse,
   type BrokerSignUserOpResponse,
@@ -262,6 +264,48 @@ export class BrokerClient {
       throw new BrokerClientError(
         'protocol_error',
         `expected get_active_session_id response, got ${res.type}`,
+      );
+    }
+    return res;
+  }
+
+  // ── Wave 5 Option D Commit 3 — install-mode pre-check + callback notify ──
+
+  async currentNonce(
+    accountAddress: `0x${string}`,
+  ): Promise<BrokerCurrentNonceResponse> {
+    const res = await this.exchange({ type: 'current_nonce', accountAddress });
+    if (res.type !== 'current_nonce') {
+      throw new BrokerClientError(
+        'protocol_error',
+        `expected current_nonce response, got ${res.type}`,
+      );
+    }
+    // Defensive cross-check: the broker MUST echo the same address.
+    // A mismatch points at a broker bug serving a cached response for
+    // a different account — fail closed.
+    if (res.accountAddress.toLowerCase() !== accountAddress.toLowerCase()) {
+      throw new BrokerClientError(
+        'protocol_error',
+        `current_nonce echo mismatch (requested ${accountAddress}, got ${res.accountAddress})`,
+      );
+    }
+    return res;
+  }
+
+  async notifyUseropLanded(args: {
+    sessionId: string;
+    accountAddress: `0x${string}`;
+    permissionId: `0x${string}`;
+    txHash: `0x${string}`;
+    blockNumber: number;
+    logIndex: number;
+  }): Promise<BrokerNotifyUseropLandedResponse> {
+    const res = await this.exchange({ type: 'notify_userop_landed', ...args });
+    if (res.type !== 'notify_userop_landed') {
+      throw new BrokerClientError(
+        'protocol_error',
+        `expected notify_userop_landed response, got ${res.type}`,
       );
     }
     return res;

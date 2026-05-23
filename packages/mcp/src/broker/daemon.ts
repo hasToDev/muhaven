@@ -37,6 +37,7 @@ import {
 import { MissingSessionKeyError, NullSigner, ViemSigner, type ISigner } from './signer.js';
 import { openKeystore, type IKeystore } from './keystore.js';
 import { checkPolicy, FilePolicyStore, PolicyStoreError, type IPolicyStore } from './policy-snapshot.js';
+import { BrokerOutbound, ChainRpcError } from './outbound.js';
 
 export { BROKER_PROTOCOL_VERSION };
 
@@ -53,6 +54,12 @@ export interface BrokerDaemonOptions {
    * verbs added in Wave 5 Path D Slice 1 (protocol 0.4.0).
    */
   policyStore?: IPolicyStore;
+  /**
+   * Wave 5 Option D Commit 3 — inject the outbound module for tests.
+   * Production builds one from `config.chainRpcUrl` +
+   * `config.callbackServiceSecret` at constructor time.
+   */
+  outbound?: BrokerOutbound;
   /** Override for the connection-handler logger; defaults to silent. */
   logger?: (event: BrokerLogEvent) => void;
 }
@@ -106,6 +113,7 @@ export async function handleBrokerRequest(
   nowSec: () => number = () => Math.floor(Date.now() / 1000),
   options: HandleBrokerRequestOptions = {},
   policyStore?: IPolicyStore,
+  outbound?: BrokerOutbound,
 ): Promise<BrokerResponse> {
   switch (req.type) {
     case 'hello': {
@@ -326,6 +334,73 @@ export async function handleBrokerRequest(
         );
       }
     }
+    case 'current_nonce': {
+      // Wave 5 Option D Commit 3 — read kernel.currentNonce() via the
+      // broker's chain RPC. The MCP server uses this to gate MODE.ENABLE
+      // composition: mirror's stored validatorNonce MUST still match the
+      // live on-chain nonce, else the enableSig is over a stale digest
+      // (per the C2 lessons / R2 review).
+      if (!outbound) {
+        return errorResponse(
+          'chain_rpc_failed',
+          'broker daemon was not configured with a chain RPC URL',
+        );
+      }
+      try {
+        const nonce = await outbound.currentNonce(req.accountAddress);
+        return {
+          type: 'current_nonce',
+          nonce,
+          accountAddress: req.accountAddress,
+        };
+      } catch (err) {
+        if (err instanceof ChainRpcError) {
+          return errorResponse('chain_rpc_failed', err.message);
+        }
+        return errorResponse(
+          'chain_rpc_failed',
+          err instanceof Error ? err.message : 'chain RPC eth_call failed',
+        );
+      }
+    }
+    case 'notify_userop_landed': {
+      // Wave 5 Option D Commit 3 — MCP server hands the broker a
+      // post-receipt notification; broker forwards to the backend's
+      // validator-enabled route via the retry-backed BrokerOutbound.
+      //
+      // IPC return is FIRE-AND-FORGET: the broker queues the callback
+      // + acks the IPC immediately. The retry loop runs in the
+      // background; failures land in the broker log channel only (the
+      // chain indexer is the authoritative safety net regardless).
+      if (!outbound) {
+        return errorResponse(
+          'callback_unconfigured',
+          'broker daemon was not configured with the callback service secret',
+        );
+      }
+      if (!outbound.isCallbackConfigured()) {
+        return errorResponse(
+          'callback_unconfigured',
+          'BROKER_CALLBACK_SERVICE_SECRET or backend URL is unset — validator-enabled callback skipped (chain indexer is the safety net)',
+        );
+      }
+      // Fire-and-forget. The returned Promise is intentionally not
+      // awaited — the IPC caller (MCP server) acks immediately while
+      // the retry loop runs in the broker's event loop.
+      void outbound.enqueueValidatorEnabledCallback({
+        sessionId: req.sessionId,
+        accountAddress: req.accountAddress,
+        permissionId: req.permissionId,
+        txHash: req.txHash,
+        blockNumber: req.blockNumber,
+        logIndex: req.logIndex,
+      });
+      return {
+        type: 'notify_userop_landed',
+        queued: true,
+        sessionId: req.sessionId,
+      };
+    }
   }
 }
 
@@ -369,6 +444,7 @@ export class BrokerDaemon {
   private readonly config: BrokerRuntimeConfig;
   private keystore: IKeystore | null;
   private readonly policyStore: IPolicyStore;
+  private readonly outbound: BrokerOutbound;
 
   /**
    * Whether a session-key private half is actually loaded. `false` =
@@ -401,6 +477,22 @@ export class BrokerDaemon {
     // start() awaits the optional init so the asymmetry stays paper-thin
     // (Backend Architect M-1). Tests pass a memory impl via options.policyStore.
     this.policyStore = options.policyStore ?? new FilePolicyStore(FilePolicyStore.defaultDir());
+    // Wave 5 Option D Commit 3 — the outbound module is constructed
+    // eagerly. When neither chainRpcUrl nor callbackServiceSecret is
+    // configured, the module is still safe to hold — both handlers
+    // explicitly return `chain_rpc_failed` / `callback_unconfigured`
+    // when their respective configs are missing.
+    this.outbound =
+      options.outbound ??
+      new BrokerOutbound(
+        {
+          chainRpcUrl: options.config.chainRpcUrl,
+          backendBaseUrl: options.config.backendBaseUrl,
+          callbackServiceSecret: options.config.callbackServiceSecret,
+          outboundOriginHeader: options.config.outboundOriginHeader ?? options.config.dashboardBaseUrl,
+        },
+        (level, msg, meta) => (options.logger ?? noopLogger)({ level, msg, meta }),
+      );
     this.log = options.logger ?? noopLogger;
     this.server = createServer((socket) => this.onConnection(socket));
   }
@@ -556,6 +648,7 @@ export class BrokerDaemon {
           pid: process.pid,
         },
         this.policyStore,
+        this.outbound,
       );
       socket.end(serializeResponse(res));
     } catch (err) {

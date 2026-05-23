@@ -1079,6 +1079,13 @@ export const container = {
       ? 'http'
       : 'logging';
   },
+  // Wave 5 Option D · Commit 3 — expose the cached transport so the
+  // validator-install watchdog can fire alerts without re-running the
+  // env resolution / cache logic. Same singleton the cron's catch
+  // path uses; the watchdog is a sibling caller.
+  get operatorAlertTransport(): IOperatorAlertTransport {
+    return getOperatorAlertTransport();
+  },
   // Wave 5 Path D Slice 1 (Commit 3.5) — encrypts cleartext share
   // amounts into InEuint128 ciphertext bound to the user's kernel
   // address for MCP-side Path D autonomous-buy assembly. New per

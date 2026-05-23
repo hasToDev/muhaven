@@ -88,10 +88,10 @@ describe('broker protocol parser', () => {
     expect(JSON.parse(out)).toEqual({ type: 'clear_jwt', cleared: true });
   });
 
-  // ---------- Wave 5 Path D Slice 1 — protocol 0.4.0 additions ----------
+  // ---------- Wave 5 Option D Commit 3 — protocol 0.5.0 ----------
 
-  it('protocol version is bumped to 0.4.0', () => {
-    expect(BROKER_PROTOCOL_VERSION).toBe('0.4.0');
+  it('protocol version is bumped to 0.5.0', () => {
+    expect(BROKER_PROTOCOL_VERSION).toBe('0.5.0');
   });
 
   const validSnapshot = () => ({
@@ -410,5 +410,150 @@ describe('broker protocol parser', () => {
   // ensure isHashHex is still exported (back-compat smoke)
   it('isHashHex export is intact', () => {
     expect(isHashHex('0x' + '1'.repeat(64))).toBe(true);
+  });
+
+  // ---------- Wave 5 Option D Commit 3 — install material + new verbs ----
+
+  const enableData128 = '0x' + 'cd'.repeat(64); // 128 hex chars, 64 bytes
+  const enableSig256 = '0x' + '12'.repeat(128); // 256 hex chars, 128 bytes
+
+  const validSnapshotWithInstall = () => ({
+    sessionId: 'sess_install_xyz',
+    mode: 'scoped' as const,
+    signerAddress: '0x' + 'a'.repeat(40),
+    targetContracts: ['0x' + 'b'.repeat(40)],
+    selectorCaps: [{ selector: '0xdeadbeef', capArgIndex: 2, maxAmount: '100' }],
+    validUntilSec: 2000000000,
+    mintedAtSec: 1700000000,
+    permissionId: '0xfeedface',
+    enableData: enableData128,
+    enableSig: enableSig256,
+    validatorNonce: 7,
+  });
+
+  it('parses store_policy_snapshot with full install material', () => {
+    const res = parseBrokerRequest(
+      JSON.stringify({
+        type: 'store_policy_snapshot',
+        snapshot: validSnapshotWithInstall(),
+      }),
+    );
+    expect(res.type).toBe('store_policy_snapshot');
+    if (res.type === 'store_policy_snapshot') {
+      expect(res.snapshot.enableData).toBe(enableData128.toLowerCase());
+      expect(res.snapshot.enableSig).toBe(enableSig256.toLowerCase());
+      expect(res.snapshot.validatorNonce).toBe(7);
+    }
+  });
+
+  it('rejects partial install-material capture (2-of-3)', () => {
+    const partial = {
+      ...validSnapshotWithInstall(),
+      enableSig: undefined,
+    };
+    const res = parseBrokerRequest(
+      JSON.stringify({ type: 'store_policy_snapshot', snapshot: partial }),
+    );
+    expect(res.type).toBe('error');
+    if (res.type === 'error') {
+      expect(res.message).toMatch(/all-present or all-absent/);
+    }
+  });
+
+  it('rejects install material without a paired permissionId', () => {
+    const snap = validSnapshotWithInstall() as Record<string, unknown>;
+    delete snap.permissionId;
+    const res = parseBrokerRequest(
+      JSON.stringify({ type: 'store_policy_snapshot', snapshot: snap }),
+    );
+    expect(res.type).toBe('error');
+    if (res.type === 'error') {
+      expect(res.message).toMatch(/permissionId/);
+    }
+  });
+
+  it('rejects enableSig shorter than 256 hex chars (downgrade-attack defense)', () => {
+    const snap = validSnapshotWithInstall();
+    snap.enableSig = '0x' + '12'.repeat(64); // 128 hex chars, would admit bare ECDSA
+    const res = parseBrokerRequest(
+      JSON.stringify({ type: 'store_policy_snapshot', snapshot: snap }),
+    );
+    expect(res.type).toBe('error');
+  });
+
+  it('rejects validatorNonce > uint32 max', () => {
+    const snap = validSnapshotWithInstall();
+    snap.validatorNonce = 0x1_0000_0000; // 2^32, just over
+    const res = parseBrokerRequest(
+      JSON.stringify({ type: 'store_policy_snapshot', snapshot: snap }),
+    );
+    expect(res.type).toBe('error');
+  });
+
+  it('parses current_nonce request', () => {
+    const accountAddress = '0x' + 'c'.repeat(40);
+    const res = parseBrokerRequest(
+      JSON.stringify({ type: 'current_nonce', accountAddress }),
+    );
+    expect(res.type).toBe('current_nonce');
+    if (res.type === 'current_nonce') {
+      expect(res.accountAddress).toBe(accountAddress.toLowerCase());
+    }
+  });
+
+  it('rejects current_nonce with malformed accountAddress', () => {
+    const res = parseBrokerRequest(
+      JSON.stringify({ type: 'current_nonce', accountAddress: '0xabc' }),
+    );
+    expect(res.type).toBe('error');
+  });
+
+  it('parses notify_userop_landed with all required fields', () => {
+    const payload = {
+      type: 'notify_userop_landed',
+      sessionId: 'sess_xyz',
+      accountAddress: '0x' + 'a'.repeat(40),
+      permissionId: '0xabcdabcd',
+      txHash: '0x' + 'f'.repeat(64),
+      blockNumber: 12345,
+      logIndex: 0,
+    };
+    const res = parseBrokerRequest(JSON.stringify(payload));
+    expect(res.type).toBe('notify_userop_landed');
+    if (res.type === 'notify_userop_landed') {
+      expect(res.permissionId).toBe('0xabcdabcd');
+      expect(res.blockNumber).toBe(12345);
+      expect(res.logIndex).toBe(0);
+    }
+  });
+
+  it('rejects notify_userop_landed with negative blockNumber', () => {
+    const res = parseBrokerRequest(
+      JSON.stringify({
+        type: 'notify_userop_landed',
+        sessionId: 'sess_xyz',
+        accountAddress: '0x' + 'a'.repeat(40),
+        permissionId: '0xabcdabcd',
+        txHash: '0x' + 'f'.repeat(64),
+        blockNumber: -1,
+        logIndex: 0,
+      }),
+    );
+    expect(res.type).toBe('error');
+  });
+
+  it('rejects notify_userop_landed with malformed permissionId', () => {
+    const res = parseBrokerRequest(
+      JSON.stringify({
+        type: 'notify_userop_landed',
+        sessionId: 'sess_xyz',
+        accountAddress: '0x' + 'a'.repeat(40),
+        permissionId: '0xdead', // 2 bytes
+        txHash: '0x' + 'f'.repeat(64),
+        blockNumber: 12345,
+        logIndex: 0,
+      }),
+    );
+    expect(res.type).toBe('error');
   });
 });

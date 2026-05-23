@@ -196,4 +196,86 @@ export class MemoryScopedSessionRepository implements IScopedSessionRepository {
     }
     return affected;
   }
+
+  // ── Wave 5 Option D · Commit 3 — PermissionValidator install lifecycle ──
+
+  async findByPermissionIdAndAccountAddress(
+    permissionId: `0x${string}`,
+    _accountAddress: `0x${string}`,
+  ): Promise<ScopedSession | null> {
+    // Memory repo: no `account_address` column. We match on
+    // `permission_id` alone and refuse to return a row when 2+ rows
+    // match (defends against the cross-user permissionId-clash race
+    // — multi-agent review HIGH-1). Mirrors the Pg repo's
+    // structural shape; see its JSDoc.
+    const needle = permissionId.toLowerCase();
+    const matches: ScopedSession[] = [];
+    for (const s of this.store.values()) {
+      if (s.permissionId && s.permissionId.toLowerCase() === needle) {
+        matches.push(s);
+      }
+    }
+    if (matches.length === 0) return null;
+    if (matches.length > 1) {
+      matches.sort((a, b) => a.sessionId.localeCompare(b.sessionId));
+      throw new Error(
+        `permissionId collision: ${matches.length}+ rows match permissionId=${needle} (sessionIds=${matches
+          .map((r) => r.sessionId)
+          .join(',')}); refusing to flip — operator triage required`,
+      );
+    }
+    return matches[0]!;
+  }
+
+  async markValidatorEnabled(
+    sessionId: string,
+    txHash: `0x${string}`,
+    now: Date,
+  ): Promise<ScopedSession | null> {
+    const existing = this.store.get(sessionId);
+    if (!existing) return null;
+    if (existing.enableStatus === 'enabled') {
+      // Idempotent — race winner; return existing unchanged.
+      return existing;
+    }
+    if (existing.enableStatus !== 'pending') {
+      // Failed / null — refuse to flip.
+      return null;
+    }
+    const updated = existing.with({
+      enableStatus: 'enabled',
+      validatorEnabledAt: now,
+      validatorEnabledTxHash: txHash.toLowerCase() as `0x${string}`,
+    });
+    this.store.set(sessionId, updated);
+    return updated;
+  }
+
+  async markValidatorFailed(sessionId: string): Promise<ScopedSession | null> {
+    const existing = this.store.get(sessionId);
+    if (!existing) return null;
+    if (existing.enableStatus !== 'pending') return null;
+    const updated = existing.with({ enableStatus: 'failed' });
+    this.store.set(sessionId, updated);
+    return updated;
+  }
+
+  async findPendingEnableOlderThan(
+    beforeDate: Date,
+    limit: number,
+  ): Promise<ScopedSession[]> {
+    const matches: ScopedSession[] = [];
+    for (const s of this.store.values()) {
+      if (s.status !== ScopedSessionStatus.Active) continue;
+      if (s.enableStatus !== 'pending') continue;
+      if (s.mintedAt.getTime() >= beforeDate.getTime()) continue;
+      matches.push(s);
+    }
+    matches.sort((a, b) => {
+      const t = a.mintedAt.getTime() - b.mintedAt.getTime();
+      if (t !== 0) return t;
+      return a.sessionId.localeCompare(b.sessionId);
+    });
+    return matches.slice(0, limit);
+  }
 }

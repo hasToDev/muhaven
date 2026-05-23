@@ -1,6 +1,6 @@
 {
   "name": "@muhaven/mcp",
-  "version": "0.2.9",
+  "version": "0.3.0",
   "description": "MuHaven MCP server — read/position/policy toolsets bridging Claude Desktop / Cursor / Claude Code to the MuHaven backend, with a sibling muhaven-broker daemon holding the session-key private half over a local IPC socket",
   "type": "module",
   "repository": {
@@ -78,6 +78,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@zerodev/sdk": "^5.5.10",
     "rimraf": "^5.0.0",
     "tsup": "^8.5.1",
     "tsx": "^4.21.0",

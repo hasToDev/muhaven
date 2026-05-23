@@ -103,6 +103,33 @@ const EnvSchema = z.object({
   // txes (otherwise the indexer polls for nothing and burns RPC).
   CHECKOUT_SETTLEMENT_POLLER_ENABLED: z.coerce.boolean().default(false),
   CHECKOUT_SETTLEMENT_POLLER_INTERVAL_MS: z.coerce.number().default(8_000),
+  // Wave 5 Option D · Commit 3 — PermissionInstalled chain indexer.
+  // AUTHORITATIVE source-of-truth for `agent_scoped_sessions.enable_status`
+  // transitions from `'pending'` to `'enabled'`. The broker-callback
+  // route is the fast-path optimization; this indexer is the safety
+  // net. Re-uses `RPC_URL`; no address allowlist (every kernel emits
+  // the event from its own address — filtering would require sweeping
+  // the kernel list every tick).
+  PERMISSION_INSTALLED_POLLER_ENABLED: z.coerce.boolean().default(false),
+  PERMISSION_INSTALLED_POLLER_INTERVAL_MS: z.coerce.number().default(8_000),
+  /**
+   * Wave 5 Option D Commit 3 (multi-agent review HIGH-2-BE) — reorg
+   * confirmation buffer. The indexer reads up to `currentBlock - confirmations`
+   * only. Default 0 = read head (matches CheckoutSettlementIndexer);
+   * post-hackathon SHOULD raise to 2+.
+   */
+  PERMISSION_INSTALLED_POLLER_CONFIRMATIONS: z.coerce.number().min(0).default(0),
+  // Wave 5 Option D · Commit 3 — validator-install watchdog. Flips
+  // rows stuck in `enable_status='pending'` for more than
+  // `VALIDATOR_ENABLE_WATCHDOG_STALE_SEC` (default 720s = 60 blocks at
+  // 12s/block on Arb Sepolia ≈ 12min) to `'failed'` + fires a
+  // Telegram operator alert. Independent of the indexer toggle —
+  // operator can run the watchdog in dev (off the indexer) to fail
+  // closed during diagnosis.
+  VALIDATOR_ENABLE_WATCHDOG_ENABLED: z.coerce.boolean().default(false),
+  VALIDATOR_ENABLE_WATCHDOG_INTERVAL_MS: z.coerce.number().default(60_000),
+  VALIDATOR_ENABLE_WATCHDOG_STALE_SEC: z.coerce.number().default(720),
+  VALIDATOR_ENABLE_WATCHDOG_BATCH_LIMIT: z.coerce.number().default(20),
   // RedemptionQueue + YieldSnapshot deployments are per-token. The indexer
   // watches all addresses in these JSON arrays. Empty = disable that path.
   REDEMPTION_QUEUE_ADDRESSES_JSON: z.string().optional(),

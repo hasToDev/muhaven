@@ -13,11 +13,20 @@ import {
 } from 'viem';
 import {
   KERNEL_EXECUTE_ABI,
+  KERNEL_V3_CURRENT_NONCE_ABI,
+  KERNEL_V3_PERMISSION_INSTALLED_ABI,
   KERNEL_V3_SINGLE_CALL_MODE_DEFAULT,
   buildKernelSessionKeySignature,
   composeKernelV3NonceKey,
   encodeKernelExecuteSingleCall,
+  wrapEnableModeSignature,
 } from '../src/clients/kernel-encoder.js';
+// devDep import — the package root barrels the ep0_7 variant. The
+// byte-equality regression below imports the canonical implementation
+// and asserts our `wrapEnableModeSignature` emits IDENTICAL bytes for
+// every fixture. If ZeroDev rotates the encoder shape in a future SDK
+// release, this test fails and the operator updates the wrapper.
+import { getEncodedPluginsData } from '@zerodev/sdk';
 
 const TARGET = '0x1d6C140204F21835F1AF2A0615826A333827d946' as const; // USYC stage
 const PERMISSION_ID = '0xdeadbeef' as `0x${string}`;
@@ -172,5 +181,240 @@ describe('composeKernelV3NonceKey (Kernel v3.1 PermissionValidator nonce composi
         customKey: 1n << 17n, // > 0xffff
       }),
     ).toThrow(/customKey/);
+  });
+
+  // ── Wave 5 Option D Commit 3 — MODE.ENABLE byte-0 toggle ────────────
+
+  it('mode=enable flips byte 0 from 0x00 to 0x01 (other bytes identical)', () => {
+    const defaultKey = composeKernelV3NonceKey({
+      permissionId: PERMISSION_ID,
+      mode: 'default',
+    });
+    const enableKey = composeKernelV3NonceKey({
+      permissionId: PERMISSION_ID,
+      mode: 'enable',
+    });
+    // 24 bytes → mode=enable adds 0x01 in the MSB of a 24-byte composite.
+    // That MSB shift = 2^((24-1)*8) = 2^184. Bytes 1..23 are identical.
+    expect(enableKey - defaultKey).toBe(1n << 184n);
+  });
+
+  it('mode defaulted to default when omitted (backwards-compatibility)', () => {
+    const explicit = composeKernelV3NonceKey({
+      permissionId: PERMISSION_ID,
+      mode: 'default',
+    });
+    const omitted = composeKernelV3NonceKey({ permissionId: PERMISSION_ID });
+    expect(explicit).toBe(omitted);
+  });
+
+  it('mode=enable + non-zero customKey: both effects compose', () => {
+    const key = composeKernelV3NonceKey({
+      permissionId: PERMISSION_ID,
+      mode: 'enable',
+      customKey: 0x42n,
+    });
+    const expected = pad(
+      concatHex([
+        '0x01' as Hex, // VALIDATOR_MODE_ENABLE
+        '0x02' as Hex,
+        pad(PERMISSION_ID, { size: 20, dir: 'right' }),
+        pad('0x42' as Hex, { size: 2 }),
+      ]),
+      { size: 24 },
+    );
+    expect(key).toBe(BigInt(expected));
+  });
+});
+
+// ── Wave 5 Option D Commit 3 — wrapEnableModeSignature byte-equality ──
+
+/**
+ * Byte-equality regression suite. We re-implement the canonical
+ * `getEncodedPluginsData` from `@zerodev/sdk` and assert
+ * `wrapEnableModeSignature` produces IDENTICAL bytes. If ZeroDev rotates
+ * the encoder shape in a future SDK release, this test fails — the
+ * anti-drift pattern per `[[feedback-ai-engineer-catches-zerodev-shape-drift]]`.
+ *
+ * Each fixture exercises a different combination of hookAddress /
+ * hookData / inner-action hook / enableData size / enableSig size, so a
+ * regression that touches any of the 5 abi-encoded fields surfaces.
+ */
+describe('wrapEnableModeSignature (byte-equality vs @zerodev/sdk::getEncodedPluginsData)', () => {
+  const KERNEL_ADDR = '0x678d2e3F778C4528911b137ED4db282834f3735E' as const;
+  const HOOK_ADDR = '0xbAd1234567890ABCDef1234567890aBCDef12345' as const;
+  const ZERO = '0x0000000000000000000000000000000000000000' as const;
+  // kernel.execute(bytes32,bytes) selector — what the inner action calls.
+  const EXECUTE_SELECTOR = '0xe9ae5c53' as `0x${string}`;
+  // Stable 66-byte wrapped session-key signature (0xff + 65 bytes).
+  const WRAPPED_SIG = ('0xff' + 'ab'.repeat(65)) as `0x${string}`;
+  // Small enableData (subscription-only) and a large one (real prod ~30KB).
+  const SMALL_ENABLE_DATA = ('0x' + 'cd'.repeat(64)) as `0x${string}`;
+  const LARGE_ENABLE_DATA = ('0x' + '5a'.repeat(15_000)) as `0x${string}`;
+  // WebAuthn-shaped enableSig (256 bytes minimum per Kernel V3.1 floor).
+  const ENABLE_SIG_256 = ('0x' + '12'.repeat(256)) as `0x${string}`;
+  // Larger WebAuthn envelope.
+  const ENABLE_SIG_512 = ('0x' + '34'.repeat(512)) as `0x${string}`;
+
+  const fixtures = [
+    {
+      name: 'no hook, small enableData, 256-byte enableSig',
+      input: {
+        enableData: SMALL_ENABLE_DATA,
+        enableSig: ENABLE_SIG_256,
+        userOpSignature: WRAPPED_SIG,
+        action: { selector: EXECUTE_SELECTOR, address: KERNEL_ADDR },
+      },
+      canonical: {
+        enableSignature: ENABLE_SIG_256,
+        userOpSignature: WRAPPED_SIG,
+        action: { selector: EXECUTE_SELECTOR, address: KERNEL_ADDR },
+        enableData: SMALL_ENABLE_DATA,
+        hook: undefined,
+      },
+    },
+    {
+      name: 'no hook, large enableData (~30KB hex), 512-byte enableSig',
+      input: {
+        enableData: LARGE_ENABLE_DATA,
+        enableSig: ENABLE_SIG_512,
+        userOpSignature: WRAPPED_SIG,
+        action: { selector: EXECUTE_SELECTOR, address: KERNEL_ADDR },
+      },
+      canonical: {
+        enableSignature: ENABLE_SIG_512,
+        userOpSignature: WRAPPED_SIG,
+        action: { selector: EXECUTE_SELECTOR, address: KERNEL_ADDR },
+        enableData: LARGE_ENABLE_DATA,
+        hook: undefined,
+      },
+    },
+    {
+      name: 'hook present (outer 20-byte address), no hookData',
+      input: {
+        enableData: SMALL_ENABLE_DATA,
+        enableSig: ENABLE_SIG_256,
+        userOpSignature: WRAPPED_SIG,
+        action: { selector: EXECUTE_SELECTOR, address: KERNEL_ADDR },
+        hookAddress: HOOK_ADDR as `0x${string}`,
+      },
+      canonical: {
+        enableSignature: ENABLE_SIG_256,
+        userOpSignature: WRAPPED_SIG,
+        action: { selector: EXECUTE_SELECTOR, address: KERNEL_ADDR },
+        enableData: SMALL_ENABLE_DATA,
+        // The canonical SDK accepts `hook` with getIdentifier + getEnableData
+        // methods. We stub them — the encoder calls both.
+        hook: {
+          getIdentifier: () => HOOK_ADDR as `0x${string}`,
+          getEnableData: async () => '0x' as `0x${string}`,
+        },
+      },
+    },
+    {
+      name: 'inner-action hook (binds executor to a sub-hook)',
+      input: {
+        enableData: SMALL_ENABLE_DATA,
+        enableSig: ENABLE_SIG_256,
+        userOpSignature: WRAPPED_SIG,
+        action: {
+          selector: EXECUTE_SELECTOR,
+          address: KERNEL_ADDR,
+          hookAddress: HOOK_ADDR as `0x${string}`,
+        },
+      },
+      canonical: {
+        enableSignature: ENABLE_SIG_256,
+        userOpSignature: WRAPPED_SIG,
+        action: {
+          selector: EXECUTE_SELECTOR,
+          address: KERNEL_ADDR,
+          hook: { address: HOOK_ADDR as `0x${string}` },
+        },
+        enableData: SMALL_ENABLE_DATA,
+        hook: undefined,
+      },
+    },
+    {
+      name: 'hookData non-trivial (forwarded by the encoder)',
+      input: {
+        enableData: SMALL_ENABLE_DATA,
+        enableSig: ENABLE_SIG_256,
+        userOpSignature: WRAPPED_SIG,
+        action: { selector: EXECUTE_SELECTOR, address: KERNEL_ADDR },
+        hookAddress: HOOK_ADDR as `0x${string}`,
+        hookData: '0xbeefcafe' as `0x${string}`,
+      },
+      canonical: {
+        enableSignature: ENABLE_SIG_256,
+        userOpSignature: WRAPPED_SIG,
+        action: { selector: EXECUTE_SELECTOR, address: KERNEL_ADDR },
+        enableData: SMALL_ENABLE_DATA,
+        hook: {
+          getIdentifier: () => HOOK_ADDR as `0x${string}`,
+          getEnableData: async () => '0xbeefcafe' as `0x${string}`,
+        },
+      },
+    },
+  ] as const;
+
+  for (const fixture of fixtures) {
+    it(`fixture: ${fixture.name}`, async () => {
+      const ours = wrapEnableModeSignature(fixture.input);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const theirs = await (getEncodedPluginsData as any)(fixture.canonical);
+      expect(ours.toLowerCase()).toBe((theirs as string).toLowerCase());
+    });
+  }
+
+  it('emits 20-byte zero address as leading bytes when no hook provided', () => {
+    const out = wrapEnableModeSignature({
+      enableData: SMALL_ENABLE_DATA,
+      enableSig: ENABLE_SIG_256,
+      userOpSignature: WRAPPED_SIG,
+      action: { selector: EXECUTE_SELECTOR, address: KERNEL_ADDR },
+    });
+    // First 20 bytes = 40 hex chars after `0x` = zero address.
+    expect(out.slice(2, 42).toLowerCase()).toBe(ZERO.slice(2).toLowerCase());
+  });
+
+  it('emits the supplied hook address as leading bytes when present', () => {
+    const out = wrapEnableModeSignature({
+      enableData: SMALL_ENABLE_DATA,
+      enableSig: ENABLE_SIG_256,
+      userOpSignature: WRAPPED_SIG,
+      action: { selector: EXECUTE_SELECTOR, address: KERNEL_ADDR },
+      hookAddress: HOOK_ADDR as `0x${string}`,
+    });
+    expect(out.slice(2, 42).toLowerCase()).toBe(HOOK_ADDR.slice(2).toLowerCase());
+  });
+});
+
+// ── Wave 5 Option D Commit 3 — ABI re-exports ───────────────────────
+
+describe('KERNEL_V3_CURRENT_NONCE_ABI + KERNEL_V3_PERMISSION_INSTALLED_ABI', () => {
+  it('currentNonce ABI parses as a uint32 view function', () => {
+    expect(KERNEL_V3_CURRENT_NONCE_ABI).toHaveLength(1);
+    const item = KERNEL_V3_CURRENT_NONCE_ABI[0]!;
+    expect(item.type).toBe('function');
+    expect((item as { name: string }).name).toBe('currentNonce');
+    expect((item as { stateMutability: string }).stateMutability).toBe('view');
+  });
+
+  it('PermissionInstalled ABI parses as an event with two non-indexed args', () => {
+    expect(KERNEL_V3_PERMISSION_INSTALLED_ABI).toHaveLength(1);
+    const item = KERNEL_V3_PERMISSION_INSTALLED_ABI[0]!;
+    expect(item.type).toBe('event');
+    expect((item as { name: string }).name).toBe('PermissionInstalled');
+    const inputs = (
+      item as { inputs: readonly { name: string; type: string; indexed?: boolean }[] }
+    ).inputs;
+    expect(inputs).toHaveLength(2);
+    expect(inputs[0].name).toBe('permission');
+    expect(inputs[0].type).toBe('bytes4');
+    expect(inputs[0].indexed).toBeFalsy();
+    expect(inputs[1].name).toBe('nonce');
+    expect(inputs[1].type).toBe('uint32');
+    expect(inputs[1].indexed).toBeFalsy();
   });
 });

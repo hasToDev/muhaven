@@ -8,9 +8,12 @@ import {
   BlockchainEventPoller,
   CheckoutSettlementIndexer,
   NavWriterCron,
+  PermissionInstalledIndexer,
   TaxEventIndexer,
+  ValidatorEnableWatchdog,
   YieldDistributionCron,
 } from './infrastructure/blockchain/index.js';
+import { MarkScopedSessionValidatorEnabledUseCase } from './application/use-case/agent/policy/mark-scoped-session-validator-enabled.use-case.js';
 import { getDb, getPool } from './infrastructure/repository/postgres/db.js';
 import { ensurePgcryptoExtension } from './infrastructure/repository/postgres/pgcrypto.js';
 import { SettleFromEventUseCase } from './application/use-case/checkout/settle-from-event.use-case.js';
@@ -474,6 +477,55 @@ async function main() {
         console.log(`[tax-events] Started (interval: ${env.TAX_EVENT_POLLER_INTERVAL_MS}ms)`);
       }
     }
+  }
+
+  // Wave 5 Option D · Commit 3 — PermissionInstalled chain indexer.
+  // AUTHORITATIVE source-of-truth for `agent_scoped_sessions.enable_status`
+  // flips from `'pending'` to `'enabled'`. Re-uses `RPC_URL`; no
+  // address allowlist (event is emitted by every kernel that owns
+  // its own permission validator).
+  if (env.PERMISSION_INSTALLED_POLLER_ENABLED) {
+    if (!env.RPC_URL) {
+      console.warn('[permission-installed] enabled but RPC_URL missing — skipping');
+    } else {
+      const markEnabled = new MarkScopedSessionValidatorEnabledUseCase(
+        container.scopedSessionRepo,
+        container.appendAuditEvent,
+      );
+      const indexer = new PermissionInstalledIndexer(
+        container.scopedSessionRepo,
+        markEnabled,
+        {
+          rpcUrl: env.RPC_URL,
+          intervalMs: env.PERMISSION_INSTALLED_POLLER_INTERVAL_MS,
+          confirmations: env.PERMISSION_INSTALLED_POLLER_CONFIRMATIONS,
+        },
+      );
+      indexer.start(env.PERMISSION_INSTALLED_POLLER_INTERVAL_MS);
+      backgroundShutdown.push(() => indexer.stop());
+      console.log(
+        `[permission-installed] Started (interval: ${env.PERMISSION_INSTALLED_POLLER_INTERVAL_MS}ms)`,
+      );
+    }
+  }
+
+  // Wave 5 Option D · Commit 3 — validator-install watchdog. Flips
+  // pending rows older than the configured threshold to `'failed'`
+  // and fires a Telegram operator alert per flipped row.
+  if (env.VALIDATOR_ENABLE_WATCHDOG_ENABLED) {
+    const watchdog = new ValidatorEnableWatchdog(
+      container.scopedSessionRepo,
+      container.operatorAlertTransport,
+      {
+        staleThresholdSec: env.VALIDATOR_ENABLE_WATCHDOG_STALE_SEC,
+        batchLimit: env.VALIDATOR_ENABLE_WATCHDOG_BATCH_LIMIT,
+      },
+    );
+    watchdog.start(env.VALIDATOR_ENABLE_WATCHDOG_INTERVAL_MS);
+    backgroundShutdown.push(() => watchdog.stop());
+    console.log(
+      `[validator-enable-watchdog] Started (interval: ${env.VALIDATOR_ENABLE_WATCHDOG_INTERVAL_MS}ms, stale: ${env.VALIDATOR_ENABLE_WATCHDOG_STALE_SEC}s)`,
+    );
   }
 
   // Wave 5 P4 — checkout settlement indexer. Watches
