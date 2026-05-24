@@ -7,12 +7,15 @@ import type { AppendAuditEventUseCase } from './append-audit-event.use-case.js';
 
 /**
  * Wave 5 Option D · Commit 3 — flip a scoped-session mirror row from
- * `enable_status='pending'` to `'enabled'` after on-chain
- * `PermissionInstalled(bytes4, uint32)` confirmation.
+ * `enable_status='pending'` to `'enabled'` after on-chain confirmation
+ * of the permission-validator install. The install signal is the kernel
+ * `SelectorSet` event (the deployed Kernel v3.1 does NOT emit
+ * `PermissionInstalled` for enable-mode installs — see
+ * `infrastructure/blockchain/selector-set.ts`).
  *
  * Two callers race for this flip:
- *   1. **Chain indexer** — subscribes to `PermissionInstalled` events
- *      from kernel V3.1 contracts. AUTHORITATIVE source of truth.
+ *   1. **Chain indexer** — polls for `SelectorSet` install events from
+ *      kernel V3.1 contracts. AUTHORITATIVE source of truth.
  *   2. **Broker callback** — `POST .../validator-enabled` invoked by
  *      the broker daemon after the MCP server's MODE.ENABLE UserOp
  *      submits a receipt. Fast-path optimization — re-verifies the

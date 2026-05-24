@@ -2141,16 +2141,84 @@ async function attemptPathD(
     };
   }
 
-  // 11. Compose partial UserOp for paymaster sponsorship. Placeholder
-  //     signature carries the right shape so paymaster simulates the
-  //     real verification cost.
+  // Wave 5 Option D Commit 3 (smoke fix) — MODE.ENABLE sponsorship MUST
+  // carry the enable envelope around the stub signature, not the bare
+  // placeholder.
+  //
+  // The paymaster's `zd_sponsorUserOperation` simulates the FULL UserOp
+  // through the EntryPoint, which invokes the kernel's `validateUserOp`.
+  // In ENABLE mode (nonce byte 0 = 0x01) the kernel decodes the
+  // signature as the `getEncodedPluginsData` envelope (hookAddr20 +
+  // abi.encode of 5 `bytes` fields) BEFORE it installs + validates. A
+  // bare PLACEHOLDER_SIGNATURE (66 bytes) can't be abi.decoded as that
+  // envelope → the decode reverts with empty data → `AA23 reverted 0x`
+  // at the paymaster simulator → `paymaster_rejected`.
+  //
+  // The canonical @zerodev/sdk does the same wrap for its STUB signature
+  // when the plugin isn't yet installed — `toKernelPluginManager.js`
+  // `getSignatureData`: `!isPluginEnabled → getEncodedPluginsData({...,
+  // userOpSignature: stub})`. We mirror it via a closure that wraps a
+  // given userOpSig (the stub here, the real broker sig at step 14) in
+  // the enable envelope. Wrapping the stub also makes the paymaster
+  // price the real install + validate cost, so `verificationGasLimit`
+  // isn't under-estimated (which would AA40/AA51-out-of-gas on submit).
+  let wrapForEnableMode:
+    | ((userOpSig: `0x${string}`) => `0x${string}`)
+    | null = null;
+  if (needsEnable && installMaterial) {
+    // The `action` here MUST byte-match the one the FRONTEND signed into
+    // `enableSig` at mint time, or the on-chain kernel reverts
+    // `EnableNotApproved()` (selector 0xc48cf8ee). The kernel recomputes
+    // the enable typed-data digest from the envelope's `selectorData`
+    // (`selector ‖ action.address ‖ hook ‖ initData`) and checks
+    // `enableSig` against it.
+    //
+    // The frontend (`zerodev.provider.ts::installScopedSessionKey`) uses
+    //   `action = { selector: getActionSelector('0.7'), address: zeroAddress }`
+    // — the ZeroDev SDK's built-in-`execute` action sentinel. So:
+    //   - `action.address` is the ZERO ADDRESS, NOT the kernel. (The C3
+    //     first cut used `accountAddress` on the plausible-but-wrong
+    //     intuition that "the action target is the kernel"; the first
+    //     prod smoke reverted `EnableNotApproved` and the frontend's
+    //     signed action is the source of truth.)
+    //   - `action.selector` is `execute(bytes32,bytes)` (0xe9ae5c53),
+    //     byte-identical to `getActionSelector('0.7')` (both resolve the
+    //     KernelV3 `execute` ABI item).
+    // Drift surfaces at the byte-equality test (`kernel-encoder.test.ts`)
+    // + the MODE.ENABLE wiring test (`position-deeplink.test.ts`).
+    const kernelExecuteSelector = toFunctionSelector(
+      KERNEL_EXECUTE_ABI[0]!,
+    ).toLowerCase() as `0x${string}`;
+    const enableActionAddress: `0x${string}` =
+      '0x0000000000000000000000000000000000000000';
+    const enableData = installMaterial.enableData! as `0x${string}`;
+    const enableSig = installMaterial.enableSig! as `0x${string}`;
+    wrapForEnableMode = (userOpSig) =>
+      wrapEnableModeSignature({
+        enableData,
+        enableSig,
+        userOpSignature: userOpSig,
+        action: {
+          selector: kernelExecuteSelector,
+          address: enableActionAddress,
+        },
+      });
+  }
+  const sponsorshipSignature: `0x${string}` = wrapForEnableMode
+    ? wrapForEnableMode(PLACEHOLDER_SIGNATURE)
+    : PLACEHOLDER_SIGNATURE;
+
+  // 11. Compose partial UserOp for paymaster sponsorship. The stub
+  //     signature carries the right shape (and, in ENABLE mode, the full
+  //     enable envelope) so the paymaster simulates the real
+  //     verification cost without reverting.
   const partial = {
     sender: accountAddress,
     nonce: (`0x${nonce.toString(16)}` as `0x${string}`),
     callData: kernelCallData,
     maxFeePerGas: feeData.maxFeePerGas,
     maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
-    signature: PLACEHOLDER_SIGNATURE,
+    signature: sponsorshipSignature,
   };
 
   let sponsored: Awaited<ReturnType<typeof deps.bundler.sponsorUserOp>>;
@@ -2271,37 +2339,18 @@ async function attemptPathD(
   const wrappedSessionKeySig = buildKernelSessionKeySignature({
     ecdsaSignature: brokerSig,
   });
-  let finalSignature: `0x${string}` = wrappedSessionKeySig;
-  if (needsEnable && installMaterial) {
-    // The inner action descriptor for our case: the kernel's own
-    // `execute(bytes32 mode, bytes calldata)` selector + the kernel
-    // address itself. No inner hook (no hook in our snapshot today).
-    //
-    // ⚠ Multi-agent review (AI Engineer M-2): `action.address` IS the
-    // action TARGET (per `@zerodev/sdk::getEncodedPluginsData`). For
-    // `kernel.execute` the target is the kernel — which is the same
-    // value as `accountAddress` ONLY because kernel.execute is a self-
-    // call from the EntryPoint. A future Path D variant that wraps a
-    // non-kernel-self action (e.g., a direct ERC-7579 module call)
-    // would set `action.address` to the MODULE, NOT the kernel. To
-    // prevent a refactor from silently miswiring, we bind a distinctly-
-    // named local that asserts equality with `accountAddress` at this
-    // call site only. Drift would surface at the byte-equality test
-    // (`__tests__/kernel-encoder.test.ts` fixtures).
-    const kernelExecuteSelector = toFunctionSelector(
-      KERNEL_EXECUTE_ABI[0]!,
-    ).toLowerCase() as `0x${string}`;
-    const kernelExecuteActionTarget: `0x${string}` = accountAddress;
-    finalSignature = wrapEnableModeSignature({
-      enableData: installMaterial.enableData! as `0x${string}`,
-      enableSig: installMaterial.enableSig! as `0x${string}`,
-      userOpSignature: wrappedSessionKeySig,
-      action: {
-        selector: kernelExecuteSelector,
-        address: kernelExecuteActionTarget,
-      },
-    });
-  }
+  // Wave 5 Option D Commit 3 — when MODE.ENABLE is in flight, wrap the
+  // 66-byte session-key signature with the byte-exact
+  // `getEncodedPluginsData` envelope (`wrapForEnableMode`, built once at
+  // step 11 — the SAME wrap the sponsorship stub used, so the simulated
+  // and submitted UserOps differ only in the inner userOpSig). The
+  // kernel splits the envelope on-chain, installs the validator using
+  // the enableData + enableSig, then validates the inner call with the
+  // unwrapped userOpSig. Subsequent buys (MODE.DEFAULT) use the bare
+  // wrapped sig.
+  const finalSignature: `0x${string}` = wrapForEnableMode
+    ? wrapForEnableMode(wrappedSessionKeySig)
+    : wrappedSessionKeySig;
   const signedUserOpWire = {
     sender: accountAddress,
     nonce: partial.nonce,
@@ -2357,12 +2406,14 @@ async function attemptPathD(
     // tool result.
     if (needsEnable && activeId) {
       try {
-        // The receipt's PermissionInstalled log carries the
-        // permissionId + nonce. We re-decode locally to extract the
-        // logIndex (the broker IPC needs it for forwarding). On
-        // decode failure (event missing → install reverted on-chain
-        // but the receipt was a success status?), we skip the
-        // callback — the chain indexer + watchdog handle the rest.
+        // The enable-mode install signal is the kernel's `SelectorSet`
+        // log (NOT `PermissionInstalled` — the deployed kernel doesn't
+        // emit that for this path; see `KERNEL_V3_SELECTOR_SET_ABI` +
+        // memory `feedback_kernel_emits_selectorset_not_permissioninstalled`).
+        // We re-locate it here only to forward its `logIndex` to the
+        // broker callback (informational — the backend re-scans the
+        // full receipt). On miss we send 0; the chain indexer + watchdog
+        // are the authoritative net.
         let permissionLogIndex = 0;
         try {
           // Best-effort search; receipt structure varies between
@@ -2371,12 +2422,12 @@ async function attemptPathD(
             logs?: { address?: string; topics?: string[]; logIndex?: number }[];
           };
           if (Array.isArray(r.logs)) {
-            const PERMISSION_INSTALLED_TOPIC0 = toEventSelector(
-              'PermissionInstalled(bytes4,uint32)',
+            const SELECTOR_SET_TOPIC0 = toEventSelector(
+              'SelectorSet(bytes4,bytes21,bool)',
             ).toLowerCase();
             for (const l of r.logs) {
               if (
-                l.topics?.[0]?.toLowerCase() === PERMISSION_INSTALLED_TOPIC0 &&
+                l.topics?.[0]?.toLowerCase() === SELECTOR_SET_TOPIC0 &&
                 l.address?.toLowerCase() === accountAddress.toLowerCase()
               ) {
                 permissionLogIndex = l.logIndex ?? 0;

@@ -14,7 +14,7 @@ import {
 import {
   KERNEL_EXECUTE_ABI,
   KERNEL_V3_CURRENT_NONCE_ABI,
-  KERNEL_V3_PERMISSION_INSTALLED_ABI,
+  KERNEL_V3_SELECTOR_SET_ABI,
   KERNEL_V3_SINGLE_CALL_MODE_DEFAULT,
   buildKernelSessionKeySignature,
   composeKernelV3NonceKey,
@@ -392,7 +392,7 @@ describe('wrapEnableModeSignature (byte-equality vs @zerodev/sdk::getEncodedPlug
 
 // ── Wave 5 Option D Commit 3 — ABI re-exports ───────────────────────
 
-describe('KERNEL_V3_CURRENT_NONCE_ABI + KERNEL_V3_PERMISSION_INSTALLED_ABI', () => {
+describe('KERNEL_V3_CURRENT_NONCE_ABI + KERNEL_V3_SELECTOR_SET_ABI', () => {
   it('currentNonce ABI parses as a uint32 view function', () => {
     expect(KERNEL_V3_CURRENT_NONCE_ABI).toHaveLength(1);
     const item = KERNEL_V3_CURRENT_NONCE_ABI[0]!;
@@ -401,20 +401,20 @@ describe('KERNEL_V3_CURRENT_NONCE_ABI + KERNEL_V3_PERMISSION_INSTALLED_ABI', () 
     expect((item as { stateMutability: string }).stateMutability).toBe('view');
   });
 
-  it('PermissionInstalled ABI parses as an event with two non-indexed args', () => {
-    expect(KERNEL_V3_PERMISSION_INSTALLED_ABI).toHaveLength(1);
-    const item = KERNEL_V3_PERMISSION_INSTALLED_ABI[0]!;
+  it('SelectorSet ABI parses as an event with three non-indexed args', () => {
+    // Wave 5 Option D Commit 3 smoke fix — the deployed kernel emits
+    // SelectorSet (NOT PermissionInstalled) on an enable-mode install.
+    expect(KERNEL_V3_SELECTOR_SET_ABI).toHaveLength(1);
+    const item = KERNEL_V3_SELECTOR_SET_ABI[0]!;
     expect(item.type).toBe('event');
-    expect((item as { name: string }).name).toBe('PermissionInstalled');
+    expect((item as { name: string }).name).toBe('SelectorSet');
     const inputs = (
       item as { inputs: readonly { name: string; type: string; indexed?: boolean }[] }
     ).inputs;
-    expect(inputs).toHaveLength(2);
-    expect(inputs[0].name).toBe('permission');
+    expect(inputs).toHaveLength(3);
     expect(inputs[0].type).toBe('bytes4');
-    expect(inputs[0].indexed).toBeFalsy();
-    expect(inputs[1].name).toBe('nonce');
-    expect(inputs[1].type).toBe('uint32');
-    expect(inputs[1].indexed).toBeFalsy();
+    expect(inputs[1].type).toBe('bytes21');
+    expect(inputs[2].type).toBe('bool');
+    expect(inputs.every((i) => !i.indexed)).toBe(true);
   });
 });

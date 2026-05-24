@@ -20,8 +20,7 @@ vi.mock('../../../core/logger.js', () => ({
 }));
 
 import {
-  encodeEventTopics,
-  parseAbi,
+  encodeAbiParameters,
   toEventSelector,
   type Hex,
   type Log,
@@ -39,28 +38,33 @@ import { PermissionInstalledIndexer } from '../permission-installed-indexer.js';
 const KERNEL_ADDR = '0x678d2e3F778C4528911b137ED4db282834f3735E' as `0x${string}`;
 const PERMISSION_ID = '0xa2500760' as `0x${string}`;
 const TX_HASH = ('0x' + '1'.repeat(64)) as `0x${string}`;
+const KERNEL_EXECUTE_SELECTOR = '0xe9ae5c53' as `0x${string}`;
 
-const PERMISSION_INSTALLED_ABI = parseAbi([
-  'event PermissionInstalled(bytes4 permission, uint32 nonce)',
-]);
-
-function makePermissionInstalledLog(args: {
-  permissionId: Hex;
-  nonce: number;
+/**
+ * Build a kernel `SelectorSet(bytes4 selector, bytes21 vId, bool allowed)`
+ * log — the ACTUAL on-chain signal of an enable-mode permission install
+ * (the deployed kernel does NOT emit `PermissionInstalled`). `vId` =
+ * `<typeByte><permissionId(4 bytes)><16 zero bytes>`; default type `0x02`
+ * (PERMISSION). All three args are non-indexed → ABI-encoded in `data`.
+ */
+function makeSelectorSetLog(args: {
+  permissionId: Hex; // 0x + 8 hex
   emittedBy: `0x${string}`;
   blockNumber: bigint;
   txHash: `0x${string}`;
   logIndex: number;
+  allowed?: boolean;
+  /** 2-hex validation-type byte; default '02' (PERMISSION). */
+  validationType?: string;
 }): Log {
-  // The event has two non-indexed args (bytes4 + uint32) so both live
-  // in `data` — packed as a tuple of (bytes4, uint32) each padded to
-  // 32 bytes.
-  const permissionPadded =
-    args.permissionId.slice(2).padEnd(64, '0').slice(0, 64);
-  const noncePadded = args.nonce.toString(16).padStart(64, '0');
-  const data = ('0x' + permissionPadded + noncePadded) as `0x${string}`;
-  // topic[0] = event signature hash. No indexed args.
-  const sigHash = toEventSelector('PermissionInstalled(bytes4,uint32)');
+  const typeByte = args.validationType ?? '02';
+  // bytes21 = type(1) + permissionId(4) + 16 zero bytes = 42 hex.
+  const vId = (`0x${typeByte}${args.permissionId.slice(2)}${'0'.repeat(32)}`) as `0x${string}`;
+  const data = encodeAbiParameters(
+    [{ type: 'bytes4' }, { type: 'bytes21' }, { type: 'bool' }],
+    [KERNEL_EXECUTE_SELECTOR, vId, args.allowed ?? true],
+  );
+  const sigHash = toEventSelector('SelectorSet(bytes4,bytes21,bool)');
   return {
     address: args.emittedBy,
     blockHash: ('0x' + 'b'.repeat(64)) as `0x${string}`,
@@ -149,9 +153,8 @@ describe('PermissionInstalledIndexer', () => {
     indexer.setCursorForTests(99n);
     client.blockNumber = 100n;
     client.logs = [
-      makePermissionInstalledLog({
+      makeSelectorSetLog({
         permissionId: PERMISSION_ID,
-        nonce: 1,
         emittedBy: KERNEL_ADDR,
         blockNumber: 100n,
         txHash: TX_HASH,
@@ -169,9 +172,8 @@ describe('PermissionInstalledIndexer', () => {
     seed(repo, { permissionId: '0xabcdabcd' });
     indexer.setCursorForTests(99n);
     client.logs = [
-      makePermissionInstalledLog({
+      makeSelectorSetLog({
         permissionId: '0xdeaddead', // different
-        nonce: 1,
         emittedBy: KERNEL_ADDR,
         blockNumber: 100n,
         txHash: TX_HASH,
@@ -188,9 +190,8 @@ describe('PermissionInstalledIndexer', () => {
     seed(repo);
     indexer.setCursorForTests(99n);
     client.logs = [
-      makePermissionInstalledLog({
+      makeSelectorSetLog({
         permissionId: PERMISSION_ID,
-        nonce: 1,
         emittedBy: KERNEL_ADDR,
         blockNumber: 100n,
         txHash: TX_HASH,
@@ -212,9 +213,8 @@ describe('PermissionInstalledIndexer', () => {
     seed(repo, { enableStatus: 'failed' });
     indexer.setCursorForTests(99n);
     client.logs = [
-      makePermissionInstalledLog({
+      makeSelectorSetLog({
         permissionId: PERMISSION_ID,
-        nonce: 1,
         emittedBy: KERNEL_ADDR,
         blockNumber: 100n,
         txHash: TX_HASH,
@@ -226,6 +226,44 @@ describe('PermissionInstalledIndexer', () => {
     // Row stays failed; the indexer treats failed as a terminal state
     // and does not retry (also no throw → cursor advances).
     expect(row?.enableStatus).toBe('failed');
+    expect(indexer.getStatus().lastProcessedBlock).toBe(100n);
+  });
+
+  it('ignores SelectorSet with allowed=false (unbind, not an install)', async () => {
+    seed(repo);
+    indexer.setCursorForTests(99n);
+    client.logs = [
+      makeSelectorSetLog({
+        permissionId: PERMISSION_ID,
+        emittedBy: KERNEL_ADDR,
+        blockNumber: 100n,
+        txHash: TX_HASH,
+        logIndex: 0,
+        allowed: false,
+      }),
+    ];
+    await indexer.tickOnce();
+    const row = await repo.findById('sess-indexer-1');
+    expect(row?.enableStatus).toBe('pending');
+    expect(indexer.getStatus().lastProcessedBlock).toBe(100n);
+  });
+
+  it('ignores SelectorSet for a non-permission validation type (e.g. secondary 0x01)', async () => {
+    seed(repo);
+    indexer.setCursorForTests(99n);
+    client.logs = [
+      makeSelectorSetLog({
+        permissionId: PERMISSION_ID,
+        emittedBy: KERNEL_ADDR,
+        blockNumber: 100n,
+        txHash: TX_HASH,
+        logIndex: 0,
+        validationType: '01', // secondary validator, not a permission
+      }),
+    ];
+    await indexer.tickOnce();
+    const row = await repo.findById('sess-indexer-1');
+    expect(row?.enableStatus).toBe('pending');
     expect(indexer.getStatus().lastProcessedBlock).toBe(100n);
   });
 

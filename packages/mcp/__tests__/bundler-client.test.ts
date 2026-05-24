@@ -536,6 +536,45 @@ describe('BundlerClient.sponsorUserOp', () => {
     expect(out.paymasterData).toBe('0x');
   });
 
+  it('accepts odd-length gas QUANTITY hex like paymasterPostOpGasLimit "0x1"', async () => {
+    // Wave 5 Option D Commit 3 (smoke fix) — ZeroDev's paymaster returns
+    // minimal-hex quantities (no leading zeros), so an ODD number of hex
+    // digits is normal + valid (`0x1` = 1 gas). The byte-aligned
+    // assertHex used to reject it, collapsing the entire sponsorship to
+    // `paymaster_rejected`. Gas fields use `assertHexQuantity` now. This
+    // is the EXACT value the first prod smoke received.
+    const fetchImpl = makeMockFetch(async () => {
+      const fields = { ...sponsoredFixture(), paymasterPostOpGasLimit: '0x1' };
+      return jsonResponse({ jsonrpc: '2.0', id: 1, result: fields });
+    });
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      expectedChainId: 421614,
+      fetchImpl,
+    });
+    const out = await client.sponsorUserOp(partialUserOpFixture(), ENTRY_POINT_07_ADDRESS);
+    expect(out.paymasterPostOpGasLimit).toBe('0x1');
+  });
+
+  it('still REJECTS odd-length hex for the paymasterData BYTES field (quantity≠bytes)', async () => {
+    // The quantity relaxation must NOT loosen byte-aligned `bytes` fields.
+    // `paymasterData` is bytes — odd-length (`0xabc`) is malformed.
+    const fetchImpl = makeMockFetch(async () => {
+      const fields = { ...sponsoredFixture(), paymasterData: '0xabc' };
+      return jsonResponse({ jsonrpc: '2.0', id: 1, result: fields });
+    });
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      expectedChainId: 421614,
+      fetchImpl,
+    });
+    await expect(
+      client.sponsorUserOp(partialUserOpFixture(), ENTRY_POINT_07_ADDRESS),
+    ).rejects.toMatchObject({ code: 'invalid_response' });
+  });
+
   it('refuses a sponsored response whose callGasLimit exceeds the plausibility ceiling', async () => {
     // SecEng round-2 MED-3 — a malicious / buggy bundler can return a
     // gas limit beyond reasonable per-buy headroom. Refuse before

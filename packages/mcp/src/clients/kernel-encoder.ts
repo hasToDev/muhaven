@@ -425,7 +425,13 @@ export interface WrapEnableModeSignatureInput {
   readonly hookData?: `0x${string}`;
   /**
    * Inner action selector + address. For the Path D UserOp this is the
-   * kernel.execute selector + the kernel address itself.
+   * kernel.execute selector (`0xe9ae5c53`) + the ZeroDev built-in-execute
+   * action address, which is the ZERO ADDRESS — NOT the kernel address.
+   * The enable digest the on-chain kernel recomputes embeds `action.address`
+   * in its `selectorData`; it MUST byte-match what the frontend signed
+   * (`zerodev.provider.ts` → `{ selector: getActionSelector('0.7'),
+   * address: zeroAddress }`). Passing the kernel address here was the C3
+   * first-cut bug that reverted `EnableNotApproved()` (0xc48cf8ee).
    */
   readonly action: {
     readonly selector: `0x${string}`;
@@ -485,12 +491,18 @@ export const KERNEL_V3_CURRENT_NONCE_ABI = parseAbi([
 ]);
 
 /**
- * Wave 5 Option D Commit 3 — `PermissionInstalled(bytes4 permission,
- * uint32 nonce)` event ABI. Indexer + backend broker-callback route
- * decode the receipt's logs against this. Source:
- * `@zerodev/sdk/accounts/kernel/abi/kernel_v_3_1/KernelAccountAbi.ts:604-620`.
- * Both args are NON-INDEXED.
+ * Wave 5 Option D Commit 3 (smoke fix) — kernel V3.1 `SelectorSet` event
+ * ABI. This is the ACTUAL on-chain signal of an enable-mode permission
+ * install — the deployed kernel does NOT emit `PermissionInstalled` for
+ * that path (verified against the first `path:'D'` receipt; see memory
+ * `feedback_kernel_emits_selectorset_not_permissioninstalled`). The MCP
+ * post-receipt notify locates this log's index to forward to the broker
+ * callback; the backend indexer + callback route decode it for the
+ * authoritative `enable_status` flip.
+ *
+ * Layout: `SelectorSet(bytes4 selector, bytes21 vId, bool allowed)` — all
+ * NON-INDEXED. `vId[0]=0x02` (PERMISSION type); `vId[1..5)` = permissionId.
  */
-export const KERNEL_V3_PERMISSION_INSTALLED_ABI = parseAbi([
-  'event PermissionInstalled(bytes4 permission, uint32 nonce)',
+export const KERNEL_V3_SELECTOR_SET_ABI = parseAbi([
+  'event SelectorSet(bytes4 selector, bytes21 vId, bool allowed)',
 ]);

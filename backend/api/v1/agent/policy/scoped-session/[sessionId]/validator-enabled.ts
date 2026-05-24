@@ -3,14 +3,12 @@ import { ZodError, z } from 'zod';
 import {
   createPublicClient,
   http,
-  decodeEventLog,
-  parseAbi,
   type Address,
-  type Hex,
   type Log,
   type PublicClient,
 } from 'viem';
 import { arbitrumSepolia } from 'viem/chains';
+import { decodePermissionInstallFromSelectorSet } from '../../../../../../src/infrastructure/blockchain/selector-set.js';
 import { RevokeScopedSessionParamsSchema } from '../../../../../../src/application/dto/agent/policy.dto.js';
 import { MarkScopedSessionValidatorEnabledUseCase } from '../../../../../../src/application/use-case/agent/policy/mark-scoped-session-validator-enabled.use-case.js';
 import { container } from '../../../../../../src/infrastructure/container.js';
@@ -43,11 +41,12 @@ const log = getLogger('ValidatorEnabledCallback');
  *
  * **Re-verification**: the body's `txHash` is NOT trusted. We re-call
  * `eth_getTransactionReceipt` via the configured RPC + decode the
- * receipt's logs against `PermissionInstalled(bytes4, uint32)` to
- * confirm:
+ * receipt's logs against the kernel `SelectorSet` install signal (see
+ * `infrastructure/blockchain/selector-set.ts` — the deployed kernel does
+ * NOT emit `PermissionInstalled` for enable-mode installs) to confirm:
  *   - the tx is mined,
- *   - it carries a matching PermissionInstalled log,
- *   - the log's `permission` decoded value matches the body's
+ *   - it carries a matching SelectorSet (permission-enable) log,
+ *   - the log's decoded permissionId (`vId[1..5)`) matches the body's
  *     `permissionId`.
  * Mismatches surface as 422 with a structural reason; the broker
  * daemon's retry loop drops the callback after 1h.
@@ -68,10 +67,6 @@ const log = getLogger('ValidatorEnabledCallback');
  *   - 409 when the row is `'failed'` (watchdog beat the receipt).
  *   - 503 when the RPC URL is unset (broker callback can't re-verify).
  */
-
-const PERMISSION_INSTALLED_EVENT_ABI = parseAbi([
-  'event PermissionInstalled(bytes4 permission, uint32 nonce)',
-]);
 
 const ValidatorEnabledBodySchema = z.object({
   userId: z.string().min(1).max(128).optional(),
@@ -119,7 +114,7 @@ async function verifyReceipt(args: {
   txHash: `0x${string}`;
   permissionId: `0x${string}`;
   logIndex: number;
-}): Promise<{ ok: true; emittedBy: Address; nonce: number } | { ok: false; reason: string }> {
+}): Promise<{ ok: true; emittedBy: Address } | { ok: false; reason: string }> {
   const client = getPublicClient();
   if (!client) {
     return { ok: false, reason: 'rpc_unconfigured' };
@@ -139,35 +134,20 @@ async function verifyReceipt(args: {
   if (receipt.status !== 'success') {
     return { ok: false, reason: `tx_status_${receipt.status}` };
   }
-  // Decode every log against the PermissionInstalled ABI. The log
-  // index supplied by the caller is informational; we ALSO scan the
-  // full receipt so a callback with a slightly-wrong logIndex still
-  // succeeds when the right event exists. Defense-in-depth on broker
-  // implementation bugs.
-  const decodedLogs: {
-    permission: Hex;
-    nonce: number;
-    logIndex: number;
-    emittedBy: Address;
-  }[] = [];
+  // Decode every log against the kernel SelectorSet install signal (the
+  // deployed kernel does NOT emit PermissionInstalled for enable-mode
+  // installs — see selector-set.ts). The caller's `logIndex` is
+  // informational; we scan the FULL receipt so a callback with a
+  // slightly-wrong logIndex still succeeds when the right event exists.
+  // Defense-in-depth on broker implementation bugs.
+  const decodedLogs: { permission: `0x${string}`; emittedBy: Address }[] = [];
   for (const lg of receipt.logs as Log[]) {
-    try {
-      const decoded = decodeEventLog({
-        abi: PERMISSION_INSTALLED_EVENT_ABI,
-        data: lg.data,
-        topics: lg.topics,
-      });
-      if (decoded.eventName !== 'PermissionInstalled') continue;
-      const evArgs = decoded.args as { permission: Hex; nonce: number };
-      decodedLogs.push({
-        permission: evArgs.permission,
-        nonce: Number(evArgs.nonce),
-        logIndex: lg.logIndex ?? -1,
-        emittedBy: lg.address as Address,
-      });
-    } catch {
-      // Not a PermissionInstalled log — skip.
-    }
+    const signal = decodePermissionInstallFromSelectorSet(lg);
+    if (!signal) continue;
+    decodedLogs.push({
+      permission: signal.permissionId,
+      emittedBy: lg.address as Address,
+    });
   }
   const hit = decodedLogs.find(
     (m) => m.permission.toLowerCase() === args.permissionId.toLowerCase(),
@@ -181,7 +161,7 @@ async function verifyReceipt(args: {
           : 'no_permission_installed_event',
     };
   }
-  return { ok: true, emittedBy: hit.emittedBy, nonce: hit.nonce };
+  return { ok: true, emittedBy: hit.emittedBy };
 }
 
 async function postHandler(req: VercelRequest, res: VercelResponse): Promise<void> {
@@ -227,16 +207,16 @@ async function postHandler(req: VercelRequest, res: VercelResponse): Promise<voi
     }
 
     // Optional cross-check: `body.accountAddress` should match the log
-    // emitter. The PermissionInstalled event is emitted by the kernel
-    // (smart account) itself, so `lg.address` IS `accountAddress`.
-    // Mismatch points at a broker that picked the wrong tx hash.
+    // emitter. The SelectorSet event is emitted by the kernel (smart
+    // account) itself, so `lg.address` IS `accountAddress`. Mismatch
+    // points at a broker that picked the wrong tx hash.
     if (verify.emittedBy.toLowerCase() !== body.accountAddress.toLowerCase()) {
       sendResponse(res, {
         statusCode: 422,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           type: 'about:blank',
-          title: 'PermissionInstalled emitter mismatch',
+          title: 'install-event emitter mismatch',
           status: 422,
           detail: `event emitted by ${verify.emittedBy}, callback claimed ${body.accountAddress}`,
         }),

@@ -1,11 +1,21 @@
 /**
- * Wave 5 Option D · Commit 3 — chain indexer for kernel V3.1
- * `PermissionInstalled(bytes4 permission, uint32 nonce)` events.
+ * Wave 5 Option D · Commit 3 — chain indexer that detects kernel V3.1
+ * permission-validator installs and flips the scoped-session mirror's
+ * `enable_status` from `'pending'` to `'enabled'`.
  *
- * **AUTHORITATIVE source of truth** for `agent_scoped_sessions.enable_status`
- * transitions from `'pending'` to `'enabled'`. The broker-callback route
- * exists as a fast-path optimization (MCP-server-mediated); this indexer
- * is the safety net that flips the row even when:
+ * **Install signal = `SelectorSet`, NOT `PermissionInstalled`.** The
+ * deployed Kernel v3.1 does NOT emit `PermissionInstalled(bytes4,uint32)`
+ * for an enable-mode permission install — verified on-chain in the first
+ * `path:'D'` smoke (see `./selector-set.ts` + memory
+ * `feedback_kernel_emits_selectorset_not_permissioninstalled`). It emits
+ * `SelectorSet(bytes4 selector, bytes21 vId, bool allowed)`, whose `vId`
+ * carries the permissionId. The C3 first cut keyed on `PermissionInstalled`
+ * → the mirror never flipped. (Class name kept for continuity; the
+ * MECHANISM is `SelectorSet`.)
+ *
+ * **AUTHORITATIVE source of truth** for the `pending → enabled` flip. The
+ * broker-callback route is a fast-path optimization (MCP-server-mediated);
+ * this indexer is the safety net that flips the row even when:
  *   - the broker daemon is offline
  *   - the broker's outbound HTTPS callback fails after exhausting retries
  *   - the MCP server crashes mid-flow between submit and notify
@@ -19,10 +29,13 @@
  * can be added as a sibling without changing the use-case contract.
  *
  * **Filter scope**: we DO NOT filter on event-emitter address. Every
- * kernel V3.1 smart account in the system emits `PermissionInstalled`
- * from its OWN address; trying to maintain an `[allKernelAddresses]`
- * filter would require a sweep of every onboarded user. The downside is
- * a wider getLogs result set; the upside is no enumeration cost.
+ * kernel V3.1 smart account in the system emits `SelectorSet` from its
+ * OWN address; trying to maintain an `[allKernelAddresses]` filter would
+ * require a sweep of every onboarded user. The downside is a wider
+ * getLogs result set (`SelectorSet` is more frequent than the old
+ * `PermissionInstalled` filter would have been — it fires on every
+ * selector binding); the upside is no enumeration cost. `processLog`
+ * discards non-permission validations + untracked emitters cheaply.
  * Acceptable for the hackathon scale; revisit at Slice 5+ if log volume
  * becomes a hotspot.
  */
@@ -30,10 +43,7 @@
 import {
   createPublicClient,
   http,
-  parseAbi,
-  decodeEventLog,
   type Address,
-  type Hex,
   type Log,
   type PublicClient,
 } from 'viem';
@@ -43,12 +53,12 @@ import type { MarkScopedSessionValidatorEnabledUseCase } from '../../application
 import { ApplicationHttpError } from '../../core/errors.js';
 import { getLogger } from '../../core/logger.js';
 import type { Logger } from 'pino';
+import {
+  SELECTOR_SET_EVENT_ABI,
+  decodePermissionInstallFromSelectorSet,
+} from './selector-set.js';
 
 const MAX_BLOCK_RANGE = 2000n;
-
-const PERMISSION_INSTALLED_EVENT_ABI = parseAbi([
-  'event PermissionInstalled(bytes4 permission, uint32 nonce)',
-]);
 
 export interface PermissionInstalledIndexerConfig {
   readonly rpcUrl: string;
@@ -138,7 +148,7 @@ export class PermissionInstalledIndexer {
           : currentBlock;
       if (this.lastProcessedBlock === null) {
         // First tick on a fresh boot — anchor the cursor at the
-        // confirmation-buffered head. Pre-existing PermissionInstalled
+        // confirmation-buffered head. Pre-existing install (SelectorSet)
         // events that landed before this restart are picked up by the
         // broker-callback path if the broker daemon is still queueing
         // them; otherwise the 60-block watchdog flips stale-pending
@@ -156,7 +166,7 @@ export class PermissionInstalledIndexer {
           : safeHead;
 
       const logs = await this.client.getLogs({
-        events: PERMISSION_INSTALLED_EVENT_ABI,
+        events: SELECTOR_SET_EVENT_ABI,
         fromBlock,
         toBlock,
       });
@@ -191,24 +201,14 @@ export class PermissionInstalledIndexer {
     if (!lg.transactionHash || lg.blockNumber === null || lg.blockNumber === undefined) {
       return false;
     }
-    let permissionId: Hex;
-    try {
-      const decoded = decodeEventLog({
-        abi: PERMISSION_INSTALLED_EVENT_ABI,
-        data: lg.data,
-        topics: lg.topics,
-      });
-      if (decoded.eventName !== 'PermissionInstalled') {
-        return false;
-      }
-      const evArgs = decoded.args as { permission: Hex; nonce: number };
-      permissionId = evArgs.permission;
-    } catch {
-      // Different event with overlapping topic[0] — extremely unlikely
-      // for a 4-byte event whose signature is unique, but skip
-      // defensively rather than throw.
+    // SelectorSet → permission-install signal. Returns null for unbinds
+    // (`allowed=false`), non-permission validation types, and foreign /
+    // malformed logs — all skipped without advancing into a flip.
+    const signal = decodePermissionInstallFromSelectorSet(lg);
+    if (!signal) {
       return false;
     }
+    const permissionId = signal.permissionId;
 
     // Find the matching mirror row. The kernel address (emitter) is
     // `lg.address`. Today the repo lookup is by permissionId alone
@@ -247,9 +247,10 @@ export class PermissionInstalledIndexer {
       throw err;
     }
     if (!session) {
-      // PermissionInstalled emitted by a kernel we don't track. Common
-      // — every dashboard-mediated install fires this event too; our
-      // mirror only carries the Scoped-tier rows. Skip silently.
+      // SelectorSet emitted by a kernel we don't track. Common — every
+      // dashboard-mediated install (+ any other selector binding) fires
+      // this event too; our mirror only carries the Scoped-tier rows.
+      // Skip silently.
       return false;
     }
     if (session.enableStatus === 'enabled') {
@@ -271,7 +272,7 @@ export class PermissionInstalledIndexer {
           txHash: lg.transactionHash.toLowerCase(),
           blockNumber: lg.blockNumber.toString(),
         },
-        'PermissionInstalled → enable_status=enabled (chain indexer)',
+        'SelectorSet (permission install) → enable_status=enabled (chain indexer)',
       );
       return false;
     } catch (err) {
@@ -286,7 +287,7 @@ export class PermissionInstalledIndexer {
               statusCode: err.statusCode,
               msg: err.message,
             },
-            'PermissionInstalled landed but row in terminal state — skipping',
+            'permission install landed but row in terminal state — skipping',
           );
           return false;
         }
@@ -297,7 +298,7 @@ export class PermissionInstalledIndexer {
           sessionId: session.sessionId,
           permissionId: permissionId.toLowerCase(),
         },
-        'PermissionInstalled flip failed — will retry on next tick',
+        'permission-install flip failed — will retry on next tick',
       );
       // Transient — retry next tick. Re-processing is idempotent via
       // `markValidatorEnabled`'s WHERE clause.

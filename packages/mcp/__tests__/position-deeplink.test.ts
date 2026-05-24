@@ -778,6 +778,21 @@ interface BrokerStubOverrides {
     | { type: 'sign_userop'; signature: `0x${string}`; signerAddress: `0x${string}`; sessionId: string }
     | Error;
   /**
+   * Wave 5 Option D Commit 3 — `current_nonce` override (MODE.ENABLE
+   * pre-check). The handler compares `nonce` against the install-
+   * material's `validatorNonce`; equal → proceed, unequal →
+   * `enable_sig_stale`. Wired only when the test opts in.
+   */
+  currentNonce?:
+    | { type: 'current_nonce'; accountAddress: `0x${string}`; nonce: number }
+    | Error;
+  /**
+   * Wave 5 Option D Commit 3 — `notify_userop_landed` override (post-
+   * receipt broker callback). Fire-and-forget; the handler swallows
+   * failures. Wired only when the test opts in.
+   */
+  notifyUseropLanded?: { type: 'notify_userop_landed'; queued?: boolean } | Error;
+  /**
    * Pickup A follow-up Bug #5 — getJwt stub for the
    * `fetchJwtSubjectHint` enrichment that surfaces the broker JWT's
    * subject in the `no_active_session_key` fallback message. When
@@ -875,6 +890,28 @@ function stubBroker(overrides: BrokerStubOverrides = {}): BrokerClient {
     // `fetchJwtSubjectHint`'s catch swallows. That degradation keeps
     // existing tests passing while letting new tests opt in.
     ...(overrides.getJwt ? { getJwt: vi.fn().mockResolvedValue(overrides.getJwt) } : {}),
+    // Wave 5 Option D Commit 3 — MODE.ENABLE IPC verbs. Wired only when
+    // the test opts in; otherwise the Proxy throws "not stubbed" (which,
+    // for notifyUseropLanded, the handler's fire-and-forget catch would
+    // swallow anyway).
+    ...(overrides.currentNonce
+      ? {
+          currentNonce: vi.fn().mockImplementation(async () => {
+            const o = overrides.currentNonce!;
+            if (o instanceof Error) throw o;
+            return o;
+          }),
+        }
+      : {}),
+    ...(overrides.notifyUseropLanded
+      ? {
+          notifyUseropLanded: vi.fn().mockImplementation(async () => {
+            const o = overrides.notifyUseropLanded!;
+            if (o instanceof Error) throw o;
+            return o;
+          }),
+        }
+      : {}),
   };
   return new Proxy(wired, {
     get(target, prop, receiver) {
@@ -1675,10 +1712,15 @@ import { BackendError } from '../src/clients/backend-client.js';
 import { BrokerClientError } from '../src/clients/broker-client.js';
 import { BundlerClientError } from '../src/clients/bundler-client.js';
 import { getUserOperationHash } from 'viem/account-abstraction';
+import { toFunctionSelector } from 'viem';
 import {
   buildKernelSessionKeySignature,
+  composeKernelV3NonceKey,
   encodeKernelExecuteSingleCall,
+  KERNEL_EXECUTE_ABI,
+  wrapEnableModeSignature,
 } from '../src/clients/kernel-encoder.js';
+import { PLACEHOLDER_SIGNATURE } from '../src/tools/handlers.js';
 
 const KERNEL_ADDR = ('0x' + 'a'.repeat(40)) as `0x${string}`;
 const VALIDATOR_ADDR = ('0x' + '9'.repeat(40)) as `0x${string}`;
@@ -1803,6 +1845,70 @@ function computeExpectedUserOpHash(args: {
   // Returning a fixed sentinel — the happy path test below captures the
   // hash dynamically via a sendUserOp spy instead of pre-computing it.
   return ('0x' + '0'.repeat(64)) as `0x${string}`;
+}
+
+// ── Wave 5 Option D Commit 3 — MODE.ENABLE fixtures ──
+// Arbitrary but well-formed hex; `wrapEnableModeSignature` treats both as
+// opaque `bytes`. Real enableData is ~30KB; these are small for test speed.
+const PATH_D_ENABLE_DATA = ('0x' + 'a1'.repeat(64)) as `0x${string}`;
+const PATH_D_ENABLE_SIG = ('0x' + 'b2'.repeat(96)) as `0x${string}`;
+
+/**
+ * Backend stub for the MODE.ENABLE path: serves `policy/state`,
+ * the mirror row with `enableStatus='pending'` + `validatorNonce`, the
+ * `install-material` subroute, the token catalog, and the
+ * `path-d/encrypt-shares` POST. permissionId defaults to `snapshotWith()`'s
+ * `0xdeadbeef` so the mirror ↔ snapshot ↔ install-material cross-checks pass.
+ */
+function pathDEnableBackend(opts: {
+  validatorNonce: number;
+  encryptSharesResult: ReturnType<typeof happyEncryptShares>;
+  permissionId?: string;
+}): BackendClient {
+  const permissionId = opts.permissionId ?? '0xdeadbeef';
+  const catalog = {
+    tokens: [
+      { address: PATH_D_TBILL_ADDR, symbol: 'TBILL1', status: 'active', latest_nav: { nav: '1.0' } },
+    ],
+  };
+  const mirrorSession = {
+    sessionId: 'sess_test',
+    mode: 'scoped',
+    status: 'active',
+    signerAddress: SIGNER_ADDR,
+    permissionId,
+    enableStatus: 'pending',
+    validatorNonce: opts.validatorNonce,
+    targetContracts: [STUB_SUBSCRIPTION_ADDRESS],
+    selectorCaps: [],
+    validUntilSec: 9_999_999_999,
+    mintedAtSec: 1_700_000_000,
+    consentActionHash: null,
+    consentTextSha256: null,
+  };
+  const installMaterial = {
+    sessionId: 'sess_test',
+    userId: 'u-test',
+    enableStatus: 'pending',
+    enableData: PATH_D_ENABLE_DATA,
+    enableSig: PATH_D_ENABLE_SIG,
+    validatorNonce: opts.validatorNonce,
+    permissionId,
+  };
+  return {
+    get: vi.fn().mockImplementation(async (path: string) => {
+      // `/install-material` is a sub-path of `/scoped-session` — match it FIRST.
+      if (path.includes('/install-material')) return { installMaterial };
+      if (path.startsWith('/api/v1/agent/policy/scoped-session')) return { session: mirrorSession };
+      if (path === '/api/v1/agent/policy/state') return { accountAddress: KERNEL_ADDR };
+      return catalog;
+    }),
+    getUnauth: vi.fn().mockResolvedValue(catalog),
+    post: vi.fn().mockImplementation(async (path: string) => {
+      if (path === '/api/v1/agent/path-d/encrypt-shares') return opts.encryptSharesResult;
+      throw new Error(`pathDEnableBackend: unexpected post to ${path}`);
+    }),
+  } as unknown as BackendClient;
 }
 
 describe('positionBuy — Path D Slice 1 Commit 3.5 UserOp pipeline', () => {
@@ -2232,5 +2338,174 @@ describe('positionBuy — Path D Slice 1 Commit 3.5 UserOp pipeline', () => {
     // Sanity: 66 bytes = 132 hex chars + 0x prefix.
     expect(submitted.signature.length).toBe(2 + 132);
     expect(submitted.signature.slice(0, 4)).toBe('0xff');
+  });
+
+  // ── Wave 5 Option D Commit 3 (smoke fix) — MODE.ENABLE sponsorship ──
+  //
+  // Regression for the AA23-reverted-0x gate the first C3 prod smoke hit:
+  // the paymaster's `zd_sponsorUserOperation` simulates the FULL UserOp,
+  // and in ENABLE mode the kernel decodes the signature as the
+  // `getEncodedPluginsData` envelope BEFORE install+validate. A bare
+  // PLACEHOLDER_SIGNATURE fails that abi.decode → `AA23 reverted 0x`. The
+  // sponsorship stub MUST therefore carry the enable envelope (mirroring
+  // the canonical @zerodev/sdk `getSignatureData` `!pluginEnabled` path).
+  it('MODE.ENABLE: sponsorship stub AND final submission both carry the enable envelope (not the bare placeholder)', async () => {
+    const VALIDATOR_NONCE = 1;
+    const snap = snapshotWith();
+    const enc = happyEncryptShares();
+    const sponsored = happySponsored();
+    const nonce = 5n;
+    const fee = { maxFeePerGas: '0x10' as `0x${string}`, maxPriorityFeePerGas: '0x10' as `0x${string}` };
+    const brokerSig = ('0x' + 'ab'.repeat(65)) as `0x${string}`;
+
+    // Replicate the handler's userOpHash so sendUserOp can echo it back
+    // (else `userop_hash_mismatch`). Signature is stripped before hashing
+    // per EIP-4337 v0.7, so its value here is irrelevant.
+    const { encodeFunctionData, parseAbi } = await import('viem');
+    const innerCalldata = encodeFunctionData({
+      abi: parseAbi([
+        'function purchase(address token, (uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) encShares, uint128 maxSharesHint, address ephemeralEOA)',
+      ]),
+      functionName: 'purchase',
+      args: [
+        PATH_D_TBILL_ADDR,
+        {
+          ctHash: BigInt(enc.encShares.ctHash),
+          securityZone: enc.encShares.securityZone,
+          utype: enc.encShares.utype,
+          signature: enc.encShares.signature,
+        },
+        500n,
+        enc.ephemeralEOA,
+      ],
+    }) as `0x${string}`;
+    const kernelCallData = encodeKernelExecuteSingleCall({
+      target: STUB_SUBSCRIPTION_ADDRESS,
+      value: 0n,
+      callData: innerCalldata,
+    });
+    const expectedHash = getUserOperationHash({
+      userOperation: {
+        sender: KERNEL_ADDR,
+        nonce,
+        factory: undefined,
+        factoryData: undefined,
+        callData: kernelCallData,
+        callGasLimit: BigInt(sponsored.callGasLimit),
+        verificationGasLimit: BigInt(sponsored.verificationGasLimit),
+        preVerificationGas: BigInt(sponsored.preVerificationGas),
+        maxFeePerGas: BigInt(fee.maxFeePerGas),
+        maxPriorityFeePerGas: BigInt(fee.maxPriorityFeePerGas),
+        paymaster: sponsored.paymaster,
+        paymasterVerificationGasLimit: BigInt(sponsored.paymasterVerificationGasLimit),
+        paymasterPostOpGasLimit: BigInt(sponsored.paymasterPostOpGasLimit),
+        paymasterData: sponsored.paymasterData,
+        signature: PLACEHOLDER_SIGNATURE,
+      } as unknown as Parameters<typeof getUserOperationHash>[0]['userOperation'],
+      entryPointAddress: STUB_ENTRY_POINT,
+      entryPointVersion: '0.7',
+      chainId: STUB_CHAIN_ID,
+    });
+
+    // Expected envelopes — what `wrapEnableModeSignature` produces for the
+    // stub (sponsorship) and the real broker sig (submission). The two
+    // differ ONLY in the inner userOpSig.
+    //
+    // ⚠ `action.address` MUST be the ZERO ADDRESS (the ZeroDev built-in-
+    // `execute` action sentinel the frontend signs at mint time), NOT the
+    // kernel address. Using the kernel address yields a different
+    // `selectorData` → different enable digest → on-chain
+    // `EnableNotApproved()` (0xc48cf8ee). The first C3 prod smoke hit
+    // exactly that; this test pins the zero-address contract.
+    const kernelExecuteSelector = toFunctionSelector(
+      KERNEL_EXECUTE_ABI[0]!,
+    ).toLowerCase() as `0x${string}`;
+    const ENABLE_ACTION_ADDR = ('0x' + '00'.repeat(20)) as `0x${string}`;
+    const expectedSponsorEnvelope = wrapEnableModeSignature({
+      enableData: PATH_D_ENABLE_DATA,
+      enableSig: PATH_D_ENABLE_SIG,
+      userOpSignature: PLACEHOLDER_SIGNATURE,
+      action: { selector: kernelExecuteSelector, address: ENABLE_ACTION_ADDR },
+    });
+    const expectedSubmitEnvelope = wrapEnableModeSignature({
+      enableData: PATH_D_ENABLE_DATA,
+      enableSig: PATH_D_ENABLE_SIG,
+      userOpSignature: buildKernelSessionKeySignature({ ecdsaSignature: brokerSig }),
+      action: { selector: kernelExecuteSelector, address: ENABLE_ACTION_ADDR },
+    });
+    // The WRONG envelope the C3 first cut produced (action.address =
+    // kernel) — pinned as a negative assertion so a regression to
+    // `accountAddress` fails loudly here, not on-chain.
+    const wrongAccountAddrEnvelope = wrapEnableModeSignature({
+      enableData: PATH_D_ENABLE_DATA,
+      enableSig: PATH_D_ENABLE_SIG,
+      userOpSignature: PLACEHOLDER_SIGNATURE,
+      action: { selector: kernelExecuteSelector, address: KERNEL_ADDR },
+    });
+
+    const getNonceSpy = vi.fn().mockResolvedValue(nonce);
+    const sponsorSpy = vi.fn().mockResolvedValue(sponsored);
+    const sendSpy = vi.fn().mockResolvedValue(expectedHash);
+    const bundler = {
+      getNonce: getNonceSpy,
+      getFeeData: vi.fn().mockResolvedValue(fee),
+      sponsorUserOp: sponsorSpy,
+      sendUserOp: sendSpy,
+      waitForReceipt: vi.fn().mockResolvedValue(happyReceipt(expectedHash)),
+      drainTrace: vi.fn().mockReturnValue([]),
+    } as unknown as BundlerClient;
+
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '500' },
+      {
+        backend: pathDEnableBackend({ validatorNonce: VALIDATOR_NONCE, encryptSharesResult: enc }),
+        broker: stubBroker({
+          preflight: { supported: true, daemonVersion: '0.5.0', signerAddress: SIGNER_ADDR },
+          policySnapshot: { type: 'get_policy_snapshot', snapshot: snap },
+          signUserOp: {
+            type: 'sign_userop',
+            sessionId: 'sess_test',
+            signerAddress: SIGNER_ADDR,
+            signature: brokerSig,
+          },
+          currentNonce: { type: 'current_nonce', accountAddress: KERNEL_ADDR, nonce: VALIDATOR_NONCE },
+          notifyUseropLanded: { type: 'notify_userop_landed', queued: true },
+        }),
+        bundler,
+        surface: 'mcp',
+        dashboardBaseUrl: 'https://muhaven.app',
+        subscriptionAddress: STUB_SUBSCRIPTION_ADDRESS,
+        entryPointAddress: STUB_ENTRY_POINT,
+        chainId: STUB_CHAIN_ID,
+      },
+    );
+
+    // Submitted successfully via Path D (MODE.ENABLE install + buy atomic).
+    expect(result.ok).toBe(true);
+    if (!result.ok || 'echo' in result.data) {
+      throw new Error(`expected PositionSubmittedData (path D), got ${JSON.stringify(result)}`);
+    }
+    expect(result.data.path).toBe('D');
+    expect(result.data.userOpHash).toBe(expectedHash);
+
+    // The nonce key carries the ENABLE mode byte (0x01), not DEFAULT (0x00).
+    expect(getNonceSpy.mock.calls[0]![2]).toBe(
+      composeKernelV3NonceKey({ permissionId: '0xdeadbeef', mode: 'enable' }),
+    );
+
+    // THE FIX: the sponsorship stub is the enable envelope, NOT the bare
+    // 66-byte placeholder (which would AA23-revert at the simulator).
+    const sponsorArg = sponsorSpy.mock.calls[0]![0] as { signature: `0x${string}` };
+    expect(sponsorArg.signature).not.toBe(PLACEHOLDER_SIGNATURE);
+    expect(sponsorArg.signature).toBe(expectedSponsorEnvelope);
+    // ...and it uses the ZERO-address action, not the kernel address
+    // (the EnableNotApproved regression).
+    expect(sponsorArg.signature).not.toBe(wrongAccountAddrEnvelope);
+
+    // The submitted UserOp wraps the REAL broker sig in the SAME envelope.
+    const submitted = sendSpy.mock.calls[0]![0] as { signature: `0x${string}` };
+    expect(submitted.signature).toBe(expectedSubmitEnvelope);
+    // Sponsorship and submission share the envelope but differ in inner sig.
+    expect(submitted.signature).not.toBe(sponsorArg.signature);
   });
 });

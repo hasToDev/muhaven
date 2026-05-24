@@ -428,13 +428,14 @@ export class BundlerClient {
       );
     }
     const obj = result as Record<string, unknown>;
+    // Gas estimates are uint QUANTITIES — odd-length hex is valid.
     return {
-      callGasLimit: assertHex(obj.callGasLimit, 'estimateUserOpGas.callGasLimit'),
-      verificationGasLimit: assertHex(
+      callGasLimit: assertHexQuantity(obj.callGasLimit, 'estimateUserOpGas.callGasLimit'),
+      verificationGasLimit: assertHexQuantity(
         obj.verificationGasLimit,
         'estimateUserOpGas.verificationGasLimit',
       ),
-      preVerificationGas: assertHex(
+      preVerificationGas: assertHexQuantity(
         obj.preVerificationGas,
         'estimateUserOpGas.preVerificationGas',
       ),
@@ -837,12 +838,41 @@ function assertHex(value: unknown, label: string): `0x${string}` {
     // — surface a stable string for both undefined AND structured values.
     // Regex also enforces EVEN hex length (each byte = 2 hex chars) —
     // an odd-length hex string is malformed (Code Reviewer L-3).
+    // NOTE: this byte-aligned check is correct ONLY for `bytes`-type
+    // fields (paymasterData). uint QUANTITY fields (gas limits) are
+    // odd-length-legal — use `assertHexQuantity` for those.
     const repr =
       value === undefined ? 'undefined' : JSON.stringify(value);
     const safe = typeof repr === 'string' ? repr.slice(0, 80) : 'unknown';
     throw new BundlerClientError(
       'invalid_response',
       `${label} must be a 0x-prefixed hex string (got ${safe})`,
+    );
+  }
+  return value as `0x${string}`;
+}
+
+/**
+ * Wave 5 Option D Commit 3 (smoke fix) — validate an Ethereum JSON-RPC
+ * QUANTITY: a uint encoded as the SHORTEST hex with no leading zeros
+ * (per the JSON-RPC spec). Unlike `assertHex` (byte-aligned / even-length,
+ * for `bytes`-type fields), a QUANTITY may have an ODD number of hex
+ * digits — `0x1`, `0xb578`, etc. are all valid.
+ *
+ * The prod smoke surfaced ZeroDev's paymaster legitimately returning
+ * `paymasterPostOpGasLimit: "0x1"`; the byte-aligned `assertHex` rejected
+ * it ("must be a 0x-prefixed hex string"), collapsing the entire
+ * sponsorship path to `paymaster_rejected`. Gas/quantity fields MUST go
+ * through this validator, NOT `assertHex`.
+ */
+function assertHexQuantity(value: unknown, label: string): `0x${string}` {
+  if (typeof value !== 'string' || !/^0x[0-9a-fA-F]+$/.test(value)) {
+    const repr =
+      value === undefined ? 'undefined' : JSON.stringify(value);
+    const safe = typeof repr === 'string' ? repr.slice(0, 80) : 'unknown';
+    throw new BundlerClientError(
+      'invalid_response',
+      `${label} must be a 0x-prefixed hex quantity (got ${safe})`,
     );
   }
   return value as `0x${string}`;
@@ -866,7 +896,8 @@ function assertHexNonZero(
   label: string,
   maxValue?: bigint,
 ): `0x${string}` {
-  const hex = assertHex(value, label);
+  // Gas limits are uint QUANTITIES — odd-length hex is valid (e.g. `0x1`).
+  const hex = assertHexQuantity(value, label);
   // Reject empty (`0x`) AND all-zero hex strings.
   if (hex.length === 2 || BigInt(hex) === 0n) {
     throw new BundlerClientError(
