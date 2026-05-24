@@ -59,13 +59,15 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <!-- Compact sidebar-bottom pill. Two-line stack so the warning sits in
-       its own visual block without competing with the wallet pill above. -->
+  <!-- Compact sidebar-bottom pill — a single tight row (dot + shield +
+       "Dev Mode · KYC bypassed"). The full warning lives in the title
+       tooltip so the strip stays slim without dropping the safety signal. -->
   <div
     v-if="devMode === true && !disabledForever"
     role="status"
     data-testid="dev-mode-banner"
-    class="group relative flex items-center gap-2 px-3 py-1.5 rounded-md
+    title="KYC verification is bypassed — every address is treated as verified. Do not use with real funds."
+    class="group flex items-center gap-1.5 px-2.5 py-1 rounded-md
            bg-negative/8 dark:bg-negative/12
            ring-1 ring-inset ring-negative/25 dark:ring-negative/30
            transition-colors duration-200"
@@ -78,23 +80,20 @@ onBeforeUnmount(() => {
       <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-negative" />
     </span>
     <ShieldAlert
-      :size="11"
+      :size="10"
       :stroke-width="2.2"
       class="text-negative/85 flex-shrink-0"
     />
-    <div class="flex flex-col leading-tight min-w-0">
-      <span
-        class="text-[9.5px] font-sans font-bold uppercase tracking-[0.14em]
-               text-negative/95 dark:text-negative"
-      >
-        Dev Mode
-      </span>
-      <span
-        class="text-[9px] font-sans text-negative/70 dark:text-negative/60 truncate"
-        title="KYC verification is bypassed — every address is treated as verified. Do not use with real funds."
-      >
-        KYC bypassed
-      </span>
-    </div>
+    <span
+      class="text-[9.5px] font-sans font-bold uppercase tracking-[0.14em]
+             text-negative/95 dark:text-negative whitespace-nowrap flex-shrink-0"
+    >
+      Dev Mode
+    </span>
+    <span
+      class="text-[9px] font-sans text-negative/65 dark:text-negative/55 truncate"
+    >
+      · KYC bypassed
+    </span>
   </div>
 </template>
