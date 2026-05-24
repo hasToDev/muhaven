@@ -318,13 +318,15 @@ export class PgScopedSessionRepository implements IScopedSessionRepository {
   ): Promise<ScopedSession | null> {
     // Chain indexer + broker-callback both call this. The match-key is
     // `(permission_id, account_address)` where `account_address` is the
-    // KERNEL that emitted the `PermissionInstalled` log. The mirror's
+    // KERNEL that emitted the `SelectorSet` install log. The mirror's
     // `signer_address` is the SESSION-KEY EOA — those are distinct (a
     // single kernel has multiple session keys over time). We therefore
     // cannot match on `signer_address`; we match on `permission_id`
     // alone + return `null` when a clash lands across two kernels in
     // the same observation window (multi-agent review HIGH-1 across
-    // CR + BE Arch + SecEng all flagged this collision risk).
+    // CR + BE Arch + SecEng all flagged this collision risk). Backed by
+    // the partial `agent_scoped_sessions_permission_id_idx` so the
+    // higher-volume SelectorSet scan doesn't seq-scan per log.
     //
     // **Cross-user collision defense**: permissionId is
     // `keccak256(policy+signer).slice(0,4)` — 4 bytes = ~4.3B space.
