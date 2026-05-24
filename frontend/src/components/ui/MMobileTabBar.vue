@@ -54,7 +54,7 @@ const onboardingTabs = [
 // truncated labels so it never overflows the 360px viewport. The
 // onboarding set stays minimal (Apply / Cash / Agent) — an unapproved
 // issuer can't yet hold a Scoped session, so Policy is omitted there.
-const POLICY_TAB = { path: '/agent/policy/transition', icon: KeyRound, label: 'Policy' }
+const POLICY_TAB = { path: '/agent/policy/transition', icon: KeyRound, label: 'Autonomy' }
 const AGENT_TAB = { path: '/agent', icon: Sparkles, label: 'Agent' }
 
 const tabs = computed(() => {

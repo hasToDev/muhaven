@@ -1,9 +1,10 @@
 /**
  * Wave 5 Option D · Commit 4 — MMobileTabBar nav-entry presence.
  *
- * Asserts the `Policy` tab appears for both investor + issuer roles and is
- * suppressed for an unapproved issuer (the minimal onboarding set). Stores
- * + vue-router are mocked so the bar mounts without a full app boot.
+ * Asserts the agent-autonomy tab (labelled "Autonomy", route
+ * `/agent/policy/transition`) appears for both investor + issuer roles and
+ * is suppressed for an unapproved issuer (the minimal onboarding set).
+ * Stores + vue-router are mocked so the bar mounts without a full app boot.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
@@ -40,7 +41,7 @@ vi.mock('vue-router', () => ({
 
 import MMobileTabBar from '../MMobileTabBar.vue'
 
-describe('MMobileTabBar — Policy entry', () => {
+describe('MMobileTabBar — Autonomy entry', () => {
   beforeEach(() => {
     state.role = 'investor'
     state.issuerStatus = 'approved'
@@ -48,42 +49,42 @@ describe('MMobileTabBar — Policy entry', () => {
     state.push.mockReset()
   })
 
-  it('shows the Policy tab for an investor', () => {
+  it('shows the Autonomy tab for an investor', () => {
     state.role = 'investor'
     const w = mount(MMobileTabBar)
-    expect(w.find('[data-testid="tabbar-nav-policy"]').exists()).toBe(true)
+    expect(w.find('[data-testid="tabbar-nav-autonomy"]').exists()).toBe(true)
   })
 
-  it('shows the Policy tab for an approved issuer', () => {
+  it('shows the Autonomy tab for an approved issuer', () => {
     state.role = 'issuer'
     state.issuerStatus = 'approved'
     const w = mount(MMobileTabBar)
-    expect(w.find('[data-testid="tabbar-nav-policy"]').exists()).toBe(true)
+    expect(w.find('[data-testid="tabbar-nav-autonomy"]').exists()).toBe(true)
   })
 
-  it('Policy sits penultimate, just before Agent', () => {
+  it('Autonomy sits penultimate, just before Agent', () => {
     state.role = 'investor'
     const w = mount(MMobileTabBar)
     const labels = w.findAll('button').map((b) => b.text())
-    const policyIdx = labels.indexOf('Policy')
+    const policyIdx = labels.indexOf('Autonomy')
     const agentIdx = labels.indexOf('Agent')
     expect(policyIdx).toBeGreaterThanOrEqual(0)
     expect(agentIdx).toBe(policyIdx + 1)
   })
 
-  it('omits Policy for an unapproved issuer (minimal onboarding set)', () => {
+  it('omits Autonomy for an unapproved issuer (minimal onboarding set)', () => {
     state.role = 'issuer'
     state.issuerStatus = 'pending'
     const w = mount(MMobileTabBar)
-    expect(w.find('[data-testid="tabbar-nav-policy"]').exists()).toBe(false)
+    expect(w.find('[data-testid="tabbar-nav-autonomy"]').exists()).toBe(false)
     // Onboarding set still carries Apply + Cash + Agent.
     expect(w.find('[data-testid="tabbar-nav-apply"]').exists()).toBe(true)
   })
 
-  it('routes to the policy page on tap', async () => {
+  it('routes to the autonomy (policy) page on tap', async () => {
     state.role = 'investor'
     const w = mount(MMobileTabBar)
-    await w.find('[data-testid="tabbar-nav-policy"]').trigger('click')
+    await w.find('[data-testid="tabbar-nav-autonomy"]').trigger('click')
     expect(state.push).toHaveBeenCalledWith('/agent/policy/transition')
   })
 })

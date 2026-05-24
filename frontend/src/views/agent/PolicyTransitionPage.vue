@@ -1131,12 +1131,11 @@ function humaniseError(e: unknown, fallback: string): string {
             Choose how much your agent can do without asking
           </h1>
           <p class="font-sans text-[13px] leading-relaxed text-midnight/80 dark:text-white/80 mt-2">
-            Tiers gate what the agent (HavenBot, MCP broker, OpenClaw skill,
-            Checkout deeplinks) can execute on your behalf. Pick any tier
-            directly — step-ups need a second tap to confirm; step-downs
-            apply immediately. A breach pauses the surface and resuming
-            always lands back in <span class="font-mono">Advisory</span>,
-            from where you re-arm with a fresh confirmation.
+            Each tier sets what your agent (HavenBot, MCP broker, OpenClaw,
+            Checkout) can do on your behalf. Pick any tier directly — raising
+            autonomy needs a confirming tap; lowering it applies at once. A
+            breach pauses the surface; resuming returns to
+            <span class="font-mono">Advisory</span>, where you re-arm.
           </p>
         </div>
       </div>
@@ -1879,14 +1878,12 @@ function humaniseError(e: unknown, fallback: string): string {
           Broker handoff
         </p>
         <p class="font-sans text-[13px] text-compute dark:text-body-dark leading-relaxed">
-          When you confirm a <span class="font-mono">Scoped autonomy</span>
-          transition, a one-time reveal shows the broker session key. Copy it
-          into <code class="font-mono text-[11px]">MUHAVEN_BROKER_SESSION_KEY</code>
-          on your broker machine and restart the daemon — every read / propose
-          call from the MCP / OpenClaw skill then routes through this policy.
-          The key is computed locally, shown once, and never stored or sent to
-          the backend; if you dismiss it before copying, revoke this session
-          and re-walk to mint a fresh one.
+          Confirming a <span class="font-mono">Scoped autonomy</span> transition
+          reveals a one-time broker session key. Paste it into
+          <code class="font-mono text-[11px]">MUHAVEN_BROKER_SESSION_KEY</code>
+          on your broker machine and restart the daemon — the MCP / OpenClaw
+          skill then signs within this policy. Computed locally, shown once,
+          never sent to the backend; miss it and you'll revoke + re-mint.
         </p>
       </section>
     </template>

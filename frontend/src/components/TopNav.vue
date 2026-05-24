@@ -54,9 +54,13 @@ const investorNav = [
   { path: '/yields', label: 'Yields', icon: TrendingUp },
   { path: '/redemptions', label: 'Redemptions', icon: Undo2 },
   { path: '/activity', label: 'Activity', icon: Activity },
-  // Wave 5 Option D · Commit 4 — mirror Sidebar.vue: Policy penultimate,
-  // just before /agent. testid auto-derives to `topnav-nav-policy`.
-  { path: '/agent/policy/transition', label: 'Policy', icon: KeyRound },
+  // Wave 5 Option D · Commit 4 — mirror Sidebar.vue: the agent-autonomy
+  // entry penultimate, just before /agent. Labelled "Autonomy" (the
+  // page's own "Agent autonomy" / "Scoped autonomy" language) so it reads
+  // as agent-adjacent next to "Agent" without nesting; the revoke
+  // kill-switch stays a one-tap top-level sibling. testid auto-derives to
+  // `topnav-nav-autonomy`.
+  { path: '/agent/policy/transition', label: 'Autonomy', icon: KeyRound },
   { path: '/agent', label: 'Agent', icon: Sparkles },
 ]
 

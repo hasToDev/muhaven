@@ -74,7 +74,7 @@ const investorNav = [
   // management (mint / manage / revoke). Penultimate, just before
   // /agent: it's the autonomy CONFIG surface that sits beside the
   // /agent chat. testid auto-derives to `sidebar-nav-policy`.
-  { path: '/agent/policy/transition', label: 'Policy', icon: KeyRound },
+  { path: '/agent/policy/transition', label: 'Autonomy', icon: KeyRound },
   { path: '/agent', label: 'Agent', icon: Sparkles },
 ]
 
@@ -103,7 +103,7 @@ const issuerNav = [
   // Wave 5 Option D · Commit 4 — Policy is dual-role (issuers manage
   // their own agent autonomy too); mirror the investor-side penultimate
   // placement just before /agent.
-  { path: '/agent/policy/transition', label: 'Policy', icon: KeyRound },
+  { path: '/agent/policy/transition', label: 'Autonomy', icon: KeyRound },
   { path: '/agent', label: 'Agent', icon: Sparkles },
 ]
 
