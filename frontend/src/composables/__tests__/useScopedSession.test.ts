@@ -108,6 +108,73 @@ describe('useScopedSession', () => {
     expect(pendingBrokerPurge.value).toBeNull()
   })
 
+  it('refresh() that loads a NEW active session clears a pending broker-purge (re-mint after revoke)', async () => {
+    // C4 re-smoke issue 3 — revoke (purge armed) → mint a new key → the
+    // refresh that picks up the new session must drop the stale purge
+    // reminder so the active-session banner shows instead of the revoked
+    // strip (showPurgeReminder wins over showActiveBanner otherwise).
+    const s = fakeSession()
+    apiStubs.revokeScopedSession.mockResolvedValue({
+      session: { ...s, status: 'revoked', revokedAt: '2026-05-24T01:00:00.000Z' },
+    })
+    const { session, refresh, revoke, pendingBrokerPurge } = useScopedSession()
+    await revoke('s1')
+    expect(pendingBrokerPurge.value).not.toBeNull()
+
+    // A fresh session is minted + the banner/page re-reads the mirror.
+    apiStubs.getActiveScopedSession.mockResolvedValue({
+      session: fakeSession({ sessionId: 's2' }),
+    })
+    await refresh()
+    expect(session.value?.sessionId).toBe('s2')
+    expect(pendingBrokerPurge.value).toBeNull()
+  })
+
+  it('refresh() with NO active session leaves a pending broker-purge intact', async () => {
+    // The normal post-revoke state: still no session, so the purge reminder
+    // must persist across navigation re-fetches until dismissed/re-minted.
+    const s = fakeSession()
+    apiStubs.revokeScopedSession.mockResolvedValue({
+      session: { ...s, status: 'revoked', revokedAt: '2026-05-24T01:00:00.000Z' },
+    })
+    const { refresh, revoke, pendingBrokerPurge } = useScopedSession()
+    await revoke('s1')
+    expect(pendingBrokerPurge.value).not.toBeNull()
+
+    apiStubs.getActiveScopedSession.mockResolvedValue({ session: null })
+    await refresh()
+    expect(pendingBrokerPurge.value).not.toBeNull()
+  })
+
+  it('drops an in-flight refresh result if a revoke lands first (epoch guard)', async () => {
+    // Frontend-review LOW: a refresh() already in flight when revoke()
+    // completes must NOT apply its stale pre-revoke snapshot — otherwise it
+    // would resurrect the revoked session + wipe the just-armed purge. The
+    // kill-switch must win the race.
+    let resolveGet!: (v: unknown) => void
+    apiStubs.getActiveScopedSession.mockReturnValue(
+      new Promise((res) => {
+        resolveGet = res
+      }),
+    )
+    apiStubs.revokeScopedSession.mockResolvedValue({
+      session: { ...fakeSession(), status: 'revoked', revokedAt: '2026-05-24T01:00:00.000Z' },
+    })
+    const { session, refresh, revoke, pendingBrokerPurge } = useScopedSession()
+
+    const refreshPromise = refresh() // in-flight, awaiting resolveGet
+    await revoke('s1') // bumps the epoch, sets session=null + arms purge
+    expect(session.value).toBeNull()
+    expect(pendingBrokerPurge.value).not.toBeNull()
+
+    // The stale pre-revoke fetch resolves LATE with an active session.
+    resolveGet({ session: fakeSession({ sessionId: 's1' }) })
+    await refreshPromise
+    // Result dropped — revoked state preserved.
+    expect(session.value).toBeNull()
+    expect(pendingBrokerPurge.value).not.toBeNull()
+  })
+
   it('dismissBrokerPurge() clears the reminder', async () => {
     const s = fakeSession()
     apiStubs.revokeScopedSession.mockResolvedValue({ session: { ...s, status: 'revoked', revokedAt: null } })

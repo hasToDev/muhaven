@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, computed, onMounted } from 'vue'
+import { useElementSize } from '@vueuse/core'
 import { useRoute } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { useAgentStore } from '@/stores/agent'
@@ -53,6 +54,17 @@ const showChrome = computed(() => !isLandingPage.value && !isLoginPage.value)
 const RIGHT_RAIL_PATHS = new Set<string>(['/cash', '/trade', '/agent'])
 const hasRightRail = computed(() => RIGHT_RAIL_PATHS.has(route.path))
 
+// Wave 5 Option D · C4 re-smoke — the global banner is a normal-flow strip
+// ABOVE <router-view>. On the viewport-locked `/agent` page (its chat column
+// is `height: calc(100vh - 2.75rem - …)`) the banner's added height would push
+// the chat input below the fold. Measure the banner wrapper's rendered height
+// and publish it as the `--scoped-banner-h` CSS var on <main>; AgentPage's
+// column subtracts it so the input stays visible whether or not the banner
+// shows. Collapses to 0 (→ `0px`) when no banner is rendered; tracks the
+// collapse transition live so the column resizes smoothly.
+const bannerWrapEl = ref<HTMLElement | null>(null)
+const { height: bannerHeight } = useElementSize(bannerWrapEl)
+
 // Phase 9.A · role guardrail. The role is the wallet's stored role
 // (server-side source of truth, hydrated by `useAuth.initialize` from
 // the JWT) — NOT a function of the current URL. The legacy
@@ -93,7 +105,10 @@ onMounted(() => {
     <Sidebar v-if="showChrome" />
     <!-- Mobile top bar: only shows on <md; desktop nav lives in Sidebar -->
     <TopNav v-if="showChrome" class="md:hidden" />
-    <main :class="showChrome ? 'md:pl-64' : ''">
+    <main
+      :class="showChrome ? 'md:pl-64' : ''"
+      :style="{ '--scoped-banner-h': `${bannerHeight}px` }"
+    >
       <!-- Wave 5 Option D · Commit 4 — dashboard banner for an active
            Scoped (agent-autonomy) session. The OUTER wrapper matches the
            router-view content wrapper EXACTLY (`max-w-7xl mx-auto px-…`) so
@@ -116,6 +131,7 @@ onMounted(() => {
            the strip above the ambient mesh-gradient backdrop. -->
       <div
         v-if="showChrome"
+        ref="bannerWrapEl"
         class="relative z-40 max-w-7xl mx-auto w-full px-6 sm:px-10 lg:px-12"
       >
         <div :class="hasRightRail ? 'xl:mr-80' : ''">

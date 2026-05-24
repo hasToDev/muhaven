@@ -42,6 +42,16 @@ const error = ref<string | null>(null)
 let inFlight: Promise<void> | null = null
 
 /**
+ * Monotonic guard bumped on every revoke. A `refresh()` that was already
+ * in-flight when a revoke lands snapshots the epoch at entry and DROPS its
+ * result if the epoch advanced mid-fetch — otherwise a stale pre-revoke
+ * `getActiveScopedSession` response could resurrect the just-revoked session
+ * AND wipe the freshly-armed broker-purge reminder (the kill-switch must
+ * win the race). Narrow window, but this is the security-critical path.
+ */
+let revokeEpoch = 0
+
+/**
  * Post-revoke reminder. The mirror flip to `status='revoked'` is only the
  * FIRST half of the kill-switch — the broker daemon still holds the
  * on-disk session key until the operator restarts it. This ref keeps the
@@ -66,13 +76,32 @@ export function useScopedSession() {
     if (inFlight) return inFlight
     loading.value = true
     error.value = null
+    const epoch = revokeEpoch
     inFlight = (async () => {
       try {
         const { session: s } = await agentPolicyApi.getActiveScopedSession({
           surface: SCOPED_SURFACE,
         })
+        // A revoke landed while this fetch was in flight — its result is a
+        // stale pre-revoke snapshot; drop it so we don't clobber the
+        // kill-switch's `session=null` + armed purge.
+        if (epoch !== revokeEpoch) return
         session.value = s
+        // A freshly-minted (re-armed) session supersedes any pending
+        // broker-purge reminder from a PRIOR revoke: showing "you revoked,
+        // stop your broker" alongside a live session is contradictory, and
+        // the active-session banner is suppressed while a purge is pending
+        // (`showPurgeReminder` wins). Clearing here flips the banner to the
+        // active-session variant the moment the new session lands (C4
+        // re-smoke — minting after a non-dismissed revoke left the stale
+        // purge strip showing).
+        if (s !== null) {
+          pendingBrokerPurge.value = null
+        }
       } catch (e) {
+        // Same staleness guard on the error path — a revoke's state must
+        // not be overwritten by a late-failing pre-revoke fetch.
+        if (epoch !== revokeEpoch) return
         // 401 (expired JWT) / network — treat as "no active session"; the
         // banner hides and the page can show a soft error if it wants.
         error.value =
@@ -98,6 +127,9 @@ export function useScopedSession() {
    */
   async function revoke(sessionId: string): Promise<void> {
     const res = await agentPolicyApi.revokeScopedSession({ sessionId })
+    // Invalidate any refresh that started before this revoke so its stale
+    // pre-revoke result can't resurrect the session / wipe the purge below.
+    revokeEpoch++
     session.value = null
     // Clear any stale load error from a prior failed refresh() so a
     // consumer reading `{ error }` doesn't show a failure next to a

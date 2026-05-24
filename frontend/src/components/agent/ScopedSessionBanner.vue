@@ -151,45 +151,42 @@ onBeforeUnmount(() => {
         <div
           data-testid="scoped-session-purge-reminder"
           role="status"
-          class="mb-3 rounded-b-xl px-3.5 py-2.5 space-y-1.5
+          class="mb-3 flex items-center gap-2.5 rounded-b-xl px-3.5 py-2
                  border-x border-b border-negative/40 bg-negative/5
                  dark:border-negative/30 dark:bg-negative/10 backdrop-blur-sm"
         >
-          <div class="flex items-start gap-2">
-            <CircleCheck :size="14" class="mt-0.5 flex-shrink-0 text-positive" aria-hidden="true" />
-            <p class="font-sans text-[12px] text-midnight dark:text-white leading-snug">
-              <span class="font-semibold">Session revoked.</span>
-              Your broker still holds the old key until you run
-              <code class="font-mono text-[11px]">{{ BROKER_STOP_CMD }}</code> — re-mint to re-arm.
-            </p>
-          </div>
-          <div class="flex items-center justify-end gap-2">
-            <button
-              type="button"
-              data-testid="scoped-session-purge-copy"
-              @click="copyStopCmd"
-              class="inline-flex items-center gap-1 px-2 py-1 rounded-md
-                     text-[11px] font-medium cursor-pointer
-                     text-compute dark:text-signal
-                     border border-haze dark:border-white/10
-                     hover:bg-mist/60 dark:hover:bg-white/5 transition-colors"
-            >
-              <Check v-if="purgeCopied" :size="11" class="text-positive" aria-hidden="true" />
-              <Copy v-else :size="11" aria-hidden="true" />
-              {{ purgeCopied ? 'Copied' : 'Copy stop command' }}
-            </button>
-            <button
-              type="button"
-              data-testid="scoped-session-purge-dismiss"
-              @click="dismissBrokerPurge"
-              class="inline-flex items-center gap-1 px-2.5 py-1 rounded-md
-                     text-[11px] font-medium cursor-pointer
-                     text-cool hover:text-midnight dark:hover:text-white transition-colors"
-            >
-              <X :size="11" aria-hidden="true" />
-              Stopped — dismiss
-            </button>
-          </div>
+          <CircleCheck :size="14" class="flex-shrink-0 text-positive" aria-hidden="true" />
+          <p class="min-w-0 flex-1 text-[12px] leading-tight truncate text-midnight dark:text-white">
+            <span class="font-semibold">Session revoked.</span>
+            <span class="text-cool dark:text-body-dark/80">
+              Broker still holds the old key — stop it, then re-mint.
+            </span>
+          </p>
+          <button
+            type="button"
+            data-testid="scoped-session-purge-copy"
+            @click="copyStopCmd"
+            class="flex-shrink-0 inline-flex items-center gap-1 px-2.5 py-1 rounded-md
+                   text-[11px] font-medium cursor-pointer
+                   text-compute dark:text-signal
+                   border border-haze dark:border-white/10
+                   hover:bg-mist/60 dark:hover:bg-white/5 transition-colors"
+          >
+            <Check v-if="purgeCopied" :size="11" class="text-positive" aria-hidden="true" />
+            <Copy v-else :size="11" aria-hidden="true" />
+            {{ purgeCopied ? 'Copied' : 'Copy stop cmd' }}
+          </button>
+          <button
+            type="button"
+            data-testid="scoped-session-purge-dismiss"
+            @click="dismissBrokerPurge"
+            aria-label="Broker stopped — dismiss this reminder"
+            class="flex-shrink-0 inline-flex items-center justify-center w-6 h-6 rounded-md cursor-pointer
+                   text-cool hover:text-midnight dark:hover:text-white
+                   hover:bg-white/60 dark:hover:bg-white/10 transition-colors"
+          >
+            <X :size="13" aria-hidden="true" />
+          </button>
           <span class="sr-only" role="status" aria-live="polite">
             {{ purgeCopied ? 'Broker stop command copied to clipboard' : '' }}
           </span>

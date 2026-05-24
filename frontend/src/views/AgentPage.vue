@@ -563,8 +563,16 @@ onMounted(() => {
 
 
     <!-- ── Chat column (with input bar pinned at bottom).
-         On xl+: `xl:mr-80` reserves space for the fixed right aside. ── -->
-    <div class="flex flex-col h-[calc(100vh-2.75rem)] xl:mr-80">
+         On xl+: `xl:mr-80` reserves space for the fixed right aside.
+         Height subtracts the global Scoped-session banner's measured height
+         (`--scoped-banner-h`, published by App.vue → 0px when no banner) so
+         the banner never pushes the chat input below the fold (C4 re-smoke).
+         Inline style (not a Tailwind `h-[…]` class) so the `var(…, 0px)`
+         fallback's comma isn't mangled by the arbitrary-value parser. ── -->
+    <div
+      class="flex flex-col xl:mr-80"
+      style="height: calc(100vh - 2.75rem - var(--scoped-banner-h, 0px))"
+    >
       <!-- Scrollable messages.
            Round-2 a11y review AA-HIGH-1: role="log" + aria-live="polite"
            + aria-relevant="additions" so SR users get notified when a
