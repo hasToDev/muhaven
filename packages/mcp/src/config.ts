@@ -68,20 +68,6 @@ export interface McpRuntimeConfig {
    * `MUHAVEN_ENTRY_POINT`.
    */
   entryPointAddress: `0x${string}`;
-  /**
-   * Wave 5 Option D Commit 3 — shared secret the MCP server presents
-   * as `Authorization: Bearer <secret>` when calling the backend's
-   * install-material subroute (`GET .../scoped-session/:id/install-
-   * material`). Same secret the broker daemon uses for its outbound
-   * validator-enabled callback (the backend's `with-service-secret`
-   * middleware accepts only one value per env var).
-   *
-   * Optional: when unset, the MCP server cannot fetch install-material
-   * and Path D's MODE.ENABLE branch is unreachable. The Path D
-   * fallback chain returns `install_material_unavailable` so the LLM
-   * has a clear remediation message ("operator: set BROKER_CALLBACK_SERVICE_SECRET").
-   */
-  brokerCallbackServiceSecret: string | undefined;
 }
 
 export interface BrokerRuntimeConfig {
@@ -341,24 +327,11 @@ export function loadMcpConfig(env: NodeJS.ProcessEnv = process.env): McpRuntimeC
     entryPointAddress = entryPointAddressRaw.toLowerCase() as `0x${string}`;
   }
 
-  // Wave 5 Option D Commit 3 — shared secret for the install-material
-  // GET subroute. Same env var the broker daemon uses; the MCP server
-  // is the second holder per the operator's handoff. Optional — when
-  // unset, Path D's MODE.ENABLE branch is unreachable and the
-  // attemptPathD chain falls back with `install_material_unavailable`.
-  const brokerCallbackServiceSecretRaw = readEnv(
-    'BROKER_CALLBACK_SERVICE_SECRET',
-    env,
-  );
-  let brokerCallbackServiceSecret: string | undefined;
-  if (brokerCallbackServiceSecretRaw !== undefined) {
-    if (brokerCallbackServiceSecretRaw.length < 16) {
-      throw new Error(
-        'BROKER_CALLBACK_SERVICE_SECRET must be at least 16 characters (matches backend with-service-secret middleware floor)',
-      );
-    }
-    brokerCallbackServiceSecret = brokerCallbackServiceSecretRaw;
-  }
+  // C3 third-commit refactor: the install-material subroute moved from
+  // shared-service-secret auth to the caller's user JWT. The MCP server
+  // no longer reads BROKER_CALLBACK_SERVICE_SECRET — that env var is now
+  // only relevant to the broker daemon (its outbound validator-enabled
+  // callback) + the backend (the callback route gate).
 
   return {
     backendBaseUrl,
@@ -374,7 +347,6 @@ export function loadMcpConfig(env: NodeJS.ProcessEnv = process.env): McpRuntimeC
     chainId,
     subscriptionAddress,
     entryPointAddress,
-    brokerCallbackServiceSecret,
   };
 }
 

@@ -1,15 +1,18 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { ZodError } from 'zod';
 import {
-  GetInstallMaterialQuerySchema,
   RevokeScopedSessionParamsSchema,
   toScopedSessionInstallMaterialDto,
 } from '../../../../../../src/application/dto/agent/policy.dto.js';
 import { GetScopedSessionInstallMaterialUseCase } from '../../../../../../src/application/use-case/agent/policy/get-scoped-session-install-material.use-case.js';
 import { container } from '../../../../../../src/infrastructure/container.js';
-import { sendResponse } from '../../../../../../src/interface/handler-factory.js';
+import {
+  sendResponse,
+  type AuthenticatedRequest,
+} from '../../../../../../src/interface/handler-factory.js';
+import { withAuth } from '../../../../../../src/interface/middleware/with-auth.js';
 import { withCors } from '../../../../../../src/interface/middleware/with-cors.js';
-import { withServiceSecret } from '../../../../../../src/interface/middleware/with-service-secret.js';
+import { withScope } from '../../../../../../src/interface/middleware/with-scope.js';
 import { Response } from '../../../../../../src/interface/response.js';
 import { MissingEncryptionKeyError } from '../../../../../../src/infrastructure/repository/postgres/pgcrypto.js';
 import { ApplicationHttpError } from '../../../../../../src/core/errors.js';
@@ -18,46 +21,53 @@ import { getLogger } from '../../../../../../src/core/logger.js';
 const log = getLogger('GetScopedSessionInstallMaterial');
 
 /**
- * Wave 5 Option D · Commit 2 — internal-only install-material reveal.
+ * Wave 5 Option D · Commit 2 (auth model rev. in C3 third commit) —
+ * install-material reveal for the MCP server's MODE.ENABLE UserOp.
  *
- *   GET /api/v1/agent/policy/scoped-session/:sessionId/install-material?userId=...
+ *   GET /api/v1/agent/policy/scoped-session/:sessionId/install-material
  *
- * **Auth**: shared service secret `BROKER_CALLBACK_SERVICE_SECRET` in
- * `Authorization: Bearer <secret>`. Browser clients never see this
- * route — only the C3 MCP server (when its Path D probe hits
- * `enable_status === 'pending'` and needs to compose the MODE.ENABLE
- * UserOp).
+ * **Auth (C3 rev.)**: the caller's own **user JWT** (`withAuth` +
+ * `withScope(['mcp.propose.*'])`). The owning userId is taken from the
+ * verified JWT subject — NOT a query param + NOT a shared service
+ * secret. Rationale (third-commit refactor): the actual consumer is
+ * the MCP server, which already holds the user's device-flow JWT
+ * (scopes `mcp.read.* + mcp.propose.*`). The C2 design gated this on
+ * the shared `BROKER_CALLBACK_SERVICE_SECRET` on the assumption the
+ * consumer would be the broker daemon — but a shared service secret
+ * does NOT scale to a multi-user install (a fresh `npm i -g
+ * @muhaven/mcp` user has no provisioning path to obtain it, and N-way
+ * distributing one secret is a leak-amplification risk). Gating on the
+ * user's own JWT is the correct per-user model: a user fetches THEIR
+ * OWN session's install material, nothing else.
  *
- * The shared secret is the CALLER gate ("are you the MCP server?").
- * The required `userId` query parameter is the OWNERSHIP gate
- * (defense-in-depth: a service-secret holder can't peek at OTHER
- * users' install material by varying the sessionId). The repository
- * layer re-checks `user_id = $1` in the SELECT.
+ * **Scope = `mcp.propose.*`** (not `mcp.read.*`): the install material
+ * (`enable_data` + `enable_sig`) directly enables an on-chain write
+ * (the PermissionValidator install), so it sits behind the same scope
+ * the autonomous buy itself requires — least-privilege.
  *
- * **Why GET + body-less + query userId** (vs POST + JSON body): the
- * route is idempotent + cacheable in principle (the install material
- * is immutable post-mint; only the lifecycle fields change). GET keeps
- * the wire shape boring. The userId is in the query string (not the
- * path) so the route pattern stays clean — `[sessionId]/install-
- * material` matches what the dev-server scanner produces.
+ * **Ownership**: the use-case re-checks `user_id = $1` at the repo
+ * layer. With JWT-derived userId this is now belt-and-suspenders (the
+ * JWT subject IS the userId), but kept as defense-in-depth against a
+ * future caller that passes a different userId.
+ *
+ * **`enable_data`/`enable_sig` exposure**: these decrypt server-side
+ * (pgcrypto) inside the SELECT and ship over TLS to the user's own
+ * authenticated session. The user generated this material (their
+ * passkey signed the enable typed-data); exposing it back to their own
+ * `mcp.propose.*`-scoped JWT is appropriate. The default scoped-session
+ * GET still REDACTS these columns — this subroute is the sole reveal
+ * path.
  *
  * **Response shapes**:
  *   - 200 + ScopedSessionInstallMaterialDto when the row exists +
- *     ownership matches.
- *   - 404 when the row doesn't exist OR ownership mismatches
+ *     belongs to the JWT subject.
+ *   - 404 when the row doesn't exist OR isn't owned by the caller
  *     (uniform response defeats sessionId-existence side channels).
  *   - 503 when `OPTION_D_C2_ENCRYPTION_KEY` is unset (pgcrypto can't
  *     decrypt without the key).
- *   - 401 from `withServiceSecret` when the bearer is missing /
- *     wrong-length / wrong-value.
- *   - 503 from `withServiceSecret` when `BROKER_CALLBACK_SERVICE_SECRET`
- *     is unset (route inactive until the operator wires the secret).
- *   - 400 when the query schema rejects (malformed userId).
- *
- * **Method allowance**: GET only — the verb check sits INSIDE
- * `withServiceSecret` so an unauthenticated POST/PUT/DELETE gets the
- * same 401/503 response shape as an unauthenticated GET. Defends
- * against route-fingerprinting probes.
+ *   - 401 from `withAuth` (missing/invalid JWT) / 403 from `withScope`
+ *     (JWT lacks `mcp.propose.*`).
+ *   - 405 for non-GET methods.
  */
 
 const useCase = new GetScopedSessionInstallMaterialUseCase(
@@ -66,20 +76,18 @@ const useCase = new GetScopedSessionInstallMaterialUseCase(
 
 async function getHandler(req: VercelRequest, res: VercelResponse): Promise<void> {
   try {
+    const authReq = req as AuthenticatedRequest;
+    const userId = authReq.authPayload!.userId;
+
     const rawSessionId = (
       req.query as Record<string, string | string[] | undefined>
     ).sessionId;
     const sessionId = Array.isArray(rawSessionId) ? rawSessionId[0] : rawSessionId;
     const params = RevokeScopedSessionParamsSchema.parse({ sessionId });
 
-    const rawUserId = (req.query as Record<string, string | string[] | undefined>)
-      .userId;
-    const userId = Array.isArray(rawUserId) ? rawUserId[0] : rawUserId;
-    const query = GetInstallMaterialQuerySchema.parse({ userId });
-
     const material = await useCase.execute({
       sessionId: params.sessionId,
-      userId: query.userId,
+      userId,
     });
     if (!material) {
       // Uniform 404 across "not found" and "not owned" — see route
@@ -97,8 +105,8 @@ async function getHandler(req: VercelRequest, res: VercelResponse): Promise<void
       return;
     }
     if (error instanceof MissingEncryptionKeyError) {
-      // 503 — distinct from "secret missing" (also 503) so an operator
-      // running through the runbook can disambiguate.
+      // 503 when OPTION_D_C2_ENCRYPTION_KEY is unset — pgcrypto can't
+      // decrypt enable_data/enable_sig without it.
       sendResponse(res, {
         statusCode: 503,
         headers: { 'Content-Type': 'application/json' },
@@ -120,18 +128,12 @@ async function getHandler(req: VercelRequest, res: VercelResponse): Promise<void
   }
 }
 
-const protectedHandler = withServiceSecret(
-  {
-    envVar: 'BROKER_CALLBACK_SERVICE_SECRET',
-    serviceName: 'Broker Callback',
-  },
-  async (req: VercelRequest, res: VercelResponse): Promise<void> => {
-    if (req.method !== 'GET') {
-      sendResponse(res, Response.methodNotAllowed('GET'));
-      return;
-    }
-    return getHandler(req, res);
-  },
-);
+const router = async (req: VercelRequest, res: VercelResponse): Promise<void> => {
+  if (req.method !== 'GET') {
+    sendResponse(res, Response.methodNotAllowed('GET'));
+    return;
+  }
+  return getHandler(req, res);
+};
 
-export default withCors(protectedHandler);
+export default withCors(withAuth(withScope(['mcp.propose.*'])(router)));

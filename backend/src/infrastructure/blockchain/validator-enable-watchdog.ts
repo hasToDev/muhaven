@@ -29,7 +29,17 @@ import type { Logger } from 'pino';
 import type { IOperatorAlertTransport } from '../operator/operator-alert-transport.js';
 
 export interface ValidatorEnableWatchdogConfig {
-  /** Rows with `mintedAt < now - staleThresholdSec` get flipped. */
+  /**
+   * Post-expiry grace (seconds). A pending session is flagged `failed`
+   * only once `valid_until_sec + graceSec <= now` — i.e. its TTL window
+   * closed AND the grace buffer elapsed without the validator
+   * installing. (Third-commit correction: this WAS "minutes since
+   * mint", which prematurely killed healthy within-TTL sessions that
+   * were simply awaiting their first Path D buy. C3 installs at first
+   * buy, not at mint, so the only genuine failure is "TTL expired
+   * without ever installing".) Default 720s grace ≈ one watchdog
+   * confirmation window past expiry.
+   */
   readonly staleThresholdSec: number;
   /** Maximum rows processed per tick. */
   readonly batchLimit: number;
@@ -84,9 +94,15 @@ export class ValidatorEnableWatchdog {
     let flipped = 0;
     try {
       const now = nowOverride ?? new Date();
-      const cutoff = new Date(now.getTime() - this.config.staleThresholdSec * 1000);
-      const stale = await this.scopedRepo.findPendingEnableOlderThan(
-        cutoff,
+      // TTL-based cutoff (third-commit correction): flag pending
+      // sessions whose `valid_until_sec + grace <= now` — i.e. their
+      // TTL window has closed plus a grace buffer, and the validator
+      // never installed. `cutoffSec = nowSec - graceSec` so the repo
+      // matches `valid_until_sec <= cutoffSec`.
+      const nowSec = Math.floor(now.getTime() / 1000);
+      const cutoffSec = nowSec - this.config.staleThresholdSec;
+      const stale = await this.scopedRepo.findExpiredPendingEnable(
+        cutoffSec,
         this.config.batchLimit,
       );
       for (const row of stale) {
@@ -137,7 +153,9 @@ export class ValidatorEnableWatchdog {
       return;
     }
     try {
-      const ageMs = now.getTime() - session.mintedAt.getTime();
+      // Milliseconds since the session's TTL window closed (the
+      // trigger condition), NOT since mint.
+      const expiredMs = now.getTime() - session.validUntilSec * 1000;
       await this.appendAudit.execute({
         userId: session.userId,
         surface: session.surface,
@@ -147,7 +165,9 @@ export class ValidatorEnableWatchdog {
           permissionId: session.permissionId,
           signerAddressPrefix: session.signerAddress.slice(0, 10),
           mintedAt: session.mintedAt.toISOString(),
-          staleMs: ageMs,
+          validUntilSec: session.validUntilSec,
+          expiredMs,
+          reason: 'ttl_expired_without_install',
           source: 'watchdog',
         },
         now,
@@ -168,22 +188,24 @@ export class ValidatorEnableWatchdog {
     session: ScopedSession,
     now: Date,
   ): Promise<void> {
-    const ageMs = now.getTime() - session.mintedAt.getTime();
-    const ageMin = Math.round(ageMs / 60_000);
+    // Minutes since the session's TTL window closed (NOT since mint —
+    // the trigger is TTL-expiry, see findExpiredPendingEnable).
+    const expiredMs = now.getTime() - session.validUntilSec * 1000;
+    const expiredMin = Math.max(0, Math.round(expiredMs / 60_000));
     // Match the OperatorAlertPayloadSchema (strict) — see
     // `infrastructure/operator/operator-alert-transport.ts`. The
     // bot worker's renderer collapses these fields into the final
     // Telegram message; we don't pre-format the wire shape here.
     // `shortMessage` is capped at 1024 chars; ours is ~500.
     const shortMessage =
-      `Scoped session validator install watchdog flipping pending → failed after ${ageMin}min stale. ` +
+      `Scoped session flipped pending → failed: TTL expired ${expiredMin}min ago without the validator ever installing (user minted but never completed a Path D buy, or every attempt failed). ` +
       `sessionId=${session.sessionId.slice(0, 32)}, signer=${session.signerAddress.slice(0, 10)}, ` +
       `permissionId=${session.permissionId ?? 'null'}, mintedAt=${session.mintedAt.toISOString()}. ` +
-      `Operator action: investigate broker/bundler/paymaster; user must re-mint Scoped tier.`;
+      `No operator action required unless this is unexpected; the affected user must re-mint to use autonomous buys.`;
     try {
       await this.alertTransport.notify({
         tokenSymbol: 'agent_scoped_session',
-        errorClass: 'ValidatorInstallTimeout',
+        errorClass: 'ValidatorInstallExpired',
         shortMessage: shortMessage.slice(0, 1024),
         severity: 'warn',
       });

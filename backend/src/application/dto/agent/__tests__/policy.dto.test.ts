@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import {
-  GetInstallMaterialQuerySchema,
   GetScopedSessionQuerySchema,
   MintScopedSessionDtoSchema,
   RevokeScopedSessionParamsSchema,
@@ -562,24 +561,6 @@ describe('MintScopedSessionDtoSchema — Option D · C2 install material', () =>
   });
 });
 
-describe('GetInstallMaterialQuerySchema — Option D · C2', () => {
-  it('accepts a non-empty userId', () => {
-    expect(
-      GetInstallMaterialQuerySchema.parse({ userId: 'user-abc-123' }),
-    ).toEqual({ userId: 'user-abc-123' });
-  });
-
-  it('REJECTS empty userId', () => {
-    expect(() => GetInstallMaterialQuerySchema.parse({ userId: '' })).toThrow();
-  });
-
-  it('REJECTS missing userId', () => {
-    expect(() => GetInstallMaterialQuerySchema.parse({})).toThrow();
-  });
-
-  it('REJECTS userId over 128 chars (defense-in-depth on the FK length)', () => {
-    expect(() =>
-      GetInstallMaterialQuerySchema.parse({ userId: 'a'.repeat(129) }),
-    ).toThrow();
-  });
-});
+// GetInstallMaterialQuerySchema removed in the C3 third commit — the
+// install-material route moved to user-JWT auth (userId from the JWT
+// subject, no query param to validate). Its tests are removed with it.

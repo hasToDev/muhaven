@@ -233,17 +233,29 @@ export interface IScopedSessionRepository {
   markValidatorFailed(sessionId: string): Promise<ScopedSession | null>;
 
   /**
-   * Wave 5 Option D · Commit 3 — fetch active rows whose
-   * `enable_status='pending'` AND `mintedAt < beforeDate`. Used by the
-   * 60-block watchdog cron to identify stuck install ceremonies.
+   * Wave 5 Option D · Commit 3 (trigger corrected in the third commit)
+   * — fetch active rows whose `enable_status='pending'` AND
+   * `valid_until_sec <= cutoffSec` (the session's TTL window has
+   * closed without the validator ever being installed).
    *
-   * Backed by the partial index
-   * `agent_scoped_sessions_pending_enable_v1 ON (minted_at)
-   * WHERE enable_status='pending' AND status='active'`. Returns at
-   * most `limit` rows.
+   * **Why TTL-based, not mint-age-based**: C3 installs the validator
+   * at the user's FIRST Path D buy (MODE.ENABLE), which can land
+   * arbitrarily long after mint (a user legitimately takes minutes-to-
+   * hours to configure their broker + buy). The original
+   * `findPendingEnableOlderThan(mintedAt)` flagged healthy within-TTL
+   * pending sessions as `failed` prematurely — surfaced organically
+   * at the first prod smoke when a fresh session was killed ~12min
+   * after mint, before the user's first buy. A pending session is
+   * only genuinely "failed" once its TTL expires without installing;
+   * within TTL it's retryable and must be left alone.
+   *
+   * Caller (watchdog) passes `cutoffSec = nowSec - graceSec` where
+   * `graceSec` is a small post-expiry buffer (`VALIDATOR_ENABLE_WATCHDOG_STALE_SEC`,
+   * repurposed). Returns at most `limit` rows, oldest-`valid_until_sec`
+   * first.
    */
-  findPendingEnableOlderThan(
-    beforeDate: Date,
+  findExpiredPendingEnable(
+    cutoffSec: number,
     limit: number,
   ): Promise<ScopedSession[]>;
 }

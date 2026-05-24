@@ -544,6 +544,21 @@ export const agentAuditEventTypeEnum = pgEnum('agent_audit_event_type', [
   // Adding an unused enum value is harmless; the migration use-case
   // emits one row per affected `agent_scoped_sessions` row at run time.
   'scoped_session_revoked_by_policy_migration',
+  // Wave 5 Option D · Commit 3 (second-pass review fix) — emitted by
+  // `ValidatorEnableWatchdog` when a pending Scoped session crossed the
+  // stale threshold without a `PermissionInstalled` event arriving.
+  // The TypeScript enum (`AuditEventType.ValidatorInstallFailed`) was
+  // added in `3bf02b6` but the pgEnum side was missed — surfaced
+  // organically at first prod boot when the C2-minted session
+  // `a552c4b4-...` (never installed because C3 hadn't shipped at
+  // mint time) was the first row the watchdog flipped. The mirror
+  // row flipped correctly (`markValidatorFailed` succeeded); the
+  // audit emit threw with `invalid input value for enum
+  // agent_audit_event_type: "validator_install_failed"`. Use-case's
+  // catch-and-log-orphan path saved the forensic trail. This entry
+  // closes the drift; subsequent watchdog flips will land the audit
+  // row cleanly.
+  'validator_install_failed',
 ]);
 
 export const agentUserState = pgTable(

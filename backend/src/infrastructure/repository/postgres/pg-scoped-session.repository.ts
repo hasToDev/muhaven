@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, lt, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, lte, sql } from 'drizzle-orm';
 import {
   ScopedSession,
   isScopedSessionEnableStatus,
@@ -421,21 +421,26 @@ export class PgScopedSessionRepository implements IScopedSessionRepository {
     return row ? this.toDomain(row) : null;
   }
 
-  async findPendingEnableOlderThan(
-    beforeDate: Date,
+  async findExpiredPendingEnable(
+    cutoffSec: number,
     limit: number,
   ): Promise<ScopedSession[]> {
-    // Partial index `agent_scoped_sessions_pending_enable_v1 ON
-    // (minted_at) WHERE enable_status='pending' AND status='active'`
-    // covers this seek exactly. Order ASC by mintedAt so the watchdog
-    // processes the oldest-stuck rows first (FIFO operator triage).
+    // TTL-based trigger (third-commit correction): flag pending+active
+    // rows whose `valid_until_sec <= cutoffSec` (TTL window closed
+    // without an install). Order ASC by valid_until_sec so the watchdog
+    // processes the longest-expired rows first (FIFO operator triage).
+    //
+    // The partial index `agent_scoped_sessions_pending_enable_v1`
+    // (WHERE enable_status='pending' AND status='active') still narrows
+    // the candidate set; the `valid_until_sec` comparison is a cheap
+    // range filter on top of the already-tiny pending-active partition.
     const rows = await this.db.query.agentScopedSessions.findMany({
       where: and(
         eq(agentScopedSessions.status, ScopedSessionStatus.Active),
         eq(agentScopedSessions.enableStatus, 'pending'),
-        lt(agentScopedSessions.mintedAt, beforeDate),
+        lte(agentScopedSessions.validUntilSec, cutoffSec),
       ),
-      orderBy: [asc(agentScopedSessions.mintedAt), agentScopedSessions.sessionId],
+      orderBy: [asc(agentScopedSessions.validUntilSec), agentScopedSessions.sessionId],
       limit,
       columns: { enableData: false, enableSig: false },
     });

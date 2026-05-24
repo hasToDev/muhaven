@@ -531,21 +531,12 @@ export function toScopedSessionInstallMaterialDto(
   };
 }
 
-/**
- * Wave 5 Option D · Commit 2 — query schema for the install-material
- * route. `sessionId` comes via path-param routing; `userId` is the
- * separate query parameter the route layer also re-checks against the
- * SIWE-tier ownership rule the repo layer enforces.
- */
-export const GetInstallMaterialQuerySchema = z
-  .object({
-    userId: z.string().min(1).max(128),
-  })
-  .strict();
-
-export type GetInstallMaterialQuery = z.infer<
-  typeof GetInstallMaterialQuerySchema
->;
+// Wave 5 Option D · Commit 2 had a `GetInstallMaterialQuerySchema`
+// (a `userId` query-param validator) for the install-material route's
+// original shared-service-secret auth model. The C3 third commit moved
+// that route to user-JWT auth (userId derived from the verified JWT
+// subject, not a query param), so the schema is removed — there's no
+// longer a userId query param to validate.
 
 export function toScopedSelectorCapDto(c: ScopedSelectorCap): ScopedSelectorCapDto {
   return {

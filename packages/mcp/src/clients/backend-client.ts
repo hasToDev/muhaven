@@ -92,28 +92,6 @@ export class BackendClient {
     return this.exchange<T>('GET', url, undefined, /* withAuth */ false);
   }
 
-  /**
-   * Wave 5 Option D Commit 3 — GET variant that authenticates with a
-   * SHARED SERVICE SECRET as `Authorization: Bearer <secret>` instead
-   * of the user JWT. Used for the install-material subroute:
-   *
-   *   GET /api/v1/agent/policy/scoped-session/:id/install-material?userId=...
-   *
-   * Gated on `BROKER_CALLBACK_SERVICE_SECRET` (same secret the broker
-   * uses for its outbound validator-enabled callback). The route layer
-   * pre-checks the bearer; the use-case layer re-checks `userId`
-   * ownership against the row. Returns the same JSON envelope as the
-   * normal `get()` path.
-   */
-  async getServiceSecret<T>(
-    path: string,
-    secret: string,
-    query?: Record<string, string | number | undefined>,
-  ): Promise<T> {
-    const url = this.buildUrl(path, query);
-    return this.exchangeServiceSecret<T>('GET', url, undefined, secret);
-  }
-
   private buildUrl(path: string, query?: Record<string, string | number | undefined>): URL {
     if (!path.startsWith('/')) {
       throw new BackendError('bad_request', `path must start with "/": ${path}`);
@@ -144,20 +122,6 @@ export class BackendClient {
       }
       throw err;
     }
-  }
-
-  private async exchangeServiceSecret<T>(
-    method: string,
-    url: URL,
-    body: unknown,
-    secret: string,
-  ): Promise<T> {
-    const headers: Record<string, string> = {
-      accept: 'application/json',
-      ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
-      authorization: `Bearer ${secret}`,
-    };
-    return this.runFetch<T>(method, url, body, headers);
   }
 
   private async exchange<T>(

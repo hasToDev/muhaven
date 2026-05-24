@@ -123,16 +123,6 @@ export interface ToolDeps {
    * deployment).
    */
   entryPointAddress?: `0x${string}`;
-  /**
-   * Wave 5 Option D Commit 3 — shared service secret used to fetch
-   * install material from the backend's `GET .../install-material`
-   * subroute (gated on `BROKER_CALLBACK_SERVICE_SECRET`). Undefined
-   * → Path D's MODE.ENABLE branch returns fallback
-   * `install_material_unavailable` and degrades to Path C with a
-   * clear operator-action remediation. Held by the MCP server per
-   * the operator's C3 handoff.
-   */
-  brokerCallbackServiceSecret?: string;
 }
 
 /**
@@ -498,10 +488,12 @@ export type PathDFallbackReason =
    *  for (e.g. `internal`, future unknowns). */
   | 'broker_internal'
   // ── Wave 5 Option D Commit 3 — MODE.ENABLE branch ──
-  /** Backend mirror reports `enable_status='pending'` but the MCP
-   *  server isn't holding `BROKER_CALLBACK_SERVICE_SECRET`. Without
-   *  it, the install-material subroute is unreachable. Operator
-   *  remediation: set the env var + restart the MCP. */
+  /** The install-material subroute rejected the fetch with 401/403 —
+   *  the broker's device-flow JWT is missing / expired / lacks the
+   *  `mcp.propose.*` scope. Remediation: `muhaven-broker login` to
+   *  refresh the JWT, then retry. (Pre-C3-third-commit this code meant
+   *  "MCP not holding BROKER_CALLBACK_SERVICE_SECRET"; the route moved
+   *  to user-JWT auth so the secret is no longer involved.) */
   | 'install_material_unavailable'
   /** Mirror row has `enable_status` set but the install-material
    *  subroute returned 404 (row vanished mid-flow) OR malformed
@@ -1870,14 +1862,6 @@ async function attemptPathD(
   }
   let installMaterial: InstallMaterialResponse['installMaterial'] | null = null;
   if (needsEnable) {
-    if (!deps.brokerCallbackServiceSecret) {
-      return {
-        kind: 'fallback',
-        reason: 'install_material_unavailable',
-        message:
-          'mirror reports enable_status=pending but the MCP server is not holding BROKER_CALLBACK_SERVICE_SECRET — set the env var + restart the MCP to install the validator on first Path D buy',
-      };
-    }
     if (!mirrorSessionRow?.sessionId) {
       return {
         kind: 'fallback',
@@ -1886,39 +1870,19 @@ async function attemptPathD(
           'mirror reports enable_status=pending but no sessionId was carried back — backend response shape regressed',
       };
     }
-    // The install-material subroute requires a userId param. The
-    // mirror DTO carries userId; without it the call returns 404
-    // (intentional uniform response).
-    const userId = mirrorSessionRow.userId;
-    if (!userId) {
-      return {
-        kind: 'fallback',
-        reason: 'install_material_malformed',
-        message:
-          'mirror row is orphaned (userId=null after FK CASCADE SET NULL) — re-mint required',
-      };
-    }
-    // Multi-agent review (API Tester H-3): validate userId MCP-side
-    // BEFORE the GET so a malformed mirror payload doesn't produce
-    // confusing 404s downstream (the backend uniform-404 posture
-    // can't distinguish "row missing" from "userId invalid"). Same
-    // regex the backend Zod uses + the same broker SESSION_ID_RE
-    // shape — keeps the boundaries consistent.
-    if (typeof userId !== 'string' || userId.length === 0 || userId.length > 128) {
-      return {
-        kind: 'fallback',
-        reason: 'install_material_malformed',
-        message: `mirror row userId failed local validation (length=${typeof userId === 'string' ? userId.length : 0})`,
-      };
-    }
+    // C3 third-commit refactor: the install-material subroute now
+    // authenticates with the caller's own user JWT (the MCP server
+    // already holds it via the broker's device-flow login) +
+    // `mcp.propose.*` scope. The backend derives the owning userId
+    // from the verified JWT subject — no userId query param, no
+    // shared service secret. This is the per-user model that scales
+    // to a multi-user `npm i -g @muhaven/mcp` install.
     let raw: InstallMaterialResponse;
     try {
-      raw = await deps.backend.getServiceSecret<InstallMaterialResponse>(
+      raw = await deps.backend.get<InstallMaterialResponse>(
         `/api/v1/agent/policy/scoped-session/${encodeURIComponent(
           mirrorSessionRow.sessionId,
         )}/install-material`,
-        deps.brokerCallbackServiceSecret,
-        { userId },
       );
     } catch (err) {
       if (err instanceof BackendError && err.status === 404) {
@@ -1926,7 +1890,21 @@ async function attemptPathD(
           kind: 'fallback',
           reason: 'install_material_malformed',
           message:
-            'install-material subroute returned 404 — row vanished mid-flow OR ownership re-check failed; re-walk the ceremony',
+            'install-material subroute returned 404 — row vanished mid-flow OR not owned by the authenticated user; re-walk the ceremony',
+        };
+      }
+      // 401 (JWT missing/expired/invalid) or 403 (JWT lacks
+      // `mcp.propose.*` scope) → the broker's device-flow JWT needs
+      // refresh, NOT a ceremony re-walk. Distinct remediation.
+      if (
+        err instanceof BackendError &&
+        (err.status === 401 || err.status === 403)
+      ) {
+        return {
+          kind: 'fallback',
+          reason: 'install_material_unavailable',
+          message:
+            'install-material fetch rejected (JWT missing / expired / lacks mcp.propose.* scope) — run `muhaven-broker login` to refresh the device-flow JWT, then retry',
         };
       }
       return {

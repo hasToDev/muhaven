@@ -26,6 +26,19 @@ class StubAlertTransport implements IOperatorAlertTransport {
   }
 }
 
+// Fixed clock for the suite. The watchdog's TTL-based trigger flags a
+// pending session iff `validUntilSec <= nowSec - graceSec`.
+const NOW = new Date('2026-05-23T20:30:00.000Z');
+const NOW_SEC = Math.floor(NOW.getTime() / 1000);
+const GRACE_SEC = 720;
+// Expired well past the grace window → flagged.
+const EXPIRED_VALID_UNTIL = NOW_SEC - 1000;
+// Still within its 8h TTL (expires in 1h) → NOT flagged (the bug fix:
+// a within-TTL pending session is just awaiting its first Path D buy).
+const FUTURE_VALID_UNTIL = NOW_SEC + 3600;
+// Expired, but still inside the post-expiry grace buffer → NOT flagged.
+const IN_GRACE_VALID_UNTIL = NOW_SEC - 300;
+
 function seed(
   repo: MemoryScopedSessionRepository,
   overrides: Partial<ConstructorParameters<typeof ScopedSession>[0]> = {},
@@ -41,11 +54,13 @@ function seed(
     selectorCaps: [{ selector: '0xdeadbeef', capArgIndex: 2, maxAmount: '1000000' }],
     maxPerOpUsd6: 100_000_000n,
     totalSpentUsd6: 0n,
-    validUntilSec: 2_000_000_000,
+    // Default: expired past grace → flagged. Skip-tests override with
+    // FUTURE_VALID_UNTIL / IN_GRACE_VALID_UNTIL.
+    validUntilSec: EXPIRED_VALID_UNTIL,
     mintedAtSec: 1_000_000_000,
     consentActionHash: null,
     consentTextSha256: null,
-    mintedAt: new Date('2026-05-23T20:00:00.000Z'),
+    mintedAt: new Date('2026-05-23T12:00:00.000Z'),
     revokedAt: null,
     expiredAt: null,
     enableStatus: 'pending',
@@ -76,66 +91,78 @@ describe('ValidatorEnableWatchdog', () => {
     });
   });
 
-  it('flips stale pending rows to failed + fires one alert per row', async () => {
-    seed(repo, { sessionId: 'stale-1', mintedAt: new Date('2026-05-23T20:00:00.000Z') });
+  it('flips expired pending rows to failed + fires one alert per row', async () => {
+    seed(repo, { sessionId: 'expired-1', validUntilSec: EXPIRED_VALID_UNTIL });
     seed(repo, {
-      sessionId: 'stale-2',
+      sessionId: 'expired-2',
       userId: 'u2',
-      mintedAt: new Date('2026-05-23T20:05:00.000Z'),
+      validUntilSec: EXPIRED_VALID_UNTIL - 500,
     });
-    const result = await watchdog.tickOnce(new Date('2026-05-23T20:30:00.000Z'));
+    const result = await watchdog.tickOnce(NOW);
     expect(result.flipped).toBe(2);
-    const r1 = await repo.findById('stale-1');
-    const r2 = await repo.findById('stale-2');
+    const r1 = await repo.findById('expired-1');
+    const r2 = await repo.findById('expired-2');
     expect(r1?.enableStatus).toBe('failed');
     expect(r2?.enableStatus).toBe('failed');
     expect(alert.sent).toHaveLength(2);
     expect(alert.sent[0]!.severity).toBe('warn');
-    expect(alert.sent[0]!.errorClass).toBe('ValidatorInstallTimeout');
+    expect(alert.sent[0]!.errorClass).toBe('ValidatorInstallExpired');
   });
 
-  it('skips rows younger than the stale threshold', async () => {
-    seed(repo, {
-      sessionId: 'fresh',
-      mintedAt: new Date('2026-05-23T20:28:00.000Z'),
-    });
-    const result = await watchdog.tickOnce(new Date('2026-05-23T20:30:00.000Z'));
+  // THE BUG-FIX REGRESSION: a within-TTL pending session is just
+  // awaiting its first Path D buy — the watchdog MUST NOT flag it.
+  // (The old mint-age trigger flipped it after 12min, killing healthy
+  // sessions before the user ever bought — surfaced in the first prod
+  // smoke when session 837c6a98 was killed ~12min after mint.)
+  it('does NOT flag within-TTL pending rows (awaiting first buy)', async () => {
+    seed(repo, { sessionId: 'within-ttl', validUntilSec: FUTURE_VALID_UNTIL });
+    const result = await watchdog.tickOnce(NOW);
     expect(result.flipped).toBe(0);
-    const row = await repo.findById('fresh');
+    const row = await repo.findById('within-ttl');
     expect(row?.enableStatus).toBe('pending');
     expect(alert.sent).toHaveLength(0);
   });
 
-  it('skips rows already in enabled / failed state', async () => {
+  it('does NOT flag rows still inside the post-expiry grace window', async () => {
+    seed(repo, { sessionId: 'in-grace', validUntilSec: IN_GRACE_VALID_UNTIL });
+    const result = await watchdog.tickOnce(NOW);
+    expect(result.flipped).toBe(0);
+    const row = await repo.findById('in-grace');
+    expect(row?.enableStatus).toBe('pending');
+  });
+
+  it('skips rows already in enabled / failed state (even if expired)', async () => {
     seed(repo, {
       sessionId: 'already-enabled',
       enableStatus: 'enabled',
-      validatorEnabledAt: new Date('2026-05-23T20:01:00.000Z'),
+      validUntilSec: EXPIRED_VALID_UNTIL,
+      validatorEnabledAt: new Date('2026-05-23T19:01:00.000Z'),
       validatorEnabledTxHash: '0xabcd000000000000000000000000000000000000000000000000000000001111',
     });
     seed(repo, {
       sessionId: 'already-failed',
       userId: 'u2',
       enableStatus: 'failed',
+      validUntilSec: EXPIRED_VALID_UNTIL,
     });
-    const result = await watchdog.tickOnce(new Date('2026-05-23T20:30:00.000Z'));
+    const result = await watchdog.tickOnce(NOW);
     expect(result.flipped).toBe(0);
     expect(alert.sent).toHaveLength(0);
   });
 
   it('continues even when alert transport throws', async () => {
     alert.shouldThrow = true;
-    seed(repo, { sessionId: 'stale-with-bad-alert' });
-    const result = await watchdog.tickOnce(new Date('2026-05-23T20:30:00.000Z'));
+    seed(repo, { sessionId: 'expired-with-bad-alert', validUntilSec: EXPIRED_VALID_UNTIL });
+    const result = await watchdog.tickOnce(NOW);
     expect(result.flipped).toBe(1);
-    const row = await repo.findById('stale-with-bad-alert');
+    const row = await repo.findById('expired-with-bad-alert');
     expect(row?.enableStatus).toBe('failed');
   });
 
   it('emits ValidatorInstallFailed audit per flipped row', async () => {
-    seed(repo, { sessionId: 'audited-1' });
-    seed(repo, { sessionId: 'audited-2', userId: 'u2' });
-    const result = await watchdog.tickOnce(new Date('2026-05-23T20:30:00.000Z'));
+    seed(repo, { sessionId: 'audited-1', validUntilSec: EXPIRED_VALID_UNTIL });
+    seed(repo, { sessionId: 'audited-2', userId: 'u2', validUntilSec: EXPIRED_VALID_UNTIL });
+    const result = await watchdog.tickOnce(NOW);
     expect(result.flipped).toBe(2);
     const u1Audits = await auditRepo.findByUserId('u1', { limit: 10 });
     const u2Audits = await auditRepo.findByUserId('u2', { limit: 10 });
@@ -145,12 +172,13 @@ describe('ValidatorEnableWatchdog', () => {
     expect(u1Audits.items[0]!.metadata).toMatchObject({
       sessionId: 'audited-1',
       source: 'watchdog',
+      reason: 'ttl_expired_without_install',
     });
   });
 
   it('skips audit emission for orphaned rows (userId=null)', async () => {
-    seed(repo, { sessionId: 'orphan', userId: null });
-    const result = await watchdog.tickOnce(new Date('2026-05-23T20:30:00.000Z'));
+    seed(repo, { sessionId: 'orphan', userId: null, validUntilSec: EXPIRED_VALID_UNTIL });
+    const result = await watchdog.tickOnce(NOW);
     expect(result.flipped).toBe(1);
     const audits = await auditRepo.findByUserId('u1', { limit: 10 });
     expect(audits.items).toHaveLength(0);
@@ -161,28 +189,31 @@ describe('ValidatorEnableWatchdog', () => {
       seed(repo, {
         sessionId: `bulk-${i}`,
         userId: `u${i}`,
-        mintedAt: new Date(`2026-05-23T20:0${i}:00.000Z`),
+        // Stagger validUntilSec so FIFO ordering (oldest-expiry-first)
+        // is deterministic.
+        validUntilSec: EXPIRED_VALID_UNTIL - (5 - i) * 100,
       });
     }
     const limited = new ValidatorEnableWatchdog(repo, alert, appendAudit, {
-      staleThresholdSec: 720,
+      staleThresholdSec: GRACE_SEC,
       batchLimit: 2,
     });
-    const result = await limited.tickOnce(new Date('2026-05-23T20:30:00.000Z'));
+    const result = await limited.tickOnce(NOW);
     expect(result.flipped).toBe(2);
-    // Oldest two flipped first (FIFO).
+    // Oldest valid_until_sec flipped first (FIFO). bulk-0 has the
+    // earliest expiry (EXPIRED_VALID_UNTIL - 500), bulk-1 next.
     const r0 = await repo.findById('bulk-0');
     const r1 = await repo.findById('bulk-1');
-    const r2 = await repo.findById('bulk-2');
+    const r4 = await repo.findById('bulk-4');
     expect(r0?.enableStatus).toBe('failed');
     expect(r1?.enableStatus).toBe('failed');
-    expect(r2?.enableStatus).toBe('pending');
+    expect(r4?.enableStatus).toBe('pending');
   });
 
   it('re-entrant guard prevents overlapping ticks', async () => {
-    seed(repo);
-    const t1 = watchdog.tickOnce(new Date('2026-05-23T20:30:00.000Z'));
-    const t2 = watchdog.tickOnce(new Date('2026-05-23T20:30:00.000Z'));
+    seed(repo, { validUntilSec: EXPIRED_VALID_UNTIL });
+    const t1 = watchdog.tickOnce(NOW);
+    const t2 = watchdog.tickOnce(NOW);
     const [r1, r2] = await Promise.all([t1, t2]);
     // First wins with the flip, second sees `running=true` and returns
     // immediately. The actual flip count is 1.

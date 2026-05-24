@@ -258,19 +258,21 @@ export class MemoryScopedSessionRepository implements IScopedSessionRepository {
     return updated;
   }
 
-  async findPendingEnableOlderThan(
-    beforeDate: Date,
+  async findExpiredPendingEnable(
+    cutoffSec: number,
     limit: number,
   ): Promise<ScopedSession[]> {
+    // TTL-based trigger (third-commit correction) — mirror the Pg
+    // repo: flag pending+active rows whose validUntilSec <= cutoffSec.
     const matches: ScopedSession[] = [];
     for (const s of this.store.values()) {
       if (s.status !== ScopedSessionStatus.Active) continue;
       if (s.enableStatus !== 'pending') continue;
-      if (s.mintedAt.getTime() >= beforeDate.getTime()) continue;
+      if (s.validUntilSec > cutoffSec) continue;
       matches.push(s);
     }
     matches.sort((a, b) => {
-      const t = a.mintedAt.getTime() - b.mintedAt.getTime();
+      const t = a.validUntilSec - b.validUntilSec;
       if (t !== 0) return t;
       return a.sessionId.localeCompare(b.sessionId);
     });
