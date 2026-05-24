@@ -297,11 +297,29 @@ async function onConfirmRevoke(): Promise<void> {
       clearInterval(revokeHoldHandle)
       revokeHoldHandle = null
     }
+    // Re-mint ergonomics: revoking leaves the tier at 'scoped', and you
+    // can't step Scoped → Scoped (the state machine rejects same-tier), so
+    // re-arming used to require a manual step-down THEN re-pick. Auto-reset
+    // the MCP tier to Advisory here so re-arming is the normal one flow:
+    // pick Scoped → confirm → mint. Best-effort — revoke already committed,
+    // so a step-down hiccup just falls back to the manual path.
+    try {
+      const stepDown = await agentPolicyApi.requestTransition({
+        surface: 'mcp',
+        targetTier: 'advisory',
+      })
+      if (!stepDown.requiresConfirmation) {
+        statesBySurface.value = { ...statesBySurface.value, mcp: stepDown.state }
+        if (selectedSurface.value === 'mcp') targetTier.value = null
+      }
+    } catch {
+      /* best-effort — leave the tier as-is; user can step down manually */
+    }
     // The revoke zone is gone now (no active session) — re-open the tier
-    // picker so the user can step down / re-walk to a fresh session.
+    // picker so the user can re-pick Scoped for a fresh session.
     showTierPicker.value = true
     toast.success('Scoped session revoked', {
-      description: 'Restart your broker daemon to drop its in-memory session key.',
+      description: 'Pick Scoped again to mint a fresh session — and restart your broker to drop its old key.',
     })
     // A11y (R1 Issue 9): the revoke zone unmounted, so `useModalA11y`'s
     // focus-restore target (the "Revoke now" button) is gone and focus

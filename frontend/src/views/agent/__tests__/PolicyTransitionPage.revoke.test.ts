@@ -160,12 +160,20 @@ describe('PolicyTransitionPage — revoke flow', () => {
     api.revokeScopedSession.mockResolvedValue({
       session: { ...activeSession(), status: 'revoked', revokedAt: new Date().toISOString() },
     })
+    // Revoke auto-steps the MCP tier back to Advisory (so re-arming is a
+    // clean re-pick of Scoped, not a manual step-down dance).
+    api.requestTransition.mockResolvedValue({
+      requiresConfirmation: false,
+      state: { ...mcpScopedState(), tier: 'advisory' },
+    })
     vi.advanceTimersByTime(3000)
     await flushPromises()
     confirm.click()
     await flushPromises()
 
     expect(api.revokeScopedSession).toHaveBeenCalledWith({ sessionId: SESSION_ID })
+    // Auto step-down to Advisory on the MCP surface.
+    expect(api.requestTransition).toHaveBeenCalledWith({ surface: 'mcp', targetTier: 'advisory' })
     // Dialog closed + revoke zone gone (session cleared) + purge reminder armed.
     expect(document.querySelector('[data-testid="policy-revoke-dialog"]')).toBeNull()
     expect(w.find('[data-testid="policy-revoke-zone"]').exists()).toBe(false)
