@@ -82,9 +82,16 @@ export function decodePermissionInstallFromSelectorSet(
   // Only the kernel `execute` action binding is a MuHaven Scoped install.
   if (selector !== KERNEL_EXECUTE_SELECTOR) return null;
   const vId = args.vId.toLowerCase();
-  // bytes21 → `0x` + 42 hex. Type byte = chars [2,4); permissionId = [4,12).
+  // bytes21 → `0x` + 42 hex. Type byte = chars [2,4); permissionId = [4,12);
+  // trailing 16 bytes (chars [12,44)) are the right-pad of the 4-byte
+  // identifier and MUST be zero.
   if (vId.length !== 2 + 42) return null;
   if (`0x${vId.slice(2, 4)}` !== VALIDATION_TYPE_PERMISSION) return null;
+  // Assert the 16-byte tail is zero so the signal stays EXACT — a future
+  // validation type that packs a >4-byte identifier into the same field
+  // would otherwise be silently mis-decoded as a 4-byte permission (BSA
+  // MED-1, C3 second-review).
+  if (vId.slice(12) !== '0'.repeat(32)) return null;
   const permissionId = `0x${vId.slice(4, 12)}` as `0x${string}`;
   return { permissionId, selector };
 }

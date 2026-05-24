@@ -204,14 +204,21 @@ export class MemoryScopedSessionRepository implements IScopedSessionRepository {
     _accountAddress: `0x${string}`,
   ): Promise<ScopedSession | null> {
     // Memory repo: no `account_address` column. We match on
-    // `permission_id` alone and refuse to return a row when 2+ rows
+    // `permission_id` + `status='active'` (parity with the Pg repo's
+    // BSA-LOW-3 scoping) and refuse to return a row when 2+ ACTIVE rows
     // match (defends against the cross-user permissionId-clash race
-    // — multi-agent review HIGH-1). Mirrors the Pg repo's
+    // — multi-agent review HIGH-1). Scoping to active avoids flipping a
+    // revoked/expired row's enable_status + a false collision on an
+    // active+revoked pair sharing a permissionId. Mirrors the Pg repo's
     // structural shape; see its JSDoc.
     const needle = permissionId.toLowerCase();
     const matches: ScopedSession[] = [];
     for (const s of this.store.values()) {
-      if (s.permissionId && s.permissionId.toLowerCase() === needle) {
+      if (
+        s.status === ScopedSessionStatus.Active &&
+        s.permissionId &&
+        s.permissionId.toLowerCase() === needle
+      ) {
         matches.push(s);
       }
     }

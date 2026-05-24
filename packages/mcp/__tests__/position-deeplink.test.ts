@@ -1830,23 +1830,6 @@ function happyReceipt(userOpHash: `0x${string}`) {
   };
 }
 
-/** Reproduces the handler's userOpHash computation so the tests can
- *  feed the same hash back into `sendUserOp` / `waitForReceipt`. */
-function computeExpectedUserOpHash(args: {
-  nonce: bigint;
-  feeMaxFeePerGas: `0x${string}`;
-  feePriorityFeePerGas: `0x${string}`;
-}): `0x${string}` {
-  const innerCalldata = '0x' as `0x${string}`; // placeholder — overridden below if needed
-  // Real hash test below skips this fn; it's here so the happy-path
-  // test can pre-compute the expected hash to register on the stub.
-  void innerCalldata;
-  void args;
-  // Returning a fixed sentinel — the happy path test below captures the
-  // hash dynamically via a sendUserOp spy instead of pre-computing it.
-  return ('0x' + '0'.repeat(64)) as `0x${string}`;
-}
-
 // ── Wave 5 Option D Commit 3 — MODE.ENABLE fixtures ──
 // Arbitrary but well-formed hex; `wrapEnableModeSignature` treats both as
 // opaque `bytes`. Real enableData is ~30KB; these are small for test speed.
@@ -1864,8 +1847,10 @@ function pathDEnableBackend(opts: {
   validatorNonce: number;
   encryptSharesResult: ReturnType<typeof happyEncryptShares>;
   permissionId?: string;
+  enableStatus?: 'pending' | 'enabled';
 }): BackendClient {
   const permissionId = opts.permissionId ?? '0xdeadbeef';
+  const enableStatus = opts.enableStatus ?? 'pending';
   const catalog = {
     tokens: [
       { address: PATH_D_TBILL_ADDR, symbol: 'TBILL1', status: 'active', latest_nav: { nav: '1.0' } },
@@ -1877,7 +1862,7 @@ function pathDEnableBackend(opts: {
     status: 'active',
     signerAddress: SIGNER_ADDR,
     permissionId,
-    enableStatus: 'pending',
+    enableStatus,
     validatorNonce: opts.validatorNonce,
     targetContracts: [STUB_SUBSCRIPTION_ADDRESS],
     selectorCaps: [],
@@ -2507,5 +2492,193 @@ describe('positionBuy — Path D Slice 1 Commit 3.5 UserOp pipeline', () => {
     expect(submitted.signature).toBe(expectedSubmitEnvelope);
     // Sponsorship and submission share the envelope but differ in inner sig.
     expect(submitted.signature).not.toBe(sponsorArg.signature);
+  });
+
+  // ── Repeat buy: enable_status='enabled' → MODE.DEFAULT ──
+  // The autonomous-repeat-buy value of C3: once the validator is installed
+  // (mirror flipped to 'enabled' by the SelectorSet indexer), subsequent
+  // buys skip the enable envelope + the currentNonce pre-check and use a
+  // bare wrapped session-key sig with a DEFAULT-mode (0x00) nonce key.
+  it('MODE.DEFAULT: enable_status=enabled → bare wrapped sig, default-mode nonce, no envelope/currentNonce', async () => {
+    const snap = snapshotWith();
+    const enc = happyEncryptShares();
+    const sponsored = happySponsored();
+    const nonce = 7n;
+    const fee = { maxFeePerGas: '0x10' as `0x${string}`, maxPriorityFeePerGas: '0x10' as `0x${string}` };
+    const brokerSig = ('0x' + 'cd'.repeat(65)) as `0x${string}`;
+    const { encodeFunctionData, parseAbi } = await import('viem');
+    const innerCalldata = encodeFunctionData({
+      abi: parseAbi([
+        'function purchase(address token, (uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) encShares, uint128 maxSharesHint, address ephemeralEOA)',
+      ]),
+      functionName: 'purchase',
+      args: [
+        PATH_D_TBILL_ADDR,
+        {
+          ctHash: BigInt(enc.encShares.ctHash),
+          securityZone: enc.encShares.securityZone,
+          utype: enc.encShares.utype,
+          signature: enc.encShares.signature,
+        },
+        500n,
+        enc.ephemeralEOA,
+      ],
+    }) as `0x${string}`;
+    const kernelCallData = encodeKernelExecuteSingleCall({
+      target: STUB_SUBSCRIPTION_ADDRESS,
+      value: 0n,
+      callData: innerCalldata,
+    });
+    const expectedHash = getUserOperationHash({
+      userOperation: {
+        sender: KERNEL_ADDR,
+        nonce,
+        factory: undefined,
+        factoryData: undefined,
+        callData: kernelCallData,
+        callGasLimit: BigInt(sponsored.callGasLimit),
+        verificationGasLimit: BigInt(sponsored.verificationGasLimit),
+        preVerificationGas: BigInt(sponsored.preVerificationGas),
+        maxFeePerGas: BigInt(fee.maxFeePerGas),
+        maxPriorityFeePerGas: BigInt(fee.maxPriorityFeePerGas),
+        paymaster: sponsored.paymaster,
+        paymasterVerificationGasLimit: BigInt(sponsored.paymasterVerificationGasLimit),
+        paymasterPostOpGasLimit: BigInt(sponsored.paymasterPostOpGasLimit),
+        paymasterData: sponsored.paymasterData,
+        signature: PLACEHOLDER_SIGNATURE,
+      } as unknown as Parameters<typeof getUserOperationHash>[0]['userOperation'],
+      entryPointAddress: STUB_ENTRY_POINT,
+      entryPointVersion: '0.7',
+      chainId: STUB_CHAIN_ID,
+    });
+    const getNonceSpy = vi.fn().mockResolvedValue(nonce);
+    const sendSpy = vi.fn().mockResolvedValue(expectedHash);
+    const bundler = {
+      getNonce: getNonceSpy,
+      getFeeData: vi.fn().mockResolvedValue(fee),
+      sponsorUserOp: vi.fn().mockResolvedValue(sponsored),
+      sendUserOp: sendSpy,
+      waitForReceipt: vi.fn().mockResolvedValue(happyReceipt(expectedHash)),
+      drainTrace: vi.fn().mockReturnValue([]),
+    } as unknown as BundlerClient;
+
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '500' },
+      {
+        backend: pathDEnableBackend({
+          validatorNonce: 1,
+          encryptSharesResult: enc,
+          enableStatus: 'enabled',
+        }),
+        // NOTE: currentNonce + notifyUseropLanded are intentionally NOT
+        // wired — MODE.DEFAULT must never call them (the stubBroker Proxy
+        // throws "not stubbed" if it does, failing this test loudly).
+        broker: stubBroker({
+          preflight: { supported: true, daemonVersion: '0.5.0', signerAddress: SIGNER_ADDR },
+          policySnapshot: { type: 'get_policy_snapshot', snapshot: snap },
+          signUserOp: {
+            type: 'sign_userop',
+            sessionId: 'sess_test',
+            signerAddress: SIGNER_ADDR,
+            signature: brokerSig,
+          },
+        }),
+        bundler,
+        surface: 'mcp',
+        dashboardBaseUrl: 'https://muhaven.app',
+        subscriptionAddress: STUB_SUBSCRIPTION_ADDRESS,
+        entryPointAddress: STUB_ENTRY_POINT,
+        chainId: STUB_CHAIN_ID,
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok || 'echo' in result.data) {
+      throw new Error(`expected PositionSubmittedData (path D, MODE.DEFAULT), got ${JSON.stringify(result)}`);
+    }
+    expect(result.data.path).toBe('D');
+    // DEFAULT-mode nonce key (byte 0 = 0x00), not ENABLE (0x01).
+    expect(getNonceSpy.mock.calls[0]![2]).toBe(
+      composeKernelV3NonceKey({ permissionId: '0xdeadbeef', mode: 'default' }),
+    );
+    // Submitted sig is the BARE 66-byte wrapped session-key sig — NO enable envelope.
+    const submitted = sendSpy.mock.calls[0]![0] as { signature: `0x${string}` };
+    expect(submitted.signature).toBe(buildKernelSessionKeySignature({ ecdsaSignature: brokerSig }));
+    expect(submitted.signature.length).toBe(2 + 132);
+    expect(submitted.signature.slice(0, 4)).toBe('0xff');
+  });
+
+  it('MODE.ENABLE: currentNonce advanced since mint → enable_sig_stale, no UserOp sponsored/submitted', async () => {
+    const snap = snapshotWith();
+    const enc = happyEncryptShares();
+    const sponsorSpy = vi.fn();
+    const sendSpy = vi.fn();
+    const bundler = {
+      getNonce: vi.fn().mockResolvedValue(5n),
+      getFeeData: vi.fn().mockResolvedValue({ maxFeePerGas: '0x10', maxPriorityFeePerGas: '0x10' }),
+      sponsorUserOp: sponsorSpy,
+      sendUserOp: sendSpy,
+      waitForReceipt: vi.fn(),
+      drainTrace: vi.fn().mockReturnValue([]),
+    } as unknown as BundlerClient;
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '500' },
+      {
+        backend: pathDEnableBackend({ validatorNonce: 1, encryptSharesResult: enc }),
+        broker: stubBroker({
+          preflight: { supported: true, daemonVersion: '0.5.0', signerAddress: SIGNER_ADDR },
+          policySnapshot: { type: 'get_policy_snapshot', snapshot: snap },
+          // Live nonce advanced 1 → 2 since mint: the stored enableSig is stale.
+          currentNonce: { type: 'current_nonce', accountAddress: KERNEL_ADDR, nonce: 2 },
+        }),
+        bundler,
+        surface: 'mcp',
+        dashboardBaseUrl: 'https://muhaven.app',
+        subscriptionAddress: STUB_SUBSCRIPTION_ADDRESS,
+        entryPointAddress: STUB_ENTRY_POINT,
+        chainId: STUB_CHAIN_ID,
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (!(result.ok && 'echo' in result.data)) {
+      throw new Error('expected Path C fallback (echo) on enable_sig_stale');
+    }
+    expect(result.data.echo.pathDFallbackReason).toBe('enable_sig_stale');
+    // Critical: the stale enableSig must NOT be submitted (no double-spend,
+    // no doomed MODE.ENABLE UserOp).
+    expect(sponsorSpy).not.toHaveBeenCalled();
+    expect(sendSpy).not.toHaveBeenCalled();
+  });
+
+  it('MODE.ENABLE: broker currentNonce IPC chain_rpc_failed → broker_chain_rpc_failed fallback', async () => {
+    const snap = snapshotWith();
+    const enc = happyEncryptShares();
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '500' },
+      {
+        backend: pathDEnableBackend({ validatorNonce: 1, encryptSharesResult: enc }),
+        broker: stubBroker({
+          preflight: { supported: true, daemonVersion: '0.5.0', signerAddress: SIGNER_ADDR },
+          policySnapshot: { type: 'get_policy_snapshot', snapshot: snap },
+          currentNonce: new BrokerClientError(
+            'broker_error',
+            'broker chain RPC unconfigured',
+            undefined,
+            'chain_rpc_failed',
+          ),
+        }),
+        bundler: stubBundler(),
+        surface: 'mcp',
+        dashboardBaseUrl: 'https://muhaven.app',
+        subscriptionAddress: STUB_SUBSCRIPTION_ADDRESS,
+        entryPointAddress: STUB_ENTRY_POINT,
+        chainId: STUB_CHAIN_ID,
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (!(result.ok && 'echo' in result.data)) {
+      throw new Error('expected Path C fallback (echo) on broker_chain_rpc_failed');
+    }
+    expect(result.data.echo.pathDFallbackReason).toBe('broker_chain_rpc_failed');
   });
 });

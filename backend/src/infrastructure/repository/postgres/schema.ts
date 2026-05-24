@@ -941,15 +941,16 @@ export const agentScopedSessions = pgTable(
     index('agent_scoped_sessions_signer_idx').on(t.signerAddress),
     // Wave 5 Option D Commit 3 (smoke fix) — backs the SelectorSet chain
     // indexer's + broker-callback's per-log `findByPermissionIdAndAccountAddress`
-    // lookup (`WHERE permission_id = $1`). The `SelectorSet` install event
-    // is higher-volume than the old `PermissionInstalled` filter, so every
-    // candidate log triggers this lookup; without the index it's a seq scan
-    // of the table. Partial (non-null) keeps it tiny — only rows that carry
-    // a permissionId can ever match (pre-C2 rows have NULL). Needs a paired
-    // `db:push` to materialize in prod.
+    // lookup (`WHERE permission_id = $1 AND status = 'active'`). The
+    // `SelectorSet` install event is higher-volume than the old
+    // `PermissionInstalled` filter, so every candidate log triggers this
+    // lookup; without the index it's a seq scan of the table. Partial
+    // predicate (non-null permissionId AND active) keeps it tiny + matches
+    // the repo query's WHERE so it stays an index probe (the lookup scopes
+    // to active rows — BSA LOW-3). Needs a paired `db:push` to materialize.
     index('agent_scoped_sessions_permission_id_idx')
       .on(t.permissionId)
-      .where(sql`permission_id IS NOT NULL`),
+      .where(sql`permission_id IS NOT NULL AND status = 'active'`),
     // CHECK constraints mirror the broker's wire-shape validators in
     // `packages/mcp/src/broker/protocol.ts` so a hand-INSERT or an
     // operator-CLI write can't slip a malformed value past the gate

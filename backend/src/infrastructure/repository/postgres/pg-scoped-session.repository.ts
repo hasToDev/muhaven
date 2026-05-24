@@ -345,7 +345,18 @@ export class PgScopedSessionRepository implements IScopedSessionRepository {
     // query and refusing on >1 hit.
     void accountAddress;
     const rows = await this.db.query.agentScopedSessions.findMany({
-      where: eq(agentScopedSessions.permissionId, permissionId.toLowerCase() as `0x${string}`),
+      // Scope to ACTIVE rows (BSA LOW-3): an install flip only ever
+      // targets an active pending row. Without this, a re-mint that
+      // happened to reuse a permissionId, OR a late SelectorSet arriving
+      // after a revoke, would (a) trip the multi-match collision guard on
+      // an active+revoked pair, or (b) flip a revoked/expired row's
+      // enable_status. The partial index
+      // `agent_scoped_sessions_permission_id_idx` carries the same
+      // `status = 'active'` predicate so this stays an index probe.
+      where: and(
+        eq(agentScopedSessions.permissionId, permissionId.toLowerCase() as `0x${string}`),
+        eq(agentScopedSessions.status, ScopedSessionStatus.Active),
+      ),
       orderBy: [desc(agentScopedSessions.mintedAt), agentScopedSessions.sessionId],
       columns: { enableData: false, enableSig: false },
       limit: 2,

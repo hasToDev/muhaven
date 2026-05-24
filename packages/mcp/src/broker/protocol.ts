@@ -267,9 +267,11 @@ export interface BrokerNotifyUseropLandedRequest {
   readonly txHash: `0x${string}`;
   /** Block number containing the receipt — telemetry / forensics. */
   readonly blockNumber: number;
-  /** Log index of the matched `PermissionInstalled` event within the
-   *  tx's logs array. Backend's log-decode pass uses this to pick the
-   *  exact log instead of scanning the whole receipt. */
+  /** Log index of the matched `SelectorSet` install event within the
+   *  tx's logs array. INFORMATIONAL only — the backend re-scans the FULL
+   *  receipt and matches by permissionId, so a wrong/0 logIndex is
+   *  harmless (the deployed kernel emits `SelectorSet`, not
+   *  `PermissionInstalled`, for enable-mode installs). */
   readonly logIndex: number;
 }
 

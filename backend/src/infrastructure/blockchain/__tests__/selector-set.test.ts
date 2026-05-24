@@ -40,6 +40,13 @@ describe('decodePermissionInstallFromSelectorSet', () => {
     expect(decodePermissionInstallFromSelectorSet(selectorSetLog(vId('01', '0xa2e7dd60'), true))).toBeNull();
   });
 
+  it('returns null when the vId 16-byte tail is non-zero (>4-byte identifier, not a 4-byte permission)', () => {
+    // BSA MED-1: a vId of 0x02 ‖ permissionId(4) ‖ <non-zero 16 bytes> must
+    // NOT be decoded as a 4-byte permission install.
+    const dirtyVId = (`0x02a2e7dd60${'0'.repeat(30)}ff`) as `0x${string}`; // 21 bytes, non-zero tail
+    expect(decodePermissionInstallFromSelectorSet(selectorSetLog(dirtyVId, true))).toBeNull();
+  });
+
   it('returns null for a SelectorSet bound to a NON-execute selector (signal must be exact)', () => {
     // SecEng defense-in-depth: a same-kernel, same-permissionId bind to a
     // different action selector must NOT flip enable_status.

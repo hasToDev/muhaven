@@ -1990,7 +1990,11 @@ async function attemptPathD(
         return {
           kind: 'fallback',
           reason: 'enable_sig_stale',
-          message: `kernel.currentNonce() advanced ${minted} → ${liveNonce.nonce} since mint; stored enableSig is over a stale typed-data digest — re-mint the Scoped session`,
+          message:
+            `kernel.currentNonce() advanced ${minted} → ${liveNonce.nonce} since mint; the stored enableSig is over a stale typed-data digest. ` +
+            (liveNonce.nonce === minted + 1
+              ? 'This is most likely the benign post-install race (your own MODE.ENABLE just landed; the mirror flips to enabled within a few seconds) — WAIT a few seconds and retry; the repeat buy will use MODE.DEFAULT. Only re-mint if it persists.'
+              : 'The validator nonce diverged by more than one — re-mint the Scoped session from the dashboard.'),
         };
       }
     } catch (err) {

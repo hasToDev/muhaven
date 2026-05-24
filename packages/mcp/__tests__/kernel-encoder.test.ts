@@ -356,6 +356,27 @@ describe('wrapEnableModeSignature (byte-equality vs @zerodev/sdk::getEncodedPlug
         },
       },
     },
+    {
+      // The PRODUCTION action.address — the ZeroDev built-in-execute
+      // sentinel (zero address) the frontend signs. Pins the exact value
+      // the EnableNotApproved fix landed, at the cheap byte-equality layer
+      // (the other fixtures use KERNEL_ADDR; this one guards a future drift
+      // back to a non-zero address). BSA/AI-Eng C3 second-review LOW.
+      name: 'no hook, ZERO action.address (production built-in-execute sentinel)',
+      input: {
+        enableData: SMALL_ENABLE_DATA,
+        enableSig: ENABLE_SIG_256,
+        userOpSignature: WRAPPED_SIG,
+        action: { selector: EXECUTE_SELECTOR, address: ZERO },
+      },
+      canonical: {
+        enableSignature: ENABLE_SIG_256,
+        userOpSignature: WRAPPED_SIG,
+        action: { selector: EXECUTE_SELECTOR, address: ZERO },
+        enableData: SMALL_ENABLE_DATA,
+        hook: undefined,
+      },
+    },
   ] as const;
 
   for (const fixture of fixtures) {

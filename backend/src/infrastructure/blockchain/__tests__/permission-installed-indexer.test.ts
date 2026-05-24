@@ -186,6 +186,31 @@ describe('PermissionInstalledIndexer', () => {
     expect(indexer.getStatus().lastProcessedBlock).toBe(100n);
   });
 
+  it('flips the ACTIVE row when a REVOKED row shares the same permissionId (no false collision)', async () => {
+    // BSA LOW-3: the lookup scopes to status='active', so a stale revoked
+    // row sharing a permissionId neither trips the multi-match collision
+    // guard nor gets its enable_status flipped.
+    seed(repo); // active, pending, PERMISSION_ID, sess-indexer-1
+    seed(repo, {
+      sessionId: 'sess-indexer-revoked',
+      status: ScopedSessionStatus.Revoked,
+    }); // same PERMISSION_ID, revoked
+    indexer.setCursorForTests(99n);
+    client.logs = [
+      makeSelectorSetLog({
+        permissionId: PERMISSION_ID,
+        emittedBy: KERNEL_ADDR,
+        blockNumber: 100n,
+        txHash: TX_HASH,
+        logIndex: 0,
+      }),
+    ];
+    await indexer.tickOnce();
+    expect((await repo.findById('sess-indexer-1'))?.enableStatus).toBe('enabled');
+    // The revoked row is untouched (not matched, not flipped).
+    expect((await repo.findById('sess-indexer-revoked'))?.enableStatus).toBe('pending');
+  });
+
   it('idempotent — re-processing the same log is a no-op', async () => {
     seed(repo);
     indexer.setCursorForTests(99n);
