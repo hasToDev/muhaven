@@ -157,7 +157,6 @@ const transitionError = ref<string | null>(null)
 // Step-up flow: backend returned a confirmation token; user must click
 // "Confirm" to consume it. Cleared once consumed or on tier-pick change.
 const pendingConfirmation = ref<TierTransitionConfirmation | null>(null)
-const showRevealModal = ref(false)
 const lastCommittedAt = ref<string | null>(null)
 
 // F2 — Resume flow when current tier is paused. Distinct from the
@@ -174,10 +173,11 @@ const maxPerOpUsd6Input = ref<string>('100')
 const ttlSecInput = ref<number>(SCOPED_DEFAULT_TTL_SEC)
 
 // Reveal flow for the Scoped session-key surfaced AFTER the tier transition
-// commit + the policy-snapshot POST land. Distinct from the legacy
-// `showRevealModal` ceremony (in-tab session-key for HavenBot copy-paste):
-// the Scoped reveal carries a freshly-minted ephemeral EOA's private half
-// for paste into the broker daemon's `MUHAVEN_BROKER_SESSION_KEY`.
+// commit + the policy-snapshot POST land. This is the SOLE broker-key reveal
+// (Wave 5 Option D · C4 follow-up removed the legacy in-tab "Reveal session
+// key for broker" button — it minted a different key that didn't match the
+// on-chain Scoped validator). It carries the freshly-minted ephemeral EOA's
+// private half for paste into the broker daemon's `MUHAVEN_BROKER_SESSION_KEY`.
 const scopedReveal = ref<ScopedSessionInstallResult | null>(null)
 
 /** R1 UX H-3 — post-commit error-recovery state. When set, the inline
@@ -671,25 +671,6 @@ function onTransitionApplied(
       : `Transition confirmed — now ${formatTier(next.tier)}`,
     { description: `Surface: ${formatSurface(next.surface)}` },
   )
-}
-
-function openReveal(): void {
-  if (!walletStore.connected) {
-    toast.error('Reconnect your wallet first', {
-      description: 'Session-key minting needs an active ZeroDev kernel.',
-    })
-    return
-  }
-  // R1 Frontend M-3 — block legacy reveal while a Scoped reveal is on
-  // screen; otherwise two modals stack at `z-[60]` and the user might
-  // confuse two distinct session keys (legacy in-tab vs Scoped EOA).
-  if (scopedReveal.value !== null) {
-    toast('Dismiss the Scoped reveal first', {
-      description: 'A freshly-minted Scoped session key is still on screen.',
-    })
-    return
-  }
-  showRevealModal.value = true
 }
 
 /**
@@ -1613,16 +1594,6 @@ function humaniseError(e: unknown, fallback: string): string {
           {{ submitLabel }}
         </MButton>
 
-        <MButton
-          variant="outline"
-          :disabled="!walletStore.connected"
-          data-testid="policy-reveal-cta"
-          @click="openReveal"
-        >
-          <KeyRound :size="14" />
-          Reveal session key for broker
-        </MButton>
-
         <p
           v-if="lastCommittedAt"
           class="text-[11px] text-cool ml-auto"
@@ -1632,7 +1603,16 @@ function humaniseError(e: unknown, fallback: string): string {
         </p>
       </div>
 
-      <!-- Broker handoff explainer -->
+      <!-- Broker handoff explainer.
+           Wave 5 Option D · C4 follow-up: the legacy "Reveal session key
+           for broker" button was REMOVED — it minted a DIFFERENT in-tab
+           session key (`walletStore.exportSessionKey`) that does NOT match
+           the on-chain Scoped validator, so pasting it into the broker
+           silently failed. The ONLY correct broker key is the one shown in
+           the reveal modal that pops up RIGHT AFTER you confirm the Scoped
+           transition (the freshly-minted Scoped signer). It's shown once
+           and never stored; if you miss it, revoke + re-walk to mint a
+           fresh one. -->
       <section
         class="p-4 rounded-xl border border-haze dark:border-white/5
                bg-mist/40 dark:bg-[#0d0e10]/60 space-y-2"
@@ -1643,26 +1623,22 @@ function humaniseError(e: unknown, fallback: string): string {
           Broker handoff
         </p>
         <p class="font-sans text-[13px] text-compute dark:text-body-dark leading-relaxed">
-          Click <span class="font-mono">Reveal session key for broker</span>
-          above to surface the 0x-prefixed 32-byte hex once. Paste it into
-          <code class="font-mono text-[11px]">MUHAVEN_BROKER_SESSION_KEY</code>
-          on your broker machine, restart the daemon, and any read /
-          propose call from the MCP / OpenClaw skill will route through
-          the policy you just set. The key never leaves your device; the
-          backend doesn't see it.
+          When you confirm a <span class="font-mono">Scoped autonomy</span>
+          transition, a one-time reveal shows the broker session key. Copy it
+          into <code class="font-mono text-[11px]">MUHAVEN_BROKER_SESSION_KEY</code>
+          on your broker machine and restart the daemon — every read / propose
+          call from the MCP / OpenClaw skill then routes through this policy.
+          The key is computed locally, shown once, and never stored or sent to
+          the backend; if you dismiss it before copying, revoke this session
+          and re-walk to mint a fresh one.
         </p>
       </section>
     </template>
 
-    <SessionKeyRevealModal
-      v-if="showRevealModal"
-      @close="showRevealModal = false"
-    />
-
-    <!-- Wave 5 Path D Slice 1 Pickup A — Scoped session-key reveal.
-         Distinct mount from the legacy in-tab `showRevealModal`: this
-         one's `preMinted` carries the FRESHLY-minted ephemeral EOA from
-         the Scoped tier transition commit step. The `smartAccountAddress`
+    <!-- Wave 5 Path D Slice 1 Pickup A — Scoped session-key reveal. The
+         SOLE broker-key reveal (the legacy in-tab reveal was removed in the
+         C4 follow-up). `preMinted` carries the FRESHLY-minted ephemeral EOA
+         from the Scoped tier transition commit step. The `smartAccountAddress`
          field stays bound to the user's kernel (not the EOA) so the
          modal's "Smart account" label remains accurate. The privateKey
          decodes to the broker's session signer EOA (`signerAddress`);

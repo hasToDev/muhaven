@@ -132,4 +132,19 @@ describe('ScopedSessionBanner', () => {
     await w.find('[data-testid="scoped-session-purge-dismiss"]').trigger('click')
     expect(w.find('[data-testid="scoped-session-purge-reminder"]').exists()).toBe(false)
   })
+
+  it('dismiss × hides the active banner for that session', async () => {
+    // Distinct sessionId — the dismiss state is module-level + keyed by
+    // sessionId, so using a unique id keeps this test from suppressing the
+    // banner in the other ('s1') cases regardless of run order.
+    api.getActiveScopedSession.mockResolvedValue({
+      session: fakeSession({ sessionId: 's1-dismiss' }),
+    })
+    const w = mount(ScopedSessionBanner)
+    await flushPromises()
+    expect(w.find('[data-testid="active-session-banner"]').exists()).toBe(true)
+
+    await w.find('[data-testid="active-session-banner-dismiss"]').trigger('click')
+    expect(w.find('[data-testid="active-session-banner"]').exists()).toBe(false)
+  })
 })

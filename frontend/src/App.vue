@@ -83,13 +83,19 @@ onMounted(() => {
     <TopNav v-if="showChrome" class="md:hidden" />
     <main :class="showChrome ? 'md:pl-64' : ''">
       <!-- Wave 5 Option D · Commit 4 — dashboard banner for an active
-           Scoped (agent-autonomy) session. The wrapper carries only
-           horizontal padding (aligns with page content), so when the
-           banner self-hides (the common case — no active session) this
-           div collapses to zero height and adds NO layout shift. -->
+           Scoped (agent-autonomy) session. The wrapper carries ONLY
+           horizontal padding (aligns with page content) + `relative z-40`.
+           No vertical padding: the banner self-hides (the common case —
+           no active session), and a top margin would leave a white gap
+           above the strip, so the visible banner sits flush at the top of
+           the content area (a clean top strip) and owns its own bottom
+           margin. When hidden the wrapper collapses to zero height → no
+           layout shift. `z-40` lifts the strip above per-page fixed asides
+           (e.g. `/cash`'s `xl:fixed … z-30` wallet aside) so its CTA is
+           always clickable. -->
       <div
         v-if="showChrome"
-        class="max-w-7xl mx-auto w-full px-6 sm:px-10 lg:px-12"
+        class="relative z-40 max-w-7xl mx-auto w-full px-6 sm:px-10 lg:px-12"
       >
         <ScopedSessionBanner />
       </div>
