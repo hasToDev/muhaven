@@ -4,6 +4,7 @@ import { useOracleTokensStore } from '@/stores/oracle-tokens'
 import { formatUSD } from '@/lib/utils'
 import MButton from '@/components/ui/MButton.vue'
 import MPageLoader from '@/components/ui/MPageLoader.vue'
+import TokenIcon from '@/components/ui/TokenIcon.vue'
 import OracleSparkline from '@/components/charts/OracleSparkline.vue'
 import {
   Search, ShieldCheck, Inbox, EyeOff,
@@ -281,14 +282,7 @@ function formatApy(raw: string | null | undefined): string {
           >
             <div class="flex flex-col h-full justify-between gap-8 mt-2">
               <div class="flex items-start gap-3">
-                <img
-                  v-if="token.icon_url"
-                  :src="token.icon_url"
-                  alt=""
-                  role="presentation"
-                  loading="lazy"
-                  class="w-10 h-10 rounded-full bg-mist/60 dark:bg-white/5 border border-haze dark:border-white/5 object-contain flex-shrink-0"
-                />
+                <TokenIcon :ticker="token.ticker" variant="card" />
                 <div class="flex-1 min-w-0">
                   <h3
                     data-testid="marketplace-token-name"

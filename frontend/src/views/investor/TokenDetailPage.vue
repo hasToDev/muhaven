@@ -11,6 +11,7 @@ import {
 import { formatUSD } from '@/lib/utils'
 import MButton from '@/components/ui/MButton.vue'
 import MPageLoader from '@/components/ui/MPageLoader.vue'
+import TokenIcon from '@/components/ui/TokenIcon.vue'
 import OracleTimeseriesChart from '@/components/charts/OracleTimeseriesChart.vue'
 import {
   ArrowLeft, Globe, ShieldCheck, TrendingUp,
@@ -53,7 +54,6 @@ const snapshot = ref<OracleSnapshotDto | null>(null)
 const loading = ref(true)
 const error = ref<string | null>(null)
 const snapshotError = ref<string | null>(null)
-const iconLoadFailed = ref(false)
 const backLink = useTemplateRef<HTMLAnchorElement>('backLink')
 
 // Monotonically-increasing request token — every load() captures the
@@ -70,7 +70,6 @@ async function load() {
   snapshotError.value = null
   metadata.value = null
   snapshot.value = null
-  iconLoadFailed.value = false
   try {
     // Metadata is the load-bearing fetch — if it fails, the whole
     // page falls through to the error state. Snapshot is best-effort.
@@ -374,14 +373,7 @@ const isRetired = computed(() => retirementLabel.value !== '')
         class="pb-10 border-b border-haze dark:border-white/5"
       >
         <div class="flex items-start gap-5 mb-5 flex-wrap">
-          <img
-            v-if="metadata.icon_url && !iconLoadFailed"
-            :src="metadata.icon_url"
-            alt=""
-            role="presentation"
-            class="w-16 h-16 rounded-2xl bg-mist/60 dark:bg-white/5 border border-haze dark:border-white/5 object-contain"
-            @error="iconLoadFailed = true"
-          />
+          <TokenIcon :ticker="metadata.ticker" variant="hero" />
           <div class="flex-1 min-w-0">
             <div class="flex items-center gap-2 mb-2 flex-wrap">
               <span

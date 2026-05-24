@@ -8,6 +8,8 @@
     "scrape:asset": "tsx scripts/scrape-asset.ts",
     "extract:asset": "tsx scripts/extract-asset.ts",
     "fetch:timeseries": "tsx scripts/fetch-timeseries.ts",
+    "fetch:icons": "tsx scripts/fetch-icons.ts",
+    "test:icons": "tsx --test scripts/lib/icon-validate.test.ts",
     "refresh:all": "tsx scripts/refresh-all.ts",
     "postinstall": "playwright install chromium"
   },
