@@ -1461,8 +1461,10 @@ export interface ScopedSessionResponseDto {
   /**
    * Wave 5 Option D · Commit 2 — install lifecycle fields surfaced
    * on the standard GET response. enableData / enableSig are NEVER
-   * here — only the dedicated internal install-material subroute
-   * exposes them (gated on the broker-callback service secret).
+   * here — only the dedicated install-material subroute exposes them
+   * (C3 third commit moved that subroute to user-JWT auth + the
+   * `mcp.propose.*` scope; it was briefly broker-callback-service-
+   * secret-gated in C2).
    */
   enableStatus?: 'pending' | 'enabled' | 'failed' | null
   validatorEnabledAt?: string | null

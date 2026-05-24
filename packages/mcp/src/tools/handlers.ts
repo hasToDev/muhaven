@@ -488,12 +488,15 @@ export type PathDFallbackReason =
    *  for (e.g. `internal`, future unknowns). */
   | 'broker_internal'
   // ── Wave 5 Option D Commit 3 — MODE.ENABLE branch ──
-  /** The install-material subroute rejected the fetch with 401/403 —
-   *  the broker's device-flow JWT is missing / expired / lacks the
-   *  `mcp.propose.*` scope. Remediation: `muhaven-broker login` to
-   *  refresh the JWT, then retry. (Pre-C3-third-commit this code meant
-   *  "MCP not holding BROKER_CALLBACK_SERVICE_SECRET"; the route moved
-   *  to user-JWT auth so the secret is no longer involved.) */
+  /** The install-material subroute fetch failed in a way that is NOT a
+   *  session/structural problem (so the user should NOT re-mint):
+   *    - 401 → broker device-flow JWT missing/expired → `muhaven-broker login`
+   *    - 403 → JWT lacks `mcp.propose.*` scope → re-authorize with propose
+   *    - 5xx / network / timeout → transient backend or operator config
+   *      (e.g. OPTION_D_C2_ENCRYPTION_KEY unset) → retry
+   *  (Pre-C3-third-commit this code meant "MCP not holding
+   *  BROKER_CALLBACK_SERVICE_SECRET"; the route moved to user-JWT auth
+   *  so the secret is no longer involved.) */
   | 'install_material_unavailable'
   /** Mirror row has `enable_status` set but the install-material
    *  subroute returned 404 (row vanished mid-flow) OR malformed
@@ -1893,20 +1896,46 @@ async function attemptPathD(
             'install-material subroute returned 404 — row vanished mid-flow OR not owned by the authenticated user; re-walk the ceremony',
         };
       }
-      // 401 (JWT missing/expired/invalid) or 403 (JWT lacks
-      // `mcp.propose.*` scope) → the broker's device-flow JWT needs
-      // refresh, NOT a ceremony re-walk. Distinct remediation.
-      if (
-        err instanceof BackendError &&
-        (err.status === 401 || err.status === 403)
-      ) {
+      // 401 → JWT missing / expired / invalid → `muhaven-broker login`
+      // refreshes it. 403 → JWT is valid but lacks `mcp.propose.*`
+      // scope → re-login ONLY helps if the device-flow grants propose
+      // (the standard flow does; a read-only grant must be re-authorized
+      // with propose). Distinct messages so the user doesn't loop on a
+      // re-login that can't add a scope the grant never carried.
+      if (err instanceof BackendError && err.status === 401) {
         return {
           kind: 'fallback',
           reason: 'install_material_unavailable',
           message:
-            'install-material fetch rejected (JWT missing / expired / lacks mcp.propose.* scope) — run `muhaven-broker login` to refresh the device-flow JWT, then retry',
+            'install-material fetch returned 401 — the broker device-flow JWT is missing/expired/invalid. Run `muhaven-broker login` to refresh it, then retry.',
         };
       }
+      if (err instanceof BackendError && err.status === 403) {
+        return {
+          kind: 'fallback',
+          reason: 'install_material_unavailable',
+          message:
+            'install-material fetch returned 403 — the broker JWT lacks the `mcp.propose.*` scope. Re-authorize via `muhaven-broker login` (the device-flow must grant propose, not read-only). NOT a session problem — do not re-mint.',
+        };
+      }
+      // 5xx / network / timeout → transient backend or operator-config
+      // (e.g. 503 when OPTION_D_C2_ENCRYPTION_KEY is unset on the
+      // backend). This is NOT a structural/session problem — surface
+      // it as retryable + steer AWAY from a needless re-mint. (Network
+      // / timeout errors carry `status === undefined` from
+      // BackendError, so the `>= 500` test alone wouldn't catch them —
+      // gate on "not a 4xx" instead.)
+      if (
+        err instanceof BackendError &&
+        (err.status === undefined || err.status >= 500)
+      ) {
+        return {
+          kind: 'fallback',
+          reason: 'install_material_unavailable',
+          message: `install-material fetch hit a transient backend error (${typedErrorCode(err)}) — retry shortly. If it persists, the operator should check backend logs + that OPTION_D_C2_ENCRYPTION_KEY is set. NOT a session problem — do not re-mint.`,
+        };
+      }
+      // Remaining 4xx (other than 401/403/404) — treat as structural.
       return {
         kind: 'fallback',
         reason: 'install_material_malformed',
