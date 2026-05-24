@@ -593,6 +593,20 @@ describe('Wave 4 P2 — tool use cases', () => {
       expect(out.preview.targetTier).toBe(Tier.PolicyBound);
     });
 
+    it('rejects a same-tier no-op (no doomed confirm token / audit row)', async () => {
+      // Fresh user defaults to Advisory; set_policy(advisory) is a no-op the
+      // state machine would reject at commit. The tool rejects it up front
+      // (CR/RC R2 LOW) so no ConfirmTokenIssued audit row is minted.
+      const uc = new SetPolicyToolUseCase(getPolicy, confirmTokens, appendAudit);
+      await expect(
+        uc.execute(
+          { userId: USER_ID, emittingSurface: Surface.HavenBot },
+          { surface: Surface.HavenBot, targetTier: Tier.Advisory },
+          NOW,
+        ),
+      ).rejects.toMatchObject({ statusCode: 400 });
+    });
+
     it('rejects targetTier=paused (use muhaven_pause instead)', async () => {
       const uc = new SetPolicyToolUseCase(getPolicy, confirmTokens, appendAudit);
       await expect(

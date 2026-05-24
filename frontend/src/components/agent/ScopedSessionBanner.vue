@@ -20,7 +20,7 @@
  * Auto-clear on a broker IPC ack lands in a later slice; today the purge
  * reminder is a manual dismiss.
  */
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { KeyRound, ChevronRight, Copy, Check, CircleCheck, X } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
@@ -89,8 +89,20 @@ async function copyPurgeCmd(): Promise<void> {
   }
 }
 
+// FE-R2 H-1 — fetch reactively on auth, not just at mount: the banner is
+// mounted once (App.vue) and may be present before `useAuth.initialize()`
+// resolves, or auth may land mid-session (silent re-login). A bare
+// `onMounted` fetch would skip those and leave the banner permanently
+// blank. `{ immediate: true }` covers the already-authed mount case.
+watch(
+  () => authStore.isAuthenticated,
+  (authed) => {
+    if (authed && session.value === null) void refresh()
+  },
+  { immediate: true },
+)
+
 onMounted(() => {
-  if (authStore.isAuthenticated) void refresh()
   ticker = setInterval(() => {
     nowMs.value = Date.now()
   }, 1000)

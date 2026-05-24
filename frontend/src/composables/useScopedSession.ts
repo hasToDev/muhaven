@@ -16,8 +16,16 @@ import {
   agentPolicyApi,
   ApiError,
   type ScopedSessionResponseDto,
-  type Surface,
 } from '@/services/api'
+
+/**
+ * Scoped sessions are hard-locked to the MCP-broker surface at mint time
+ * (see PolicyTransitionPage `mintScopedSession`), so this composable only
+ * ever reads `surface='mcp'`. Kept as a named constant rather than a
+ * per-call parameter so the in-flight coalescing below can't be handed a
+ * different surface than the fetch already in progress.
+ */
+const SCOPED_SURFACE = 'mcp' as const
 
 const session = ref<ScopedSessionResponseDto | null>(null)
 const loading = ref(false)
@@ -50,16 +58,18 @@ export function useScopedSession() {
    * `error` for the page to optionally surface. Guards against concurrent
    * in-flight fetches.
    */
-  async function refresh(opts?: { surface?: Surface }): Promise<void> {
+  async function refresh(): Promise<void> {
     // Coalesce concurrent callers onto the same fetch so the second
     // `await` observes the resolved result, not a stale early-return.
+    // (Surface is fixed to `mcp` — see SCOPED_SURFACE — so there's no
+    // risk of a second caller awaiting a different-surface fetch.)
     if (inFlight) return inFlight
     loading.value = true
     error.value = null
     inFlight = (async () => {
       try {
         const { session: s } = await agentPolicyApi.getActiveScopedSession({
-          surface: opts?.surface ?? 'mcp',
+          surface: SCOPED_SURFACE,
         })
         session.value = s
       } catch (e) {
@@ -89,6 +99,10 @@ export function useScopedSession() {
   async function revoke(sessionId: string): Promise<void> {
     const res = await agentPolicyApi.revokeScopedSession({ sessionId })
     session.value = null
+    // Clear any stale load error from a prior failed refresh() so a
+    // consumer reading `{ error }` doesn't show a failure next to a
+    // successful revoke (FE-R2 L-1).
+    error.value = null
     pendingBrokerPurge.value = {
       sessionId,
       revokedAt: res.session.revokedAt ?? new Date().toISOString(),

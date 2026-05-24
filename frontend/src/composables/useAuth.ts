@@ -112,6 +112,14 @@ async function tearDownUserStores(): Promise<void> {
     // fresh from User B's token load. Pure-data clear; no async
     // work.
     import('@/contracts/addresses').then((m) => m.clearYieldSnapshotRegistry()),
+    // Wave 5 Option D · C4 — the active-Scoped-session composable holds
+    // MODULE-LEVEL singleton state (`session` + the post-revoke
+    // `pendingBrokerPurge` reminder, which carries the prior session's
+    // signer + sessionId). Without this, an in-SPA account switch (logout
+    // → login as a different wallet, or silent JWT-expiry relogin) would
+    // leak User A's session / revoke-reminder to User B until the next
+    // refresh. `reset()` nulls every ref incl. the in-flight fetch guard.
+    import('@/composables/useScopedSession').then((m) => m.useScopedSession().reset()),
   ])
 }
 

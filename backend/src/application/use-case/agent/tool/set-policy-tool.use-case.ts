@@ -48,6 +48,18 @@ export class SetPolicyToolUseCase {
     const surface = input.surface;
     const current = await this.getPolicyState.forSurface(ctx.userId, surface, now);
 
+    // Same-tier is a no-op that `requestUserTierChange` rejects at commit
+    // time (`forbidden_transition` "already at tier"). Reject it here too
+    // so the LLM path can't mint a doomed confirm token + a misleading
+    // `ConfirmTokenIssued` audit row for a transition that can never
+    // commit (CR/RC R2 LOW — keeps "the agent never proposed an
+    // impossible transition" true).
+    if (input.targetTier === current.tier) {
+      throw ApplicationHttpError.badRequest(
+        `${surface} is already at tier ${current.tier}; no transition needed.`,
+      );
+    }
+
     // Wave 5 Option D · Commit 4 (+ "pick any tier" follow-up, operator
     // decisions 2026-05-24) — the forced tier climb is FULLY removed.
     // `requestUserTierChange` now accepts any non-paused → any other
@@ -56,7 +68,7 @@ export class SetPolicyToolUseCase {
     // mirrored with the state machine. The security boundary is the
     // confirmation-token tap + the Scoped mint ceremony (passkey + cap +
     // TTL) + the on-chain per-tier policy / revoke rails, not the climb.
-    // The only thing still rejected here is `targetTier = paused` (above).
+    // Only `targetTier = paused` (above) and same-tier no-ops are rejected.
 
     const actionPayload = {
       action: 'set_policy',

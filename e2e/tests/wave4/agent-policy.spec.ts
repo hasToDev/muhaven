@@ -11,8 +11,9 @@ import { test, expect, type Route } from '@playwright/test'
  *   1. /agent/policy/transition redirects unauthenticated visitors to /login
  *   2. With a seeded auth payload, the page mounts + renders the tier
  *      picker + surface picker
- *   3. Step-up to Policy-bound from Advisory surfaces the gate-failure
- *      hint without firing a backend POST (forbidden-transition path).
+ *   3. Step-up to Policy-bound from Advisory is now allowed DIRECTLY
+ *      (Wave 5 Option D · C4 "pick any tier" follow-up removed the forced
+ *      climb) — submit enables + the confirm-token step-up flow fires.
  *   4. Step-down auto-applies (POST /policy/transition returns
  *      `requiresConfirmation: false`).
  *
@@ -135,11 +136,22 @@ test.describe('Wave 4 Q1 · /agent/policy/transition', () => {
     await expect(page.getByTestId('policy-tier-policy-bound')).toBeVisible()
   })
 
-  test('Advisory → Policy-bound shows the forbidden-transition hint', async ({ page }) => {
+  test('Advisory → Policy-bound is allowed directly (no forced climb) + drives the confirm flow', async ({ page }) => {
     await seedAuthState(page)
     await stubMe(page)
     await stubPolicyState(page, {
       surfaces: [defaultStateForSurface('mcp', 'advisory')],
+    })
+    // Wave 5 Option D · C4 follow-up — the forced climb is gone, so this
+    // is now a valid step-up. First POST (no token) returns
+    // requiresConfirmation:true; the page surfaces the pending strip.
+    await stubPolicyTransition(page, {
+      requiresConfirmation: true,
+      confirmation: {
+        token: 'tok_' + 'a'.repeat(64),
+        actionHash: 'sha256:' + 'b'.repeat(64),
+        expiresAt: new Date(Date.now() + 300_000).toISOString(),
+      },
     })
 
     await page.goto('/agent/policy/transition')
@@ -148,10 +160,12 @@ test.describe('Wave 4 Q1 · /agent/policy/transition', () => {
     }
 
     await page.getByTestId('policy-tier-policy-bound').click()
-    await expect(page.getByTestId('policy-gate-hint')).toBeVisible()
-    await expect(page.getByTestId('policy-gate-hint')).toContainText(/forbidden/i)
-    // Submit CTA should remain disabled.
-    await expect(page.getByTestId('policy-submit')).toBeDisabled()
+    // The old forbidden-transition gate hint is gone; submit is enabled.
+    await expect(page.getByTestId('policy-gate-hint')).toHaveCount(0)
+    await expect(page.getByTestId('policy-submit')).toBeEnabled({ timeout: 5_000 })
+    // Step-up → confirm-token flow.
+    await page.getByTestId('policy-submit').click()
+    await expect(page.getByTestId('policy-pending-confirmation')).toBeVisible()
   })
 
   test('Confirm-per-action → Advisory applies as step-down without confirmation', async ({ page }) => {

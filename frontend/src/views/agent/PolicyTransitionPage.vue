@@ -460,21 +460,29 @@ onMounted(async () => {
   showTierPicker.value = !hasActiveScopedSession.value
   // Deep-link `?focus=revoke` from the dashboard banner — auto-focus the
   // "Revoke now" trigger (not scroll-only) once the zone has rendered.
-  if (route.query.focus === 'revoke' && hasActiveScopedSession.value) {
-    void Promise.resolve().then(() => {
-      const el = document.querySelector<HTMLButtonElement>(
-        '[data-testid="policy-revoke-now"]',
-      )
-      el?.focus()
-      const reducedMotion =
-        typeof window !== 'undefined'
-        && typeof window.matchMedia === 'function'
-        && window.matchMedia('(prefers-reduced-motion: reduce)').matches
-      el?.scrollIntoView({
-        behavior: reducedMotion ? 'auto' : 'smooth',
-        block: 'center',
+  if (route.query.focus === 'revoke') {
+    if (hasActiveScopedSession.value) {
+      void Promise.resolve().then(() => {
+        const el = document.querySelector<HTMLButtonElement>(
+          '[data-testid="policy-revoke-now"]',
+        )
+        el?.focus()
+        const reducedMotion =
+          typeof window !== 'undefined'
+          && typeof window.matchMedia === 'function'
+          && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+        el?.scrollIntoView({
+          behavior: reducedMotion ? 'auto' : 'smooth',
+          block: 'center',
+        })
       })
-    })
+    }
+    // FE-R2 M-3 — strip the consumed one-shot deep-link param so a later
+    // reload (or a fresh mint) doesn't keep auto-focusing the revoke zone.
+    // Done regardless of whether a session was present so the intent
+    // doesn't stick around.
+    const { focus: _drop, ...restQuery } = route.query
+    void router.replace({ query: restQuery })
   }
 })
 
@@ -1108,10 +1116,17 @@ function humaniseError(e: unknown, fallback: string): string {
             </span>
           </p>
         </div>
+        <!-- Informational only. As of the Option D · C4 "pick any tier"
+             follow-up these counters NO LONGER gate any tier change
+             (any tier is one confirm tap away); they're shown as session
+             activity so the label makes that explicit (FE-R2 L2). -->
         <div
           v-if="currentState"
           class="text-right text-[11px] text-cool dark:text-body-dark/70"
         >
+          <p class="text-[9px] uppercase tracking-[0.18em] text-cool/70 mb-0.5">
+            Session activity · not required for tier changes
+          </p>
           <p>
             Confirmed actions:
             <span class="font-mono text-midnight dark:text-white">
