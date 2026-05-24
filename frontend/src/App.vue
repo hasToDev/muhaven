@@ -9,6 +9,7 @@ import MMeshGradient from '@/components/ui/MMeshGradient.vue'
 import MMobileTabBar from '@/components/ui/MMobileTabBar.vue'
 import AgentFAB from '@/components/agent/AgentFAB.vue'
 import AgentSidePanel from '@/components/agent/AgentSidePanel.vue'
+import ScopedSessionBanner from '@/components/agent/ScopedSessionBanner.vue'
 import LinkTelegramModal from '@/components/agent/LinkTelegramModal.vue'
 import MToastProvider from '@/components/ui/MToastProvider.vue'
 import type { TelegramLinkIssueResponse } from '@/services/api'
@@ -81,6 +82,17 @@ onMounted(() => {
     <!-- Mobile top bar: only shows on <md; desktop nav lives in Sidebar -->
     <TopNav v-if="showChrome" class="md:hidden" />
     <main :class="showChrome ? 'md:pl-64' : ''">
+      <!-- Wave 5 Option D · Commit 4 — dashboard banner for an active
+           Scoped (agent-autonomy) session. The wrapper carries only
+           horizontal padding (aligns with page content), so when the
+           banner self-hides (the common case — no active session) this
+           div collapses to zero height and adds NO layout shift. -->
+      <div
+        v-if="showChrome"
+        class="max-w-7xl mx-auto w-full px-6 sm:px-10 lg:px-12"
+      >
+        <ScopedSessionBanner />
+      </div>
       <router-view v-slot="{ Component, route: viewRoute }">
         <transition name="page" mode="out-in">
           <div

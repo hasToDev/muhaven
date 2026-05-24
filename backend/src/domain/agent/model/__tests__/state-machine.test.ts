@@ -67,13 +67,39 @@ describe('state-machine — allowed transitions', () => {
     expect(r.ok).toBe(true);
   });
 
-  // Wave 5 Path D — Scoped tier transitions (RD-2 in PATH_D_PLAN.md).
+  // Wave 5 Option D · Commit 4 — direct-to-Scoped (operator decision
+  // 2026-05-24 "Uniform"). The forced climb was removed: Scoped is
+  // reachable from ANY non-paused tier WITHOUT the ≥5-confirm + risk-Q
+  // gates. Pre-C4 these four cases were `forbidden_transition` /
+  // `gate_failed_*`; they now accept. See state-machine.ts JSDoc.
 
-  it('PolicyBound → Scoped is allowed with ≥5 confirms + risk Q&A', () => {
+  it('Advisory → Scoped is allowed directly (no climb, no gates)', () => {
+    const s = freshState({
+      tier: Tier.Advisory,
+      confirmedActionCount: 0,
+      riskQuestionnaireComplete: false,
+    });
+    const r = requestUserTierChange(s, Tier.Scoped, { now: NOW });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.state.tier).toBe(Tier.Scoped);
+  });
+
+  it('ConfirmPerAction → Scoped is allowed directly (no gates)', () => {
+    const s = freshState({
+      tier: Tier.ConfirmPerAction,
+      confirmedActionCount: 0,
+      riskQuestionnaireComplete: false,
+    });
+    const r = requestUserTierChange(s, Tier.Scoped, { now: NOW });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.state.tier).toBe(Tier.Scoped);
+  });
+
+  it('PolicyBound → Scoped is allowed without ≥5 confirms or risk Q&A', () => {
     const s = freshState({
       tier: Tier.PolicyBound,
-      confirmedActionCount: MIN_CONFIRMS_FOR_POLICY_BOUND,
-      riskQuestionnaireComplete: true,
+      confirmedActionCount: 0,
+      riskQuestionnaireComplete: false,
     });
     const r = requestUserTierChange(s, Tier.Scoped, { now: NOW });
     expect(r.ok).toBe(true);
@@ -149,46 +175,26 @@ describe('state-machine — forbidden transitions (ADR-0)', () => {
     expect(r.ok).toBe(false);
   });
 
-  // Wave 5 Path D — Scoped tier rejections (no skip the ladder).
-
-  it('Advisory → Scoped is forbidden (must traverse confirm-per-action + policy-bound)', () => {
-    const s = freshState({ tier: Tier.Advisory });
+  // Wave 5 Option D · Commit 4 — the Scoped tier is NO LONGER gated
+  // behind a forced climb (see the "allowed transitions" block for the
+  // direct-to-Scoped cases). Scoped → Scoped is still rejected as a
+  // self-transition; only that invariant remains here.
+  it('rejecting a self-transition (scoped → scoped)', () => {
+    const s = freshState({ tier: Tier.Scoped });
     const r = requestUserTierChange(s, Tier.Scoped, { now: NOW });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe('forbidden_transition');
   });
 
-  it('ConfirmPerAction → Scoped is forbidden (must traverse policy-bound)', () => {
+  it('Scoped target while paused is still rejected (resume first)', () => {
     const s = freshState({
-      tier: Tier.ConfirmPerAction,
-      confirmedActionCount: MIN_CONFIRMS_FOR_POLICY_BOUND,
-      riskQuestionnaireComplete: true,
+      tier: Tier.Paused,
+      pausedAt: NOW,
+      pauseTrigger: Trigger.DrawdownBreach,
     });
     const r = requestUserTierChange(s, Tier.Scoped, { now: NOW });
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.code).toBe('forbidden_transition');
-  });
-
-  it('PolicyBound → Scoped without ≥5 confirms is rejected', () => {
-    const s = freshState({
-      tier: Tier.PolicyBound,
-      confirmedActionCount: 4,
-      riskQuestionnaireComplete: true,
-    });
-    const r = requestUserTierChange(s, Tier.Scoped, { now: NOW });
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.code).toBe('gate_failed_confirms');
-  });
-
-  it('PolicyBound → Scoped without risk Q&A is rejected', () => {
-    const s = freshState({
-      tier: Tier.PolicyBound,
-      confirmedActionCount: MIN_CONFIRMS_FOR_POLICY_BOUND,
-      riskQuestionnaireComplete: false,
-    });
-    const r = requestUserTierChange(s, Tier.Scoped, { now: NOW });
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.code).toBe('gate_failed_questionnaire');
+    if (!r.ok) expect(r.code).toBe('gate_failed_already_paused');
   });
 });
 

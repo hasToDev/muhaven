@@ -137,10 +137,12 @@ export class MintScopedSessionUseCase {
     const surface = input.dto.surface;
 
     // 1. Tier gate — user must currently be at 'scoped' on this surface.
-    //    `requestUserTierChange` already gate-keeps the climb to Scoped
-    //    (PolicyBound + 5 confirms + risk Q); we re-check here so a
-    //    direct-API caller can't post a snapshot before the tier
-    //    transition committed.
+    //    The tier transition to Scoped is its own passkey-bound,
+    //    confirmation-token step-up (Wave 5 Option D · Commit 4 made
+    //    Scoped directly reachable from any non-paused tier, but it's
+    //    still a step-up — see `requestUserTierChange`). We re-check the
+    //    committed tier here so a direct-API caller can't post a snapshot
+    //    before that tier transition committed.
     const state = await this.stateRepo.findByUserAndSurface(input.userId, surface);
     if (!state || state.tier !== Tier.Scoped) {
       throw new ApplicationHttpError(

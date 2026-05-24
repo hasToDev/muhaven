@@ -610,6 +610,24 @@ describe('Wave 4 P2 — tool use cases', () => {
       const tok = await confirmRepo.findByToken(out.confirmTokenId);
       expect(tok?.actionKind).toBe('tier_transition');
     });
+
+    // Wave 5 Option D · Commit 4 — direct-to-Scoped (operator decision
+    // 2026-05-24 "Uniform"). Pre-C4 this threw 409 ("Step through
+    // Policy-bound first"); the climb was removed so a fresh Advisory
+    // user (0 confirms, no risk Q&A) can mint a Scoped confirm token
+    // directly. Stays mirrored with the relaxed `requestUserTierChange`.
+    it('mints a tier_transition confirm token on a direct Advisory → Scoped step', async () => {
+      const uc = new SetPolicyToolUseCase(getPolicy, confirmTokens, appendAudit);
+      const out = await uc.execute(
+        { userId: USER_ID, emittingSurface: Surface.HavenBot },
+        { surface: Surface.HavenBot, targetTier: Tier.Scoped },
+        NOW,
+      );
+      expect(out.kind).toBe('set_policy');
+      expect(out.preview.targetTier).toBe(Tier.Scoped);
+      const tok = await confirmRepo.findByToken(out.confirmTokenId);
+      expect(tok?.actionKind).toBe('tier_transition');
+    });
   });
 
   describe('PauseToolUseCase', () => {

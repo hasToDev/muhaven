@@ -8,6 +8,7 @@ import { useAuth } from '@/composables/useAuth'
 import { useGlassNav } from '@/composables/useGlassNav'
 import { useHomeTarget } from '@/composables/useHomeTarget'
 import { cn, formatAddress } from '@/lib/utils'
+import { resolveActiveNavPath } from '@/lib/nav-active'
 import MDarkToggle from '@/components/ui/MDarkToggle.vue'
 import MSessionStatus from '@/components/ui/MSessionStatus.vue'
 import MDevModeBanner from '@/components/ui/MDevModeBanner.vue'
@@ -15,7 +16,7 @@ import { toast } from 'vue-sonner'
 import {
   PieChart, ShoppingCart, TrendingUp, Activity, Store, Sparkles, Send, Undo2,
   Coins, Share2, Users, ClipboardCheck, Wallet, LogOut, LogIn, Loader2,
-  Copy, Check, Banknote, FileSignature, CreditCard,
+  Copy, Check, Banknote, FileSignature, CreditCard, KeyRound,
 } from 'lucide-vue-next'
 
 const route = useRoute()
@@ -53,6 +54,9 @@ const investorNav = [
   { path: '/yields', label: 'Yields', icon: TrendingUp },
   { path: '/redemptions', label: 'Redemptions', icon: Undo2 },
   { path: '/activity', label: 'Activity', icon: Activity },
+  // Wave 5 Option D · Commit 4 — mirror Sidebar.vue: Policy penultimate,
+  // just before /agent. testid auto-derives to `topnav-nav-policy`.
+  { path: '/agent/policy/transition', label: 'Policy', icon: KeyRound },
   { path: '/agent', label: 'Agent', icon: Sparkles },
 ]
 
@@ -79,9 +83,17 @@ const navItems = computed(() => store.role === 'investor' ? investorNav : issuer
  * Third-pass review (Frontend M8): prefix-match active state so nav items
  * with sub-routes (`/checkout/:sessionId`, `/checkout/webhooks`) keep
  * their pill highlighted. Mirror of Sidebar.isNavActive.
+ *
+ * Wave 5 Option D · Commit 4: longest-prefix-wins so the new `Policy`
+ * entry (`/agent/policy/transition`) doesn't co-light the `Agent` pill
+ * (`/agent`) on the Policy page. See Sidebar.vue for the full rationale.
  */
+const activeNavPath = computed<string | null>(() =>
+  resolveActiveNavPath(navItems.value.map((i) => i.path), route.path),
+)
+
 function isNavActive(path: string): boolean {
-  return route.path === path || route.path.startsWith(path + '/')
+  return activeNavPath.value === path
 }
 
 const displayAddress = computed(() => formatAddress(authStore.walletAddress))
@@ -199,6 +211,7 @@ onBeforeUnmount(() => {
           v-for="item in navItems"
           :key="item.path"
           :to="item.path"
+          :data-testid="`topnav-nav-${item.label.toLowerCase()}`"
           :class="cn(
             'flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-sans transition-colors duration-200',
             isNavActive(item.path)

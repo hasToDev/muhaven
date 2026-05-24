@@ -23,11 +23,12 @@
  * call-policy build (currently the backend's permission template is
  * scoped per-action; per-tier thresholds are a separate concern).
  */
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
 import {
   ShieldCheck,
+  ShieldOff,
   Layers,
   KeyRound,
   Sparkles,
@@ -38,6 +39,7 @@ import {
   Lock,
   PlayCircle,
   Clock,
+  ChevronDown,
 } from 'lucide-vue-next'
 import {
   agentPolicyApi,
@@ -50,6 +52,16 @@ import {
 } from '@/services/api'
 import { useAuthStore } from '@/stores/auth'
 import { useWalletStore } from '@/stores/wallet'
+import { useModalA11y } from '@/composables/useModalA11y'
+import { useScopedSession } from '@/composables/useScopedSession'
+import {
+  scopedExpiresInSec,
+  formatExpiresIn,
+  signerPrefix,
+  permissionIdPrefix,
+  formatMhUsdc6,
+  isSessionLive,
+} from '@/composables/scoped-session.helpers'
 import MButton from '@/components/ui/MButton.vue'
 import MPageLoader from '@/components/ui/MPageLoader.vue'
 import SessionKeyRevealModal from '@/components/agent/SessionKeyRevealModal.vue'
@@ -193,6 +205,126 @@ const pendingScopedParams = ref<{ maxPerOpUsd6: bigint; ttlSec: number } | null>
 const nowMs = ref<number>(Date.now())
 let countdownHandle: ReturnType<typeof setInterval> | null = null
 
+// ── Wave 5 Option D · Commit 4 — active Scoped session + revoke ──────
+// Shared module state (same refs the global ScopedSessionBanner reads),
+// so a revoke here clears the banner + arms its broker-purge reminder.
+const {
+  session: activeScopedSession,
+  refresh: refreshScopedSession,
+  revoke: revokeScopedSession,
+} = useScopedSession()
+
+/** A revocable Scoped session exists (status='active' + TTL live). The
+ *  revoke zone + the tier-picker disclosure key off this. Re-evaluates
+ *  every 1s via the existing `nowMs` ticker. */
+const hasActiveScopedSession = computed<boolean>(() =>
+  isSessionLive(activeScopedSession.value, nowMs.value),
+)
+
+const scopedExpiresLabel = computed<string>(() =>
+  activeScopedSession.value
+    ? formatExpiresIn(scopedExpiresInSec(activeScopedSession.value.validUntilSec, nowMs.value))
+    : '—',
+)
+
+const scopedMintedLabel = computed<string>(() =>
+  activeScopedSession.value?.mintedAt
+    ? new Date(activeScopedSession.value.mintedAt).toLocaleString()
+    : '—',
+)
+
+/** When an active session exists the tier picker collapses behind a
+ *  "Change tier" disclosure (UX HIGH-2 — keep the revoke zone the focus).
+ *  Initialised in onMounted once the session has loaded; toggled open by
+ *  the disclosure button or after a revoke. */
+const showTierPicker = ref<boolean>(true)
+
+// Revoke confirmation alertdialog state.
+const showRevokeDialog = ref<boolean>(false)
+const revokeDialogRoot = ref<HTMLElement | null>(null)
+const revoking = ref<boolean>(false)
+const revokeError = ref<string | null>(null)
+/** Dual-tap safety — "Confirm revoke" is hold-disabled for 3s after the
+ *  dialog opens so the second tap is deliberate (mirrors the
+ *  pendingConfirmation cognitive model). */
+const REVOKE_HOLD_SEC = 3
+const revokeHoldRemaining = ref<number>(REVOKE_HOLD_SEC)
+let revokeHoldHandle: ReturnType<typeof setInterval> | null = null
+
+useModalA11y({
+  isOpen: showRevokeDialog,
+  rootRef: revokeDialogRoot,
+  onEscape: () => closeRevokeDialog(),
+  // Don't let Esc / backdrop close mid-DELETE — avoids a confusing
+  // "did it revoke?" state if the round-trip is in flight.
+  disableEscape: revoking,
+})
+
+function openRevokeDialog(): void {
+  if (!hasActiveScopedSession.value) return
+  revokeError.value = null
+  revokeHoldRemaining.value = REVOKE_HOLD_SEC
+  showRevokeDialog.value = true
+  if (revokeHoldHandle !== null) clearInterval(revokeHoldHandle)
+  revokeHoldHandle = setInterval(() => {
+    revokeHoldRemaining.value = Math.max(0, revokeHoldRemaining.value - 1)
+    if (revokeHoldRemaining.value <= 0 && revokeHoldHandle !== null) {
+      clearInterval(revokeHoldHandle)
+      revokeHoldHandle = null
+    }
+  }, 1000)
+}
+
+function closeRevokeDialog(): void {
+  if (revoking.value) return
+  showRevokeDialog.value = false
+  if (revokeHoldHandle !== null) {
+    clearInterval(revokeHoldHandle)
+    revokeHoldHandle = null
+  }
+}
+
+async function onConfirmRevoke(): Promise<void> {
+  const s = activeScopedSession.value
+  if (!s || revoking.value || revokeHoldRemaining.value > 0) return
+  revoking.value = true
+  revokeError.value = null
+  try {
+    // On success: composable clears `session` (banner disappears) + arms
+    // the global broker-purge reminder (the "sticky panel").
+    await revokeScopedSession(s.sessionId)
+    showRevokeDialog.value = false
+    if (revokeHoldHandle !== null) {
+      clearInterval(revokeHoldHandle)
+      revokeHoldHandle = null
+    }
+    // The revoke zone is gone now (no active session) — re-open the tier
+    // picker so the user can step down / re-walk to a fresh session.
+    showTierPicker.value = true
+    toast.success('Scoped session revoked', {
+      description: 'Restart your broker daemon to drop its in-memory session key.',
+    })
+    // A11y (R1 Issue 9): the revoke zone unmounted, so `useModalA11y`'s
+    // focus-restore target (the "Revoke now" button) is gone and focus
+    // would fall to <body>. Land focus on the now-visible tier picker so
+    // the user keeps a logical position (the global purge reminder's
+    // role="status" announces the outcome independently). nextTick so the
+    // restore + re-render settle first.
+    await nextTick()
+    const picker = document.querySelector<HTMLElement>('[data-testid="policy-tier-picker"]')
+    if (picker) {
+      picker.setAttribute('tabindex', '-1')
+      picker.focus({ preventScroll: true })
+    }
+  } catch (e) {
+    // 409 = already terminal (race / double-tap across tabs). Humanise
+    // for the inline dialog error; keep the dialog open so the user sees it.
+    revokeError.value = humaniseError(e, 'Revoke failed')
+  } finally {
+    revoking.value = false
+  }
+}
+
 const currentState = computed<AgentUserStateDto | null>(
   () => statesBySurface.value[selectedSurface.value] ?? null,
 )
@@ -244,26 +376,16 @@ const stepUpGateFailure = computed<string | null>(() => {
       return 'Policy-bound requires the risk questionnaire to be completed first.'
     }
   }
-  // Wave 5 Path D RD-2 — Scoped sits ABOVE PolicyBound. No skip-the-ladder.
-  if (targetTier.value === 'scoped') {
-    if (currentTier.value !== 'policy-bound') {
-      // R1 UX M-3 — re-frame from "rules-lawyer" to "why + actionable".
-      // The "why" is the operational semantic — PolicyBound's gates need
-      // to exercise before silent-spending unlocks. Surface the prereqs
-      // so the user sees the full path at once.
-      return 'To enable Scoped autonomy, first reach Policy-bound — we need to see at least 5 confirm-per-action approvals + a completed risk questionnaire on this surface before unlocking silent spending.'
-    }
-    // Mirror the PolicyBound gates server-side state-machine re-checks at
-    // step-up time (`requestUserTierChange` in
-    // `backend/src/domain/agent/model/state-machine.ts:163-176`).
-    const c = currentState.value.confirmedActionCount
-    if (c < 5) {
-      return `Scoped requires ≥5 confirmed actions on this surface; you have ${c}.`
-    }
-    if (!currentState.value.riskQuestionnaireComplete) {
-      return 'Scoped requires the risk questionnaire to be completed first.'
-    }
-  }
+  // Wave 5 Option D · Commit 4 (operator decision 2026-05-24 "Uniform")
+  // — Scoped is NO LONGER gated behind a forced climb. It's reachable
+  // directly from any non-paused tier; the backend `requestUserTierChange`
+  // accepts `* → Scoped` as a step-up without the ≥5-confirm + risk-Q
+  // gates (those season the climb that's now optional). The real rails —
+  // the per-op mhUSDC cap + 8h TTL collected in the Scoped form below,
+  // the on-chain purchase-only CallPolicy, and the revoke surfaces —
+  // bound blast radius regardless of source tier. So there is NO
+  // `targetTier === 'scoped'` gate here; `scopedFormFailure` (cap + TTL
+  // required) is the only Scoped pre-condition. See state-machine.ts JSDoc.
   return null
 })
 
@@ -298,9 +420,11 @@ const isStepUp = computed<boolean>(() => {
   if (currentTier.value === 'advisory' && targetTier.value === 'confirm-per-action') return true
   if (currentTier.value === 'confirm-per-action' && targetTier.value === 'policy-bound') return true
   if (currentTier.value === 'advisory' && targetTier.value === 'policy-bound') return true
-  // Wave 5 Path D RD-2 — Scoped sits above PolicyBound; ascending into it
-  // is always a step-up (confirmation-gated). The `stepUpGateFailure`
-  // computed already short-circuits skip-the-ladder attempts.
+  // Wave 5 Option D · Commit 4 — ascending into Scoped from any lower
+  // tier is always a step-up (confirmation-gated). The forced climb was
+  // removed (`stepUpGateFailure` no longer gates Scoped), but the
+  // confirmation-token tap is preserved as the consent moment, mirroring
+  // the backend's `RequestTierTransitionUseCase.isStepDown` logic.
   if (targetTier.value === 'scoped' && currentTier.value !== 'scoped') return true
   return false
 })
@@ -360,12 +484,42 @@ onMounted(async () => {
     nowMs.value = Date.now()
   }, 1000)
   await loadState()
+
+  // Wave 5 Option D · Commit 4 — load the active Scoped session so the
+  // revoke zone + the tier-picker disclosure render correctly. Best-effort
+  // (the composable swallows errors into `session=null`).
+  await refreshScopedSession()
+  // When a session is live, collapse the tier picker (the revoke zone is
+  // the focus); otherwise leave it open.
+  showTierPicker.value = !hasActiveScopedSession.value
+  // Deep-link `?focus=revoke` from the dashboard banner — auto-focus the
+  // "Revoke now" trigger (not scroll-only) once the zone has rendered.
+  if (route.query.focus === 'revoke' && hasActiveScopedSession.value) {
+    void Promise.resolve().then(() => {
+      const el = document.querySelector<HTMLButtonElement>(
+        '[data-testid="policy-revoke-now"]',
+      )
+      el?.focus()
+      const reducedMotion =
+        typeof window !== 'undefined'
+        && typeof window.matchMedia === 'function'
+        && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      el?.scrollIntoView({
+        behavior: reducedMotion ? 'auto' : 'smooth',
+        block: 'center',
+      })
+    })
+  }
 })
 
 onBeforeUnmount(() => {
   if (countdownHandle !== null) {
     clearInterval(countdownHandle)
     countdownHandle = null
+  }
+  if (revokeHoldHandle !== null) {
+    clearInterval(revokeHoldHandle)
+    revokeHoldHandle = null
   }
 })
 
@@ -737,6 +891,11 @@ async function mintScopedSession(consentActionHash: `0x${string}`): Promise<void
   scopedRecoveryNeeded.value = null
   scopedRecoveryConsentHash.value = null
   pendingScopedParams.value = null
+  // Wave 5 Option D · Commit 4 — re-read the mirror so the revoke zone +
+  // the global banner pick up the freshly-minted session, and collapse
+  // the tier picker (the session is now the focus).
+  await refreshScopedSession()
+  showTierPicker.value = false
   toast.success('Scoped session minted', {
     description: 'Copy the broker session key and paste it into MUHAVEN_BROKER_SESSION_KEY.',
   })
@@ -1041,8 +1200,118 @@ function humaniseError(e: unknown, fallback: string): string {
         </MButton>
       </section>
 
-      <!-- Tier picker -->
+      <!-- Wave 5 Option D · Commit 4 — revoke zone. Shown whenever a live
+           Scoped session exists (independent of the surface picker — a
+           Scoped session is always the MCP-broker autonomy scope). Distinct
+           negative tint vs the gold pending/recovery strips so the
+           kill-switch reads as a destructive control (UX). -->
       <section
+        v-if="hasActiveScopedSession"
+        data-testid="policy-revoke-zone"
+        class="rounded-2xl border border-negative/40 bg-negative/5
+               dark:border-negative/30 dark:bg-negative/10 p-5 md:p-6 space-y-4"
+      >
+        <div class="flex items-start gap-3">
+          <div
+            class="w-9 h-9 rounded-full bg-negative/12 flex items-center justify-center flex-shrink-0"
+          >
+            <ShieldOff :size="16" :stroke-width="1.8" class="text-negative" aria-hidden="true" />
+          </div>
+          <div class="min-w-0 flex-1">
+            <p class="font-sans text-[10px] uppercase tracking-[0.22em] text-negative/90 font-semibold mb-0.5">
+              Active scoped session
+            </p>
+            <h2 class="font-accent text-[1.15rem] leading-tight text-midnight dark:text-white">
+              Your agent can sign autonomous buys right now
+            </h2>
+          </div>
+        </div>
+
+        <dl
+          data-testid="policy-revoke-meta"
+          class="grid grid-cols-2 gap-x-4 gap-y-2.5 text-[12px]"
+        >
+          <div>
+            <dt class="text-cool">Signer</dt>
+            <dd class="font-mono text-midnight dark:text-white truncate">
+              {{ signerPrefix(activeScopedSession?.signerAddress) }}
+            </dd>
+          </div>
+          <div>
+            <dt class="text-cool">Expires in</dt>
+            <dd
+              class="font-mono text-midnight dark:text-white"
+              data-testid="policy-revoke-expiry"
+            >{{ scopedExpiresLabel }}</dd>
+          </div>
+          <div>
+            <dt class="text-cool">Minted</dt>
+            <dd class="font-mono text-midnight dark:text-white truncate">{{ scopedMintedLabel }}</dd>
+          </div>
+          <div>
+            <dt class="text-cool">Per-buy cap</dt>
+            <dd class="font-mono text-midnight dark:text-white">
+              {{ formatMhUsdc6(activeScopedSession?.maxPerOpUsd6) }} mhUSDC
+            </dd>
+          </div>
+          <div>
+            <dt class="text-cool">Spent so far</dt>
+            <dd class="font-mono text-midnight dark:text-white">
+              {{ formatMhUsdc6(activeScopedSession?.totalSpentUsd6) }} mhUSDC
+            </dd>
+          </div>
+          <div>
+            <dt class="text-cool">Permission</dt>
+            <dd class="font-mono text-midnight dark:text-white">
+              {{ permissionIdPrefix(activeScopedSession?.permissionId) }}
+            </dd>
+          </div>
+        </dl>
+
+        <p
+          data-testid="policy-revoke-cost"
+          class="text-[12px] text-compute dark:text-body-dark leading-relaxed"
+        >
+          Revoking flips the backend mirror to <span class="font-mono">revoked</span> so the
+          broker stops receiving your policy. Restoring autonomous buys afterwards means
+          re-walking the Scoped consent (one confirm tap), minting + pasting a fresh broker
+          key, and restarting the broker daemon — typically ~2–3 minutes hands-on.
+        </p>
+
+        <button
+          type="button"
+          data-testid="policy-revoke-now"
+          @click="openRevokeDialog"
+          class="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg cursor-pointer
+                 text-sm font-sans font-semibold text-white
+                 bg-negative hover:bg-negative/90 transition-colors duration-150
+                 shadow-[0_4px_14px_rgba(220,38,38,0.22)]"
+        >
+          <ShieldOff :size="14" aria-hidden="true" />
+          Revoke now
+        </button>
+      </section>
+
+      <!-- Tier-picker disclosure — when an active session exists the
+           picker collapses behind a "Change tier" affordance so the
+           revoke zone stays the visual focus (UX HIGH-2). -->
+      <button
+        v-if="hasActiveScopedSession && !showTierPicker"
+        type="button"
+        data-testid="policy-change-tier-toggle"
+        @click="showTierPicker = true"
+        class="inline-flex items-center gap-1.5 self-start px-3 py-2 rounded-lg cursor-pointer
+               text-[12px] font-sans font-medium text-cool
+               border border-haze dark:border-white/10
+               hover:bg-mist/60 dark:hover:bg-white/5 transition-colors"
+      >
+        <ChevronDown :size="13" />
+        Change tier
+      </button>
+
+      <!-- Tier picker (collapsible when an active session exists) -->
+      <section
+        v-show="!hasActiveScopedSession || showTierPicker"
         data-testid="policy-tier-picker"
         class="rounded-2xl border border-haze dark:border-white/5
                bg-white/40 dark:bg-[#1c1b1b]/40 backdrop-blur-md p-5 md:p-6"
@@ -1362,6 +1631,7 @@ function humaniseError(e: unknown, fallback: string): string {
       <!-- CTAs -->
       <div class="flex flex-wrap items-center gap-3">
         <MButton
+          v-if="!hasActiveScopedSession || showTierPicker"
           variant="primary"
           :disabled="!canSubmit"
           data-testid="policy-submit"
@@ -1438,5 +1708,136 @@ function humaniseError(e: unknown, fallback: string): string {
       }"
       @close="scopedReveal = null"
     />
+
+    <!-- Wave 5 Option D · Commit 4 — revoke confirmation alertdialog.
+         `role="alertdialog"` + `aria-describedby` → the cost paragraph
+         (UX MED-3). Esc + focus-trap + focus-restore via `useModalA11y`
+         (Esc disabled mid-DELETE). The "Confirm revoke" button is
+         hold-disabled for 3s (dual-tap safety) with a live countdown. -->
+    <Teleport to="body">
+      <div
+        v-if="showRevokeDialog"
+        class="fixed inset-0 z-[70] flex items-center justify-center p-4"
+      >
+        <div
+          class="absolute inset-0 bg-midnight/60 dark:bg-black/70 backdrop-blur-sm"
+          @click="closeRevokeDialog"
+        />
+        <div
+          ref="revokeDialogRoot"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="policy-revoke-dialog-title"
+          aria-describedby="policy-revoke-dialog-desc"
+          data-testid="policy-revoke-dialog"
+          class="relative w-full max-w-md rounded-2xl p-6 space-y-4
+                 bg-white dark:bg-[#16171a]
+                 border border-negative/40 dark:border-negative/30
+                 shadow-[0_24px_70px_-20px_rgba(0,0,0,0.5)]"
+        >
+          <div class="flex items-start gap-3">
+            <div
+              class="w-9 h-9 rounded-full bg-negative/12 flex items-center justify-center flex-shrink-0"
+            >
+              <ShieldOff :size="16" :stroke-width="1.9" class="text-negative" aria-hidden="true" />
+            </div>
+            <h2
+              id="policy-revoke-dialog-title"
+              class="font-accent text-[1.25rem] leading-tight text-midnight dark:text-white pt-1"
+            >
+              Revoke this scoped session?
+            </h2>
+          </div>
+
+          <p
+            id="policy-revoke-dialog-desc"
+            data-testid="policy-revoke-dialog-desc"
+            class="text-[13px] text-compute dark:text-body-dark leading-relaxed"
+          >
+            This immediately flips the backend mirror to
+            <span class="font-mono">revoked</span> so the broker stops receiving your policy.
+            The broker daemon keeps its in-memory key until you restart it — we'll show you the
+            command next. Restoring autonomy means re-walking the Scoped consent and pasting a
+            fresh broker key.
+          </p>
+
+          <p
+            v-if="revokeError"
+            role="alert"
+            data-testid="policy-revoke-dialog-error"
+            class="px-3 py-2 rounded-lg border border-negative/40 bg-negative/5
+                   text-[12px] text-negative"
+          >
+            <AlertTriangle :size="11" class="inline -mt-0.5 mr-1" aria-hidden="true" />
+            {{ revokeError }}
+          </p>
+
+          <!-- A11y (R1 Issue 1): announce the 3s dual-tap hold + the
+               ready state to screen readers. Without this the disabled
+               "Confirm revoke" button reads as a permanently-broken
+               control. `role="status"` + polite live region; the short
+               3-tick window is acceptable to announce. -->
+          <p
+            class="sr-only"
+            role="status"
+            aria-live="polite"
+            data-testid="policy-revoke-hold-status"
+          >
+            {{
+              revoking
+                ? 'Revoking…'
+                : revokeHoldRemaining > 0
+                  ? `Confirm available in ${revokeHoldRemaining} second${revokeHoldRemaining === 1 ? '' : 's'}`
+                  : 'You can now confirm the revoke'
+            }}
+          </p>
+
+          <div class="flex items-center justify-end gap-2 pt-1">
+            <button
+              type="button"
+              data-testid="policy-revoke-cancel"
+              :disabled="revoking"
+              @click="closeRevokeDialog"
+              class="px-4 py-2 rounded-lg text-sm font-sans font-medium cursor-pointer
+                     text-cool border border-haze dark:border-white/10
+                     hover:bg-mist/60 dark:hover:bg-white/5 transition-colors
+                     disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Cancel
+            </button>
+            <!-- A11y (R1 Issue 2): native `disabled` only for the in-flight
+                 DELETE; the 3s hold uses `aria-disabled` so the button
+                 stays focusable + announced (and keeps a stable Tab order)
+                 during the wait. `onConfirmRevoke` already no-ops while
+                 `revokeHoldRemaining > 0`, so an early activation is safe. -->
+            <button
+              type="button"
+              data-testid="policy-revoke-confirm"
+              :disabled="revoking"
+              :aria-disabled="revoking || revokeHoldRemaining > 0"
+              @click="onConfirmRevoke"
+              :class="[
+                'inline-flex items-center gap-1.5 px-4 py-2 rounded-lg',
+                'text-sm font-sans font-semibold text-white',
+                'bg-negative hover:bg-negative/90 transition-colors',
+                (revoking || revokeHoldRemaining > 0)
+                  ? 'opacity-50 cursor-not-allowed'
+                  : 'cursor-pointer',
+              ]"
+            >
+              <Loader2 v-if="revoking" :size="14" class="animate-spin" aria-hidden="true" />
+              <ShieldOff v-else :size="14" aria-hidden="true" />
+              {{
+                revoking
+                  ? 'Revoking…'
+                  : revokeHoldRemaining > 0
+                    ? `Confirm revoke (${revokeHoldRemaining})`
+                    : 'Confirm revoke'
+              }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>

@@ -8,6 +8,7 @@ import { useAuth } from '@/composables/useAuth'
 import { useHomeTarget } from '@/composables/useHomeTarget'
 import { useAppVersion } from '@/composables/useAppVersion'
 import { cn, formatAddress } from '@/lib/utils'
+import { resolveActiveNavPath } from '@/lib/nav-active'
 import MDarkToggle from '@/components/ui/MDarkToggle.vue'
 import MSessionStatus from '@/components/ui/MSessionStatus.vue'
 import MDevModeBanner from '@/components/ui/MDevModeBanner.vue'
@@ -16,7 +17,7 @@ import { toast } from 'vue-sonner'
 import {
   PieChart, ShoppingCart, TrendingUp, Activity, Store, Sparkles, Send, Undo2,
   Coins, Share2, Users, ClipboardCheck, Wallet, LogOut, LogIn, Loader2,
-  Copy, Check, Banknote, FileSignature, CreditCard,
+  Copy, Check, Banknote, FileSignature, CreditCard, KeyRound,
 } from 'lucide-vue-next'
 
 // Q4 (post-§4 queue) — Telegram-link modal visibility ref.
@@ -69,6 +70,11 @@ const investorNav = [
   { path: '/yields', label: 'Yields', icon: TrendingUp },
   { path: '/redemptions', label: 'Redemptions', icon: Undo2 },
   { path: '/activity', label: 'Activity', icon: Activity },
+  // Wave 5 Option D · Commit 4 — agent-autonomy policy + Scoped-session
+  // management (mint / manage / revoke). Penultimate, just before
+  // /agent: it's the autonomy CONFIG surface that sits beside the
+  // /agent chat. testid auto-derives to `sidebar-nav-policy`.
+  { path: '/agent/policy/transition', label: 'Policy', icon: KeyRound },
   { path: '/agent', label: 'Agent', icon: Sparkles },
 ]
 
@@ -94,6 +100,10 @@ const issuerNav = [
   // omitted /agent entirely, forcing issuers to type the URL to
   // reach HavenBot. Mirrors the investor-side last-position
   // (post-Activity / post-Compliance "tools beyond the core flow").
+  // Wave 5 Option D · Commit 4 — Policy is dual-role (issuers manage
+  // their own agent autonomy too); mirror the investor-side penultimate
+  // placement just before /agent.
+  { path: '/agent/policy/transition', label: 'Policy', icon: KeyRound },
   { path: '/agent', label: 'Agent', icon: Sparkles },
 ]
 
@@ -104,10 +114,20 @@ const navItems = computed(() => store.role === 'investor' ? investorNav : issuer
  * prefix-match active state so `/checkout/:sessionId` and
  * `/checkout/webhooks` keep the "Checkout" pill highlighted. Pre-fix
  * the exact `route.path === item.path` lost orientation on detail pages.
- * Safe because no item.path is `/`; all are concrete prefixes.
+ *
+ * Wave 5 Option D · Commit 4: the new `Policy` entry (`/agent/policy/
+ * transition`) is a SUB-route of the `Agent` entry (`/agent`). A naive
+ * prefix-match lit BOTH pills on the Policy page. Resolve a SINGLE active
+ * item by longest matching path so the most specific entry wins —
+ * `/agent/policy/transition` beats `/agent`, while `/checkout` still
+ * wins for `/checkout/:id` (it's the only nav item that prefixes it).
  */
+const activeNavPath = computed<string | null>(() =>
+  resolveActiveNavPath(navItems.value.map((i) => i.path), route.path),
+)
+
 function isNavActive(path: string): boolean {
-  return route.path === path || route.path.startsWith(path + '/')
+  return activeNavPath.value === path
 }
 
 const displayAddress = computed(() => formatAddress(authStore.walletAddress))

@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils'
 import {
   PieChart, ShoppingCart, Undo2,
   Coins, Share2, Users, ClipboardCheck,
-  Sparkles, Banknote, FileSignature,
+  Sparkles, Banknote, FileSignature, KeyRound,
 } from 'lucide-vue-next'
 
 const route = useRoute()
@@ -47,16 +47,26 @@ const onboardingTabs = [
   { path: '/cash', icon: Banknote, label: 'Cash' },
 ]
 
+// Wave 5 Option D · Commit 4 — Policy (agent-autonomy + Scoped-session
+// management) is dual-role. Slotted penultimate, just before Agent, to
+// mirror Sidebar/TopNav. The bottom bar now carries 6 items at most
+// (4 role tabs + Policy + Agent); the template uses `flex-1 min-w-0` +
+// truncated labels so it never overflows the 360px viewport. The
+// onboarding set stays minimal (Apply / Cash / Agent) — an unapproved
+// issuer can't yet hold a Scoped session, so Policy is omitted there.
+const POLICY_TAB = { path: '/agent/policy/transition', icon: KeyRound, label: 'Policy' }
+const AGENT_TAB = { path: '/agent', icon: Sparkles, label: 'Agent' }
+
 const tabs = computed(() => {
   const isUnapprovedIssuer =
     store.role === 'issuer'
     && authStore.issuerStatus !== 'approved'
     && authStore.issuerStatus !== 'suspended'
   if (isUnapprovedIssuer) {
-    return [...onboardingTabs, { path: '/agent', icon: Sparkles, label: 'Agent' }]
+    return [...onboardingTabs, AGENT_TAB]
   }
   const roleTabs = store.role === 'issuer' ? issuerTabs : investorTabs
-  return [...roleTabs, { path: '/agent', icon: Sparkles, label: 'Agent' }]
+  return [...roleTabs, POLICY_TAB, AGENT_TAB]
 })
 </script>
 
@@ -64,20 +74,31 @@ const tabs = computed(() => {
   <nav
     class="fixed bottom-0 left-0 right-0 z-50 md:hidden bg-white dark:bg-midnight border-t border-haze dark:border-white/8 pb-[env(safe-area-inset-bottom)]"
   >
-    <div class="flex items-center justify-around px-2 py-2">
+    <!-- Wave 5 Option D · Commit 4 — `flex-1 min-w-0` + truncated labels
+         so 6 tabs (4 role + Policy + Agent) fit without overflowing a
+         360px viewport. `px-1` keeps a little breathing room; the label
+         truncates (rather than wrapping or pushing the bar wide) on the
+         longest tokens ("Distribute"/"Portfolio") at the narrowest
+         widths. `justify-around` is dropped — `flex-1` children already
+         share the row equally. -->
+    <div class="flex items-stretch px-2 py-2">
       <button
         v-for="tab in tabs"
         :key="tab.path"
+        :data-testid="`tabbar-nav-${tab.label.toLowerCase()}`"
+        :title="tab.label"
+        :aria-label="tab.label"
+        :aria-current="route.path === tab.path ? 'page' : undefined"
         :class="cn(
-          'flex flex-col items-center gap-1 px-3 py-2 rounded-xl transition-colors duration-200 cursor-pointer',
+          'flex flex-1 min-w-0 flex-col items-center gap-1 px-1 py-2 rounded-xl transition-colors duration-200 cursor-pointer',
           route.path === tab.path
             ? 'bg-gold/12 dark:bg-signal/8 ring-1 ring-gold/35 dark:ring-signal/30 text-compute dark:text-signal'
             : 'text-cool hover:text-midnight dark:hover:text-white',
         )"
         @click="router.push(tab.path)"
       >
-        <component :is="tab.icon" :size="20" />
-        <span class="text-[10px] font-medium">{{ tab.label }}</span>
+        <component :is="tab.icon" :size="20" class="flex-shrink-0" aria-hidden="true" />
+        <span class="text-[10px] font-medium max-w-full truncate">{{ tab.label }}</span>
       </button>
     </div>
   </nav>

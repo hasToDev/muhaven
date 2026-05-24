@@ -71,29 +71,14 @@ export class SetPolicyToolUseCase {
         `Confirm-per-action → Policy-bound requires ≥5 confirmed actions (have ${current.confirmedActionCount}) and a complete risk Q&A (${current.riskQuestionnaireComplete ? 'done' : 'not done'}).`,
       );
     }
-    // Wave 5 Path D — no skip-the-ladder into Scoped. The state machine
-    // rejects these at commit time; mirroring here avoids minting a
-    // doomed confirm token and leaving a misleading ConfirmTokenIssued
-    // audit row.
-    if (
-      (current.tier === Tier.Advisory || current.tier === Tier.ConfirmPerAction)
-      && input.targetTier === Tier.Scoped
-    ) {
-      throw new ApplicationHttpError(
-        409,
-        `${current.tier} → Scoped is forbidden. Step through Policy-bound first.`,
-      );
-    }
-    if (
-      current.tier === Tier.PolicyBound
-      && input.targetTier === Tier.Scoped
-      && (current.confirmedActionCount < 5 || !current.riskQuestionnaireComplete)
-    ) {
-      throw new ApplicationHttpError(
-        409,
-        `Policy-bound → Scoped requires ≥5 confirmed actions (have ${current.confirmedActionCount}) and a complete risk Q&A (${current.riskQuestionnaireComplete ? 'done' : 'not done'}).`,
-      );
-    }
+    // Wave 5 Option D · Commit 4 (operator decision 2026-05-24 "Uniform")
+    // — the forced tier climb into Scoped was removed. Scoped is now
+    // reachable directly from any non-paused tier WITHOUT the ≥5-confirm
+    // + risk-Q gates, so the HavenBot tool no longer rejects `* → Scoped`
+    // (it stays mirrored with `requestUserTierChange`, which accepts
+    // these as step-ups). The mint ceremony's passkey signature + the
+    // explicit cap/TTL + the on-chain CallPolicy/revoke rails are the
+    // security boundary, not the climb. See state-machine.ts JSDoc.
 
     const actionPayload = {
       action: 'set_policy',

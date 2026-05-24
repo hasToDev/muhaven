@@ -1387,6 +1387,36 @@ export const agentPolicyApi = {
       auth: true,
     })
   },
+
+  /**
+   * Wave 5 Option D · Commit 4 — read the latest ACTIVE Scoped session
+   * for a surface (the backend's `GetActiveScopedSessionUseCase`). Returns
+   * `{ session: null }` when none is active. Scoped sessions are always
+   * minted under `surface: 'mcp'` (hard-locked at mint), so callers pass
+   * `'mcp'`. The GET route's `mcp.read.*` scope is satisfied by the
+   * dashboard's passkey JWT via the with-scope legacy-token fallback.
+   */
+  getActiveScopedSession(args: { surface: Surface }): Promise<GetActiveScopedSessionResponse> {
+    return request(
+      `/agent/policy/scoped-session?surface=${encodeURIComponent(args.surface)}`,
+      { method: 'GET', auth: true },
+    )
+  },
+
+  /**
+   * Wave 5 Option D · Commit 4 — revoke (soft-revoke) a Scoped session by
+   * id. Flips the mirror row to `status='revoked'`; the broker daemon
+   * still holds the on-disk snapshot until the operator restarts it
+   * (surfaced in the revoke UX). The existing DELETE route is
+   * ownership-checked server-side (masks others' ids as 404) and emits
+   * the `ScopedSessionRevoked` audit event. 409 when already terminal.
+   */
+  revokeScopedSession(args: { sessionId: string }): Promise<RevokeScopedSessionResponse> {
+    return request(
+      `/agent/policy/scoped-session/${encodeURIComponent(args.sessionId)}`,
+      { method: 'DELETE', auth: true },
+    )
+  },
 }
 
 // ── Wave 5 Path D Slice 1 — Scoped session mint shapes ─────────────
@@ -1473,6 +1503,18 @@ export interface ScopedSessionResponseDto {
 }
 
 export interface MintScopedSessionResponse {
+  session: ScopedSessionResponseDto
+}
+
+/** Wave 5 Option D · Commit 4 — GET latest-active result. `session` is
+ *  null when no active Scoped session exists for the surface. */
+export interface GetActiveScopedSessionResponse {
+  session: ScopedSessionResponseDto | null
+}
+
+/** Wave 5 Option D · Commit 4 — DELETE (revoke) result. Carries the
+ *  now-`revoked` row so the caller can confirm the status flip. */
+export interface RevokeScopedSessionResponse {
   session: ScopedSessionResponseDto
 }
 
