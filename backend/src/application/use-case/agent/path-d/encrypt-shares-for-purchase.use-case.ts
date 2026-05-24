@@ -1,6 +1,8 @@
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { ApplicationHttpError } from '../../../../core/errors.js';
 import { getLogger } from '../../../../core/logger.js';
+import { Surface } from '../../../../domain/agent/model/surface.enum.js';
+import type { IScopedSessionRepository } from '../../../../domain/agent/repository/scoped-session.repository.js';
 import type { IRwaTokenRepository } from '../../../../domain/token-registry/repository/rwa-token.repository.js';
 import type { FheWorkerClient } from '../../../../infrastructure/fhe/fhe-worker.client.js';
 import type { EncryptSharesForPurchaseResponseDto } from '../../../dto/agent/path-d.dto.js';
@@ -31,6 +33,13 @@ import type { EncryptSharesForPurchaseResponseDto } from '../../../dto/agent/pat
  */
 
 export interface EncryptSharesForPurchaseInput {
+  /**
+   * JWT subject (the kernel-account UUID). Used ONLY for the revoke
+   * kill-switch gate (`findLatestActive(userId, 'mcp', now)`) — distinct
+   * from `accountAddress` (the on-chain kernel hex). The route sources
+   * this from `authPayload.userId`. Wave 5 revoke-gate (2026-05-24).
+   */
+  readonly userId: string;
   /** On-chain kernel smart-account address (0x-prefixed 20-byte hex,
    *  case-tolerant — lowercased at the route layer). Renamed from
    *  `userId` (Pickup B follow-up) to prevent the JWT-subject-vs-
@@ -38,6 +47,8 @@ export interface EncryptSharesForPurchaseInput {
   readonly accountAddress: string;
   readonly tokenAddress: string;
   readonly sharesAmount: bigint;
+  /** Injectable clock for the session-active gate. Defaults to `new Date()`. */
+  readonly now?: Date;
 }
 
 /** uint128 max = 2^128 - 1. */
@@ -49,6 +60,7 @@ export class EncryptSharesForPurchaseUseCase {
   constructor(
     private readonly fheWorker: FheWorkerClient,
     private readonly tokenRepo: IRwaTokenRepository,
+    private readonly scopedRepo: IScopedSessionRepository,
   ) {}
 
   async execute(
@@ -79,6 +91,34 @@ export class EncryptSharesForPurchaseUseCase {
     }
     if (input.sharesAmount > UINT128_MAX) {
       throw ApplicationHttpError.badRequest('sharesAmount exceeds uint128 max');
+    }
+
+    // 1.5 REVOKE KILL-SWITCH GATE (Wave 5, 2026-05-24). `encrypt-shares`
+    //     is the one server-side chokepoint EVERY Path D buy must hit
+    //     (the UserOp calldata needs the encrypted share count), so it's
+    //     the authoritative place to enforce revocation — the broker
+    //     daemon signs from a local snapshot with no "revoked" concept,
+    //     and the on-chain validator stays installed until a hard revoke
+    //     (C6). Dashboard "revoke" flips the mirror row to
+    //     `status='revoked'`; `findLatestActive` excludes it, so a revoked
+    //     (or expired) session returns null here → 403 → the MCP maps the
+    //     4xx to `encrypt_shares_rejected` and falls back to Path C. This
+    //     gate is server-side (behind the same JWT), so it holds even if a
+    //     client-side check is bypassed. SecEng investigation 2026-05-24:
+    //     previously this route had no scoped-session awareness, so a buy
+    //     succeeded after revoke (kill-switch hole).
+    const nowSec = Math.floor((input.now ?? new Date()).getTime() / 1000);
+    const activeSession = await this.scopedRepo.findLatestActive(
+      input.userId,
+      Surface.MCP,
+      nowSec,
+    );
+    if (!activeSession) {
+      throw new ApplicationHttpError(
+        403,
+        'no active Scoped session for this user — it was revoked or has expired; ' +
+          're-mint a Scoped session on the dashboard to authorize autonomous buys',
+      );
     }
 
     // 2. Token catalog check. Reject delisted / unknown tokens early —

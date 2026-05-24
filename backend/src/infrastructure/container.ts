@@ -1094,6 +1094,7 @@ export const container = {
     return new EncryptSharesForPurchaseUseCase(
       fheWorkerClient,
       getMuHavenRepos().rwaTokenRepo,
+      getAgentRepos().scopedSessionRepo,
     );
   },
 };

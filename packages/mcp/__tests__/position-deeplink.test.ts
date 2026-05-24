@@ -825,6 +825,12 @@ function stubBroker(overrides: BrokerStubOverrides = {}): BrokerClient {
         signerAddress: '0x' + '1'.repeat(40),
       },
     ),
+    // Wave 5 revoke kill-switch (2026-05-24) — always wired (returns
+    // success). Called only by the session_revoked gate to purge the
+    // broker's stale snapshot; harmless for every other Path D path.
+    clearPolicySnapshot: vi
+      .fn()
+      .mockResolvedValue({ type: 'clear_policy_snapshot', cleared: true, sessionId: 'sess_test' }),
     getActiveSessionId: (() => {
       // Tracks call count so the Commit 2.B auto-sync test can simulate
       // first-call=null → second-call=synced-id. Without this the
@@ -1073,9 +1079,32 @@ const STUB_SUBSCRIPTION_ADDRESS = ('0x' + '2'.repeat(40)) as `0x${string}`;
 const STUB_ENTRY_POINT = '0x0000000071727De22E5E9d8BAf0edAc6f37da032' as `0x${string}`;
 const STUB_CHAIN_ID = 421614;
 
+/**
+ * A healthy active mirror row matching the `snapshotWith()` fixture
+ * (same signerAddress + permissionId + targetContracts). Wave 5 revoke
+ * kill-switch (2026-05-24): the MCP now hard-gates a buy when the broker
+ * has an active snapshot but the backend mirror reports NO active session
+ * (= revoked) → `session_revoked` fallback. So past-step-6a Path D gate
+ * tests must present a healthy mirror; tests exercising revoke / the
+ * broker-empty auto-sync path pass an explicit `null` / object instead.
+ */
+const ACTIVE_MIRROR = {
+  sessionId: 'sess_test',
+  mode: 'scoped' as const,
+  status: 'active' as const,
+  signerAddress: '0x' + '1'.repeat(40),
+  permissionId: '0xdeadbeef',
+  targetContracts: ['0x' + '2'.repeat(40)],
+  selectorCaps: [{ selector: SUBSCRIPTION_PURCHASE_SELECTOR, capArgIndex: 2, maxAmount: '1000' }],
+  validUntilSec: 9_999_999_999,
+  mintedAtSec: 1_700_000_000,
+  consentActionHash: null,
+  consentTextSha256: null,
+};
+
 function depsWithPathD(
   brokerOverrides: BrokerStubOverrides = {},
-  mirrorSession?: ScopedSessionMirrorOverride,
+  mirrorSession: ScopedSessionMirrorOverride = ACTIVE_MIRROR,
 ): ToolDeps {
   return {
     backend: catalogBackend(undefined, mirrorSession),
@@ -1162,14 +1191,56 @@ describe('positionBuy — Path D probe (Wave 5 Slice 1 Commit 3)', () => {
   it('falls back with no_active_session_key when no scoped session is active', async () => {
     const result = await positionBuy(
       { token: 'TBILL1', amountUsdc: '5' },
-      depsWithPathD({
-        activeSessionId: { type: 'get_active_session_id', sessionId: null },
-      }),
+      // Explicit EMPTY mirror (null): broker has no active session AND the
+      // backend mirror is empty → the broker-empty auto-sync path yields
+      // no_active_session_key. (depsWithPathD now defaults to a HEALTHY
+      // active mirror for the past-step-6a gate tests.)
+      depsWithPathD(
+        {
+          activeSessionId: { type: 'get_active_session_id', sessionId: null },
+        },
+        null,
+      ),
     );
     expect(result.ok).toBe(true);
     if (result.ok && 'echo' in result.data) {
       expect(result.data.echo.pathDFallbackReason).toBe('no_active_session_key');
     }
+  });
+
+  it('falls back with session_revoked when the broker holds a snapshot but the mirror reports NO active session (revoke kill-switch)', async () => {
+    // Revoke kill-switch (SecEng 2026-05-24): the broker still has an
+    // active snapshot (getActiveSessionId + getPolicySnapshot succeed) and
+    // the buy passes selector + cap + accountAddress, but the dashboard
+    // revoked the session so the backend mirror now returns
+    // `{session:null}`. The MCP must refuse (session_revoked) + best-effort
+    // purge the broker's stale snapshot — NOT silently proceed to sign
+    // (the bug the operator hit).
+    const backend = pathDBackend({ validatorAddress: VALIDATOR_ADDR, revokedMirror: true });
+    const broker = stubBroker({
+      policySnapshot: { type: 'get_policy_snapshot', snapshot: snapshotWith() },
+    });
+    const result = await positionBuy(
+      { token: 'TBILL1', amountUsdc: '500' },
+      {
+        backend,
+        broker,
+        bundler: stubBundler(),
+        surface: 'mcp',
+        dashboardBaseUrl: 'https://muhaven.app',
+        subscriptionAddress: STUB_SUBSCRIPTION_ADDRESS,
+        entryPointAddress: STUB_ENTRY_POINT,
+        chainId: STUB_CHAIN_ID,
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && 'echo' in result.data) {
+      expect(result.data.echo.pathDFallbackReason).toBe('session_revoked');
+      // Path C deep-link still returned (single-affordance fallback).
+      expect(result.data.dashboardUrl).toContain('/trade');
+    }
+    // The stale broker snapshot was purged.
+    expect(broker.clearPolicySnapshot).toHaveBeenCalledWith('sess_test');
   });
 
   it('falls back with no_active_snapshot when snapshot disappears between lookups', async () => {
@@ -1737,6 +1808,9 @@ const PATH_D_TBILL_ADDR = ('0x' + '3'.repeat(40)) as `0x${string}`;
 function pathDBackend(opts: {
   validatorAddress?: string | null;
   accountAddress?: string;
+  /** When true, the scoped-session mirror returns `{session:null}` (the
+   *  session was revoked on the dashboard) — exercises the kill-switch. */
+  revokedMirror?: boolean;
   encryptSharesResult?:
     | {
         encShares: {
@@ -1774,6 +1848,32 @@ function pathDBackend(opts: {
               validatorAddress: opts.validatorAddress ?? null,
             },
           ],
+        };
+      }
+      // Wave 5 revoke kill-switch (2026-05-24): the MCP now hard-gates a
+      // buy when this mirror reports NO active session. These MODE.DEFAULT
+      // pipeline tests assume a HEALTHY session, so serve an active row
+      // (enableStatus='enabled' → needsEnable=false → the buy proceeds to
+      // its intended gate, not session_revoked). Revoke is covered by its
+      // own test (empty mirror).
+      if (path.startsWith('/api/v1/agent/policy/scoped-session')) {
+        if (opts.revokedMirror) return { session: null };
+        return {
+          session: {
+            sessionId: 'sess_test',
+            mode: 'scoped',
+            status: 'active',
+            signerAddress: SIGNER_ADDR,
+            permissionId: '0xdeadbeef',
+            enableStatus: 'enabled',
+            validatorNonce: null,
+            targetContracts: [STUB_SUBSCRIPTION_ADDRESS],
+            selectorCaps: [],
+            validUntilSec: 9_999_999_999,
+            mintedAtSec: 1_700_000_000,
+            consentActionHash: null,
+            consentTextSha256: null,
+          },
         };
       }
       return catalog;

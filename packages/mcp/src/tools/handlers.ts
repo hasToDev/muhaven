@@ -427,6 +427,20 @@ export type PathDFallbackReason =
    * action).
    */
   | 'mirror_sync_failed'
+  /**
+   * Wave 5 revoke kill-switch (2026-05-24). The broker handed us an
+   * active snapshot, but the backend mirror — the authoritative
+   * revoked-state source — reports NO active session for this
+   * (user, mcp). The session was REVOKED (or expired) on the dashboard
+   * since the broker last synced. The broker still holds the key + the
+   * on-chain validator is still installed, so the MCP refuses here +
+   * best-effort purges the broker's now-stale snapshot. (The backend
+   * `encrypt-shares` route enforces the same gate server-side as the
+   * authoritative backstop; this MCP-side check is the fast, clear
+   * fail BEFORE the encrypt round-trip.) Remediation: re-mint a Scoped
+   * session on the dashboard.
+   */
+  | 'session_revoked'
   | 'no_active_snapshot'
   | 'snapshot_lookup_failed'
   | 'signer_mismatch'
@@ -1787,22 +1801,56 @@ async function attemptPathD(
   //     backed snapshot), so we re-read the mirror authoritatively.
   //     `findLatestActive` is per-(userId, surface) — the mirror entry
   //     is the same row whose snapshot we already validated above.
+  let mirrorFetchOk = false;
+  let mirrorHadActiveSession = false;
   try {
     const mirror = await deps.backend.get<ScopedSessionMirrorResponse>(
       '/api/v1/agent/policy/scoped-session',
       { surface: 'mcp' },
     );
+    mirrorFetchOk = true;
     if (mirror?.session) {
+      mirrorHadActiveSession = true;
       mirrorSessionRow = mirror.session;
       mirrorEnableStatus = mirror.session.enableStatus ?? null;
       mirrorValidatorNonce = mirror.session.validatorNonce ?? null;
     }
   } catch (err) {
-    // Mirror re-read is best-effort. A failure here drops us back to
-    // the legacy MODE.DEFAULT path. If MODE.ENABLE is needed, the
-    // downstream `paymaster_rejected → AA23 reverted` failure will
-    // expose the missing install. We log via the error message; the
-    // LLM gets enough context to escalate.
+    // Mirror re-read is best-effort on the NETWORK-ERROR path. A
+    // transient failure here drops us back to the legacy MODE.DEFAULT
+    // path; if MODE.ENABLE is needed, the downstream
+    // `paymaster_rejected → AA23 reverted` failure will expose the
+    // missing install, and the backend `encrypt-shares` gate is the
+    // authoritative revoke backstop regardless. We intentionally do NOT
+    // treat a fetch error as "revoked" — that would break Path D on a
+    // backend blip.
+    void err;
+  }
+
+  // 6a-gate. REVOKE KILL-SWITCH (SecEng 2026-05-24). The mirror fetch
+  //   SUCCEEDED but returned no active session for this (user, mcp) —
+  //   yet the broker just handed us an active snapshot (steps 2-3). That
+  //   means the session was REVOKED (or expired) on the dashboard since
+  //   the broker last synced. The broker daemon has no "revoked" concept
+  //   (it only honours `validUntilSec`) and the on-chain PermissionValidator
+  //   is still installed, so WITHOUT this gate the buy proceeds and signs
+  //   — the kill-switch hole the operator hit. Refuse + best-effort purge
+  //   the broker's now-stale, key-backed snapshot so the dormant signer
+  //   material doesn't linger until TTL.
+  if (mirrorFetchOk && !mirrorHadActiveSession) {
+    try {
+      await deps.broker.clearPolicySnapshot(activeId);
+    } catch {
+      // Best-effort: the snapshot's 8h TTL bounds it regardless, and the
+      // refusal below is the load-bearing half of the kill-switch.
+    }
+    return {
+      kind: 'fallback',
+      reason: 'session_revoked',
+      message:
+        'the Scoped session was revoked (or expired) on the dashboard — the broker snapshot is ' +
+        'stale; purged it and falling back to Path C. Re-mint a Scoped session to resume autonomous buys.',
+    };
   }
 
   // 6b. Read `permissionId` from the snapshot. Without it we can't

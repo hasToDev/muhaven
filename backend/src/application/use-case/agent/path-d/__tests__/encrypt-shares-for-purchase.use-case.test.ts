@@ -10,10 +10,13 @@ beforeAll(() => {
 });
 import { RwaToken } from '../../../../../domain/token-registry/model/rwa-token.js';
 import type { IRwaTokenRepository } from '../../../../../domain/token-registry/repository/rwa-token.repository.js';
+import type { IScopedSessionRepository } from '../../../../../domain/agent/repository/scoped-session.repository.js';
+import type { ScopedSession } from '../../../../../domain/agent/model/scoped-session.js';
 import { ApplicationHttpError } from '../../../../../core/errors.js';
 import { EncryptSharesForPurchaseUseCase } from '../encrypt-shares-for-purchase.use-case.js';
 
 const KERNEL = '0xe11E83398C33A37CaC02C01c43F14A7f95876986';
+const USER_ID = 'user-uuid-0001';
 const TOKEN_ACTIVE = '0x1d6C140204F21835F1AF2A0615826A333827d946'; // USYC from Wave 5 1A
 const TOKEN_WINDDOWN = '0x797b9a2ec6F752B791DcE2f721Ad51Da68074Ed3';
 
@@ -97,6 +100,24 @@ function makeTokenRepo(active = TOKEN_ACTIVE, winddown = TOKEN_WINDDOWN): IRwaTo
   };
 }
 
+/**
+ * Stub the scoped-session repo for the revoke kill-switch gate. The
+ * use-case only calls `findLatestActive`, so we stub just that:
+ * `hasActive=true` → return a truthy session (gate passes);
+ * `hasActive=false` → return null (revoked/expired → gate rejects 403).
+ * The session object's fields are never read by the gate (truthiness
+ * only), so an opaque cast is sufficient.
+ */
+function makeScopedRepo(hasActive: boolean): {
+  repo: IScopedSessionRepository;
+  findLatestActive: ReturnType<typeof vi.fn>;
+} {
+  const findLatestActive = vi.fn(async () =>
+    hasActive ? ({ sessionId: 'sess_active' } as unknown as ScopedSession) : null,
+  );
+  return { repo: { findLatestActive } as unknown as IScopedSessionRepository, findLatestActive };
+}
+
 describe('EncryptSharesForPurchaseUseCase', () => {
   let fhe: StubbedFheWorker;
   let tokenRepo: IRwaTokenRepository;
@@ -108,11 +129,13 @@ describe('EncryptSharesForPurchaseUseCase', () => {
     useCase = new EncryptSharesForPurchaseUseCase(
       fhe as unknown as FheWorkerClient,
       tokenRepo,
+      makeScopedRepo(true).repo,
     );
   });
 
   it('returns encShares + a fresh ephemeralEOA on the happy path', async () => {
     const result = await useCase.execute({
+      userId: USER_ID,
       accountAddress: KERNEL,
       tokenAddress: TOKEN_ACTIVE,
       sharesAmount: 500n,
@@ -132,11 +155,13 @@ describe('EncryptSharesForPurchaseUseCase', () => {
 
   it('mints a different ephemeralEOA on each call (no key reuse)', async () => {
     const r1 = await useCase.execute({
+      userId: USER_ID,
       accountAddress: KERNEL,
       tokenAddress: TOKEN_ACTIVE,
       sharesAmount: 1n,
     });
     const r2 = await useCase.execute({
+      userId: USER_ID,
       accountAddress: KERNEL,
       tokenAddress: TOKEN_ACTIVE,
       sharesAmount: 1n,
@@ -144,15 +169,70 @@ describe('EncryptSharesForPurchaseUseCase', () => {
     expect(r1.ephemeralEOA).not.toBe(r2.ephemeralEOA);
   });
 
+  // ── Revoke kill-switch gate (Wave 5, 2026-05-24) ──
+
+  it('rejects with 403 when there is no active scoped session (revoked / expired)', async () => {
+    const { repo, findLatestActive } = makeScopedRepo(false);
+    const gated = new EncryptSharesForPurchaseUseCase(
+      fhe as unknown as FheWorkerClient,
+      tokenRepo,
+      repo,
+    );
+    await expect(
+      gated.execute({
+        userId: USER_ID,
+        accountAddress: KERNEL,
+        tokenAddress: TOKEN_ACTIVE,
+        sharesAmount: 1n,
+      }),
+    ).rejects.toMatchObject({ statusCode: 403 });
+    // The gate keyed the lookup on the JWT subject + the MCP surface.
+    expect(findLatestActive).toHaveBeenCalledWith(USER_ID, 'mcp', expect.any(Number));
+  });
+
+  it('does NOT encrypt (no fhe-worker call) when the session is revoked', async () => {
+    const gated = new EncryptSharesForPurchaseUseCase(
+      fhe as unknown as FheWorkerClient,
+      tokenRepo,
+      makeScopedRepo(false).repo,
+    );
+    await expect(
+      gated.execute({
+        userId: USER_ID,
+        accountAddress: KERNEL,
+        tokenAddress: TOKEN_ACTIVE,
+        sharesAmount: 1n,
+      }),
+    ).rejects.toMatchObject({ statusCode: 403 });
+    expect(fhe.callLog).toHaveLength(0);
+  });
+
+  it('passes the gate when an active session exists, then encrypts', async () => {
+    const result = await useCase.execute({
+      userId: USER_ID,
+      accountAddress: KERNEL,
+      tokenAddress: TOKEN_ACTIVE,
+      sharesAmount: 7n,
+    });
+    expect(result.encShares.ctHash).toMatch(/^0x/);
+    expect(fhe.callLog).toHaveLength(1);
+  });
+
   it('rejects accountAddress that is not a 0x-prefixed 20-byte hex address with 400', async () => {
     await expect(
-      useCase.execute({ accountAddress: 'not-an-address', tokenAddress: TOKEN_ACTIVE, sharesAmount: 1n }),
+      useCase.execute({
+        userId: USER_ID,
+        accountAddress: 'not-an-address',
+        tokenAddress: TOKEN_ACTIVE,
+        sharesAmount: 1n,
+      }),
     ).rejects.toMatchObject({ statusCode: 400 });
   });
 
   it('rejects accountAddress zero address with 400', async () => {
     await expect(
       useCase.execute({
+        userId: USER_ID,
         accountAddress: '0x0000000000000000000000000000000000000000',
         tokenAddress: TOKEN_ACTIVE,
         sharesAmount: 1n,
@@ -162,13 +242,19 @@ describe('EncryptSharesForPurchaseUseCase', () => {
 
   it('rejects sharesAmount === 0 with 400', async () => {
     await expect(
-      useCase.execute({ accountAddress: KERNEL, tokenAddress: TOKEN_ACTIVE, sharesAmount: 0n }),
+      useCase.execute({
+        userId: USER_ID,
+        accountAddress: KERNEL,
+        tokenAddress: TOKEN_ACTIVE,
+        sharesAmount: 0n,
+      }),
     ).rejects.toMatchObject({ statusCode: 400 });
   });
 
   it('rejects sharesAmount > uint128 max with 400', async () => {
     await expect(
       useCase.execute({
+        userId: USER_ID,
         accountAddress: KERNEL,
         tokenAddress: TOKEN_ACTIVE,
         sharesAmount: 1n << 128n,
@@ -179,6 +265,7 @@ describe('EncryptSharesForPurchaseUseCase', () => {
   it('rejects unknown token with 404', async () => {
     await expect(
       useCase.execute({
+        userId: USER_ID,
         accountAddress: KERNEL,
         tokenAddress: '0x0000000000000000000000000000000000000abc',
         sharesAmount: 1n,
@@ -189,6 +276,7 @@ describe('EncryptSharesForPurchaseUseCase', () => {
   it('rejects winding_down token with 409', async () => {
     await expect(
       useCase.execute({
+        userId: USER_ID,
         accountAddress: KERNEL,
         tokenAddress: TOKEN_WINDDOWN,
         sharesAmount: 1n,
@@ -206,9 +294,11 @@ describe('EncryptSharesForPurchaseUseCase', () => {
     const sadUseCase = new EncryptSharesForPurchaseUseCase(
       sadFhe as unknown as FheWorkerClient,
       tokenRepo,
+      makeScopedRepo(true).repo,
     );
     await expect(
       sadUseCase.execute({
+        userId: USER_ID,
         accountAddress: KERNEL,
         tokenAddress: TOKEN_ACTIVE,
         sharesAmount: 1n,
@@ -227,9 +317,11 @@ describe('EncryptSharesForPurchaseUseCase', () => {
     const useCase2 = new EncryptSharesForPurchaseUseCase(
       emptyFhe as unknown as FheWorkerClient,
       tokenRepo,
+      makeScopedRepo(true).repo,
     );
     await expect(
       useCase2.execute({
+        userId: USER_ID,
         accountAddress: KERNEL,
         tokenAddress: TOKEN_ACTIVE,
         sharesAmount: 1n,

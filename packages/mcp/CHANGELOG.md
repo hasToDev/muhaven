@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-05-24
+
+### Fixed
+
+- **Revoke kill-switch — MCP-side gate (defense-in-depth).** A revoked
+  Scoped session let an already-running broker keep buying autonomously
+  (the broker signs from a local snapshot with no "revoked" concept and the
+  on-chain validator stays installed). `position.buy` Path D now hard-gates
+  on the backend mirror: when the broker hands over an active snapshot but
+  `GET /agent/policy/scoped-session` reports NO active session (= revoked or
+  expired on the dashboard), the buy refuses with the new
+  `pathDFallbackReason: 'session_revoked'`, best-effort calls the broker's
+  `clear_policy_snapshot` to purge the dormant key-backed snapshot, and
+  falls back to the Path C deep-link. A transient mirror-fetch ERROR is
+  still treated as best-effort (not "revoked") so a backend blip doesn't
+  break Path D. The authoritative enforcement is the server-side
+  `encrypt-shares` gate (backend change, same release window); this MCP
+  check is the fast, clear fail before the encrypt round-trip. SecEng
+  investigation 2026-05-24.
+
 ## [0.4.1] — 2026-05-24
 
 ### Added

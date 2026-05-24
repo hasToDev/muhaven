@@ -50,6 +50,9 @@ const handler = createHandler({
     // case-tolerant either way).
     const accountAddress = authPayload!.walletAddress.toLowerCase();
     const result = await container.encryptSharesForPurchase.execute({
+      // JWT subject (UUID) — the revoke kill-switch gate keys the
+      // active-session lookup on this, NOT on accountAddress.
+      userId: authPayload!.userId,
       accountAddress,
       tokenAddress: dto.tokenAddress,
       sharesAmount: BigInt(dto.sharesAmount),
