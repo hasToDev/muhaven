@@ -44,6 +44,34 @@ describe('loadBrokerConfig', () => {
     expect(overridden.backendBaseUrl).toBe('https://api-stage.muhaven.app');
     expect(overridden.dashboardBaseUrl).toBe('https://stage.muhaven.app');
   });
+
+  it('defaults chainRpcUrl to the public Arb Sepolia RPC when no RPC env is set (0.4.1)', () => {
+    // OPEN-D follow-up: previously undefined → broker `current_nonce` IPC
+    // returned `chain_rpc_failed` and Path D fell back. Now Path D works
+    // out-of-the-box.
+    const cfg = loadBrokerConfig({});
+    expect(cfg.chainRpcUrl).toBe('https://sepolia-rollup.arbitrum.io/rpc');
+  });
+
+  it('prefers MUHAVEN_BROKER_RPC_URL over the default + the bundler fallback', () => {
+    const cfg = loadBrokerConfig({
+      MUHAVEN_BROKER_RPC_URL: 'https://my-private-rpc.example.test/',
+      MUHAVEN_BUNDLER_URL: 'https://bundler.example.test',
+    });
+    // Preferred source wins; trailing slash trimmed.
+    expect(cfg.chainRpcUrl).toBe('https://my-private-rpc.example.test');
+  });
+
+  it('falls back to MUHAVEN_BUNDLER_URL when MUHAVEN_BROKER_RPC_URL is unset', () => {
+    const cfg = loadBrokerConfig({ MUHAVEN_BUNDLER_URL: 'https://bundler.example.test' });
+    expect(cfg.chainRpcUrl).toBe('https://bundler.example.test');
+  });
+
+  it('rejects a non-https chain RPC URL (same guard as other public URLs)', () => {
+    expect(() => loadBrokerConfig({ MUHAVEN_BROKER_RPC_URL: 'http://evil.example.com' })).toThrow(
+      /https/,
+    );
+  });
 });
 
 describe('loadMcpConfig (sanity smoke after config refactor)', () => {

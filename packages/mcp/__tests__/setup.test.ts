@@ -289,6 +289,7 @@ describe('parseSetupFlags', () => {
       brokerEndpoint: undefined,
       backendBaseUrl: undefined,
       dashboardBaseUrl: undefined,
+      brokerRpcUrl: undefined,
       skipLogin: false,
       register: [],
       registerScope: 'user',
@@ -618,6 +619,26 @@ describe('runSetup orchestrator', () => {
     expect(loginArgv).toContain('https://api-stage.muhaven.app');
     expect(loginArgv).toContain('--dashboard-base-url');
     expect(loginArgv).toContain('https://stage.muhaven.app');
+  });
+
+  it('--broker-rpc-url lands in the spawned daemon child env', async () => {
+    const h = makeHarness({
+      helloResults: [new Error('ECONNREFUSED')],
+      waitForBrokerResult: { hasJwt: false },
+      loginExitCode: 0,
+    });
+    await runSetup(['--skip-login', '--broker-rpc-url', 'https://my-private-rpc.example.test'], h.deps);
+    const spawnArgs = h.spawnDaemon.mock.calls[0][0];
+    expect(spawnArgs.env.MUHAVEN_BROKER_RPC_URL).toBe('https://my-private-rpc.example.test');
+  });
+
+  it('omits MUHAVEN_BROKER_RPC_URL from the child env when no flag (daemon defaults it)', async () => {
+    const h = makeHarness({
+      helloResults: [new Error('ECONNREFUSED')],
+      waitForBrokerResult: { hasJwt: false },
+    });
+    await runSetup(['--skip-login'], h.deps);
+    expect(h.spawnDaemon.mock.calls[0][0].env).not.toHaveProperty('MUHAVEN_BROKER_RPC_URL');
   });
 
   it('mints a fresh session key when not provided in env', async () => {

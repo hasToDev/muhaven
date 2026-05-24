@@ -19,7 +19,14 @@ describe('parseBringUpFlags', () => {
       brokerEndpoint: undefined,
       backendBaseUrl: undefined,
       dashboardBaseUrl: undefined,
+      brokerRpcUrl: undefined,
     });
+  });
+
+  it('parses --broker-rpc-url', () => {
+    expect(parseBringUpFlags(['--broker-rpc-url', 'https://my-rpc.example.test']).brokerRpcUrl).toBe(
+      'https://my-rpc.example.test',
+    );
   });
 
   it('parses --session <key>', () => {
@@ -269,6 +276,45 @@ describe('runBringUp — start', () => {
     expect(code).toBe(0);
     expect(h.readStdinAll).toHaveBeenCalledTimes(1);
     expect(h.spawnDaemon.mock.calls[0][0].env.MUHAVEN_BROKER_SESSION_KEY).toBe(PROVIDED_KEY);
+  });
+
+  it('--broker-rpc-url lands in the spawned daemon child env', async () => {
+    const h = makeHarness({
+      helloResults: [new Error('ECONNREFUSED'), { sessionKeyAddress: SIGNER_ADDR }],
+      waitForBrokerResult: { hasJwt: true },
+    });
+    const code = await runStart(h, [
+      '--session',
+      PROVIDED_KEY,
+      '--broker-rpc-url',
+      'https://my-private-rpc.example.test',
+    ]);
+    expect(code).toBe(0);
+    expect(h.spawnDaemon.mock.calls[0][0].env.MUHAVEN_BROKER_RPC_URL).toBe(
+      'https://my-private-rpc.example.test',
+    );
+  });
+
+  it('omits MUHAVEN_BROKER_RPC_URL from the child env when no flag/shell value (daemon defaults it)', async () => {
+    const h = makeHarness({
+      helloResults: [new Error('ECONNREFUSED'), { sessionKeyAddress: SIGNER_ADDR }],
+      waitForBrokerResult: { hasJwt: true },
+    });
+    await runStart(h, ['--session', PROVIDED_KEY]);
+    expect(h.spawnDaemon.mock.calls[0][0].env).not.toHaveProperty('MUHAVEN_BROKER_RPC_URL');
+  });
+
+  it('rejects --broker-rpc-url http://<non-loopback> before spawn', async () => {
+    const h = makeHarness();
+    const code = await runStart(h, [
+      '--session',
+      PROVIDED_KEY,
+      '--broker-rpc-url',
+      'http://evil.example.com',
+    ]);
+    expect(code).toBe(2);
+    expect(h.errOutput.join('\n')).toMatch(/must use https/);
+    expect(h.spawnDaemon).not.toHaveBeenCalled();
   });
 
   it('rejects --backend-base-url http://<non-loopback> before spawn', async () => {

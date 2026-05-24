@@ -479,8 +479,10 @@ function printUsage(): void {
   print('  start              Bring the daemon up on a DASHBOARD-minted session key (daemon NOT running)');
   print('                       --session <key|->  the key (or `-` to read it from stdin); omit to be');
   print('                         asked interactively. [--skip-login] [--no-launch-browser]');
+  print('                       [--broker-rpc-url URL] chain RPC for Path D (default: public Arb Sepolia)');
   print('  update             Rotate the session key on a running daemon (stop → swap → restart,');
   print('                       reusing the existing JWT). --session <key|-> (or interactive).');
+  print('                       [--broker-rpc-url URL] override the daemon chain RPC for Path D');
   print('  stop               Cleanly stop a running daemon (SIGTERM with SIGKILL fallback');
   print('                       after 5s). Also clears the keystore JWT as a best effort.');
   print('  login              Acquire a JWT via the device-code flow + store in keystore');

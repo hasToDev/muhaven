@@ -156,6 +156,18 @@ const DEFAULT_BUNDLER_TIMEOUT_MS = 20_000;
  *  targets. Operators on a different chain MUST override
  *  MUHAVEN_CHAIN_ID alongside MUHAVEN_BUNDLER_URL. */
 const DEFAULT_CHAIN_ID = 421614;
+/**
+ * Public Arbitrum Sepolia RPC endpoint. Used as the broker daemon's chain
+ * RPC fallback (`loadBrokerConfig.chainRpcUrl`) when neither
+ * `MUHAVEN_BROKER_RPC_URL` nor `MUHAVEN_BUNDLER_URL` is set — so the
+ * Path D `currentNonce()` pre-check works out-of-the-box instead of
+ * returning `chain_rpc_failed` (Wave 5 OPEN-D follow-up, 0.4.1). The
+ * broker's only use of this is a read-only `eth_call`, which the public
+ * RPC serves fine; operators wanting a private/faster RPC override via
+ * `MUHAVEN_BROKER_RPC_URL` (env) or `muhaven-broker start/update/setup
+ * --broker-rpc-url <url>`. Pinned to Arb Sepolia to match DEFAULT_CHAIN_ID.
+ */
+const DEFAULT_BROKER_RPC_URL = 'https://sepolia-rollup.arbitrum.io/rpc';
 /** ERC-4337 EntryPoint v0.7 canonical address. Same on every EVM chain. */
 const DEFAULT_ENTRY_POINT_ADDRESS =
   '0x0000000071727De22E5E9d8BAf0edAc6f37da032' as `0x${string}`;
@@ -389,24 +401,25 @@ export function loadBrokerConfig(env: NodeJS.ProcessEnv = process.env): BrokerRu
     DEFAULT_DASHBOARD_URL,
   );
 
-  // Wave 5 Option D Commit 3 — chain RPC + backend callback. Both
-  // optional: the broker degrades cleanly when either is unset
-  // (the chain indexer is the authoritative safety net for
-  // `enable_status` flips; the MCP server falls back to Path C when
-  // it can't pre-check the validator nonce). `MUHAVEN_BROKER_RPC_URL`
-  // is preferred (lets the operator pin a narrower RPC than the
-  // bundler URL); `MUHAVEN_BUNDLER_URL` is the back-compat fallback
-  // since ZeroDev bundlers also serve `eth_call`.
+  // Wave 5 Option D Commit 3 — chain RPC + backend callback.
+  // `MUHAVEN_BROKER_RPC_URL` is preferred (lets the operator pin a
+  // narrower/faster RPC than the bundler URL); `MUHAVEN_BUNDLER_URL` is
+  // the back-compat fallback since ZeroDev bundlers also serve `eth_call`.
+  // 0.4.1 (OPEN-D follow-up): when neither is set, default to the public
+  // Arb Sepolia RPC so the Path D `currentNonce()` pre-check works
+  // out-of-the-box (previously `chainRpcUrl` was undefined → the broker's
+  // `current_nonce` IPC returned `chain_rpc_failed` and Path D fell back).
+  // The broker's sole use is a read-only `eth_call`, which the public RPC
+  // serves; the callback channel stays gated on its own service secret.
   const chainRpcUrlRaw =
-    readEnv('MUHAVEN_BROKER_RPC_URL', env) ?? readEnv('MUHAVEN_BUNDLER_URL', env);
-  const chainRpcUrl =
-    chainRpcUrlRaw === undefined
-      ? undefined
-      : resolvePublicUrlEnv(
-          'MUHAVEN_BROKER_RPC_URL',
-          chainRpcUrlRaw,
-          chainRpcUrlRaw,
-        );
+    readEnv('MUHAVEN_BROKER_RPC_URL', env) ??
+    readEnv('MUHAVEN_BUNDLER_URL', env) ??
+    DEFAULT_BROKER_RPC_URL;
+  const chainRpcUrl = resolvePublicUrlEnv(
+    'MUHAVEN_BROKER_RPC_URL',
+    chainRpcUrlRaw,
+    chainRpcUrlRaw,
+  );
   const callbackServiceSecretRaw = readEnv('BROKER_CALLBACK_SERVICE_SECRET', env);
   let callbackServiceSecret: string | undefined;
   if (callbackServiceSecretRaw !== undefined) {

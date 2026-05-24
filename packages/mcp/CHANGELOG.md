@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-05-24
+
+### Added
+
+- **Default broker chain RPC + `--broker-rpc-url` override (OPEN-D
+  follow-up).** The broker daemon needs a chain RPC URL for the Path D
+  `currentNonce()` pre-check. Previously, with neither
+  `MUHAVEN_BROKER_RPC_URL` nor `MUHAVEN_BUNDLER_URL` set, `chainRpcUrl`
+  was undefined → the `current_nonce` IPC returned `chain_rpc_failed` and
+  Path D fell back to the deep-link. Now:
+  - `loadBrokerConfig` **defaults `chainRpcUrl` to the public Arb Sepolia
+    RPC** (`https://sepolia-rollup.arbitrum.io/rpc`) when no RPC env is
+    set, so Path D works out-of-the-box. Resolution order is unchanged
+    where set: `MUHAVEN_BROKER_RPC_URL` → `MUHAVEN_BUNDLER_URL` →
+    default. (The broker's only use is a read-only `eth_call`, which the
+    public RPC serves.)
+  - `muhaven-broker start` / `update` / `setup` gained a
+    **`--broker-rpc-url <URL>`** flag to point the spawned daemon at a
+    private/faster RPC without exporting an env var. Validated by the same
+    https-or-loopback rule as the other URL flags; forwarded into the
+    spawned daemon's child env. When omitted, the daemon inherits a
+    shell-set value or falls back to the default above.
+
+### Changed
+
+- `BrokerRuntimeConfig.chainRpcUrl` is now always populated (default
+  applied) rather than possibly `undefined`. The type stays optional for
+  test-injected configs; the `current_nonce` handler's
+  `chain_rpc_failed`-when-unset path remains as a backstop.
+
 ## [0.4.0] — 2026-05-24
 
 ### Added

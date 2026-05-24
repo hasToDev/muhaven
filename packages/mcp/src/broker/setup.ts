@@ -404,6 +404,11 @@ export interface SetupFlags {
   backendBaseUrl?: string;
   /** Override dashboard base URL. */
   dashboardBaseUrl?: string;
+  /** Override the broker daemon's chain RPC URL (`MUHAVEN_BROKER_RPC_URL`),
+   *  used for the Path D `currentNonce()` pre-check. When omitted, the
+   *  spawned daemon inherits a shell-set value, else the public Arb Sepolia
+   *  default (`config.ts`). */
+  brokerRpcUrl?: string;
   /** Skip the login step (operator will run it later). */
   skipLogin: boolean;
   /** Host(s) to register the MCP server with after login. Repeatable;
@@ -420,6 +425,7 @@ export function parseSetupFlags(argv: readonly string[]): SetupFlags {
   let brokerEndpoint: string | undefined;
   let backendBaseUrl: string | undefined;
   let dashboardBaseUrl: string | undefined;
+  let brokerRpcUrl: string | undefined;
   let skipLogin = false;
   const register: RegisterHost[] = [];
   let registerScope: RegisterScope = 'user';
@@ -431,6 +437,7 @@ export function parseSetupFlags(argv: readonly string[]): SetupFlags {
     else if (a === '--broker-endpoint' && i + 1 < argv.length) brokerEndpoint = argv[++i];
     else if (a === '--backend-base-url' && i + 1 < argv.length) backendBaseUrl = argv[++i];
     else if (a === '--dashboard-base-url' && i + 1 < argv.length) dashboardBaseUrl = argv[++i];
+    else if (a === '--broker-rpc-url' && i + 1 < argv.length) brokerRpcUrl = argv[++i];
     else if (a === '--register' && i + 1 < argv.length) {
       // Accept repeated `--register X --register Y` AND a single comma-
       // separated `--register X,Y`. Parsed values go through the
@@ -470,6 +477,7 @@ export function parseSetupFlags(argv: readonly string[]): SetupFlags {
     brokerEndpoint,
     backendBaseUrl,
     dashboardBaseUrl,
+    brokerRpcUrl,
     skipLogin,
     register,
     registerScope,
@@ -843,7 +851,7 @@ export async function runSetup(argv: readonly string[], deps: SetupDeps): Promis
     deps.printErr(
       'usage: muhaven-broker setup [--foreground|-f] [--no-launch-browser] [--skip-login]\n' +
         '                            [--broker-endpoint PATH] [--backend-base-url URL]\n' +
-        '                            [--dashboard-base-url URL]\n' +
+        '                            [--dashboard-base-url URL] [--broker-rpc-url URL]\n' +
         '                            [--register HOST[,HOST...]] [--register-scope user|project|local]',
     );
     return 2;
@@ -868,6 +876,13 @@ export async function runSetup(argv: readonly string[], deps: SetupDeps): Promis
   }
   if (flags.brokerEndpoint) {
     const err = validateBrokerEndpointFlag(flags.brokerEndpoint, deps.platformId);
+    if (err) {
+      deps.printErr(`error: ${err}`);
+      return 2;
+    }
+  }
+  if (flags.brokerRpcUrl) {
+    const err = validateHttpUrlFlag('--broker-rpc-url', flags.brokerRpcUrl);
     if (err) {
       deps.printErr(`error: ${err}`);
       return 2;
@@ -898,6 +913,7 @@ export async function runSetup(argv: readonly string[], deps: SetupDeps): Promis
   if (flags.brokerEndpoint) effectiveEnv.MUHAVEN_BROKER_ENDPOINT = flags.brokerEndpoint;
   if (flags.backendBaseUrl) effectiveEnv.MUHAVEN_BACKEND_URL = flags.backendBaseUrl;
   if (flags.dashboardBaseUrl) effectiveEnv.MUHAVEN_DASHBOARD_URL = flags.dashboardBaseUrl;
+  if (flags.brokerRpcUrl) effectiveEnv.MUHAVEN_BROKER_RPC_URL = flags.brokerRpcUrl;
 
   // Print env state. Names only for preserved vars (the value belongs to the
   // operator — don't echo it into shell history / CI logs). Values shown for
@@ -1011,6 +1027,12 @@ export async function runSetup(argv: readonly string[], deps: SetupDeps): Promis
         MUHAVEN_BACKEND_URL: effectiveEnv.MUHAVEN_BACKEND_URL!,
         MUHAVEN_DASHBOARD_URL: effectiveEnv.MUHAVEN_DASHBOARD_URL!,
         MUHAVEN_BROKER_SESSION_KEY: sessionKey,
+        // Forward the chain RPC URL only when resolved (flag or shell env);
+        // absent → the daemon's loadBrokerConfig applies the public Arb
+        // Sepolia default.
+        ...(effectiveEnv.MUHAVEN_BROKER_RPC_URL
+          ? { MUHAVEN_BROKER_RPC_URL: effectiveEnv.MUHAVEN_BROKER_RPC_URL }
+          : {}),
       },
     });
     try {

@@ -50,6 +50,14 @@ export interface BringUpFlags {
   backendBaseUrl?: string;
   /** Override dashboard base URL. */
   dashboardBaseUrl?: string;
+  /**
+   * Override the broker daemon's chain RPC URL (`MUHAVEN_BROKER_RPC_URL`),
+   * used for the Path D `currentNonce()` pre-check. When omitted, the
+   * spawned daemon inherits a shell-set value, else falls back to the
+   * public Arb Sepolia RPC default (`config.ts`). Lets an operator point
+   * at their own/private RPC without exporting an env var.
+   */
+  brokerRpcUrl?: string;
 }
 
 export function parseBringUpFlags(argv: readonly string[]): BringUpFlags {
@@ -59,6 +67,7 @@ export function parseBringUpFlags(argv: readonly string[]): BringUpFlags {
   let brokerEndpoint: string | undefined;
   let backendBaseUrl: string | undefined;
   let dashboardBaseUrl: string | undefined;
+  let brokerRpcUrl: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--no-launch-browser') noLaunchBrowser = true;
@@ -79,9 +88,18 @@ export function parseBringUpFlags(argv: readonly string[]): BringUpFlags {
     } else if (a === '--broker-endpoint' && i + 1 < argv.length) brokerEndpoint = argv[++i];
     else if (a === '--backend-base-url' && i + 1 < argv.length) backendBaseUrl = argv[++i];
     else if (a === '--dashboard-base-url' && i + 1 < argv.length) dashboardBaseUrl = argv[++i];
+    else if (a === '--broker-rpc-url' && i + 1 < argv.length) brokerRpcUrl = argv[++i];
     else throw new Error(`unknown flag: ${a}`);
   }
-  return { session, noLaunchBrowser, skipLogin, brokerEndpoint, backendBaseUrl, dashboardBaseUrl };
+  return {
+    session,
+    noLaunchBrowser,
+    skipLogin,
+    brokerEndpoint,
+    backendBaseUrl,
+    dashboardBaseUrl,
+    brokerRpcUrl,
+  };
 }
 
 export interface BringUpDeps {
@@ -120,7 +138,7 @@ function usageLine(mode: BringUpMode): string {
   return (
     `usage: muhaven-broker ${mode} --session <key|-> [--no-launch-browser] [--skip-login]\n` +
     '                            [--broker-endpoint PATH] [--backend-base-url URL]\n' +
-    '                            [--dashboard-base-url URL]\n' +
+    '                            [--dashboard-base-url URL] [--broker-rpc-url URL]\n' +
     '       (omit --session to be asked interactively; pipe the key with `--session -`)'
   );
 }
@@ -167,6 +185,13 @@ export async function runBringUp(
       return 2;
     }
   }
+  if (flags.brokerRpcUrl) {
+    const e = validateHttpUrlFlag('--broker-rpc-url', flags.brokerRpcUrl);
+    if (e) {
+      deps.printErr(`error: ${e}`);
+      return 2;
+    }
+  }
 
   // Resolve the session key. start + update both REQUIRE one (no self-mint).
   const resolution = await resolveSessionKey({
@@ -199,6 +224,7 @@ export async function runBringUp(
   if (flags.brokerEndpoint) effectiveEnv.MUHAVEN_BROKER_ENDPOINT = flags.brokerEndpoint;
   if (flags.backendBaseUrl) effectiveEnv.MUHAVEN_BACKEND_URL = flags.backendBaseUrl;
   if (flags.dashboardBaseUrl) effectiveEnv.MUHAVEN_DASHBOARD_URL = flags.dashboardBaseUrl;
+  if (flags.brokerRpcUrl) effectiveEnv.MUHAVEN_BROKER_RPC_URL = flags.brokerRpcUrl;
 
   // Names only for preserved vars (operator-owned — don't echo values);
   // values for defaulted vars (we chose them, they're public).
@@ -256,6 +282,12 @@ export async function runBringUp(
       MUHAVEN_BACKEND_URL: effectiveEnv.MUHAVEN_BACKEND_URL!,
       MUHAVEN_DASHBOARD_URL: effectiveEnv.MUHAVEN_DASHBOARD_URL!,
       MUHAVEN_BROKER_SESSION_KEY: sessionKey,
+      // Forward the chain RPC URL only when resolved (flag or shell env).
+      // When absent, the daemon's loadBrokerConfig applies the public
+      // Arb Sepolia default — no need to inject it here.
+      ...(effectiveEnv.MUHAVEN_BROKER_RPC_URL
+        ? { MUHAVEN_BROKER_RPC_URL: effectiveEnv.MUHAVEN_BROKER_RPC_URL }
+        : {}),
     },
   });
 
