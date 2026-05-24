@@ -48,37 +48,15 @@ export class SetPolicyToolUseCase {
     const surface = input.surface;
     const current = await this.getPolicyState.forSurface(ctx.userId, surface, now);
 
-    // ADR-0 §"Allowed transitions". Mirror the production /policy/transition
-    // checks here so the agent surface can't return a confirm-token for a
-    // tier the policy/transition route would reject — better UX + audit
-    // narrative ("the agent never proposed an impossible transition").
-    if (
-      current.tier === Tier.Advisory
-      && input.targetTier === Tier.PolicyBound
-    ) {
-      throw new ApplicationHttpError(
-        409,
-        'Advisory → Policy-bound is forbidden in Wave 4. Step through Confirm-per-action first.',
-      );
-    }
-    if (
-      current.tier === Tier.ConfirmPerAction
-      && input.targetTier === Tier.PolicyBound
-      && (current.confirmedActionCount < 5 || !current.riskQuestionnaireComplete)
-    ) {
-      throw new ApplicationHttpError(
-        409,
-        `Confirm-per-action → Policy-bound requires ≥5 confirmed actions (have ${current.confirmedActionCount}) and a complete risk Q&A (${current.riskQuestionnaireComplete ? 'done' : 'not done'}).`,
-      );
-    }
-    // Wave 5 Option D · Commit 4 (operator decision 2026-05-24 "Uniform")
-    // — the forced tier climb into Scoped was removed. Scoped is now
-    // reachable directly from any non-paused tier WITHOUT the ≥5-confirm
-    // + risk-Q gates, so the HavenBot tool no longer rejects `* → Scoped`
-    // (it stays mirrored with `requestUserTierChange`, which accepts
-    // these as step-ups). The mint ceremony's passkey signature + the
-    // explicit cap/TTL + the on-chain CallPolicy/revoke rails are the
-    // security boundary, not the climb. See state-machine.ts JSDoc.
+    // Wave 5 Option D · Commit 4 (+ "pick any tier" follow-up, operator
+    // decisions 2026-05-24) — the forced tier climb is FULLY removed.
+    // `requestUserTierChange` now accepts any non-paused → any other
+    // non-paused tier as a step-up (no ≥5-confirm / risk-Q gates), so this
+    // tool no longer rejects `* → PolicyBound` or `* → Scoped`; it stays
+    // mirrored with the state machine. The security boundary is the
+    // confirmation-token tap + the Scoped mint ceremony (passkey + cap +
+    // TTL) + the on-chain per-tier policy / revoke rails, not the climb.
+    // The only thing still rejected here is `targetTier = paused` (above).
 
     const actionPayload = {
       action: 'set_policy',

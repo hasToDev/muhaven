@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import {
-  MIN_CONFIRMS_FOR_POLICY_BOUND,
   requestUserTierChange,
   resumeAfterPause,
   triggerPause,
@@ -38,11 +37,27 @@ describe('state-machine — allowed transitions', () => {
     if (r.ok) expect(r.state.tier).toBe(Tier.ConfirmPerAction);
   });
 
-  it('ConfirmPerAction → PolicyBound requires ≥5 confirms + risk Q&A', () => {
+  // Wave 5 Option D · Commit 4 "pick any tier" follow-up — the forced
+  // climb is FULLY removed; PolicyBound (like Scoped) is reachable
+  // directly from any non-paused tier WITHOUT the ≥5-confirm + risk-Q
+  // gates. Pre-follow-up these required the gates / were forbidden.
+
+  it('Advisory → PolicyBound is allowed directly (no climb, no gates)', () => {
+    const s = freshState({
+      tier: Tier.Advisory,
+      confirmedActionCount: 0,
+      riskQuestionnaireComplete: false,
+    });
+    const r = requestUserTierChange(s, Tier.PolicyBound, { now: NOW });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.state.tier).toBe(Tier.PolicyBound);
+  });
+
+  it('ConfirmPerAction → PolicyBound is allowed without ≥5 confirms or risk Q&A', () => {
     const s = freshState({
       tier: Tier.ConfirmPerAction,
-      confirmedActionCount: MIN_CONFIRMS_FOR_POLICY_BOUND,
-      riskQuestionnaireComplete: true,
+      confirmedActionCount: 0,
+      riskQuestionnaireComplete: false,
     });
     const r = requestUserTierChange(s, Tier.PolicyBound, { now: NOW });
     expect(r.ok).toBe(true);
@@ -70,7 +85,7 @@ describe('state-machine — allowed transitions', () => {
   // Wave 5 Option D · Commit 4 — direct-to-Scoped (operator decision
   // 2026-05-24 "Uniform"). The forced climb was removed: Scoped is
   // reachable from ANY non-paused tier WITHOUT the ≥5-confirm + risk-Q
-  // gates. Pre-C4 these four cases were `forbidden_transition` /
+  // gates. Pre-C4 these cases were `forbidden_transition` /
   // `gate_failed_*`; they now accept. See state-machine.ts JSDoc.
 
   it('Advisory → Scoped is allowed directly (no climb, no gates)', () => {
@@ -127,34 +142,11 @@ describe('state-machine — allowed transitions', () => {
 });
 
 describe('state-machine — forbidden transitions (ADR-0)', () => {
-  it('Advisory → PolicyBound is forbidden in Wave 4', () => {
-    const s = freshState({ tier: Tier.Advisory });
-    const r = requestUserTierChange(s, Tier.PolicyBound, { now: NOW });
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.code).toBe('forbidden_transition');
-  });
-
-  it('ConfirmPerAction → PolicyBound without ≥5 confirms is rejected', () => {
-    const s = freshState({
-      tier: Tier.ConfirmPerAction,
-      confirmedActionCount: 4,
-      riskQuestionnaireComplete: true,
-    });
-    const r = requestUserTierChange(s, Tier.PolicyBound, { now: NOW });
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.code).toBe('gate_failed_confirms');
-  });
-
-  it('ConfirmPerAction → PolicyBound without risk Q&A is rejected', () => {
-    const s = freshState({
-      tier: Tier.ConfirmPerAction,
-      confirmedActionCount: 5,
-      riskQuestionnaireComplete: false,
-    });
-    const r = requestUserTierChange(s, Tier.PolicyBound, { now: NOW });
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.code).toBe('gate_failed_questionnaire');
-  });
+  // Wave 5 Option D · Commit 4 "pick any tier" follow-up — the
+  // Advisory→PolicyBound forbidden + the two ConfirmPerAction→PolicyBound
+  // gate-rejection cases were REMOVED (all now allowed; see the
+  // "allowed transitions" block). Only the structural invariants below
+  // remain: paused-source, target-paused, and self-transitions.
 
   it('any transition while paused is rejected — must call resume first', () => {
     const s = freshState({ tier: Tier.Paused, pausedAt: NOW, pauseTrigger: Trigger.ExplicitPause });

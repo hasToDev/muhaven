@@ -548,19 +548,25 @@ describe('Wave 4 P2 — tool use cases', () => {
     });
   });
 
-  describe('SetPolicyToolUseCase — ADR-0 forbidden transitions', () => {
-    it('rejects Advisory → Policy-bound directly (skip-Confirm forbidden)', async () => {
+  describe('SetPolicyToolUseCase — transitions', () => {
+    // Wave 5 Option D · Commit 4 "pick any tier" follow-up — the forced
+    // climb is gone. Advisory → Policy-bound (was 409) and
+    // Confirm-per-action → Policy-bound without ≥5 confirms (was 409) now
+    // both mint a confirm token, mirroring the relaxed state machine.
+    it('mints a confirm token on a direct Advisory → Policy-bound step (no climb)', async () => {
       const uc = new SetPolicyToolUseCase(getPolicy, confirmTokens, appendAudit);
-      await expect(
-        uc.execute(
-          { userId: USER_ID, emittingSurface: Surface.HavenBot },
-          { surface: Surface.HavenBot, targetTier: Tier.PolicyBound },
-          NOW,
-        ),
-      ).rejects.toMatchObject({ statusCode: 409 });
+      const out = await uc.execute(
+        { userId: USER_ID, emittingSurface: Surface.HavenBot },
+        { surface: Surface.HavenBot, targetTier: Tier.PolicyBound },
+        NOW,
+      );
+      expect(out.kind).toBe('set_policy');
+      expect(out.preview.targetTier).toBe(Tier.PolicyBound);
+      const tok = await confirmRepo.findByToken(out.confirmTokenId);
+      expect(tok?.actionKind).toBe('tier_transition');
     });
 
-    it('rejects Confirm-per-action → Policy-bound without ≥5 confirms', async () => {
+    it('mints a confirm token on Confirm-per-action → Policy-bound without ≥5 confirms', async () => {
       await stateRepo.upsert(
         new AgentUserState({
           userId: USER_ID,
@@ -571,20 +577,20 @@ describe('Wave 4 P2 — tool use cases', () => {
           pauseMetadata: null,
           enteredAt: NOW,
           validatorAddress: null,
-          confirmedActionCount: 2, // < 5
-          riskQuestionnaireComplete: true,
+          confirmedActionCount: 2, // < 5 — no longer a gate
+          riskQuestionnaireComplete: false,
           createdAt: NOW,
           updatedAt: NOW,
         }),
       );
       const uc = new SetPolicyToolUseCase(getPolicy, confirmTokens, appendAudit);
-      await expect(
-        uc.execute(
-          { userId: USER_ID, emittingSurface: Surface.HavenBot },
-          { surface: Surface.HavenBot, targetTier: Tier.PolicyBound },
-          NOW,
-        ),
-      ).rejects.toMatchObject({ statusCode: 409 });
+      const out = await uc.execute(
+        { userId: USER_ID, emittingSurface: Surface.HavenBot },
+        { surface: Surface.HavenBot, targetTier: Tier.PolicyBound },
+        NOW,
+      );
+      expect(out.kind).toBe('set_policy');
+      expect(out.preview.targetTier).toBe(Tier.PolicyBound);
     });
 
     it('rejects targetTier=paused (use muhaven_pause instead)', async () => {

@@ -11,13 +11,12 @@ import { AgentUserState } from './agent-user-state.js';
  * that exposes both the new entity and a structured outcome so the use
  * case can compose the audit-event side effect deterministically.
  *
- * Gate inputs (`confirmedActionCount`, `riskQuestionnaireComplete`) are
- * read-only here. P2 (HavenBot per-action confirmation modal) increments
- * the count on each successful Confirm-tier action; P2 onboarding flow
- * flips the questionnaire flag. This module never mutates them.
+ * `confirmedActionCount` / `riskQuestionnaireComplete` are still read by
+ * other surfaces (P2 maintains them for display / future policy) but, as
+ * of the Option D · C4 "pick any tier" follow-up, NO LONGER gate any
+ * transition here — the old `MIN_CONFIRMS_FOR_POLICY_BOUND` (=5) gate was
+ * removed along with the forced climb. See `requestUserTierChange` JSDoc.
  */
-export const MIN_CONFIRMS_FOR_POLICY_BOUND = 5;
-
 export interface TransitionContext {
   /** Optional override for `now` — tests pass a fixed Date. */
   now?: Date;
@@ -50,43 +49,38 @@ function nowOf(ctx?: TransitionContext): Date {
 }
 
 /**
- * User-initiated tier change (no security trigger). Validates allowed
- * transitions per ADR-0 §"Allowed transitions and required gates" + the
- * Wave 5 Path D extension for the Scoped tier (RD-2 in
- * `development/DEV_WAVE_5/PATH_D_PLAN.md`).
+ * User-initiated tier change (no security trigger).
  *
- * - Advisory → ConfirmPerAction: always allowed (after the user has
- *   accepted the Wealthfront-style limits — that gate is an upstream
- *   responsibility of the route handler).
- * - ConfirmPerAction → PolicyBound: requires `confirmedActionCount ≥ 5`
- *   AND `riskQuestionnaireComplete`.
- * - * → Scoped (Wave 5 Option D · Commit 4, operator decision
- *   2026-05-24 "Uniform"): reachable DIRECTLY from any non-paused tier,
- *   WITHOUT the ≥5-confirm + risk-questionnaire gates. The forced tier
- *   climb (Advisory → Confirm → PolicyBound → Scoped) was trust-
- *   CALIBRATION UX, NOT the security boundary. Scoped's real blast-radius
- *   rails — the on-chain Scoped CallPolicy (purchase-only; `transfer`
- *   excluded), the per-op mhUSDC cap, the 8h TTL, and the dashboard /
- *   Telegram revoke surfaces — are independent of which tier-sequence
- *   reached Scoped, so direct-to-Scoped is no less safe. Re-arming is
- *   never silent: `* → Scoped` is a step-up (the caller's confirmation-
- *   token tap is the consent moment, see
- *   `RequestTierTransitionUseCase.isStepDown`) AND the dashboard mint
- *   ceremony triggers a second user-present passkey signature + requires
- *   an explicit cap + TTL. This applies AFTER a security pause too: the
- *   "Uniform" decision accepts that post-breach re-arming relies on
- *   fresh consent + cap/TTL/revoke rather than a forced re-climb.
- *   See `development/DEV_WAVE_5/NEXT_SESSION_PROMPT_OPTION_D.md`
- *   § "skip the forced tier climb" + memory
- *   `project_skip_tier_climb_direct_scoped`.
- * - All step-downs auto-commit (Scoped → PolicyBound → ConfirmPerAction
- *   → Advisory).
- * - All other transitions in this function are forbidden — pause/resume
- *   has its own entry points. ADR-0 explicitly forbids any
- *   `Advisory → PolicyBound` skip and any
- *   `ConfirmPerAction → PolicyBound` skip without the ≥5-confirms gate.
- *   (The lower-tier PolicyBound gates are deliberately UNCHANGED — they
- *   remain an opt-in climb; only Scoped became directly reachable.)
+ * **Wave 5 Option D · Commit 4 (+ "pick any tier" follow-up, operator
+ * decisions 2026-05-24) — the forced tier climb is FULLY removed.** Any
+ * non-paused tier may move DIRECTLY to any OTHER non-paused tier:
+ * - Upward moves (e.g. Advisory → PolicyBound, Advisory → Scoped) are
+ *   step-ups; the caller (`RequestTierTransitionUseCase`) requires a
+ *   passkey-bound confirmation-token tap as the consent moment. The
+ *   Scoped mint ceremony adds a second user-present passkey signature +
+ *   an explicit per-op cap + TTL.
+ * - Downward moves auto-commit (no confirmation).
+ *
+ * There are NO remaining `confirmedActionCount` / `riskQuestionnaireComplete`
+ * gates. Those gated the OLD climb (Confirm → PolicyBound → Scoped); they
+ * were trust-CALIBRATION UX, not the security boundary. The real rails are
+ * per-tier and independent of which sequence reached the tier — the
+ * on-chain Scoped CallPolicy (purchase-only; `transfer` excluded), the
+ * per-op mhUSDC cap, the 8h TTL, and the dashboard / Telegram revoke
+ * surfaces. C4 first removed the Scoped gate; keeping a forced climb to
+ * the LOWER PolicyBound tier while the HIGHER Scoped tier was directly
+ * reachable was an inversion, so this follow-up removes the PolicyBound
+ * gates too — the whole ladder is now "pick any tier, one confirm tap".
+ *
+ * The only rejections that remain: same-tier (no-op), source paused
+ * (resume first), target paused (use `triggerPause`). `confirmedActionCount`
+ * + `riskQuestionnaireComplete` stay on the entity (P2 maintains them for
+ * display / future policy) but no longer gate anything here. If a stricter
+ * posture is ever wanted (e.g. post-breach cooldown), reintroduce a gate
+ * here rather than relying on those counters elsewhere.
+ *
+ * See `development/DEV_WAVE_5/NEXT_SESSION_PROMPT_OPTION_D.md`
+ * § "skip the forced tier climb" + memory `project_skip_tier_climb_direct_scoped`.
  */
 export function requestUserTierChange(
   current: AgentUserState,
@@ -119,79 +113,11 @@ export function requestUserTierChange(
     };
   }
 
-  // Wave 5 Option D · Commit 4 — direct-to-Scoped (operator decision
-  // 2026-05-24 "Uniform"). Scoped is reachable from ANY non-paused tier
-  // without the ≥5-confirm + risk-questionnaire gates. See the function
-  // JSDoc above for the load-bearing rationale (the climb is calibration
-  // UX, not the security boundary; cap + TTL + CallPolicy + revoke are
-  // the rails). The `target === current.tier` guard above already
-  // rejects Scoped → Scoped, and the paused guard already rejects the
-  // paused source — so reaching here means current ∈ {Advisory,
-  // ConfirmPerAction, PolicyBound}, all of which step UP into Scoped.
-  if (target === Tier.Scoped) {
-    return accept(current, target, null, now);
-  }
-
-  if (current.tier === Tier.Advisory) {
-    if (target === Tier.ConfirmPerAction) {
-      return accept(current, target, null, now);
-    }
-    if (target === Tier.PolicyBound) {
-      return {
-        ok: false,
-        code: 'forbidden_transition',
-        message: 'advisory → policy-bound is forbidden in Wave 4 (must traverse confirm-per-action)',
-      };
-    }
-  }
-
-  if (current.tier === Tier.ConfirmPerAction) {
-    if (target === Tier.Advisory) {
-      return accept(current, target, null, now);
-    }
-    if (target === Tier.PolicyBound) {
-      if (current.confirmedActionCount < MIN_CONFIRMS_FOR_POLICY_BOUND) {
-        return {
-          ok: false,
-          code: 'gate_failed_confirms',
-          message: `policy-bound requires ≥${MIN_CONFIRMS_FOR_POLICY_BOUND} confirmed actions; have ${current.confirmedActionCount}`,
-        };
-      }
-      if (!current.riskQuestionnaireComplete) {
-        return {
-          ok: false,
-          code: 'gate_failed_questionnaire',
-          message: 'policy-bound requires the risk questionnaire to be completed first',
-        };
-      }
-      return accept(current, target, null, now);
-    }
-  }
-
-  if (current.tier === Tier.PolicyBound) {
-    if (target === Tier.ConfirmPerAction) {
-      return accept(current, target, null, now);
-    }
-    if (target === Tier.Advisory) {
-      return accept(current, target, null, now);
-    }
-  }
-
-  if (current.tier === Tier.Scoped) {
-    if (
-      target === Tier.PolicyBound ||
-      target === Tier.ConfirmPerAction ||
-      target === Tier.Advisory
-    ) {
-      return accept(current, target, null, now);
-    }
-  }
-
-  return {
-    ok: false,
-    code: 'forbidden_transition',
-    message: `transition ${current.tier} → ${target} is not allowed`,
-  };
+  // Any non-paused → any other non-paused tier is allowed. Step-up vs
+  // step-down (and the confirmation-token requirement for step-ups) is the
+  // caller's concern — see `RequestTierTransitionUseCase.isStepDown`. The
+  // guards above already reject same-tier, source-paused, and target-paused.
+  return accept(current, target, null, now);
 }
 
 /**

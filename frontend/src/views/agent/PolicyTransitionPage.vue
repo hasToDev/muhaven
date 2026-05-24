@@ -36,7 +36,6 @@ import {
   CheckCircle2,
   Loader2,
   ArrowRight,
-  Lock,
   PlayCircle,
   Clock,
   ChevronDown,
@@ -336,9 +335,6 @@ const canSubmit = computed<boolean>(() => {
   if (targetTier.value === null) return false
   if (targetTier.value === currentTier.value) return false
   if (currentTier.value === 'paused') return false
-  // Step-up disabled when policy-bound gates fail (mirror backend rejection
-  // shape so the user sees the unmet gate inline, not as a 409 surprise).
-  if (stepUpGateFailure.value) return false
   // Scoped tier — additionally require the mhUSDC + TTL form to be valid
   // BEFORE any network hop. The backend Zod schema would bounce anyway,
   // but surfacing the violation inline avoids a confusing 400.
@@ -350,44 +346,15 @@ const canSubmit = computed<boolean>(() => {
   return true
 })
 
-const stepUpGateFailure = computed<string | null>(() => {
-  if (!targetTier.value || !currentState.value) return null
-  // R1 Code Reviewer LOW-2 — short-circuit when the user re-picked the
-  // tier they're already at. `canSubmit` already blocks via the
-  // `targetTier === currentTier` rule, but the gate-hint sub-banner
-  // would otherwise render a misleading "you need to climb to…" message
-  // for someone who's ALREADY at Scoped re-clicking the same card.
-  if (targetTier.value === currentTier.value) return null
-  if (
-    targetTier.value === 'policy-bound'
-    && currentTier.value === 'advisory'
-  ) {
-    return 'Advisory → Policy-bound is forbidden in Wave 4. Step through Confirm per action first.'
-  }
-  if (
-    targetTier.value === 'policy-bound'
-    && currentTier.value === 'confirm-per-action'
-  ) {
-    const c = currentState.value.confirmedActionCount
-    if (c < 5) {
-      return `Policy-bound requires ≥5 confirmed actions on this surface; you have ${c}.`
-    }
-    if (!currentState.value.riskQuestionnaireComplete) {
-      return 'Policy-bound requires the risk questionnaire to be completed first.'
-    }
-  }
-  // Wave 5 Option D · Commit 4 (operator decision 2026-05-24 "Uniform")
-  // — Scoped is NO LONGER gated behind a forced climb. It's reachable
-  // directly from any non-paused tier; the backend `requestUserTierChange`
-  // accepts `* → Scoped` as a step-up without the ≥5-confirm + risk-Q
-  // gates (those season the climb that's now optional). The real rails —
-  // the per-op mhUSDC cap + 8h TTL collected in the Scoped form below,
-  // the on-chain purchase-only CallPolicy, and the revoke surfaces —
-  // bound blast radius regardless of source tier. So there is NO
-  // `targetTier === 'scoped'` gate here; `scopedFormFailure` (cap + TTL
-  // required) is the only Scoped pre-condition. See state-machine.ts JSDoc.
-  return null
-})
+// Wave 5 Option D · Commit 4 (+ "pick any tier" follow-up, operator
+// decisions 2026-05-24) — the forced tier climb is FULLY removed, so there
+// is NO `stepUpGateFailure` gate anymore: any non-paused tier reaches any
+// higher tier directly (the backend `requestUserTierChange` accepts it as a
+// step-up). The ONLY remaining pre-condition is `scopedFormFailure` below
+// (cap ≥ $1 + valid TTL), which stays REQUIRED for the Scoped tier. The
+// security boundary is the confirmation-token tap + the Scoped mint
+// ceremony (passkey + cap + TTL) + the on-chain per-tier policy / revoke
+// rails — never the climb. See state-machine.ts JSDoc.
 
 const scopedMaxPerOpUsd6 = computed<bigint | null>(() =>
   parseMhUsdcBase6(maxPerOpUsd6Input.value),
@@ -420,11 +387,11 @@ const isStepUp = computed<boolean>(() => {
   if (currentTier.value === 'advisory' && targetTier.value === 'confirm-per-action') return true
   if (currentTier.value === 'confirm-per-action' && targetTier.value === 'policy-bound') return true
   if (currentTier.value === 'advisory' && targetTier.value === 'policy-bound') return true
-  // Wave 5 Option D · Commit 4 — ascending into Scoped from any lower
-  // tier is always a step-up (confirmation-gated). The forced climb was
-  // removed (`stepUpGateFailure` no longer gates Scoped), but the
-  // confirmation-token tap is preserved as the consent moment, mirroring
-  // the backend's `RequestTierTransitionUseCase.isStepDown` logic.
+  // Wave 5 Option D · Commit 4 (+ "pick any tier" follow-up) — the forced
+  // climb is gone, but every UPWARD move is still a step-up: the
+  // confirmation-token tap is the consent moment (mirrors the backend's
+  // `RequestTierTransitionUseCase.isStepDown` allowlist). Ascending into
+  // Scoped from any lower tier is always a step-up.
   if (targetTier.value === 'scoped' && currentTier.value !== 'scoped') return true
   return false
 })
@@ -434,7 +401,6 @@ const submitLabel = computed<string>(() => {
   if (pendingConfirmation.value) return 'Confirm transition'
   if (!targetTier.value) return 'Pick a tier'
   if (targetTier.value === currentTier.value) return 'No change'
-  if (stepUpGateFailure.value) return 'Locked'
   return isStepUp.value ? 'Request transition' : 'Apply tier change'
 })
 
@@ -963,11 +929,12 @@ async function onScopedStepDownRecover(): Promise<void> {
 
 /**
  * F2 — Resume CTA when the current surface is paused. Backend's
- * ResumeAgentUseCase requires `tier === Paused` (else rejects) and
- * always lands the resumed surface in Advisory per ADR-0
- * §"Allowed transitions" — the user must re-traverse Confirm-per-action
- * + PolicyBound to regain autonomy. We mirror that landing tier in the
- * local state so the picker comes alive immediately.
+ * ResumeAgentUseCase requires `tier === Paused` (else rejects) and always
+ * lands the resumed surface in Advisory per ADR-0 §"Allowed transitions".
+ * Since the Option D · C4 "pick any tier" follow-up, re-arming from there
+ * is the user's choice (any tier is one confirm tap away — no forced
+ * re-climb); we mirror the Advisory landing tier in local state so the
+ * picker comes alive immediately.
  */
 async function onResume(): Promise<void> {
   if (resuming.value) return
@@ -1045,11 +1012,11 @@ function humaniseError(e: unknown, fallback: string): string {
           </h1>
           <p class="font-sans text-[13px] leading-relaxed text-midnight/80 dark:text-white/80 mt-2">
             Tiers gate what the agent (HavenBot, MCP broker, OpenClaw skill,
-            Checkout deeplinks) can execute on your behalf. Step-ups need
-            a second tap to confirm; step-downs apply immediately. A
-            breach pauses the surface — resuming always lands back in
-            <span class="font-mono">Advisory</span>, so the user re-traverses
-            Confirm to regain autonomy.
+            Checkout deeplinks) can execute on your behalf. Pick any tier
+            directly — step-ups need a second tap to confirm; step-downs
+            apply immediately. A breach pauses the surface and resuming
+            always lands back in <span class="font-mono">Advisory</span>,
+            from where you re-arm with a fresh confirmation.
           </p>
         </div>
       </div>
@@ -1182,9 +1149,8 @@ function humaniseError(e: unknown, fallback: string): string {
             <p class="text-[12px] text-compute dark:text-body-dark leading-relaxed mt-0.5">
               <span class="font-mono">{{ formatSurface(selectedSurface) }}</span>
               is paused. Resuming lands you back in
-              <span class="font-mono">Advisory</span> — you'll need to
-              re-traverse Confirm-per-action before granting Policy-bound
-              autonomy again.
+              <span class="font-mono">Advisory</span>; from there you can
+              re-arm any tier directly with a fresh confirmation.
             </p>
           </div>
         </div>
@@ -1475,17 +1441,6 @@ function humaniseError(e: unknown, fallback: string): string {
           {{ scopedFormFailure }}
         </p>
       </section>
-
-      <!-- Gate-failure hint -->
-      <p
-        v-if="stepUpGateFailure"
-        data-testid="policy-gate-hint"
-        class="px-4 py-3 rounded-xl border border-gold/40 bg-gold/8
-               text-[13px] text-compute dark:text-body-dark"
-      >
-        <Lock :size="13" class="inline -mt-0.5 mr-1 text-gold" />
-        {{ stepUpGateFailure }}
-      </p>
 
       <!-- Transition error -->
       <p
