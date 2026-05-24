@@ -41,6 +41,18 @@ const isLandingPage = computed(() => route.path === '/' || route.meta.layout ===
 const isLoginPage = computed(() => route.meta.layout === 'login')
 const showChrome = computed(() => !isLandingPage.value && !isLoginPage.value)
 
+// Wave 5 Option D · C4 re-smoke OPEN-B — routes that pin an `xl:fixed
+// xl:right-0 xl:w-80 xl:z-30` wallet/actions aside and reserve `xl:mr-80`
+// on their content column (CashPage / TradePage / AgentPage). On those
+// pages the global ScopedSessionBanner must mirror the SAME `xl:mr-80`
+// reservation, else its full content-width strip extends UNDER the fixed
+// aside (covering "Your Wallet" / the QR). Exact-path match on purpose:
+// `/agent/policy/transition` + `/agent/onboarding` are separate components
+// with NO right aside, so a `startsWith('/agent')` would over-reserve there.
+// Keep in lockstep with the `xl:fixed` asides — grep `xl:fixed xl:right-0`.
+const RIGHT_RAIL_PATHS = new Set<string>(['/cash', '/trade', '/agent'])
+const hasRightRail = computed(() => RIGHT_RAIL_PATHS.has(route.path))
+
 // Phase 9.A · role guardrail. The role is the wallet's stored role
 // (server-side source of truth, hydrated by `useAuth.initialize` from
 // the JWT) — NOT a function of the current URL. The legacy
@@ -83,21 +95,32 @@ onMounted(() => {
     <TopNav v-if="showChrome" class="md:hidden" />
     <main :class="showChrome ? 'md:pl-64' : ''">
       <!-- Wave 5 Option D · Commit 4 — dashboard banner for an active
-           Scoped (agent-autonomy) session. The wrapper carries ONLY
-           horizontal padding (aligns with page content) + `relative z-40`.
-           No vertical padding: the banner self-hides (the common case —
-           no active session), and a top margin would leave a white gap
-           above the strip, so the visible banner sits flush at the top of
-           the content area (a clean top strip) and owns its own bottom
-           margin. When hidden the wrapper collapses to zero height → no
-           layout shift. `z-40` lifts the strip above per-page fixed asides
-           (e.g. `/cash`'s `xl:fixed … z-30` wallet aside) so its CTA is
-           always clickable. -->
+           Scoped (agent-autonomy) session. The OUTER wrapper matches the
+           router-view content wrapper EXACTLY (`max-w-7xl mx-auto px-…`) so
+           the banner's left edge always aligns with the page content below
+           it. No vertical padding: the banner self-hides (the common case —
+           no active session) and a top margin would leave a white gap, so
+           the visible strip sits flush at the top of the content area and
+           owns its own bottom margin; when hidden the wrapper collapses to
+           zero height → no layout shift.
+
+           C4 re-smoke OPEN-B fix — the INNER wrapper carries `xl:mr-80` on
+           the right-rail routes (CashPage / TradePage / AgentPage). Those
+           pages reserve the same `xl:mr-80` on their content column and pin
+           an `xl:fixed xl:right-0 xl:w-80 xl:z-30` aside; without the matching
+           reservation the full-width banner ran UNDER that aside (covering
+           "Your Wallet" / the QR), and the previous `z-40` only made it paint
+           ON TOP. Mirroring the content reservation keeps the banner inside
+           the content column so it never overlaps the aside — the right lever
+           is layout, not z-index. `relative z-40` is retained only to keep
+           the strip above the ambient mesh-gradient backdrop. -->
       <div
         v-if="showChrome"
         class="relative z-40 max-w-7xl mx-auto w-full px-6 sm:px-10 lg:px-12"
       >
-        <ScopedSessionBanner />
+        <div :class="hasRightRail ? 'xl:mr-80' : ''">
+          <ScopedSessionBanner />
+        </div>
       </div>
       <router-view v-slot="{ Component, route: viewRoute }">
         <transition name="page" mode="out-in">

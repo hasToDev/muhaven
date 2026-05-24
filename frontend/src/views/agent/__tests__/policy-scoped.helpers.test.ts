@@ -12,6 +12,7 @@ import {
   formatPendingMhUsdc,
   formatTier,
   formatTtlLabel,
+  scopedParamsFailure,
   SCOPED_TTL_CHOICES,
 } from '../policy-scoped.helpers'
 
@@ -38,6 +39,47 @@ describe('policy-scoped.helpers — TTL bounds', () => {
     // Option D · Commit 1 entry.
     expect(SCOPED_MAX_TTL_SEC).not.toBe(86_400)
     expect(SCOPED_MAX_TTL_SEC).toBeLessThanOrEqual(28_800)
+  })
+})
+
+describe('policy-scoped.helpers — scopedParamsFailure', () => {
+  // C4 re-smoke OPEN-A — the shared validity gate for BOTH the tier-
+  // transition Scoped form and the direct re-mint panel. Mirrors the
+  // backend `MintScopedSessionDtoSchema` structural minimums so the same
+  // rules can't drift between the two consent surfaces.
+  it('passes a valid cap + default TTL', () => {
+    expect(scopedParamsFailure(100_000_000n, SCOPED_DEFAULT_TTL_SEC)).toBeNull()
+  })
+
+  it('passes the exact $1 floor + min/max TTL bounds (inclusive)', () => {
+    expect(scopedParamsFailure(1_000_000n, SCOPED_MIN_TTL_SEC)).toBeNull()
+    expect(scopedParamsFailure(1_000_000n, SCOPED_MAX_TTL_SEC)).toBeNull()
+  })
+
+  it('rejects a null (unparseable) cap with a "ceiling" hint', () => {
+    expect(scopedParamsFailure(null, SCOPED_DEFAULT_TTL_SEC)).toMatch(/mhUSDC ceiling/)
+  })
+
+  it('rejects a sub-$1 cap (would round to 0 shares at $1 NAV)', () => {
+    // 999_999n base-6 = $0.999999 < $1 → defeats the per-op cap.
+    expect(scopedParamsFailure(999_999n, SCOPED_DEFAULT_TTL_SEC)).toMatch(/at least \$1/)
+    expect(scopedParamsFailure(0n, SCOPED_DEFAULT_TTL_SEC)).toMatch(/at least \$1/)
+  })
+
+  it('rejects a TTL below the floor or above the 8h ceiling', () => {
+    expect(scopedParamsFailure(100_000_000n, SCOPED_MIN_TTL_SEC - 1)).toMatch(/TTL must be/)
+    expect(scopedParamsFailure(100_000_000n, SCOPED_MAX_TTL_SEC + 1)).toMatch(/TTL must be/)
+  })
+
+  it('rejects a non-finite TTL', () => {
+    expect(scopedParamsFailure(100_000_000n, Number.NaN)).toMatch(/TTL must be/)
+    expect(scopedParamsFailure(100_000_000n, Number.POSITIVE_INFINITY)).toMatch(/TTL must be/)
+  })
+
+  it('checks the cap BEFORE the TTL (cap failure short-circuits)', () => {
+    // Both invalid → the cap message wins so the user fixes the more
+    // fundamental field first.
+    expect(scopedParamsFailure(null, Number.NaN)).toMatch(/mhUSDC ceiling/)
   })
 })
 
@@ -390,6 +432,23 @@ describe('policy-scoped.helpers — buildScopedMintBody', () => {
     const body = buildScopedMintBody(baseInput)
     expect(body.snapshot.consentActionHash).toBe(baseInput.consentActionHash)
     expect(body.snapshot.consentActionHash).toMatch(/^0x[0-9a-fA-F]{64}$/)
+  })
+
+  it('OMITS consentActionHash entirely when undefined (OPEN-A direct re-mint path)', () => {
+    // C4 re-smoke OPEN-A — the direct re-mint (at scoped tier, no live
+    // session) has no fresh transition token to anchor to. The backend
+    // `MintScopedSessionDtoSchema.consentActionHash` is `.optional()`, so
+    // the helper must DROP the key (not emit `consentActionHash: undefined`)
+    // — mirroring the `consentTextSha256` omission convention so the wire
+    // shape stays minimal + the audit chain falls back to adjacency.
+    const { consentActionHash: _drop, ...noConsent } = baseInput
+    const body = buildScopedMintBody(noConsent)
+    expect(
+      Object.prototype.hasOwnProperty.call(body.snapshot, 'consentActionHash'),
+    ).toBe(false)
+    // The rest of the snapshot is unaffected.
+    expect(body.snapshot.mode).toBe('scoped')
+    expect(body.snapshot.permissionId).toBe('0xdeadbeef')
   })
 
   it('preserves validUntilSec + mintedAtSec as-is (no rounding)', () => {

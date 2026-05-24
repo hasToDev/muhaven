@@ -15,11 +15,13 @@
  *      a dismiss (×) that hides it for THIS session. Hidden on the policy
  *      page (redundant there).
  *
- * Placement note (C4 smoke fix): App.vue wraps this in a `relative z-40`
- * container so the strip paints ABOVE per-page fixed asides (e.g. the
- * `/cash` wallet aside is `xl:fixed … z-30`, which previously covered the
- * right-aligned "Manage session" button). The dismiss × is the escape
- * valve when the strip is in the way.
+ * Placement note (C4 re-smoke OPEN-B): App.vue wraps this in a content-
+ * column container that mirrors the right-rail pages' `xl:mr-80`
+ * reservation on `/cash` · `/trade` · `/agent`, so the strip stays INSIDE
+ * the content column and never overlaps their `xl:fixed xl:right-0 xl:w-80`
+ * wallet/actions aside (the earlier `z-40` only made it paint on top of
+ * "Your Wallet" / the QR). The dismiss × is the escape valve when the strip
+ * is in the way.
  */
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -45,7 +47,6 @@ const POLICY_PATH = '/agent/policy/transition'
  *  restarts in one shot — is planned in `development/DEV_WAVE_5/
  *  BROKER_CLI_PLAN.md`.) */
 const BROKER_STOP_CMD = 'muhaven-broker stop'
-const BROKER_SESSION_KEY_ENV = 'MUHAVEN_BROKER_SESSION_KEY'
 
 /** Module-level so a dismiss survives the banner's mount/unmount as the
  *  user moves between chrome and non-chrome routes. Keyed by sessionId →
@@ -156,13 +157,10 @@ onBeforeUnmount(() => {
         >
           <div class="flex items-start gap-2">
             <CircleCheck :size="14" class="mt-0.5 flex-shrink-0 text-positive" aria-hidden="true" />
-            <p class="font-sans text-[12px] text-midnight dark:text-white leading-relaxed">
+            <p class="font-sans text-[12px] text-midnight dark:text-white leading-snug">
               <span class="font-semibold">Session revoked.</span>
-              The backend no longer hands your policy to the broker — but the broker
-              daemon still holds the revoked key and can sign until you stop it. Run
-              <code class="font-mono text-[11px]">{{ BROKER_STOP_CMD }}</code>.
-              When you re-mint, restart it with the new key (pasted into
-              <code class="font-mono text-[11px]">{{ BROKER_SESSION_KEY_ENV }}</code>).
+              Your broker still holds the old key until you run
+              <code class="font-mono text-[11px]">{{ BROKER_STOP_CMD }}</code> — re-mint to re-arm.
             </p>
           </div>
           <div class="flex items-center justify-end gap-2">

@@ -77,6 +77,21 @@ import type { AppendAuditEventUseCase } from './append-audit-event.use-case.js';
  *     `consentActionHash` on the mint POST.
  *   - `consentTextSha256` is intentionally omitted today; Slice 4
  *     wildcard gate item #5 will graduate.
+ *   - **OPEN-A direct re-mint (Option D · C4 re-smoke)**: when the user is
+ *     ALREADY at `tier === 'scoped'` and re-mints a fresh session WITHOUT a
+ *     new tier transition (the prior one expired / was revoked), there is by
+ *     design NO adjacent `TierChanged` / `ConfirmTokenConsumed` row AND NO
+ *     `consentActionHash`. The consent anchor for that mint is the WebAuthn
+ *     passkey ceremony (off-chain, on the dashboard) + the on-chain
+ *     enable-mode validator install (the paired C3 `SelectorSet` indexer
+ *     row joins by `sessionId`), NOT a ConfirmToken. So such a
+ *     `ScopedSessionMinted` row is intentionally a near-orphan in the WORM
+ *     chain — distinguishable from a degraded transition mint by the
+ *     simultaneous ABSENCE of consentActionHash AND any adjacent
+ *     tier-transition rows. SecEng F-2 (multi-agent review 2026-05-24): an
+ *     explicit `mintTrigger: 'direct-remint'` audit-metadata discriminator
+ *     is the cleaner long-term marker — deferred (needs a DTO field) and
+ *     tracked alongside the Slice 4 `consentTextSha256` graduation.
  *
  * The emission lives in the USE-CASE layer (not the REST handler) so
  * direct-domain callers (a future CLI, a cron job) also emit — a route-

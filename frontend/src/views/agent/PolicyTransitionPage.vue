@@ -67,8 +67,6 @@ import SessionKeyRevealModal from '@/components/agent/SessionKeyRevealModal.vue'
 import type { ScopedSessionInstallResult } from '@/providers/wallet-provider.interface'
 import { v35Addresses } from '@/contracts/addresses'
 import {
-  SCOPED_MIN_TTL_SEC,
-  SCOPED_MAX_TTL_SEC,
   SCOPED_DEFAULT_TTL_SEC,
   SCOPED_TTL_CHOICES,
   parseMhUsdcBase6,
@@ -78,6 +76,7 @@ import {
   formatPendingMhUsdc,
   formatTier,
   formatTtlLabel,
+  scopedParamsFailure,
 } from './policy-scoped.helpers'
 
 const router = useRouter()
@@ -328,10 +327,18 @@ async function onConfirmRevoke(): Promise<void> {
     // role="status" announces the outcome independently). nextTick so the
     // restore + re-render settle first.
     await nextTick()
-    const picker = document.querySelector<HTMLElement>('[data-testid="policy-tier-picker"]')
-    if (picker) {
-      picker.setAttribute('tabindex', '-1')
-      picker.focus({ preventScroll: true })
+    // A11y (FE-A11y #3): when the best-effort step-down FAILED the tier is
+    // still scoped → the re-mint panel is now the rendered primary action,
+    // so land focus there. Otherwise (step-down succeeded → Advisory) fall
+    // back to the re-opened tier picker. Either way focus never falls to
+    // <body> (the global purge reminder's role="status" announces the
+    // outcome independently).
+    const focusTarget =
+      document.querySelector<HTMLElement>('[data-testid="policy-remint-panel"]')
+      ?? document.querySelector<HTMLElement>('[data-testid="policy-tier-picker"]')
+    if (focusTarget) {
+      focusTarget.setAttribute('tabindex', '-1')
+      focusTarget.focus({ preventScroll: true })
     }
   } catch (e) {
     // 409 = already terminal (race / double-tap across tabs). Humanise
@@ -347,6 +354,70 @@ const currentState = computed<AgentUserStateDto | null>(
 )
 
 const currentTier = computed<Tier | null>(() => currentState.value?.tier ?? null)
+
+// ── Wave 5 Option D · C4 re-smoke OPEN-A — direct Scoped re-mint ─────
+// The mint ceremony was ONLY reachable as a post-commit step of a tier
+// transition INTO scoped. An operator who lands already AT `scoped` with
+// no live session (the prior one expired or was revoked) had no way to
+// mint a fresh one — picking Scoped is `targetTier === currentTier` →
+// "No change". The state below drives a dedicated "Mint a new session"
+// panel for that stranded case.
+
+// In-flight flag SPECIFIC to the direct re-mint (distinct from the shared
+// `submitting`, which also covers transition commits). `needsReMint` is
+// gated on `!submitting`, so without this the re-mint panel would unmount
+// the instant its own button is clicked — hiding the "Minting…" spinner and
+// flashing the tier picker mid-passkey-ceremony (multi-agent review:
+// Frontend Dev MED-1 + Code Reviewer MED-1). This keeps the panel mounted
+// (and the picker collapsed) for the whole direct-mint round-trip.
+const submittingDirectReMint = ref(false)
+
+// True when the user is stranded at the scoped tier with no live session.
+// Gates, in order of why each matters:
+//   - `!loadingState`: don't flash the panel during the initial cold load.
+//   - `!submitting`: a TRANSITION→scoped flow is briefly "tier=scoped,
+//     session not yet refreshed" while `submitting`; the direct re-mint
+//     keeps its panel alive via `submittingDirectReMint` instead.
+//   - `!revoking` + `scopedReveal === null`: suppress the one-tick flash on
+//     revoke, and don't re-offer the panel under an open reveal modal.
+//   - `currentTier === 'scoped'`: the MCP-broker autonomy tier is live
+//     server-side (Scoped is hard-locked to surface 'mcp'), so the backend
+//     mint tier-gate already passes.
+//   - `!hasActiveScopedSession`: no revocable session (expired/revoked).
+//     When one IS live the revoke zone owns the UI instead.
+//   - `scopedRecoveryNeeded === null`: a failed transition-mint shows the
+//     transition recovery strip (its own retry); don't double up.
+const needsReMint = computed<boolean>(
+  () =>
+    !loadingState.value
+    // `!submitting` suppresses the panel during a TRANSITION-into-scoped
+    // mint (tier flips scoped before the session refreshes); the direct
+    // re-mint keeps the panel alive via `submittingDirectReMint` below.
+    && !submitting.value
+    // `!revoking` suppresses the one-tick flash between a revoke resolving
+    // (session cleared) and the best-effort step-down landing Advisory
+    // (Code Reviewer MED-1).
+    && !revoking.value
+    // A successful mint opens the reveal modal before the mirror refresh
+    // lands; don't re-offer the panel underneath it on a slow refresh
+    // (Code Reviewer LOW-1).
+    && scopedReveal.value === null
+    && currentTier.value === 'scoped'
+    && !hasActiveScopedSession.value
+    && scopedRecoveryNeeded.value === null,
+)
+
+// When a Scoped session is live (revoke zone) OR re-mint is needed/in-flight,
+// the tier picker collapses behind a "Change tier" disclosure so the primary
+// action (revoke / re-mint) stays the focus. Stepping DOWN to a lower tier
+// is still reachable by expanding the picker. `submittingDirectReMint` keeps
+// it collapsed through the direct-mint ceremony.
+const pickerForceCollapsed = computed<boolean>(
+  () =>
+    hasActiveScopedSession.value
+    || needsReMint.value
+    || submittingDirectReMint.value,
+)
 
 const canSubmit = computed<boolean>(() => {
   if (submitting.value) return false
@@ -378,26 +449,23 @@ const scopedMaxPerOpUsd6 = computed<bigint | null>(() =>
   parseMhUsdcBase6(maxPerOpUsd6Input.value),
 )
 
-const scopedFormFailure = computed<string | null>(() => {
-  if (targetTier.value !== 'scoped') return null
-  if (scopedMaxPerOpUsd6.value === null) {
-    return 'Enter a mhUSDC ceiling (e.g. 100 or 100.5).'
-  }
-  if (scopedMaxPerOpUsd6.value < 1_000_000n) {
-    // < $1 mhUSDC base-6 — would round to 0 shares at $1 NAV, defeating
-    // the cap. Block in UI rather than landing a structurally-inoperative
-    // snapshot on the mirror.
-    return 'mhUSDC ceiling must be at least $1.'
-  }
-  if (
-    !Number.isFinite(ttlSecInput.value)
-    || ttlSecInput.value < SCOPED_MIN_TTL_SEC
-    || ttlSecInput.value > SCOPED_MAX_TTL_SEC
-  ) {
-    return `TTL must be between ${SCOPED_MIN_TTL_SEC}s (5 min) and ${SCOPED_MAX_TTL_SEC}s (8h).`
-  }
-  return null
-})
+// Tier-transition Scoped form validity (cap ≥ $1 + valid TTL). Delegates
+// to the pure `scopedParamsFailure` helper so the same rules are unit-
+// tested + shared with the OPEN-A re-mint panel below.
+const scopedFormFailure = computed<string | null>(() =>
+  targetTier.value !== 'scoped'
+    ? null
+    : scopedParamsFailure(scopedMaxPerOpUsd6.value, ttlSecInput.value),
+)
+
+// Wave 5 Option D · C4 re-smoke OPEN-A — the direct re-mint panel has no
+// `targetTier === 'scoped'` selection (the user is already AT scoped), so
+// it needs its own validity gate over the SAME shared cap/TTL refs.
+const reMintFormFailure = computed<string | null>(() =>
+  needsReMint.value
+    ? scopedParamsFailure(scopedMaxPerOpUsd6.value, ttlSecInput.value)
+    : null,
+)
 
 const isStepUp = computed<boolean>(() => {
   if (!targetTier.value || !currentTier.value) return false
@@ -473,9 +541,10 @@ onMounted(async () => {
   // revoke zone + the tier-picker disclosure render correctly. Best-effort
   // (the composable swallows errors into `session=null`).
   await refreshScopedSession()
-  // When a session is live, collapse the tier picker (the revoke zone is
-  // the focus); otherwise leave it open.
-  showTierPicker.value = !hasActiveScopedSession.value
+  // When a session is live (revoke zone) OR the user is stranded at scoped
+  // with no session (OPEN-A re-mint panel), collapse the tier picker so the
+  // primary action stays the focus; otherwise leave it open.
+  showTierPicker.value = !pickerForceCollapsed.value
   // Deep-link `?focus=revoke` from the dashboard banner — auto-focus the
   // "Revoke now" trigger (not scroll-only) once the zone has rendered.
   if (route.query.focus === 'revoke') {
@@ -718,7 +787,22 @@ function onTransitionApplied(
  * Mirroring the orphan-tier risk explicitly here closes the gap that an
  * R1 fresh CR would flag.
  */
-async function mintScopedSession(consentActionHash: `0x${string}`): Promise<void> {
+async function mintScopedSession(
+  consentActionHash: `0x${string}` | null,
+  opts?: { isDirectReMint?: boolean },
+): Promise<void> {
+  // Seed the transition-flow recovery strip after a post-commit failure
+  // (the tier already landed at Scoped server-side, so the user must not be
+  // stranded without a retry / step-down CTA). SKIPPED on the OPEN-A direct
+  // re-mint path: there the tier was ALREADY scoped (no transition just
+  // happened), `needsReMint` stays true, and the re-mint panel itself is the
+  // retry surface — the transition recovery strip's "step down to
+  // Policy-bound" copy would be misleading there.
+  const seedRecovery = (): void => {
+    if (opts?.isDirectReMint) return
+    scopedRecoveryConsentHash.value = consentActionHash
+    scopedRecoveryNeeded.value = 'retry-mint'
+  }
   // R1 UX H-4 — pull from `pendingScopedParams` (captured at Phase 1
   // issue) rather than the live form refs, so a user who edits the
   // input AFTER issuing the ConfirmToken still commits the value they
@@ -734,8 +818,7 @@ async function mintScopedSession(consentActionHash: `0x${string}`): Promise<void
     // state so the user has a retry / step-down CTA. Without these,
     // an internal-state failure would strand the user with an orphan
     // tier and no in-page recovery.
-    scopedRecoveryConsentHash.value = consentActionHash
-    scopedRecoveryNeeded.value = 'retry-mint'
+    seedRecovery()
     return
   }
   // NAV-1:1 conversion (mhUSDC base-6 → whole shares). Correct for TBILL1
@@ -756,8 +839,7 @@ async function mintScopedSession(consentActionHash: `0x${string}`): Promise<void
       'Internal: max-shares-per-op rounded to zero. The mhUSDC ceiling must be at least $1 mhUSDC.'
     // R2 Reality Check MED-2 — same orphan-tier risk as above; seed
     // recovery state so the user can retry or step down.
-    scopedRecoveryConsentHash.value = consentActionHash
-    scopedRecoveryNeeded.value = 'retry-mint'
+    seedRecovery()
     return
   }
   // R1 Frontend M-1 — defensive against a build where
@@ -771,8 +853,7 @@ async function mintScopedSession(consentActionHash: `0x${string}`): Promise<void
   ) {
     transitionError.value =
       'Subscription contract address is not configured for this environment. Cannot mint a Scoped session.'
-    scopedRecoveryConsentHash.value = consentActionHash
-    scopedRecoveryNeeded.value = 'retry-mint'
+    seedRecovery()
     return
   }
 
@@ -790,15 +871,13 @@ async function mintScopedSession(consentActionHash: `0x${string}`): Promise<void
     )
     // R1 UX H-3 — surface recovery CTAs. Preserve the consent hash so a
     // retry re-uses the originally-confirmed token's audit-chain anchor.
-    scopedRecoveryConsentHash.value = consentActionHash
-    scopedRecoveryNeeded.value = 'retry-mint'
+    seedRecovery()
     return
   }
   if (!installed) {
     transitionError.value =
       'Tier landed at Scoped, but the wallet provider returned no session-key. Reconnect your wallet and retry the mint.'
-    scopedRecoveryConsentHash.value = consentActionHash
-    scopedRecoveryNeeded.value = 'retry-mint'
+    seedRecovery()
     return
   }
 
@@ -825,7 +904,9 @@ async function mintScopedSession(consentActionHash: `0x${string}`): Promise<void
     maxSharesPerOp,
     mintedAtSec: installed.mintedAtSec,
     validUntilSec: installed.validUntilSec,
-    consentActionHash,
+    // null (OPEN-A direct re-mint — no transition token) → undefined so the
+    // helper omits the field; the backend `consentActionHash` is optional.
+    consentActionHash: consentActionHash ?? undefined,
     surface: 'mcp',
     // Pickup B — thread the PermissionValidator's identifier into the
     // snapshot so the MCP server can compose the Kernel v3.1 24-byte
@@ -851,8 +932,7 @@ async function mintScopedSession(consentActionHash: `0x${string}`): Promise<void
       e,
       'Tier landed at Scoped, but the policy-snapshot POST failed',
     )
-    scopedRecoveryConsentHash.value = consentActionHash
-    scopedRecoveryNeeded.value = 'retry-mint'
+    seedRecovery()
     return
   }
 
@@ -930,6 +1010,39 @@ async function onScopedStepDownRecover(): Promise<void> {
     transitionError.value = humaniseError(e, 'Step-down recovery rejected')
   } finally {
     submitting.value = false
+  }
+}
+
+/**
+ * Wave 5 Option D · C4 re-smoke OPEN-A — mint a fresh Scoped session when
+ * the user is ALREADY at the `scoped` tier but has no live session (the
+ * prior one expired or was revoked). No tier transition / confirmation
+ * token is involved: the tier is already committed server-side, and the
+ * WebAuthn passkey ceremony inside `installScopedSessionKey` is the
+ * user-present consent (the backend `MintScopedSessionDtoSchema`
+ * `consentActionHash` is `.optional()` — so we pass `null`).
+ *
+ * Reuses the SAME `mintScopedSession` ceremony (mint local signer → POST
+ * snapshot → reveal broker key → refresh) as the transition path, with
+ * `isDirectReMint: true` so a failure leaves the re-mint panel in place as
+ * the retry surface rather than seeding the transition recovery strip.
+ */
+async function onDirectReMint(): Promise<void> {
+  // Defensive: only valid in the stranded re-mint state. The button's
+  // `:disabled` already gates on these, but a stale click (e.g. the session
+  // refreshed into existence between render and click) must no-op.
+  if (!needsReMint.value || submitting.value) return
+  if (reMintFormFailure.value) return
+  submitting.value = true
+  // Keep the re-mint panel mounted (+ picker collapsed) through the
+  // ceremony so its "Minting…" spinner shows and the picker doesn't flash.
+  submittingDirectReMint.value = true
+  transitionError.value = null
+  try {
+    await mintScopedSession(null, { isDirectReMint: true })
+  } finally {
+    submitting.value = false
+    submittingDirectReMint.value = false
   }
 }
 
@@ -1272,11 +1385,133 @@ function humaniseError(e: unknown, fallback: string): string {
         </button>
       </section>
 
-      <!-- Tier-picker disclosure — when an active session exists the
-           picker collapses behind a "Change tier" affordance so the
-           revoke zone stays the visual focus (UX HIGH-2). -->
+      <!-- Wave 5 Option D · C4 re-smoke OPEN-A — direct re-mint panel.
+           Shown when the user is AT the scoped tier but has NO live session
+           (expired by TTL / revoked), so the tier picker would only offer
+           "No change". Mints a fresh broker session WITHOUT a tier
+           transition — the passkey ceremony inside `installScopedSessionKey`
+           is the consent (backend `consentActionHash` is optional). Binds
+           the SAME cap/TTL refs as the transition Scoped form; styled to
+           read as the primary action (the picker collapses behind the
+           "Change tier" disclosure below for the step-down case). -->
+      <section
+        v-if="needsReMint || submittingDirectReMint"
+        data-testid="policy-remint-panel"
+        class="rounded-2xl border border-gold/40 bg-gold/8
+               dark:border-signal/30 dark:bg-signal/8 p-5 md:p-6 space-y-4"
+      >
+        <div class="flex items-start gap-3">
+          <div
+            class="w-9 h-9 rounded-full bg-gold/15 dark:bg-signal/12
+                   flex items-center justify-center flex-shrink-0"
+          >
+            <KeyRound :size="16" :stroke-width="1.8" class="text-compute dark:text-signal" aria-hidden="true" />
+          </div>
+          <div class="min-w-0 flex-1">
+            <p class="font-sans text-[10px] uppercase tracking-[0.22em] text-cool font-semibold mb-0.5">
+              Scoped autonomy · no active session
+            </p>
+            <h2 class="font-accent text-[1.15rem] leading-tight text-midnight dark:text-white">
+              Mint a fresh broker session
+            </h2>
+            <p class="font-sans text-[12px] text-compute dark:text-body-dark leading-relaxed mt-1">
+              You're set to <span class="font-mono">Scoped autonomy</span> on the
+              <span class="font-mono">MCP / Broker</span> surface, but there's no live
+              session — the previous one expired or was revoked. Set the per-buy ceiling
+              and length, then confirm with your passkey to mint a new broker key.
+            </p>
+          </div>
+        </div>
+
+        <label class="flex flex-col gap-1.5">
+          <span class="font-sans text-[12px] font-semibold text-midnight dark:text-white">
+            Max mhUSDC per autonomous buy
+          </span>
+          <input
+            v-model="maxPerOpUsd6Input"
+            type="text"
+            inputmode="decimal"
+            placeholder="100"
+            data-testid="policy-remint-max-usd"
+            :disabled="submitting"
+            :aria-invalid="reMintFormFailure !== null"
+            :aria-describedby="reMintFormFailure ? 'policy-remint-form-error' : undefined"
+            class="rounded-lg border border-haze dark:border-white/10
+                   bg-white/60 dark:bg-[#0d0e10]/60
+                   px-3 py-2 font-mono text-sm text-midnight dark:text-white
+                   focus:outline-none focus:ring-2 focus:ring-gold/40
+                   disabled:opacity-60 disabled:cursor-not-allowed"
+          />
+          <span class="font-sans text-[11px] text-cool leading-relaxed">
+            The agent signs autonomous buys up to this mhUSDC value per call.
+          </span>
+        </label>
+
+        <div class="flex flex-col gap-1.5">
+          <span
+            id="policy-remint-ttl-label"
+            class="font-sans text-[12px] font-semibold text-midnight dark:text-white"
+          >
+            Session length
+          </span>
+          <div
+            role="group"
+            aria-labelledby="policy-remint-ttl-label"
+            data-testid="policy-remint-ttl"
+            class="grid grid-cols-3 sm:grid-cols-5 gap-1.5"
+          >
+            <button
+              v-for="opt in SCOPED_TTL_CHOICES"
+              :key="opt.sec"
+              type="button"
+              :aria-pressed="ttlSecInput === opt.sec"
+              :disabled="submitting"
+              :data-testid="`policy-remint-ttl-${opt.sec}`"
+              :class="[
+                'rounded-lg border px-2 py-2 text-[12px] font-mono transition-colors duration-150',
+                ttlSecInput === opt.sec
+                  ? 'border-gold/50 dark:border-signal/50 bg-gold/10 dark:bg-signal/8 ring-1 ring-gold/30 dark:ring-signal/30 text-compute dark:text-signal'
+                  : 'border-haze dark:border-white/10 text-midnight dark:text-white hover:bg-mist/60 dark:hover:bg-white/5',
+                submitting ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer',
+              ]"
+              @click="ttlSecInput = opt.sec"
+            >
+              {{ opt.label }}
+            </button>
+          </div>
+        </div>
+
+        <p
+          v-if="reMintFormFailure"
+          id="policy-remint-form-error"
+          data-testid="policy-remint-form-error"
+          role="alert"
+          class="px-3 py-2 rounded-lg border border-negative/40 bg-negative/5
+                 text-[12px] text-negative leading-relaxed"
+        >
+          <AlertTriangle :size="11" class="inline -mt-0.5 mr-1" aria-hidden="true" />
+          {{ reMintFormFailure }}
+        </p>
+
+        <MButton
+          variant="primary"
+          :disabled="submitting || reMintFormFailure !== null"
+          data-testid="policy-remint-submit"
+          @click="onDirectReMint"
+        >
+          <Loader2 v-if="submitting" :size="14" class="animate-spin" />
+          <KeyRound v-else :size="14" />
+          {{ submitting ? 'Minting…' : 'Mint a new session' }}
+        </MButton>
+      </section>
+
+      <!-- Tier-picker disclosure — when a Scoped session is live (revoke
+           zone) OR re-mint is needed (panel above), the picker collapses
+           behind a "Change tier" affordance so the primary action stays
+           the visual focus (UX HIGH-2). Expand it to step DOWN to a lower
+           tier. -->
       <button
-        v-if="hasActiveScopedSession && !showTierPicker"
+        v-if="pickerForceCollapsed && !showTierPicker"
         type="button"
         data-testid="policy-change-tier-toggle"
         @click="showTierPicker = true"
@@ -1291,7 +1526,7 @@ function humaniseError(e: unknown, fallback: string): string {
 
       <!-- Tier picker (collapsible when an active session exists) -->
       <section
-        v-show="!hasActiveScopedSession || showTierPicker"
+        v-show="!pickerForceCollapsed || showTierPicker"
         data-testid="policy-tier-picker"
         class="rounded-2xl border border-haze dark:border-white/5
                bg-white/40 dark:bg-[#1c1b1b]/40 backdrop-blur-md p-5 md:p-6"
@@ -1355,7 +1590,7 @@ function humaniseError(e: unknown, fallback: string): string {
            are static), routed to the inline form-error `<p>` as
            `role="alert"` instead. -->
       <section
-        v-if="targetTier === 'scoped'"
+        v-if="targetTier === 'scoped' && !needsReMint"
         data-testid="policy-scoped-form"
         class="rounded-2xl border border-haze dark:border-white/5
                bg-white/40 dark:bg-[#1c1b1b]/40 backdrop-blur-md p-5 md:p-6 space-y-4"
@@ -1394,6 +1629,8 @@ function humaniseError(e: unknown, fallback: string): string {
             placeholder="100"
             data-testid="policy-scoped-max-usd"
             :disabled="pendingConfirmation !== null || submitting"
+            :aria-invalid="scopedFormFailure !== null"
+            :aria-describedby="scopedFormFailure ? 'policy-scoped-form-error' : undefined"
             class="rounded-lg border border-haze dark:border-white/10
                    bg-mist/40 dark:bg-[#0d0e10]/60
                    px-3 py-2 font-mono text-sm text-midnight dark:text-white
@@ -1446,6 +1683,7 @@ function humaniseError(e: unknown, fallback: string): string {
         </div>
         <p
           v-if="scopedFormFailure"
+          id="policy-scoped-form-error"
           data-testid="policy-scoped-form-error"
           role="alert"
           class="px-3 py-2 rounded-lg border border-gold/40 bg-gold/8
@@ -1600,7 +1838,7 @@ function humaniseError(e: unknown, fallback: string): string {
       <!-- CTAs -->
       <div class="flex flex-wrap items-center gap-3">
         <MButton
-          v-if="!hasActiveScopedSession || showTierPicker"
+          v-if="!pickerForceCollapsed || showTierPicker"
           variant="primary"
           :disabled="!canSubmit"
           data-testid="policy-submit"

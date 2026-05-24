@@ -32,6 +32,39 @@ export const SCOPED_MIN_TTL_SEC = 300        // 5 min
 export const SCOPED_MAX_TTL_SEC = 28_800     // 8h Option D ceiling (was 24h pre-D3)
 export const SCOPED_DEFAULT_TTL_SEC = 14_400 // 4h
 
+/**
+ * Validate the Scoped autonomy parameters (per-buy mhUSDC ceiling + TTL).
+ * Returns a human-readable failure string, or `null` when both are valid.
+ *
+ * Pure + UI-agnostic so BOTH consent surfaces share one source of truth:
+ *  - the tier-transition Scoped form (`PolicyTransitionPage.vue` step-up),
+ *  - the C4 re-smoke OPEN-A direct re-mint panel (at scoped tier, no live
+ *    session — expired / revoked), which mints without a fresh transition.
+ *
+ * `cap` is the parsed base-6 BigInt from {@link parseMhUsdcBase6} (or `null`
+ * when the input didn't parse). The $1 floor mirrors the backend's
+ * structural minimum: a cap < $1 mhUSDC (base-6 `1_000_000n`) rounds to 0
+ * shares at $1 NAV and would defeat the per-op cap. The TTL window matches
+ * the {@link SCOPED_MIN_TTL_SEC}/{@link SCOPED_MAX_TTL_SEC} ceiling the
+ * backend `MintScopedSessionDtoSchema` re-enforces server-side.
+ */
+export function scopedParamsFailure(cap: bigint | null, ttlSec: number): string | null {
+  if (cap === null) {
+    return 'Enter a mhUSDC ceiling (e.g. 100 or 100.5).'
+  }
+  if (cap < 1_000_000n) {
+    return 'mhUSDC ceiling must be at least $1.'
+  }
+  if (
+    !Number.isFinite(ttlSec)
+    || ttlSec < SCOPED_MIN_TTL_SEC
+    || ttlSec > SCOPED_MAX_TTL_SEC
+  ) {
+    return `TTL must be between ${SCOPED_MIN_TTL_SEC}s (5 min) and ${SCOPED_MAX_TTL_SEC}s (8h).`
+  }
+  return null
+}
+
 /** `subscription.purchase(address, InEuint128, uint128 maxSharesHint, address)`
  *  4-byte selector. Derived via `toFunctionSelector` at module load so
  *  the value matches the MCP server's own derivation in
@@ -230,8 +263,20 @@ export interface BuildScopedMintBodyInput {
   maxSharesPerOp: bigint
   mintedAtSec: number
   validUntilSec: number
-  /** 0x-prefixed 32-byte hex from `prefixConsentActionHash`. */
-  consentActionHash: `0x${string}`
+  /**
+   * 0x-prefixed 32-byte hex from `prefixConsentActionHash`.
+   *
+   * OPTIONAL — present on the tier-transition step-up flow (anchors the
+   * forensic chain to the consumed ConfirmToken per Compliance H-1), but
+   * OMITTED on the C4 re-smoke OPEN-A direct re-mint (at scoped tier, no
+   * live session): there's no fresh transition token to anchor to, and the
+   * backend `MintScopedSessionDtoSchema.consentActionHash` is `.optional()`
+   * — the WebAuthn passkey ceremony in `installScopedSessionKey` is the
+   * user-present consent. When absent the field is dropped from the
+   * snapshot entirely (mirrors how `consentTextSha256` is omitted) and the
+   * audit chain reconstructs from `userId + surface + created_at` adjacency.
+   */
+  consentActionHash?: `0x${string}`
   surface: 'havenbot' | 'mcp' | 'openclaw' | 'checkout'
   /**
    * Pickup B — `getPermissionId()` for the installed
@@ -315,8 +360,11 @@ export interface ScopedMintBodyShape {
  *   - `selectorCaps[0]` is the single `subscription.purchase` entry with
  *     `capArgIndex = 2` + `maxAmount` in SHARES.
  *   - `maxPerOpUsd6` serialized as decimal string (uint256 base-6).
- *   - `consentActionHash` is `0x`-prefixed (caller responsibility — the
- *     helper does NOT prefix; verify shape with `prefixConsentActionHash`).
+ *   - `consentActionHash` is `0x`-prefixed when present (caller
+ *     responsibility — the helper does NOT prefix; verify shape with
+ *     `prefixConsentActionHash`). OMITTED from the snapshot entirely when
+ *     the caller passes `undefined` (the OPEN-A direct re-mint path), since
+ *     the backend field is `.optional()`.
  *   - `permissionId` PRESENT (Pickup B). The helper lowercases the
  *     value internally + validates against `^0x[0-9a-f]{8}$` so a
  *     future call site that forgets to pre-normalize doesn't land a
@@ -384,7 +432,11 @@ export function buildScopedMintBody(input: BuildScopedMintBodyInput): ScopedMint
       ],
       validUntilSec: input.validUntilSec,
       mintedAtSec: input.mintedAtSec,
-      consentActionHash: input.consentActionHash,
+      // Omitted from the snapshot when undefined (OPEN-A direct re-mint) —
+      // matching the `consentTextSha256` omission convention.
+      ...(input.consentActionHash
+        ? { consentActionHash: input.consentActionHash }
+        : {}),
       permissionId: permissionIdLower,
       enableData: enableDataLower,
       enableSig: enableSigLower,
