@@ -20,10 +20,14 @@
  */
 import { spawn } from 'node:child_process';
 import { release } from 'node:os';
-import { generatePrivateKey } from 'viem/accounts';
+import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { BrokerClient } from '../clients/broker-client.js';
 import { loadMcpConfig } from '../config.js';
-import { resolveSessionKey, type SessionPromptDeps } from './session-input.js';
+import {
+  resolveSessionKey,
+  validateSessionKeyShape,
+  type SessionPromptDeps,
+} from './session-input.js';
 
 /**
  * Env vars we deliberately strip from the spawned daemon's env, even if the
@@ -133,6 +137,23 @@ export function applyEnvDefaults(input: EnvDefaultsInput): EnvDefaultsResult {
  */
 export function mintSessionKey(): string {
   return generatePrivateKey();
+}
+
+/**
+ * Derive the PUBLIC signer address from a session private key, for display
+ * only — so `setup`/`start`/`update` can show WHICH signer the broker will
+ * come up on (verifiable against the dashboard's Scoped session) instead of
+ * an opaque "using env key" line. Returns `null` if the key can't be parsed
+ * (caller should shape-validate first; this guards against an out-of-range
+ * scalar). NEVER logs or returns the private key itself — the address is a
+ * one-way derivation.
+ */
+export function deriveSignerAddress(privateKeyHex: string): string | null {
+  try {
+    return privateKeyToAccount(privateKeyHex as `0x${string}`).address;
+  } catch {
+    return null;
+  }
 }
 
 export type SetupActionKind =
@@ -934,8 +955,25 @@ export async function runSetup(argv: readonly string[], deps: SetupDeps): Promis
   let sessionKey = effectiveEnv.MUHAVEN_BROKER_SESSION_KEY;
   let mintedKey = false;
   if (sessionKey && sessionKey.length > 0) {
-    // Scripted / power-user path: the env var wins over the prompt.
-    deps.print('Session key: using MUHAVEN_BROKER_SESSION_KEY from env.');
+    // Scripted / power-user path: the env var wins over the prompt. 0.4.3:
+    // shape-validate it HERE (clear error now, instead of a confusing
+    // daemon crash later) + show the derived signer so a STALE/unintended
+    // env key is obvious rather than silently used (operator-found 0.4.2).
+    const shapeErr = validateSessionKeyShape(sessionKey);
+    if (shapeErr) {
+      deps.printErr(`error: MUHAVEN_BROKER_SESSION_KEY is set but invalid — ${shapeErr}`);
+      deps.printErr(
+        '  Unset MUHAVEN_BROKER_SESSION_KEY to paste a dashboard key (or fix the value), then re-run setup.',
+      );
+      return 2;
+    }
+    const signer = deriveSignerAddress(sessionKey);
+    deps.print(
+      `Session key: using MUHAVEN_BROKER_SESSION_KEY from env${signer ? ` (signer ${signer})` : ''}.`,
+    );
+    deps.print(
+      '  To paste a dashboard-minted key instead, unset MUHAVEN_BROKER_SESSION_KEY first.',
+    );
   } else {
     // No env key — OPEN-D: ask interactively whether the operator has a
     // dashboard-minted key (paste it) or wants a fresh self-mint. Non-TTY
@@ -957,11 +995,17 @@ export async function runSetup(argv: readonly string[], deps: SetupDeps): Promis
     }
     if (resolution.kind === 'key') {
       sessionKey = resolution.key;
-      deps.print('Session key: using the pasted dashboard key.');
+      const signer = deriveSignerAddress(sessionKey);
+      deps.print(
+        `Session key: using the pasted dashboard key${signer ? ` (signer ${signer})` : ''}.`,
+      );
     } else {
       sessionKey = deps.mintSessionKey();
       mintedKey = true;
-      deps.print('Session key: minted fresh (secp256k1, ephemeral to this daemon).');
+      const signer = deriveSignerAddress(sessionKey);
+      deps.print(
+        `Session key: minted fresh (secp256k1, ephemeral to this daemon)${signer ? ` — signer ${signer}` : ''}.`,
+      );
     }
   }
   effectiveEnv.MUHAVEN_BROKER_SESSION_KEY = sessionKey;

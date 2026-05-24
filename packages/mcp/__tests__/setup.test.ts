@@ -6,6 +6,7 @@ import {
   buildClaudeMcpRemoveArgv,
   buildRegisterEnv,
   decideSetupAction,
+  deriveSignerAddress,
   KNOWN_REGISTER_HOSTS,
   KNOWN_REGISTER_SCOPES,
   mintSessionKey,
@@ -182,6 +183,33 @@ describe('withSeededLoginEnv', () => {
       },
     );
     expect(process.env.MUHAVEN_BROKER_SESSION_KEY).not.toBe(SENTINEL);
+  });
+});
+
+describe('deriveSignerAddress', () => {
+  it('derives a checksummed 0x address from a valid 32-byte private key', () => {
+    const addr = deriveSignerAddress('0x' + '11'.repeat(32));
+    expect(addr).toMatch(/^0x[0-9a-fA-F]{40}$/);
+  });
+
+  it('is deterministic for the same key + differs across keys', () => {
+    const a = deriveSignerAddress('0x' + '11'.repeat(32));
+    const b = deriveSignerAddress('0x' + '11'.repeat(32));
+    const c = deriveSignerAddress('0x' + '22'.repeat(32));
+    expect(a).toBe(b);
+    expect(a).not.toBe(c);
+  });
+
+  it('NEVER returns the private key itself (one-way derivation)', () => {
+    const key = '0x' + 'ab'.repeat(32);
+    const addr = deriveSignerAddress(key)!;
+    expect(addr).not.toBe(key);
+    expect(addr.length).toBeLessThan(key.length);
+  });
+
+  it('returns null for a malformed key (no throw)', () => {
+    expect(deriveSignerAddress('not-a-key')).toBeNull();
+    expect(deriveSignerAddress('0xdead')).toBeNull();
   });
 });
 
@@ -664,6 +692,42 @@ describe('runSetup orchestrator', () => {
     expect(h.output.join('\n')).toMatch(/Session key: using MUHAVEN_BROKER_SESSION_KEY from env/);
     const spawnArgs = h.spawnDaemon.mock.calls[0][0];
     expect(spawnArgs.env.MUHAVEN_BROKER_SESSION_KEY).toBe(caller);
+  });
+
+  it('0.4.3: env-key path prints the derived signer address + an override hint (not opaque)', async () => {
+    const caller = '0x' + '11'.repeat(32);
+    vi.stubEnv('MUHAVEN_BROKER_SESSION_KEY', caller);
+    const h = makeHarness({
+      helloResults: [new Error('ECONNREFUSED')],
+      waitForBrokerResult: { hasJwt: false },
+      env: { MUHAVEN_BROKER_SESSION_KEY: caller },
+    });
+    await runSetup(['--skip-login'], h.deps);
+    const out = h.output.join('\n');
+    const expectedSigner = deriveSignerAddress(caller)!;
+    // Signer address shown so a stale env key is obvious — and it's the
+    // PUBLIC address, never the private key.
+    expect(out).toMatch(new RegExp(`signer ${expectedSigner}`));
+    expect(out).not.toContain(caller);
+    // Override hint present.
+    expect(out).toMatch(/unset MUHAVEN_BROKER_SESSION_KEY/i);
+  });
+
+  it('0.4.3: rejects a malformed MUHAVEN_BROKER_SESSION_KEY with 2 + a clear error, no spawn', async () => {
+    const bad = '0xdeadbeef';
+    vi.stubEnv('MUHAVEN_BROKER_SESSION_KEY', bad);
+    const h = makeHarness({
+      helloResults: [new Error('ECONNREFUSED')],
+      env: { MUHAVEN_BROKER_SESSION_KEY: bad },
+    });
+    const code = await runSetup(['--skip-login'], h.deps);
+    expect(code).toBe(2);
+    expect(h.errOutput.join('\n')).toMatch(/MUHAVEN_BROKER_SESSION_KEY is set but invalid/);
+    expect(h.errOutput.join('\n')).toMatch(/32-byte hex/);
+    // Failed fast — never spawned a daemon on the bad key.
+    expect(h.spawnDaemon).not.toHaveBeenCalled();
+    // And never echoed the (malformed) value.
+    expect(h.errOutput.join('\n')).not.toContain(bad);
   });
 
   // ---------- security regressions ----------

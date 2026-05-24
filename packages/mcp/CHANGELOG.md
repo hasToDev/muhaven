@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] — 2026-05-24
+
+### Changed
+
+- **`muhaven-broker setup` no longer silently uses an opaque env key.** When
+  `MUHAVEN_BROKER_SESSION_KEY` is set (its "scriptable" precedence over the
+  interactive prompt), setup now (a) **validates the key's shape up front**
+  — a malformed value fails with a clear error + an unset hint instead of a
+  confusing daemon crash later — and (b) **prints the derived signer
+  address**: `Session key: using MUHAVEN_BROKER_SESSION_KEY from env (signer
+  0x…)`, plus a one-line "unset it to paste a dashboard key instead" hint. So
+  a STALE/unintended lingering env key is obvious rather than silently
+  adopted. The pasted-key and self-mint paths print the signer too, matching
+  `start`/`update`'s `Broker signer: 0x…`. New exported `deriveSignerAddress`
+  helper (display-only; never logs the private key). Operator-found on 0.4.2.
+
 ## [0.4.2] — 2026-05-24
 
 ### Fixed
