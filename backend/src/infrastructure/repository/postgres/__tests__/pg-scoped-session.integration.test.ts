@@ -425,6 +425,19 @@ describeIfPg('PgScopedSessionRepository (real postgres)', () => {
     const VALIDATOR_NONCE = 42;
 
     beforeAll(async () => {
+      // CI self-sufficiency (fix: this block was red on the
+      // `backend vitest (real postgres)` CI job since C2 — invisible
+      // locally because the suite is `describe.skip` without a real PG).
+      // The CI job sets only DATABASE_URL/INTEGRATION_PG_URL, so:
+      //   (a) `getEnv()` — reached via `requireEncryptionKey()` on the
+      //       pgcrypto write path — needs a JWT_SECRET to satisfy its
+      //       schema (the encryption key alone isn't enough); and
+      //   (b) the fresh test DB has no `pgcrypto` extension, so
+      //       `pgp_sym_encrypt` doesn't exist.
+      // Set both here so the integration suite provisions its own
+      // prerequisites. `??=` avoids clobbering a JWT_SECRET the CI job
+      // may set in future.
+      process.env.JWT_SECRET ??= 'test-secret-that-is-at-least-32-chars-long';
       // Test-suite encryption key. Distinct from any operator-facing
       // secret pattern so a future cross-secret regression in this
       // suite can't accidentally collide with a real prod env. The
@@ -437,6 +450,11 @@ describeIfPg('PgScopedSessionRepository (real postgres)', () => {
       // review Codex M-5 absorbed (test-cache leak path).
       const { resetEnvCacheForTesting } = await import('../../../../core/config.js');
       resetEnvCacheForTesting();
+      // pgcrypto is a TRUSTED extension on PG13+ — the DB owner (the CI
+      // `muhaven` user owns `muhaven_test`) can create it without
+      // superuser. Idempotent; runs before the "ensures pgcrypto is
+      // loaded" prerequisite test below.
+      await db.execute(sql`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
     });
 
     it('ensures pgcrypto is loaded (test prerequisite)', async () => {
