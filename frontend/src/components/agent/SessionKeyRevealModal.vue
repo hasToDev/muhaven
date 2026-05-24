@@ -3,18 +3,25 @@
  * Wave 4 Q1 — SessionKeyRevealModal
  *
  * One-time reveal of the session-key private half so the operator can
- * paste it into `MUHAVEN_BROKER_SESSION_KEY` on a different machine. The
- * key is computed locally (privacy boundary preserved); the backend
- * never sees it.
+ * install it on the broker daemon. The headline affordance is the
+ * one-paste `muhaven-broker update --session <key>` command (shipped in
+ * `@muhaven/mcp@0.4.0`) — it brings the daemon up if it's down or rotates
+ * the key if it's running, in a single paste, so the operator no longer
+ * hand-edits `MUHAVEN_BROKER_SESSION_KEY` + restarts. The raw key + the
+ * `--session -` stdin form stay available as the advanced path. The key
+ * is computed locally (privacy boundary preserved); the backend never
+ * sees it.
  *
  * UX contract:
  *   - Modal mints the key (or surfaces the in-memory record if one
  *     already exists for this tab) on mount, never on tab-load. The
  *     parent controls visibility via the `v-if` mount pattern shared
  *     with `LinkTelegramModal`.
- *   - Hex is hidden behind a "Reveal" toggle so a casual onlooker can't
- *     shoulder-surf the value off the screen.
- *   - "Copy to clipboard" is the primary CTA. After copy:
+ *   - Both the command and the raw hex embed the private key, so both are
+ *     masked behind a "Reveal" toggle — a casual onlooker can't
+ *     shoulder-surf the value (or the command that contains it) off-screen.
+ *   - "Copy broker command" is the primary CTA; "Copy raw key" is the
+ *     secondary/advanced fallback. After either copy:
  *       1. Schedules a clipboard wipe ~60s later via a writeText('') —
  *          best-effort; some browsers gate this without recent user
  *          gesture, in which case we no-op silently. The timer is
@@ -57,7 +64,11 @@ const loading = ref(true)
 const error = ref<string | null>(null)
 const exported = ref<ExportedSessionKey | null>(null)
 const revealed = ref(false)
-const copied = ref(false)
+/** Which artefact was last copied — drives the per-button "Copied" flash
+ *  and the shared clipboard-wipe notice. `null` = nothing copied yet. The
+ *  broker command and the raw key are distinct copy targets but share one
+ *  reset timer (you only ever copy one at a time). */
+const copiedTarget = ref<'cmd' | 'key' | null>(null)
 const acknowledged = ref(false)
 /** R2 A11y H-2 — the Scoped post-commit path auto-mounts this modal
  *  from a network round-trip, so without an explicit focus transfer the
@@ -83,6 +94,21 @@ const truncatedHex = computed<string>(() => {
   const hex = exported.value.privateKey
   return `${hex.slice(0, 6)}…${hex.slice(-6)}`
 })
+
+/**
+ * The one-paste broker command — `muhaven-broker update --session <key>`.
+ * `update` is the universal verb: it brings the daemon up if it's down and
+ * rotates the key (stop → swap → restart, reusing the JWT) if it's already
+ * running, so the operator never has to choose between `start`/`update`.
+ * `brokerCmd` carries the FULL key (what gets copied); `brokerCmdMasked` is
+ * the shoulder-surf-safe display until the operator hits Reveal.
+ */
+const brokerCmd = computed<string>(() =>
+  exported.value ? `muhaven-broker update --session ${exported.value.privateKey}` : '',
+)
+const brokerCmdMasked = computed<string>(() =>
+  exported.value ? `muhaven-broker update --session ${truncatedHex.value}` : '',
+)
 
 const expiresLabel = computed<string>(() => {
   if (!exported.value) return ''
@@ -130,25 +156,39 @@ async function mintAndReveal(): Promise<void> {
   }
 }
 
-async function copyHex(): Promise<void> {
+/**
+ * Schedule a best-effort clipboard wipe — same security trade-off as
+ * 1Password's auto-clear. Browsers may gate clipboard.writeText when no
+ * recent user gesture is present; the catch is intentional. Shared by both
+ * copy targets (command + raw key) so whichever was copied last is the one
+ * the wipe clears.
+ */
+function scheduleClipboardWipe(): void {
+  if (clipboardWipeHandle !== null) clearTimeout(clipboardWipeHandle)
+  clipboardWipeHandle = setTimeout(() => {
+    navigator.clipboard.writeText('').catch(() => {
+      /* permission denied — operator's clipboard manager owns hygiene */
+    })
+  }, CLIPBOARD_WIPE_MS)
+}
+
+/**
+ * Copy either the one-paste broker command (`'cmd'`, primary) or the raw
+ * private key (`'key'`, advanced). Both embed the secret, so both schedule
+ * the same auto-wipe. Surfaces a clean error if the clipboard write is
+ * blocked (e.g. insecure context / permission denied).
+ */
+async function copy(target: 'cmd' | 'key'): Promise<void> {
   if (!exported.value) return
+  const text = target === 'cmd' ? brokerCmd.value : exported.value.privateKey
   try {
-    await navigator.clipboard.writeText(exported.value.privateKey)
-    copied.value = true
+    await navigator.clipboard.writeText(text)
+    copiedTarget.value = target
     if (copyResetHandle !== null) clearTimeout(copyResetHandle)
     copyResetHandle = setTimeout(() => {
-      copied.value = false
+      copiedTarget.value = null
     }, 2400)
-
-    // Schedule a best-effort clipboard wipe — same security trade-off
-    // as 1Password's auto-clear. Browsers may gate clipboard.writeText
-    // when no recent user gesture is present; the catch is intentional.
-    if (clipboardWipeHandle !== null) clearTimeout(clipboardWipeHandle)
-    clipboardWipeHandle = setTimeout(() => {
-      navigator.clipboard.writeText('').catch(() => {
-        /* permission denied — operator's clipboard manager owns hygiene */
-      })
-    }, CLIPBOARD_WIPE_MS)
+    scheduleClipboardWipe()
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Clipboard write blocked'
   }
@@ -315,8 +355,8 @@ onBeforeUnmount(() => {
             <p class="text-xs text-compute dark:text-body-dark leading-relaxed">
               Anyone with this key can propose intents on your behalf
               within the configured policy scope. Treat it like a
-              password — paste it into <code class="font-mono text-[11px]">MUHAVEN_BROKER_SESSION_KEY</code>
-              on your broker machine, then dismiss this dialog.
+              password — copy the one-paste broker command below, run it on
+              your broker machine, then dismiss this dialog.
             </p>
           </div>
         </div>
@@ -340,19 +380,24 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <!-- The actual private hex — hidden by default behind Reveal -->
+        <!-- PRIMARY — the one-paste broker command. Embeds the key, so the
+             same Reveal toggle masks it (shoulder-surf safety); the copy
+             always carries the full command regardless of the toggle. -->
         <div
           class="p-3 rounded-xl border border-haze dark:border-white/10
                  bg-mist/60 dark:bg-midnight/50"
         >
           <div class="flex items-center justify-between mb-2">
             <span class="text-[11px] uppercase tracking-wider text-cool dark:text-body-dark/60">
-              Private key (0x-prefixed, 32 bytes)
+              One-paste broker command
             </span>
             <button
               type="button"
+              data-testid="reveal-key-toggle"
+              :aria-pressed="revealed"
               class="inline-flex items-center gap-1 text-xs text-compute dark:text-signal
-                     hover:text-compute-hover dark:hover:text-signal-hover cursor-pointer"
+                     hover:text-compute-hover dark:hover:text-signal-hover cursor-pointer
+                     focus:outline-none focus-visible:ring-2 focus-visible:ring-gold/60 rounded"
               @click="toggleReveal"
             >
               <component
@@ -363,18 +408,18 @@ onBeforeUnmount(() => {
             </button>
           </div>
           <p
-            data-testid="reveal-key-hex"
-            class="font-mono text-[12px] break-all leading-relaxed text-compute dark:text-body-dark
-                   select-all"
+            data-testid="reveal-key-cmd"
+            class="font-mono text-[12px] break-all leading-relaxed text-compute dark:text-body-dark"
+            :class="revealed ? 'select-all' : 'select-none'"
           >
-            {{ revealed ? exported.privateKey : truncatedHex }}
+            {{ revealed ? brokerCmd : brokerCmdMasked }}
           </p>
         </div>
 
-        <!-- Copy CTA -->
+        <!-- Primary copy CTA — the broker command -->
         <button
           type="button"
-          data-testid="reveal-key-copy"
+          data-testid="reveal-key-copy-cmd"
           class="w-full inline-flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg
                  text-sm font-semibold text-white dark:text-[#412d00]
                  bg-compute dark:bg-signal
@@ -382,18 +427,73 @@ onBeforeUnmount(() => {
                  transition-colors duration-150 cursor-pointer
                  shadow-[0_4px_14px_rgba(184,134,11,0.22)]
                  dark:shadow-[0_4px_14px_rgba(255,220,161,0.2)]"
-          @click="copyHex"
+          @click="copy('cmd')"
         >
-          <component :is="copied ? Check : Copy" :size="14" />
-          {{ copied ? 'Copied to clipboard' : 'Copy key to clipboard' }}
+          <component :is="copiedTarget === 'cmd' ? Check : Copy" :size="14" />
+          {{ copiedTarget === 'cmd' ? 'Command copied' : 'Copy broker command' }}
         </button>
-        <p
-          v-if="copied"
-          class="text-[11px] text-positive text-center -mt-2"
-        >
-          Paste it into your broker env now — the clipboard will be
-          cleared ~60s after copying as long as this dialog stays open.
+        <p class="text-[11px] text-cool dark:text-body-dark/60 text-center -mt-1.5 leading-relaxed">
+          Run it on your broker machine —
+          <code class="font-mono">update</code> brings the daemon up if it's
+          down, or rotates the key if it's already running. No env-var edits.
         </p>
+
+        <!-- SECONDARY / advanced — the raw key (env-var or stdin workflows) -->
+        <div
+          class="p-3 rounded-xl border border-haze/70 dark:border-white/5
+                 bg-mist/30 dark:bg-midnight/30"
+        >
+          <span class="block mb-2 text-[11px] uppercase tracking-wider text-cool dark:text-body-dark/70">
+            Raw private key · advanced
+          </span>
+          <p
+            data-testid="reveal-key-hex"
+            class="font-mono text-[12px] break-all leading-relaxed text-compute dark:text-body-dark"
+            :class="revealed ? 'select-all' : 'select-none'"
+          >
+            {{ revealed ? exported.privateKey : truncatedHex }}
+          </p>
+          <button
+            type="button"
+            data-testid="reveal-key-copy"
+            class="mt-2.5 w-full inline-flex items-center justify-center gap-2 py-2 px-4 rounded-lg
+                   text-xs font-medium
+                   border border-haze dark:border-white/10
+                   text-compute dark:text-body-dark
+                   hover:bg-mist dark:hover:bg-white/5
+                   transition-colors duration-150 cursor-pointer"
+            @click="copy('key')"
+          >
+            <component :is="copiedTarget === 'key' ? Check : Copy" :size="13" />
+            {{ copiedTarget === 'key' ? 'Raw key copied' : 'Copy raw key' }}
+          </button>
+          <p class="mt-2 text-[11px] text-cool dark:text-body-dark/70 leading-relaxed">
+            Keep the key out of <code class="font-mono text-[11px]">ps</code>/argv — pipe via stdin:
+            <code class="font-mono text-[11px] break-all">echo &lt;key&gt; | muhaven-broker update --session -</code>
+          </p>
+        </div>
+
+        <p
+          v-if="copiedTarget"
+          data-testid="reveal-key-copied-hint"
+          class="text-[11px] text-positive text-center -mt-1"
+        >
+          {{ copiedTarget === 'cmd' ? 'Run it on your broker now' : 'Paste it into your broker now' }}
+          — the clipboard will be cleared ~60s after copying as long as
+          this dialog stays open.
+        </p>
+        <!-- Persistent live region (always mounted, text-only swap) so the
+             copy confirmation is reliably announced — a v-if-inserted
+             live region can be missed by AT. Mirrors ScopedSessionBanner. -->
+        <span class="sr-only" role="status" aria-live="polite">
+          {{
+            copiedTarget === 'cmd'
+              ? 'Broker command copied to clipboard'
+              : copiedTarget === 'key'
+                ? 'Raw key copied to clipboard'
+                : ''
+          }}
+        </span>
 
         <!-- Acknowledgment gate -->
         <label
@@ -409,12 +509,12 @@ onBeforeUnmount(() => {
             class="mt-0.5 size-4 accent-compute dark:accent-signal"
           />
           <span class="text-xs text-compute dark:text-body-dark leading-relaxed">
-            I've stored this key (clipboard, password manager, or
-            <code class="font-mono text-[11px]">MUHAVEN_BROKER_SESSION_KEY</code>
-            on my broker machine). The key lives only in this browser tab
-            — close the tab and re-open this page from a new session and
-            a fresh key will be minted instead, which would also force a
-            broker env update + daemon restart.
+            I've run
+            <code class="font-mono text-[11px]">muhaven-broker update --session …</code>
+            on my broker machine (or stored the key in a password manager).
+            The key lives only in this browser tab — closing it and re-opening
+            this page mints a fresh key, which would mean re-running
+            <code class="font-mono text-[11px]">update --session</code> on the broker.
           </span>
         </label>
 

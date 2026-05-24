@@ -133,6 +133,23 @@ describe('ScopedSessionBanner', () => {
     expect(w.find('[data-testid="scoped-session-purge-reminder"]').exists()).toBe(false)
   })
 
+  it('purge-reminder Re-arm routes to the policy page pre-set to mint Scoped', async () => {
+    api.getActiveScopedSession.mockResolvedValue({ session: null })
+    api.revokeScopedSession.mockResolvedValue({
+      session: { ...fakeSession(), status: 'revoked', revokedAt: '2026-05-24T01:00:00.000Z' },
+    })
+    await useScopedSession().revoke('s1')
+    const w = mount(ScopedSessionBanner)
+    await flushPromises()
+
+    const rearm = w.find('[data-testid="scoped-session-purge-rearm"]')
+    expect(rearm.exists()).toBe(true)
+    await rearm.trigger('click')
+    // Lands on the tier picker pre-selecting MCP + Scoped — the mint there
+    // surfaces the one-paste `muhaven-broker update --session <key>` command.
+    expect(state.push).toHaveBeenCalledWith('/agent/policy/transition?surface=mcp&target=scoped')
+  })
+
   it('dismiss × hides the active banner for that session', async () => {
     // Distinct sessionId — the dismiss state is module-level + keyed by
     // sessionId, so using a unique id keeps this test from suppressing the

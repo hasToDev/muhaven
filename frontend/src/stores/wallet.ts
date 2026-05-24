@@ -130,7 +130,8 @@ export const useWalletStore = defineStore('wallet', () => {
 
   /**
    * Wave 4 Q1 — surface the session-key private half once for out-of-band
-   * copy (paste into broker daemon's `MUHAVEN_BROKER_SESSION_KEY`). Mints
+   * copy (install on the broker via `muhaven-broker update --session <key>`,
+   * or paste into the daemon's `MUHAVEN_BROKER_SESSION_KEY`). Mints
    * a fresh in-memory record if none exists; does NOT trigger an on-chain
    * UserOp. Returns null when the underlying provider has no session
    * support (currently only ZeroDevProvider implements it).
@@ -153,8 +154,9 @@ export const useWalletStore = defineStore('wallet', () => {
    * Returns the freshly-minted ephemeral EOA's private half + the
    * locally-computed `permissionId` so the caller can:
    *   1. POST the snapshot to `/api/v1/agent/policy/scoped-session`, and
-   *   2. surface the privateKey via SessionKeyRevealModal for out-of-band
-   *      paste into the broker's `MUHAVEN_BROKER_SESSION_KEY` env.
+   *   2. surface the privateKey via SessionKeyRevealModal as a one-paste
+   *      `muhaven-broker update --session <key>` command (raw key still
+   *      offered for env-var / stdin workflows).
    *
    * Independent from `installSessionKey()` (legacy in-tab path) —
    * `sessionKeyActive` / `sessionExpirySec` track only the in-tab key

@@ -42,10 +42,12 @@ const POLICY_PATH = '/agent/policy/transition'
 /** The real, cross-platform command to stop the running broker daemon
  *  (the @muhaven/mcp CLI `stop` subcommand — SIGTERM + SIGKILL fallback +
  *  best-effort JWT clear). Replaces the prior POSIX-only `pkill …` line,
- *  which failed on the Windows operator box. (Fuller automation — a
- *  `muhaven-broker update --session <key>` that stops → swaps the key →
- *  restarts in one shot — is planned in `development/DEV_WAVE_5/
- *  BROKER_CLI_PLAN.md`.) */
+ *  which failed on the Windows operator box. This is the "I'm done with
+ *  autonomy" path; to RE-ARM after a revoke, the operator mints a fresh
+ *  session (the "Re-arm" CTA → reveal modal) and runs the one-paste
+ *  `muhaven-broker update --session <key>` it surfaces — `update` stops the
+ *  stale daemon AND installs the new key in one shot (shipped in
+ *  `@muhaven/mcp@0.4.0`). */
 const BROKER_STOP_CMD = 'muhaven-broker stop'
 
 /** Module-level so a dismiss survives the banner's mount/unmount as the
@@ -82,6 +84,23 @@ const expiresLabel = computed(() =>
 
 function goManage(): void {
   void router.push(`${POLICY_PATH}?surface=mcp&focus=revoke`)
+}
+
+/**
+ * Re-arm after a revoke. The purge reminder has no freshly-minted key in
+ * hand (the old one is revoked), so instead of copying a template the
+ * operator must hand-edit, we route to the policy page to mint a fresh
+ * Scoped session. The `target=scoped` query pre-selects the tier picker
+ * when the in-page revoke stepped the tier down to Advisory; if the tier
+ * is still `scoped` (an out-of-band revoke), the page surfaces its OPEN-A
+ * "Mint a new session" re-mint panel instead — either way the post-mint
+ * reveal modal carries the real one-paste `muhaven-broker update --session
+ * <key>` command. A successful mint clears `pendingBrokerPurge`
+ * automatically (useScopedSession.refresh drops the reminder the moment a
+ * live session lands), so this banner self-heals — no manual dismiss needed.
+ */
+function goReArm(): void {
+  void router.push(`${POLICY_PATH}?surface=mcp&target=scoped`)
 }
 
 function dismissActiveBanner(): void {
@@ -151,30 +170,49 @@ onBeforeUnmount(() => {
         <div
           data-testid="scoped-session-purge-reminder"
           role="status"
-          class="mb-3 flex items-center gap-2.5 rounded-b-xl px-3.5 py-2
+          class="mb-3 flex flex-wrap items-center gap-2.5 rounded-b-xl px-3.5 py-2
                  border-x border-b border-negative/40 bg-negative/5
                  dark:border-negative/30 dark:bg-negative/10 backdrop-blur-sm"
         >
           <CircleCheck :size="14" class="flex-shrink-0 text-positive" aria-hidden="true" />
-          <p class="min-w-0 flex-1 text-[12px] leading-tight truncate text-midnight dark:text-white">
+          <!-- basis-full on narrow viewports gives the warning a full row so
+               the buttons wrap below instead of truncating the message
+               (1.4.10 reflow); sm+ keeps the compact single-row design. -->
+          <p class="min-w-0 basis-full sm:basis-0 sm:flex-1 text-[12px] leading-tight truncate text-midnight dark:text-white">
             <span class="font-semibold">Session revoked.</span>
             <span class="text-cool dark:text-body-dark/80">
-              Broker still holds the old key — stop it, then re-mint.
+              Broker still holds the old key — re-arm or stop it.
             </span>
           </p>
           <button
             type="button"
             data-testid="scoped-session-purge-copy"
             @click="copyStopCmd"
-            class="flex-shrink-0 inline-flex items-center gap-1 px-2.5 py-1 rounded-md
+            class="flex-shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md
                    text-[11px] font-medium cursor-pointer
                    text-compute dark:text-signal
                    border border-haze dark:border-white/10
-                   hover:bg-mist/60 dark:hover:bg-white/5 transition-colors"
+                   hover:bg-mist/60 dark:hover:bg-white/5 transition-colors
+                   focus:outline-none focus-visible:ring-2 focus-visible:ring-gold/60 dark:focus-visible:ring-signal/60"
           >
             <Check v-if="purgeCopied" :size="11" class="text-positive" aria-hidden="true" />
             <Copy v-else :size="11" aria-hidden="true" />
             {{ purgeCopied ? 'Copied' : 'Copy stop cmd' }}
+          </button>
+          <button
+            type="button"
+            data-testid="scoped-session-purge-rearm"
+            @click="goReArm"
+            class="flex-shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md
+                   text-[11px] font-semibold cursor-pointer
+                   text-compute dark:text-signal
+                   border border-gold/45 dark:border-signal/35
+                   bg-white/60 dark:bg-white/5
+                   hover:bg-white/90 dark:hover:bg-white/10 transition-colors
+                   focus:outline-none focus-visible:ring-2 focus-visible:ring-gold/60 dark:focus-visible:ring-signal/60"
+          >
+            Re-arm
+            <ChevronRight :size="12" aria-hidden="true" />
           </button>
           <button
             type="button"
@@ -183,7 +221,8 @@ onBeforeUnmount(() => {
             aria-label="Broker stopped — dismiss this reminder"
             class="flex-shrink-0 inline-flex items-center justify-center w-6 h-6 rounded-md cursor-pointer
                    text-cool hover:text-midnight dark:hover:text-white
-                   hover:bg-white/60 dark:hover:bg-white/10 transition-colors"
+                   hover:bg-white/60 dark:hover:bg-white/10 transition-colors
+                   focus:outline-none focus-visible:ring-2 focus-visible:ring-gold/60 dark:focus-visible:ring-signal/60"
           >
             <X :size="13" aria-hidden="true" />
           </button>

@@ -257,8 +257,9 @@ export class ZeroDevProvider implements IWalletProvider {
   }
 
   /**
-   * Wave 4 Q1 — surface the session-key private half for one-time copy
-   * into `MUHAVEN_BROKER_SESSION_KEY` on the operator's broker machine.
+   * Wave 4 Q1 — surface the session-key private half for one-time install
+   * on the operator's broker machine (via `muhaven-broker update --session
+   * <key>`, or pasting into `MUHAVEN_BROKER_SESSION_KEY`).
    *
    * Behaviour:
    *   - If a valid in-memory `sessionRecord` exists, return its key.
@@ -297,8 +298,9 @@ export class ZeroDevProvider implements IWalletProvider {
    * reading `development/DEV_WAVE_5/PATH_D_PLAN.md` RD-3 + RD-5 + RD-6):
    *
    *  - The ephemeral EOA's private half is returned to the caller so the
-   *    Reveal modal can surface it for paste into the operator's
-   *    `MUHAVEN_BROKER_SESSION_KEY` env var. The dashboard cannot reach
+   *    Reveal modal can surface it as a one-paste `muhaven-broker update
+   *    --session <key>` command (or raw paste into
+   *    `MUHAVEN_BROKER_SESSION_KEY`). The dashboard cannot reach
    *    the broker's Unix socket / named pipe directly; the
    *    backend-mirror POST + MCP auto-sync (Commit 2.B) bridges the
    *    transport gap on the next position.buy.

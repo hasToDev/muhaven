@@ -29,8 +29,9 @@ export interface IWalletProvider {
   installSessionKey?(): Promise<void>;
   /**
    * Surface the session-key private half for one-time out-of-band copy
-   * (e.g., pasting into `MUHAVEN_BROKER_SESSION_KEY` on a different
-   * machine). Mints a fresh in-memory record if none exists yet — does
+   * (e.g., installing it on the broker via `muhaven-broker update
+   * --session <key>`, or pasting into `MUHAVEN_BROKER_SESSION_KEY` on a
+   * different machine). Mints a fresh in-memory record if none exists yet — does
    * NOT trigger an on-chain UserOp. The privateKey is held only in
    * sessionStorage; the backend never sees it (privacy boundary).
    *
@@ -79,8 +80,9 @@ export interface InstallScopedSessionInput {
 
 export interface ScopedSessionInstallResult {
   /** 0x-prefixed 20-byte hex address derived from the ephemeral EOA private key.
-   *  Matches the value the operator pastes into `MUHAVEN_BROKER_SESSION_KEY` so
-   *  the broker's loaded signer matches `snapshot.signerAddress` per RD-3. */
+   *  Matches the signer the operator installs on the broker (via `muhaven-broker
+   *  update --session <key>` / `MUHAVEN_BROKER_SESSION_KEY`) so the broker's
+   *  loaded signer matches `snapshot.signerAddress` per RD-3. */
   signerAddress: `0x${string}`;
   /** 0x-prefixed 32-byte hex secp256k1 private key. SURFACED ONCE for out-of-band
    *  paste; never persisted to localStorage. The caller's modal holds it in a

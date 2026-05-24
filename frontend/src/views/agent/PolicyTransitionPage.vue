@@ -10,10 +10,11 @@
  *      Wires to backend POST /api/v1/agent/policy/transition — handles
  *      both step-down auto-commits and step-up confirmation-token flow.
  *
- *   2. One-time session-key export. Operator clicks "Reveal session key
- *      for broker" → SessionKeyRevealModal mints + surfaces a 0x-prefixed
- *      32-byte hex. Operator pastes it into MUHAVEN_BROKER_SESSION_KEY on
- *      a different machine. The dashboard never ships the key over the
+ *   2. One-time session-key export. After confirming a Scoped transition,
+ *      SessionKeyRevealModal surfaces the freshly-minted signer as a
+ *      one-paste `muhaven-broker update --session <key>` command (raw hex
+ *      still offered for env-var / stdin workflows). Operator runs it on a
+ *      different machine. The dashboard never ships the key over the
  *      wire — local-only computation per the Wave 4 privacy boundary.
  *
  * The threshold-narrowing sliders described in POST_S4_QUEUE.md are
@@ -176,7 +177,8 @@ const ttlSecInput = ref<number>(SCOPED_DEFAULT_TTL_SEC)
 // (Wave 5 Option D · C4 follow-up removed the legacy in-tab "Reveal session
 // key for broker" button — it minted a different key that didn't match the
 // on-chain Scoped validator). It carries the freshly-minted ephemeral EOA's
-// private half for paste into the broker daemon's `MUHAVEN_BROKER_SESSION_KEY`.
+// private half, surfaced as the one-paste `muhaven-broker update --session
+// <key>` command (the modal also exposes the raw key for env-var / stdin use).
 const scopedReveal = ref<ScopedSessionInstallResult | null>(null)
 
 /** R1 UX H-3 — post-commit error-recovery state. When set, the inline
@@ -776,8 +778,8 @@ function onTransitionApplied(
  *      and installs into the broker via IPC — bridging the dashboard's
  *      browser-sandbox / Unix-socket transport gap.
  *   3. Open SessionKeyRevealModal pre-seeded with the freshly-minted
- *      key so the operator can paste it into `MUHAVEN_BROKER_SESSION_KEY`
- *      on the broker machine + restart the daemon.
+ *      key so the operator can run `muhaven-broker update --session <key>`
+ *      on the broker machine (installs the key + (re)starts the daemon).
  *
  * **Failure handling**: if the mint or POST throws, the tier already
  * landed at 'scoped' server-side (Phase 2 already committed). Surface a
@@ -950,7 +952,7 @@ async function mintScopedSession(
   await refreshScopedSession()
   showTierPicker.value = false
   toast.success('Scoped session minted', {
-    description: 'Copy the broker session key and paste it into MUHAVEN_BROKER_SESSION_KEY.',
+    description: 'Copy the one-paste “muhaven-broker update --session …” command and run it on your broker.',
   })
 }
 
@@ -1879,11 +1881,12 @@ function humaniseError(e: unknown, fallback: string): string {
         </p>
         <p class="font-sans text-[13px] text-compute dark:text-body-dark leading-relaxed">
           Confirming a <span class="font-mono">Scoped autonomy</span> transition
-          reveals a one-time broker session key. Paste it into
-          <code class="font-mono text-[11px]">MUHAVEN_BROKER_SESSION_KEY</code>
-          on your broker machine and restart the daemon — the MCP / OpenClaw
-          skill then signs within this policy. Computed locally, shown once,
-          never sent to the backend; miss it and you'll revoke + re-mint.
+          reveals a one-time broker command. Run
+          <code class="font-mono text-[11px]">muhaven-broker update --session &lt;key&gt;</code>
+          on your broker machine — it installs the key and (re)starts the daemon
+          in one step, then the MCP / OpenClaw skill signs within this policy.
+          Computed locally, shown once, never sent to the backend; miss it and
+          you'll revoke + re-mint.
         </p>
       </section>
     </template>
