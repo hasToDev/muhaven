@@ -598,21 +598,23 @@ function promptYesNo(question: string): Promise<boolean> {
 
 /**
  * Prompt for a secret, masking the typed characters so the pasted session
- * key never echoes to the terminal (treat it like a password). We print
- * the prompt ourselves, then fully mute readline's echo writer (no `*`,
- * like `sudo`). Best-effort: on a terminal that bypasses `_writeToOutput`
- * the worst case is the key is visible on screen — it is still never
- * logged or persisted.
+ * key never echoes to the terminal (treat it like a password, no `*` — like
+ * `sudo`). The label is printed on its OWN line BEFORE the readline
+ * interface exists, so readline's per-keystroke line-clear (`cursorTo(0)` +
+ * `clearScreenDown`, which write directly to `output`, NOT through
+ * `_writeToOutput`) only ever clears the empty input line below it — never
+ * the label. Echo of typed content goes through `_writeToOutput`, which we
+ * fully mute. Best-effort: on a terminal that bypasses `_writeToOutput` the
+ * worst case is the key is visible on screen — it is still never logged or
+ * persisted.
  */
 function promptSecret(question: string): Promise<string> {
   return new Promise<string>((resolve) => {
+    process.stdout.write(`${question.trimEnd()} (input hidden)\n`);
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     const rlAny = rl as unknown as { _writeToOutput?: (s: string) => void };
-    // Print the prompt ourselves, then mute ALL readline echo (the prompt
-    // redraw + every typed character) so the key is never shown.
-    process.stdout.write(question);
     rlAny._writeToOutput = (): void => {
-      /* muted — typed chars + line redraws are swallowed */
+      /* mute ALL echo (typed chars + line redraws) so the key is never shown */
     };
     rl.question('', (answer) => {
       rl.close();
@@ -657,26 +659,29 @@ function makeSessionPromptDeps(): SessionPromptDeps {
  */
 function makeStopDeps(
   clearJwtOnStop: boolean,
-  override?: { endpoint?: string; brokerTimeoutMs?: number },
+  // All-or-nothing by type: when an override is given it MUST carry both
+  // values, so the "skip the ambient config load" path below is provably
+  // correct (no partial override can silently fall through to loadMcpConfig).
+  override?: { endpoint: string; brokerTimeoutMs: number },
 ): StopDeps {
-  // Load ambient config ONLY when a value isn't supplied — avoids throwing
-  // on a malformed ambient env (e.g. a bad MUHAVEN_BACKEND_URL the operator
-  // already fixed via --backend-base-url) when the caller (the `update`
-  // path) already resolved both endpoint + timeout. `config!` is safe: it's
-  // dereferenced only when the matching override is undefined, which forces
-  // config to have been loaded.
-  const config =
-    override?.endpoint !== undefined && override?.brokerTimeoutMs !== undefined
-      ? undefined
-      : loadMcpConfig();
+  // Resolve from the override when given (the `update` path supplies both
+  // values), else from ambient config. Loading ambient config ONLY when
+  // there's no override avoids throwing on a malformed ambient env (e.g. a
+  // bad MUHAVEN_BACKEND_URL the operator already fixed via --backend-base-url).
+  const resolved =
+    override ??
+    (() => {
+      const config = loadMcpConfig();
+      return { endpoint: config.brokerEndpoint, brokerTimeoutMs: config.brokerTimeoutMs };
+    })();
   return {
     print,
     printErr,
     newBrokerClient: (endpoint, timeoutMs) => new BrokerClient({ endpoint, timeoutMs }),
     killProcess: defaultKillProcess,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    endpoint: override?.endpoint ?? config!.brokerEndpoint,
-    brokerTimeoutMs: override?.brokerTimeoutMs ?? config!.brokerTimeoutMs,
+    endpoint: resolved.endpoint,
+    brokerTimeoutMs: resolved.brokerTimeoutMs,
     clearJwtOnStop,
   };
 }

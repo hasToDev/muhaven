@@ -15,6 +15,7 @@ import {
   validateBrokerEndpointFlag,
   validateHttpUrlFlag,
   waitForBroker,
+  withSeededLoginEnv,
   type RegisterHost,
   type SetupDeps,
   type ShellResult,
@@ -107,6 +108,80 @@ describe('applyEnvDefaults', () => {
     });
     expect(result.toSet.MUHAVEN_BACKEND_URL).toBe('https://api.muhaven.app');
     expect(result.preserved).not.toContain('MUHAVEN_BACKEND_URL');
+  });
+});
+
+describe('withSeededLoginEnv', () => {
+  beforeEach(() => {
+    vi.stubEnv('MUHAVEN_BACKEND_URL', '');
+    vi.stubEnv('MUHAVEN_DASHBOARD_URL', '');
+    vi.stubEnv('MUHAVEN_BROKER_ENDPOINT', '');
+    // Clear so the keys read as "unset" (vi.stubEnv('') leaves them as '').
+    delete process.env.MUHAVEN_BACKEND_URL;
+    delete process.env.MUHAVEN_DASHBOARD_URL;
+    delete process.env.MUHAVEN_BROKER_ENDPOINT;
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('seeds the login env from effectiveEnv for the duration of fn, then restores (deletes originally-unset keys)', async () => {
+    let seenBackend: string | undefined;
+    let seenEndpoint: string | undefined;
+    const result = await withSeededLoginEnv(
+      {
+        MUHAVEN_BACKEND_URL: 'https://api-stage.muhaven.app',
+        MUHAVEN_BROKER_ENDPOINT: '/tmp/x.sock',
+      },
+      async () => {
+        seenBackend = process.env.MUHAVEN_BACKEND_URL;
+        seenEndpoint = process.env.MUHAVEN_BROKER_ENDPOINT;
+        return 42;
+      },
+    );
+    expect(result).toBe(42);
+    // Seen INSIDE fn:
+    expect(seenBackend).toBe('https://api-stage.muhaven.app');
+    expect(seenEndpoint).toBe('/tmp/x.sock');
+    // Restored AFTER (were unset → deleted):
+    expect(process.env.MUHAVEN_BACKEND_URL).toBeUndefined();
+    expect(process.env.MUHAVEN_BROKER_ENDPOINT).toBeUndefined();
+  });
+
+  it('restores the ORIGINAL value when a key was already set in the shell', async () => {
+    process.env.MUHAVEN_BACKEND_URL = 'https://shell-original.example.test';
+    await withSeededLoginEnv(
+      { MUHAVEN_BACKEND_URL: 'https://seeded.example.test' },
+      async () => {
+        expect(process.env.MUHAVEN_BACKEND_URL).toBe('https://seeded.example.test');
+      },
+    );
+    expect(process.env.MUHAVEN_BACKEND_URL).toBe('https://shell-original.example.test');
+  });
+
+  it('restores even when fn throws', async () => {
+    await expect(
+      withSeededLoginEnv({ MUHAVEN_BACKEND_URL: 'https://seeded.example.test' }, async () => {
+        throw new Error('boom');
+      }),
+    ).rejects.toThrow('boom');
+    expect(process.env.MUHAVEN_BACKEND_URL).toBeUndefined();
+  });
+
+  it('NEVER seeds MUHAVEN_BROKER_SESSION_KEY into process.env (signing material)', async () => {
+    const SENTINEL = '0x' + 'cc'.repeat(32);
+    await withSeededLoginEnv(
+      {
+        MUHAVEN_BACKEND_URL: 'https://api.muhaven.app',
+        // Even if a caller pollutes effectiveEnv with the key, the helper
+        // only ever copies the LOGIN_SEED_ENV_KEYS allowlist.
+        MUHAVEN_BROKER_SESSION_KEY: SENTINEL,
+      },
+      async () => {
+        expect(process.env.MUHAVEN_BROKER_SESSION_KEY).not.toBe(SENTINEL);
+      },
+    );
+    expect(process.env.MUHAVEN_BROKER_SESSION_KEY).not.toBe(SENTINEL);
   });
 });
 

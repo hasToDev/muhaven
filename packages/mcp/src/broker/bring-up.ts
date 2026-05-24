@@ -29,6 +29,7 @@ import {
   applyEnvDefaults,
   validateBrokerEndpointFlag,
   validateHttpUrlFlag,
+  withSeededLoginEnv,
   type SpawnDaemonOptions,
   type WaitForBrokerOptions,
 } from './setup.js';
@@ -317,26 +318,10 @@ export async function runBringUp(
     if (flags.backendBaseUrl) loginArgv.push('--backend-base-url', flags.backendBaseUrl);
     if (flags.dashboardBaseUrl) loginArgv.push('--dashboard-base-url', flags.dashboardBaseUrl);
     // login reads loadMcpConfig() from process.env — seed + restore around
-    // the call so we don't pollute the operator's shell.
-    const restorationKeys = [
-      'MUHAVEN_BACKEND_URL',
-      'MUHAVEN_DASHBOARD_URL',
-      'MUHAVEN_BROKER_ENDPOINT',
-    ];
-    const originalValues: Record<string, string | undefined> = {};
-    for (const k of restorationKeys) {
-      originalValues[k] = process.env[k];
-      if (effectiveEnv[k]) process.env[k] = effectiveEnv[k];
-    }
-    let code: number;
-    try {
-      code = await deps.runLogin(loginArgv);
-    } finally {
-      for (const k of restorationKeys) {
-        if (originalValues[k] === undefined) delete process.env[k];
-        else process.env[k] = originalValues[k];
-      }
-    }
+    // the call via the shared helper (keeps the dance + the "never seed the
+    // session key into process.env" invariant in one place; restores on
+    // throw / non-zero / success).
+    const code = await withSeededLoginEnv(effectiveEnv, () => deps.runLogin(loginArgv));
     if (code !== 0) {
       deps.printErr(
         'Login step failed — the daemon is running on the new key; re-run ' +

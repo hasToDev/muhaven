@@ -261,6 +261,52 @@ export function validateBrokerEndpointFlag(
   return null;
 }
 
+/**
+ * Env vars `runLogin` resolves via `loadMcpConfig()` (which reads
+ * `process.env`). The login step is launched in-process, so for setup /
+ * start / update to point login at the SAME backend/dashboard/endpoint they
+ * resolved (which may include `--backend-base-url` etc. overrides), we
+ * temporarily seed these into `process.env` around the call.
+ *
+ * Deliberately does NOT include `MUHAVEN_BROKER_SESSION_KEY` — the session
+ * key must NEVER be written to `process.env` (a sibling child of this
+ * process could read it via /proc/<pid>/environ on POSIX or OpenProcess on
+ * Windows). The key reaches the daemon only via `spawnDaemon`'s explicit
+ * child env.
+ */
+const LOGIN_SEED_ENV_KEYS = [
+  'MUHAVEN_BACKEND_URL',
+  'MUHAVEN_DASHBOARD_URL',
+  'MUHAVEN_BROKER_ENDPOINT',
+] as const;
+
+/**
+ * Run `fn` with the login-relevant env vars temporarily seeded into
+ * `process.env` from `effectiveEnv`, restoring the originals in a `finally`
+ * (deleting keys that were originally unset). Shared by `runSetup` and the
+ * `start`/`update` orchestrator so the seed/restore dance — and the
+ * "never seed the session key" invariant — lives in exactly one place.
+ * Restores correctly whether `fn` resolves, rejects, or returns non-zero.
+ */
+export async function withSeededLoginEnv<T>(
+  effectiveEnv: Readonly<Record<string, string>>,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const originalValues: Record<string, string | undefined> = {};
+  for (const k of LOGIN_SEED_ENV_KEYS) {
+    originalValues[k] = process.env[k];
+    if (effectiveEnv[k]) process.env[k] = effectiveEnv[k];
+  }
+  try {
+    return await fn();
+  } finally {
+    for (const k of LOGIN_SEED_ENV_KEYS) {
+      if (originalValues[k] === undefined) delete process.env[k];
+      else process.env[k] = originalValues[k];
+    }
+  }
+}
+
 export interface WaitForBrokerOptions {
   readonly broker: Pick<BrokerClient, 'hello'>;
   /** Total wait budget in ms. Default 8000. */
@@ -1006,22 +1052,10 @@ export async function runSetup(argv: readonly string[], deps: SetupDeps): Promis
       loginArgv.push('--dashboard-base-url', flags.dashboardBaseUrl);
     }
     // login reads loadMcpConfig() which defaults to process.env. Seed +
-    // restore around the call so we don't pollute the operator's shell.
-    const restorationKeys = ['MUHAVEN_BACKEND_URL', 'MUHAVEN_DASHBOARD_URL', 'MUHAVEN_BROKER_ENDPOINT'];
-    const originalValues: Record<string, string | undefined> = {};
-    for (const k of restorationKeys) {
-      originalValues[k] = process.env[k];
-      if (effectiveEnv[k]) process.env[k] = effectiveEnv[k];
-    }
-    let code: number;
-    try {
-      code = await deps.runLogin(loginArgv);
-    } finally {
-      for (const k of restorationKeys) {
-        if (originalValues[k] === undefined) delete process.env[k];
-        else process.env[k] = originalValues[k];
-      }
-    }
+    // restore around the call so we don't pollute the operator's shell
+    // (shared helper — keeps the dance + the "never seed the session key"
+    // invariant in one place).
+    const code = await withSeededLoginEnv(effectiveEnv, () => deps.runLogin(loginArgv));
     if (code !== 0) {
       deps.printErr(
         'Setup: login step failed — daemon is still running, re-run `muhaven-broker login` to retry.',
