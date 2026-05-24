@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-05-24
+
+### Added
+
+- **Wave 5 Option D OPEN-D — `muhaven-broker start` / `update` session-key
+  CLI.** Automates the manual last mile after a dashboard mint / revoke so
+  the operator no longer hand-edits `MUHAVEN_BROKER_SESSION_KEY` + restarts
+  the daemon:
+  - `muhaven-broker start --session <key|->` — bring the daemon UP on a
+    provided key (when it is NOT running). Refuses if a daemon is already
+    bound to the endpoint (points the operator at `update`).
+  - `muhaven-broker update --session <key|->` — ROTATE the key on a
+    (possibly) running daemon: stop → swap → restart, **reusing the
+    existing device-flow JWT** (a key rotation does not force a fresh
+    device-code login). Fully stops the old daemon before the new one binds
+    the endpoint.
+  - Both accept `--session -` to read the key from stdin (keeps it out of
+    `ps` / shell history), and when run WITHOUT `--session` ask
+    interactively ("Do you have a session key from the dashboard? [Y/n]" →
+    masked paste). Non-TTY (CI / piped) never hangs — it requires
+    `--session` instead.
+  - `setup` gained the same interactive prompt: with no
+    `MUHAVEN_BROKER_SESSION_KEY` set, it asks whether you have a
+    dashboard-minted key (paste it) or mints a fresh one (the
+    fresh-install default). Scripted runs (env var set, or non-TTY) keep
+    the prior self-mint behavior.
+- **Key-persistence model: Option B (operator decision 2026-05-24).** The
+  resolved key is injected ONLY into the spawned daemon's child env — it
+  never touches disk. The daemon (`loadBrokerConfig`) and the keystore are
+  unchanged; the broker wire protocol is unchanged (no protocol bump). The
+  session key is validated (`0x` + 64 hex) and NEVER logged / echoed /
+  embedded in an error message.
+
+### Changed
+
+- `runStop` (`broker/stop.ts`) gained an optional `clearJwtOnStop` flag
+  (default `true`, preserving the `stop` subcommand's behavior). `update`
+  passes `false` so the JWT survives the key rotation.
+
 ## [0.3.0] — 2026-05-23
 
 ### Added

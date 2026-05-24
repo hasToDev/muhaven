@@ -23,6 +23,7 @@ import { release } from 'node:os';
 import { generatePrivateKey } from 'viem/accounts';
 import { BrokerClient } from '../clients/broker-client.js';
 import { loadMcpConfig } from '../config.js';
+import { resolveSessionKey, type SessionPromptDeps } from './session-input.js';
 
 /**
  * Env vars we deliberately strip from the spawned daemon's env, even if the
@@ -469,6 +470,16 @@ export interface SetupDeps {
    *  setup transcript stays clean. Returns the exit code + captured
    *  streams; never throws on non-zero exit (caller decides). */
   shellOut(cmd: string, argv: readonly string[]): Promise<ShellResult>;
+  /**
+   * Wave 5 Option D OPEN-D — interactive session-key prompt deps. Optional:
+   * when omitted (or non-TTY), setup falls back to self-mint exactly as
+   * before. When the operator has a dashboard-minted key, setup asks
+   * "Do you have a session key from the dashboard?" → paste (masked) → use
+   * it; otherwise mints a fresh one (the fresh-install path). The
+   * `MUHAVEN_BROKER_SESSION_KEY` env var still wins over the prompt for
+   * scripted setup runs.
+   */
+  sessionInput?: SessionPromptDeps;
 }
 
 /**
@@ -860,12 +871,36 @@ export async function runSetup(argv: readonly string[], deps: SetupDeps): Promis
   // /proc/<pid>/environ; Windows OpenProcess).
   let sessionKey = effectiveEnv.MUHAVEN_BROKER_SESSION_KEY;
   let mintedKey = false;
-  if (!sessionKey || sessionKey === '') {
-    sessionKey = deps.mintSessionKey();
-    mintedKey = true;
-    deps.print('Session key: minted fresh (secp256k1, ephemeral to this daemon).');
-  } else {
+  if (sessionKey && sessionKey.length > 0) {
+    // Scripted / power-user path: the env var wins over the prompt.
     deps.print('Session key: using MUHAVEN_BROKER_SESSION_KEY from env.');
+  } else {
+    // No env key — OPEN-D: ask interactively whether the operator has a
+    // dashboard-minted key (paste it) or wants a fresh self-mint. Non-TTY
+    // / no prompt deps → self-mint (legacy fresh-install behavior).
+    const sessionInput: SessionPromptDeps = deps.sessionInput ?? {
+      isTty: false,
+      readStdinAll: async () => '',
+      promptYesNo: async () => false,
+      promptSecret: async () => '',
+    };
+    const resolution = await resolveSessionKey({
+      sessionFlag: undefined,
+      policy: 'mint-fallback',
+      deps: sessionInput,
+    });
+    if (resolution.kind === 'error') {
+      deps.printErr(`error: ${resolution.message}`);
+      return 2;
+    }
+    if (resolution.kind === 'key') {
+      sessionKey = resolution.key;
+      deps.print('Session key: using the pasted dashboard key.');
+    } else {
+      sessionKey = deps.mintSessionKey();
+      mintedKey = true;
+      deps.print('Session key: minted fresh (secp256k1, ephemeral to this daemon).');
+    }
   }
   effectiveEnv.MUHAVEN_BROKER_SESSION_KEY = sessionKey;
 

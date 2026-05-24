@@ -41,6 +41,15 @@ export interface StopDeps {
   gracefulShutdownMs?: number;
   /** Per-attempt poll interval after SIGTERM. Default 200. */
   pollIntervalMs?: number;
+  /**
+   * Whether to clear the keystore JWT as part of the stop. Default `true`
+   * — the `stop` subcommand wipes the JWT so the OS-keychain entry doesn't
+   * linger. `muhaven-broker update` passes `false`: a key rotation stops
+   * the old daemon but MUST preserve the device-flow JWT (broker identity,
+   * independent of the session key) so the restarted daemon reuses it
+   * instead of forcing a fresh device-code login. Wave 5 Option D OPEN-D.
+   */
+  clearJwtOnStop?: boolean;
 }
 
 /**
@@ -63,14 +72,18 @@ export async function runStop(deps: StopDeps): Promise<number> {
   }
 
   // 2. Best-effort JWT clear. Failure here is non-fatal — we'd rather kill
-  // the daemon than abort because of a keystore hiccup.
-  try {
-    await broker.clearJwt();
-    deps.print('JWT cleared from keystore.');
-  } catch (err) {
-    deps.print(
-      `Warning: clearJwt failed (${err instanceof Error ? err.message : String(err)}); continuing with daemon shutdown.`,
-    );
+  // the daemon than abort because of a keystore hiccup. Skipped when
+  // `clearJwtOnStop` is false (the `update` key-rotation path preserves the
+  // JWT so the restarted daemon reuses it).
+  if (deps.clearJwtOnStop ?? true) {
+    try {
+      await broker.clearJwt();
+      deps.print('JWT cleared from keystore.');
+    } catch (err) {
+      deps.print(
+        `Warning: clearJwt failed (${err instanceof Error ? err.message : String(err)}); continuing with daemon shutdown.`,
+      );
+    }
   }
 
   // 3. PID lookup.

@@ -18,6 +18,7 @@ function makeHarness(opts: {
   killBehavior?: (pid: number, signal: 'SIGTERM' | 'SIGKILL') => boolean;
   gracefulShutdownMs?: number;
   pollIntervalMs?: number;
+  clearJwtOnStop?: boolean;
 } = {}): StopHarness {
   const output: string[] = [];
   const errOutput: string[] = [];
@@ -61,6 +62,7 @@ function makeHarness(opts: {
     brokerTimeoutMs: 2000,
     gracefulShutdownMs: opts.gracefulShutdownMs,
     pollIntervalMs: opts.pollIntervalMs,
+    clearJwtOnStop: opts.clearJwtOnStop,
   };
 
   return { output, errOutput, brokerHello, brokerClearJwt, killProcess, sleep, deps };
@@ -147,6 +149,34 @@ describe('runStop', () => {
     expect(code).toBe(1);
     expect(h.errOutput.join('\n')).toMatch(/Failed to SIGKILL PID 12345.*EPERM/);
     expect(h.errOutput.join('\n')).toMatch(/may be orphaned/);
+  });
+
+  it('clearJwtOnStop=false (update key-rotation path) preserves the JWT', async () => {
+    // `muhaven-broker update` stops the old daemon but must NOT wipe the
+    // device-flow JWT — the restarted daemon reuses it instead of forcing a
+    // fresh device-code login.
+    const h = makeHarness({
+      helloResults: [{ pid: 12345 }, new Error('socket closed')],
+      killBehavior: () => true,
+      clearJwtOnStop: false,
+    });
+    const code = await runStop(h.deps);
+    expect(code).toBe(0);
+    expect(h.brokerClearJwt).not.toHaveBeenCalled();
+    expect(h.output.join('\n')).not.toMatch(/JWT cleared/);
+    expect(h.killProcess).toHaveBeenCalledWith(12345, 'SIGTERM');
+  });
+
+  it('clearJwtOnStop=true (default stop subcommand) still clears the JWT', async () => {
+    const h = makeHarness({
+      helloResults: [{ pid: 12345 }, new Error('socket closed')],
+      killBehavior: () => true,
+      clearJwtOnStop: true,
+    });
+    const code = await runStop(h.deps);
+    expect(code).toBe(0);
+    expect(h.brokerClearJwt).toHaveBeenCalledTimes(1);
+    expect(h.output.join('\n')).toMatch(/JWT cleared from keystore/);
   });
 
   it('continues with kill even when clearJwt fails (warning, not abort)', async () => {

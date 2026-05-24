@@ -12,6 +12,7 @@
 import { hostname, platform, release } from 'node:os';
 import { exec, spawn } from 'node:child_process';
 import { resolve as resolvePath } from 'node:path';
+import { createInterface } from 'node:readline';
 import {
   defaultBrokerEndpoint,
   loadMcpConfig,
@@ -39,6 +40,12 @@ import {
   runStop as runStopOrchestrator,
   type StopDeps,
 } from './stop.js';
+import {
+  runBringUp,
+  type BringUpDeps,
+  type BringUpMode,
+} from './bring-up.js';
+import type { SessionPromptDeps } from './session-input.js';
 
 function print(line: string): void {
   process.stdout.write(line + '\n');
@@ -469,6 +476,11 @@ function printUsage(): void {
   print('                         (claude-code today; claude-desktop / cursor reserved for Wave 5)');
   print('                       [--register-scope user|project|local] scope for the host-config write');
   print('                         (default: user — every project sees the server)');
+  print('  start              Bring the daemon up on a DASHBOARD-minted session key (daemon NOT running)');
+  print('                       --session <key|->  the key (or `-` to read it from stdin); omit to be');
+  print('                         asked interactively. [--skip-login] [--no-launch-browser]');
+  print('  update             Rotate the session key on a running daemon (stop → swap → restart,');
+  print('                       reusing the existing JWT). --session <key|-> (or interactive).');
   print('  stop               Cleanly stop a running daemon (SIGTERM with SIGKILL fallback');
   print('                       after 5s). Also clears the keystore JWT as a best effort.');
   print('  login              Acquire a JWT via the device-code flow + store in keystore');
@@ -561,6 +573,115 @@ function defaultShellOut(cmd: string, argv: readonly string[]): Promise<ShellRes
 }
 
 /**
+ * Whether stdin is an interactive TTY. Drives the session-key prompt: a
+ * non-TTY (CI / piped) invocation MUST NOT hang waiting for input.
+ */
+function stdinIsTty(): boolean {
+  return process.stdin.isTTY === true;
+}
+
+/**
+ * Ask a yes/no question on the terminal. Defaults to Yes on empty input.
+ * Real-IO boundary injected into the bring-up orchestrator (the
+ * orchestrator's tests use a fake).
+ */
+function promptYesNo(question: string): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(question, (answer) => {
+      rl.close();
+      const a = answer.trim().toLowerCase();
+      resolve(a === '' || a === 'y' || a === 'yes');
+    });
+  });
+}
+
+/**
+ * Prompt for a secret, masking the typed characters so the pasted session
+ * key never echoes to the terminal (treat it like a password). We print
+ * the prompt ourselves, then fully mute readline's echo writer (no `*`,
+ * like `sudo`). Best-effort: on a terminal that bypasses `_writeToOutput`
+ * the worst case is the key is visible on screen — it is still never
+ * logged or persisted.
+ */
+function promptSecret(question: string): Promise<string> {
+  return new Promise<string>((resolve) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const rlAny = rl as unknown as { _writeToOutput?: (s: string) => void };
+    // Print the prompt ourselves, then mute ALL readline echo (the prompt
+    // redraw + every typed character) so the key is never shown.
+    process.stdout.write(question);
+    rlAny._writeToOutput = (): void => {
+      /* muted — typed chars + line redraws are swallowed */
+    };
+    rl.question('', (answer) => {
+      rl.close();
+      // The muted input never emitted a trailing newline — add one so the
+      // next line of output starts cleanly.
+      process.stdout.write('\n');
+      resolve(answer);
+    });
+  });
+}
+
+/**
+ * Read all of stdin to a UTF-8 string (for `--session -`). Returns '' on a
+ * TTY (no pipe) so an interactive `--session -` without piped input fails
+ * with a clear "stdin was empty" error instead of hanging on EOF.
+ */
+async function readStdinAll(): Promise<string> {
+  if (process.stdin.isTTY) return '';
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+/** Build the real-IO session-key prompt deps used by setup / start / update. */
+function makeSessionPromptDeps(): SessionPromptDeps {
+  return {
+    isTty: stdinIsTty(),
+    readStdinAll,
+    promptYesNo,
+    promptSecret,
+  };
+}
+
+/**
+ * Build `StopDeps` against the real BrokerClient + Node's process.kill.
+ * `clearJwtOnStop` lets the `update` key-rotation path stop the old daemon
+ * WITHOUT wiping the device-flow JWT (so the restarted daemon reuses it).
+ * `override` lets `update` target the same endpoint it resolved from a
+ * `--broker-endpoint` flag (otherwise the default endpoint is used).
+ */
+function makeStopDeps(
+  clearJwtOnStop: boolean,
+  override?: { endpoint?: string; brokerTimeoutMs?: number },
+): StopDeps {
+  // Load ambient config ONLY when a value isn't supplied — avoids throwing
+  // on a malformed ambient env (e.g. a bad MUHAVEN_BACKEND_URL the operator
+  // already fixed via --backend-base-url) when the caller (the `update`
+  // path) already resolved both endpoint + timeout. `config!` is safe: it's
+  // dereferenced only when the matching override is undefined, which forces
+  // config to have been loaded.
+  const config =
+    override?.endpoint !== undefined && override?.brokerTimeoutMs !== undefined
+      ? undefined
+      : loadMcpConfig();
+  return {
+    print,
+    printErr,
+    newBrokerClient: (endpoint, timeoutMs) => new BrokerClient({ endpoint, timeoutMs }),
+    killProcess: defaultKillProcess,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    endpoint: override?.endpoint ?? config!.brokerEndpoint,
+    brokerTimeoutMs: override?.brokerTimeoutMs ?? config!.brokerTimeoutMs,
+    clearJwtOnStop,
+  };
+}
+
+/**
  * Wire `runSetup` against the real cli helpers + IO. Kept here (not in
  * `setup.ts`) so the pure orchestrator stays free of the cli-only
  * `runLogin` import (which would pull device-flow + viem into the test
@@ -581,6 +702,7 @@ export async function runSetup(argv: readonly string[]): Promise<number> {
     platformId: process.platform,
     osRelease: release(),
     shellOut: defaultShellOut,
+    sessionInput: makeSessionPromptDeps(),
   };
   return runSetupOrchestrator(argv, deps);
 }
@@ -589,17 +711,37 @@ export async function runSetup(argv: readonly string[]): Promise<number> {
  * Wire `runStop` against the real BrokerClient + Node's process.kill.
  */
 export async function runStop(): Promise<number> {
-  const config = loadMcpConfig();
-  const deps: StopDeps = {
+  return runStopOrchestrator(makeStopDeps(true));
+}
+
+/** Build `BringUpDeps` for the `start` / `update` orchestrator. */
+function makeBringUpDeps(): BringUpDeps {
+  return {
     print,
     printErr,
     newBrokerClient: (endpoint, timeoutMs) => new BrokerClient({ endpoint, timeoutMs }),
-    killProcess: defaultKillProcess,
-    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    endpoint: config.brokerEndpoint,
-    brokerTimeoutMs: config.brokerTimeoutMs,
+    spawnDaemon,
+    waitForBroker,
+    // `update` stops the old daemon but PRESERVES the JWT (key rotation
+    // must not force a device-code re-login). Targets the resolved
+    // endpoint so a `--broker-endpoint` override stops the right daemon.
+    stopDaemon: (endpoint, brokerTimeoutMs) =>
+      runStopOrchestrator(makeStopDeps(false, { endpoint, brokerTimeoutMs })),
+    runLogin,
+    resolveBinPath: resolveBrokerBinPath,
+    env: process.env,
+    platformId: process.platform,
+    osRelease: release(),
+    sessionPrompt: makeSessionPromptDeps(),
   };
-  return runStopOrchestrator(deps);
+}
+
+/** Wire `muhaven-broker start` / `update` against the real cli helpers. */
+export async function runStartOrUpdate(
+  mode: BringUpMode,
+  argv: readonly string[],
+): Promise<number> {
+  return runBringUp(mode, argv, makeBringUpDeps());
 }
 
 export async function runCli(argv: readonly string[]): Promise<number> {
@@ -610,6 +752,10 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       return 0;
     case 'setup':
       return runSetup(rest);
+    case 'start':
+      return runStartOrUpdate('start', rest);
+    case 'update':
+      return runStartOrUpdate('update', rest);
     case 'stop':
       return runStop();
     case 'login':
