@@ -1,5 +1,34 @@
 import { z } from 'zod';
 
+/**
+ * Robust string→boolean coercion for env flags.
+ *
+ * `z.coerce.boolean()` is a footgun for env vars: it is `Boolean(value)`, so
+ * the STRING "false" coerces to `true` (every non-empty string is truthy) —
+ * meaning `FLAG=false` fails to disable, and only an unset/empty var (hitting
+ * `.default(...)`) yields `false`. This helper parses the common truthy/falsy
+ * spellings explicitly, falls back to `def` when unset/empty, and rejects
+ * anything unrecognised loudly (so a typo boot-fails rather than silently
+ * defaulting to a surprising value).
+ *
+ * Applied 2026-05-25 to `YIELD_CRON_ENABLED` + `YIELD_CRON_DRY_RUN` only — the
+ * other 8 `z.coerce.boolean()` flags below share the identical bug and are
+ * tracked as a follow-up (see development/DEV_WAVE_5 log). Do NOT add new
+ * boolean env flags with `z.coerce.boolean()`; use `zEnvBool(...)`.
+ */
+export const zEnvBool = (def: boolean) =>
+  z.preprocess((v) => {
+    if (v === undefined || v === null) return def;
+    if (typeof v === 'boolean') return v;
+    if (typeof v === 'string') {
+      const s = v.trim().toLowerCase();
+      if (s === '') return def;
+      if (['true', '1', 'yes', 'on'].includes(s)) return true;
+      if (['false', '0', 'no', 'off'].includes(s)) return false;
+    }
+    return v; // unrecognised → let z.boolean() reject it (loud boot fail)
+  }, z.boolean());
+
 const EnvSchema = z.object({
   // Database
   DB_PROVIDER: z.enum(['memory', 'postgres']).default('memory'),
@@ -371,7 +400,7 @@ const EnvSchema = z.object({
   // Master toggle — default false so the cron is opt-in. Operator
   // flips this to true AFTER setting YIELD_CRON_PRIVATE_KEY +
   // YIELD_CRON_DRY_RUN=true for the 24h smoke (step 5).
-  YIELD_CRON_ENABLED: z.coerce.boolean().default(false),
+  YIELD_CRON_ENABLED: zEnvBool(false),
   // Issuer EOA private key — has `MINTER_ROLE` on the relevant
   // contracts AND a pre-wrapped mhUSDC float (Q3_PLAN.md A.5; operator
   // runs `scripts/wrap-pusdc-only.ts` to seed the buffer). Often the
@@ -393,7 +422,7 @@ const EnvSchema = z.object({
   // ticks + iterates tokens (so logs reflect what would have
   // happened) + fires a 6h-debounced Telegram alert so operators
   // notice they're in dry-run mode before flipping to live.
-  YIELD_CRON_DRY_RUN: z.coerce.boolean().default(false),
+  YIELD_CRON_DRY_RUN: zEnvBool(false),
   // Override the default '0 0 * * *' UTC schedule for testing /
   // staging. The cron validates the expression via `cron.validate()`
   // at start; invalid input logs a warn + falls back to the default.
