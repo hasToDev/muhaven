@@ -59,4 +59,16 @@ describe('zEnvBool — robust env boolean coercion', () => {
     // zEnvBool gets it right.
     expect(zEnvBool(false).parse('false')).toBe(false);
   });
+
+  // FU-1 (Wave 5 W2) — YIELD_CRON_SNAPSHOT_FUNDING is zEnvBool(true): ON
+  // by default, but an explicit `=false` actually rolls back to cap-based
+  // funding (the whole point of using zEnvBool over z.coerce.boolean()).
+  it('YIELD_CRON_SNAPSHOT_FUNDING: default on, "false" disables', () => {
+    const flag = zEnvBool(true);
+    expect(flag.parse(undefined)).toBe(true);
+    expect(flag.parse('')).toBe(true);
+    expect(flag.parse('false')).toBe(false);
+    expect(flag.parse('off')).toBe(false);
+    expect(flag.parse('true')).toBe(true);
+  });
 });

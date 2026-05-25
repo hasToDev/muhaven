@@ -374,12 +374,14 @@ async function main() {
             staleNavHaltDays: env.STALE_NAV_HALT_DAYS,
             cronExpr: env.YIELD_CRON_CRON_EXPR,
             dryRun: env.YIELD_CRON_DRY_RUN,
+            snapshotBasedFunding: env.YIELD_CRON_SNAPSHOT_FUNDING,
           },
         );
         await cron.start();
         backgroundShutdown.push(() => cron.stop());
         console.log(
-          `[yield-cron] Started (expr: "${env.YIELD_CRON_CRON_EXPR}", dryRun: ${env.YIELD_CRON_DRY_RUN}, maxSupplyCap: ${env.YIELD_CRON_MAX_SUPPLY_CAP})`,
+          `[yield-cron] Started (expr: "${env.YIELD_CRON_CRON_EXPR}", dryRun: ${env.YIELD_CRON_DRY_RUN}, ` +
+            `snapshotFunding: ${env.YIELD_CRON_SNAPSHOT_FUNDING}, maxSupplyCap: ${env.YIELD_CRON_MAX_SUPPLY_CAP})`,
         );
       } catch (err) {
         // Round-1 Security H-2 (2026-05-21): scrub private-key-shape

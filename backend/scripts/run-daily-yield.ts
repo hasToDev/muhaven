@@ -104,14 +104,22 @@ const UINT128_MAX = 2n ** 128n - 1n;
 interface CliArgs {
   dryRun: boolean;
   token: string | null;
+  /** FU-1 (Wave 5 W2): snapshot-based fund sizing. `null` → inherit the
+   *  `YIELD_CRON_SNAPSHOT_FUNDING` env (default true); `--snapshot-funding`
+   *  / `--cap-funding` force it on/off for a one-token smoke without
+   *  touching the cron's env. */
+  snapshotFunding: boolean | null;
 }
 
 function parseArgs(argv: string[]): CliArgs {
   let dryRun = false;
   let token: string | null = null;
+  let snapshotFunding: boolean | null = null;
   for (const a of argv) {
     if (a === '--dry-run') dryRun = true;
     else if (a.startsWith('--token=')) token = a.slice('--token='.length).toUpperCase();
+    else if (a === '--snapshot-funding') snapshotFunding = true;
+    else if (a === '--cap-funding') snapshotFunding = false;
     else if (a === '--help' || a === '-h') {
       printHelp();
       process.exit(0);
@@ -128,7 +136,7 @@ function parseArgs(argv: string[]): CliArgs {
       process.exit(2);
     }
   }
-  return { dryRun, token };
+  return { dryRun, token, snapshotFunding };
 }
 
 function printHelp(): void {
@@ -140,6 +148,9 @@ Usage:
 Options:
   --dry-run            Skip on-chain side effects + DB audit writes
   --token=SYMBOL       Process only this RWA symbol (default: every active token)
+  --snapshot-funding   FU-1: fund min(decryptedSupply, cap) × rate (force ON)
+  --cap-funding        Legacy: fund cap × rate (force OFF)
+                       (default: inherit YIELD_CRON_SNAPSHOT_FUNDING, true)
   --help, -h           Show this help and exit
 
 Environment is determined by which backend env-file is loaded — run
@@ -154,6 +165,21 @@ function envOrDie(name: string): string {
     process.exit(2);
   }
   return v;
+}
+
+/** Mirror of `zEnvBool` (backend/src/core/config.ts) — robust env→bool so
+ *  `=false` actually disables. Inlined (not imported from config.ts) to
+ *  avoid pulling the whole config-schema parse into this standalone
+ *  script. Unrecognised values boot-fail loud. */
+function envBool(name: string, def: boolean): boolean {
+  const v = process.env[name];
+  if (v === undefined) return def;
+  const s = v.trim().toLowerCase();
+  if (s === '') return def;
+  if (['true', '1', 'yes', 'on'].includes(s)) return true;
+  if (['false', '0', 'no', 'off'].includes(s)) return false;
+  console.error(`[fatal] ${name} must be a boolean (true/false); got "${v}"`);
+  process.exit(2);
 }
 
 /** Validate + lower-case a 0x-prefixed 40-hex address from env. Exits
@@ -232,6 +258,11 @@ interface SweepCtx {
   maxSupplyCap: bigint;
   staleNavHaltDays: number;
   dryRun: boolean;
+  /** FU-1 (Wave 5 W2) — when true, the runner sizes the epoch to the
+   *  actual snapshotted supply (decrypt) + owns the float check/decrement;
+   *  the script's own float pre-flight + post-runner decrement run only in
+   *  the static (cap-based) fallback. */
+  snapshotBasedFunding: boolean;
   auditWriter: PgAuditWriter;
 }
 
@@ -334,8 +365,12 @@ async function processToken(
       effectiveCap = overrideRaw;
     }
   }
+  // Cap-based estimate. FU-1 (Wave 5 W2): in snapshot mode this is only
+  // the audit-insert estimate (the runner re-stamps the actual); the cap
+  // is a ceiling, so skip the cap-based uint64 pre-fail (runner does the
+  // authoritative guard on the actual sized amount). See yield-cron.ts.
   const encTotalYield = (effectiveCap * ratePerShare) / RATE_SCALE;
-  if (encTotalYield > UINT64_MAX) {
+  if (!ctx.snapshotBasedFunding && encTotalYield > UINT64_MAX) {
     console.error(
       `[${token.symbol}] encTotalYield ${encTotalYield} > uint64.max — FAILED`,
     );
@@ -350,8 +385,13 @@ async function processToken(
   );
 
   // mhUSDC float pre-flight (uses sweep-start balance — same multi-
-  // token-safe ledger as the cron; see yield-cron.ts Sec M-4)
-  if (!ctx.dryRun) {
+  // token-safe ledger as the cron; see yield-cron.ts Sec M-4).
+  //
+  // FU-1 (Wave 5 W2): in snapshot-funding mode this moves INTO the runner
+  // (the amount isn't known until after finalize); the runner reads the
+  // same sweep-start balance via the forwarded `floatLedger`. Pre-flight
+  // here runs ONLY in the static (cap-based) fallback.
+  if (!ctx.snapshotBasedFunding && !ctx.dryRun) {
     if (ctx.floatRemaining === null) {
       console.error(`[${token.symbol}] float not read — skipping`);
       return 'skipped';
@@ -377,6 +417,16 @@ async function processToken(
     console.log(`[${token.symbol}] per-token lock held — skipping`);
     return 'skipped';
   }
+  // FU-1 (Wave 5 W2) — sweep float ledger shape the runner consumes (same
+  // mutable `ctx.floatRemaining` the static-path decrement below reads).
+  const floatLedger = {
+    get remaining(): bigint | null {
+      return ctx.floatRemaining;
+    },
+    consume(amount: bigint): void {
+      if (ctx.floatRemaining !== null) ctx.floatRemaining -= amount;
+    },
+  };
   try {
     const input: RunEpochInput = {
       symbol: token.symbol,
@@ -397,6 +447,11 @@ async function processToken(
       operatorGrantSeconds: 2n * 24n * 60n * 60n,
       revokeOperatorAfterFund: true,
       dryRun: ctx.dryRun,
+      // FU-1: snapshot-based fund sizing (mirrors the cron exactly so the
+      // one-off + cron-tick yields can't diverge). The runner decrypts the
+      // on-chain encTotalSupply post-finalize + owns the float gate.
+      snapshotBasedFunding: ctx.snapshotBasedFunding,
+      floatLedger,
       logger: {
         info: (obj, msg) =>
           typeof obj === 'string'
@@ -418,12 +473,22 @@ async function processToken(
     console.log(
       `[${token.symbol}] runYieldEpoch → status=${result.status} epochId=${result.epochId.toString()}` +
         (result.fundTxHash ? ` tx=${result.fundTxHash}` : '') +
-        (result.skipReason ? ` skipReason=${result.skipReason}` : ''),
+        (result.skipReason ? ` skipReason=${result.skipReason}` : '') +
+        (result.computedYield !== undefined ? ` fundedAmount=${result.computedYield.toString()}` : ''),
     );
     if (result.status === 'success' || result.status === 'resumed_success') {
       // Only fresh fund consumes float; resumed_success is a prior-
       // tick drain already reflected in sweep-start balance.
-      if (result.status === 'success' && !ctx.dryRun && ctx.floatRemaining !== null) {
+      //
+      // FU-1 (Wave 5 W2): in snapshot-funding mode the RUNNER already
+      // decremented the ledger by the actual amount it funded — this
+      // static-path decrement is gated off to avoid double-counting.
+      if (
+        !ctx.snapshotBasedFunding &&
+        result.status === 'success' &&
+        !ctx.dryRun &&
+        ctx.floatRemaining !== null
+      ) {
         ctx.floatRemaining -= encTotalYield;
       }
       return 'success';
@@ -441,8 +506,15 @@ async function processToken(
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
+  // FU-1 (Wave 5 W2): CLI flag wins, else inherit the cron's env default
+  // (true). Lets the operator smoke ONE token under snapshot funding
+  // (`--snapshot-funding`) before flipping YIELD_CRON_SNAPSHOT_FUNDING for
+  // the cron, or force the legacy cap path (`--cap-funding`).
+  const snapshotBasedFunding =
+    args.snapshotFunding ?? envBool('YIELD_CRON_SNAPSHOT_FUNDING', true);
   console.log(
-    `[run-daily-yield] dryRun=${args.dryRun} token=${args.token ?? '<all active>'}`,
+    `[run-daily-yield] dryRun=${args.dryRun} token=${args.token ?? '<all active>'} ` +
+      `snapshotFunding=${snapshotBasedFunding}`,
   );
 
   // Required env
@@ -499,6 +571,7 @@ async function main(): Promise<void> {
     maxSupplyCap,
     staleNavHaltDays,
     dryRun: args.dryRun,
+    snapshotBasedFunding,
     auditWriter,
   };
 

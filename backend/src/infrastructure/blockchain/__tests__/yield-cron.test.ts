@@ -83,6 +83,10 @@ function makeCron(deps?: {
   /** Per-token max_supply_cap_override (bigint string), or null. */
   maxSupplyCapOverride?: string | null;
   dryRun?: boolean;
+  /** FU-1 (Wave 5 W2). Default false so the existing cron-driven float
+   *  tests exercise the static (cap-based) fallback. Snapshot-mode tests
+   *  set this true (the runner — mocked — owns the float check there). */
+  snapshotBasedFunding?: boolean;
 }) {
   const tickGuardRowCount = deps?.tickGuardRowCount ?? 1; // default: guard cleared
   const bootAlertRowCount = deps?.bootAlertRowCount ?? 0; // default: debounced
@@ -158,6 +162,7 @@ function makeCron(deps?: {
       staleNavHaltDays: 7,
       cronExpr: '0 0 * * *',
       dryRun: deps?.dryRun ?? false,
+      snapshotBasedFunding: deps?.snapshotBasedFunding ?? false,
     },
   );
   // Bypass `start()` — inject signer + cofheClient stubs so the
@@ -543,6 +548,7 @@ function tickResult(
     pending_fund: 0,
     float_short: 0,
     dry_run: 0,
+    supply_decrypt: 0,
     other: 0,
   };
   return {
@@ -663,6 +669,7 @@ describe('composeHeartbeatBody', () => {
           pending_fund: 1234,
           float_short: 1234,
           dry_run: 1234,
+          supply_decrypt: 1234,
           other: 1234,
         },
       }),
@@ -779,6 +786,9 @@ describe('YieldDistributionCron runner skip-reason bucketing', () => {
     { runnerReason: 'dry_run', expectedBucket: 'dry_run' },
     { runnerReason: 'insufficient_mhusdc_float', expectedBucket: 'float_short' },
     { runnerReason: 'orphaned_audit', expectedBucket: 'pending_fund' },
+    // FU-1 (Wave 5 W2) snapshot-funding runner skips:
+    { runnerReason: 'supply_decrypt_failed', expectedBucket: 'supply_decrypt' },
+    { runnerReason: 'zero_snapshot_yield', expectedBucket: 'zero_yield' },
     { runnerReason: 'something_new', expectedBucket: 'other' },
   ];
   for (const { runnerReason, expectedBucket } of runnerSkipCases) {
@@ -794,4 +804,232 @@ describe('YieldDistributionCron runner skip-reason bucketing', () => {
       expect(result.skipReasons[expectedBucket]).toBe(1);
     });
   }
+});
+
+// ── FU-1 (Wave 5 W2) snapshot-based funding ──────────────────────────
+//
+// In snapshot mode the RUNNER owns the supply decrypt + float check +
+// ledger decrement (the amount isn't known until post-finalize). The cron
+// (1) forwards `snapshotBasedFunding: true` + a `floatLedger`, (2) does
+// NOT run its own cap-based float pre-flight, (3) does NOT decrement on
+// success, and (4) surfaces the runner's float-short + decrypt-fail skips
+// as operator alerts.
+
+describe('YieldDistributionCron snapshot-based funding (FU-1)', () => {
+  it('forwards snapshotBasedFunding + a floatLedger to the runner', async () => {
+    RUN_YIELD_EPOCH.mockResolvedValueOnce({
+      epochId: 1n,
+      status: 'success',
+      resumed: false,
+      computedYield: 96n,
+    });
+    const { cron } = makeCron({ snapshotBasedFunding: true });
+    await cron.tick();
+    expect(RUN_YIELD_EPOCH).toHaveBeenCalledOnce();
+    const input = RUN_YIELD_EPOCH.mock.calls[0][0];
+    expect(input.snapshotBasedFunding).toBe(true);
+    expect(input.floatLedger).toBeDefined();
+    expect(typeof input.floatLedger!.remaining).toBe('bigint');
+    expect(typeof input.floatLedger!.consume).toBe('function');
+  });
+
+  it('does NOT run its own cap-based float pre-flight (hands the gate to the runner)', async () => {
+    // floatBalance far below the cap-based encTotalYield (~969M for the
+    // default inputs). In the STATIC path this would skip float_short
+    // before the runner; in snapshot mode the cron must still call the
+    // runner (the runner decides on the actual snapshot-sized amount).
+    RUN_YIELD_EPOCH.mockResolvedValueOnce({
+      epochId: 1n,
+      status: 'success',
+      resumed: false,
+      computedYield: 1n,
+    });
+    const { cron, notifyYieldCronFailure } = makeCron({
+      snapshotBasedFunding: true,
+      floatBalance: 1n,
+    });
+    const result = await cron.tick();
+    expect(RUN_YIELD_EPOCH).toHaveBeenCalledOnce();
+    expect(result.succeeded).toBe(1);
+    // No cron-side InsufficientMhusdcFloatError (the runner would emit the
+    // skip if the actual amount were short — here it returned success).
+    const floatAlerts = notifyYieldCronFailure.execute.mock.calls.filter(
+      (c: unknown[]) => (c[0] as { err: Error }).err.name === 'InsufficientMhusdcFloatError',
+    );
+    expect(floatAlerts.length).toBe(0);
+  });
+
+  it('fires a WARN InsufficientMhusdcFloatError when the runner skips float-short', async () => {
+    RUN_YIELD_EPOCH.mockResolvedValueOnce({
+      epochId: 1n,
+      status: 'skipped',
+      skipReason: 'insufficient_mhusdc_float',
+      resumed: false,
+      computedYield: 500n,
+      floatRemaining: 100n,
+    } as any);
+    const { cron, notifyYieldCronFailure } = makeCron({ snapshotBasedFunding: true });
+    const result = await cron.tick();
+    expect(result.skipped).toBe(1);
+    expect(result.skipReasons.float_short).toBe(1);
+    const call = notifyYieldCronFailure.execute.mock.calls.find(
+      (c: unknown[]) => (c[0] as { err: Error }).err.name === 'InsufficientMhusdcFloatError',
+    );
+    expect(call).toBeTruthy();
+    expect(call![0].severity).toBe('warn');
+    expect(call![0].tokenAddress).toBe('0xabcdef0000000000000000000000000000000001');
+    // The alert message carries both runner-supplied numbers.
+    expect(call![0].err.message).toContain('100');
+    expect(call![0].err.message).toContain('500');
+  });
+
+  it('fires an ERROR SnapshotSupplyDecryptError when the runner skips on decrypt failure', async () => {
+    RUN_YIELD_EPOCH.mockResolvedValueOnce({
+      epochId: 1n,
+      status: 'skipped',
+      skipReason: 'supply_decrypt_failed',
+      resumed: false,
+    } as any);
+    const { cron, notifyYieldCronFailure } = makeCron({ snapshotBasedFunding: true });
+    const result = await cron.tick();
+    expect(result.skipped).toBe(1);
+    expect(result.skipReasons.supply_decrypt).toBe(1);
+    const call = notifyYieldCronFailure.execute.mock.calls.find(
+      (c: unknown[]) => (c[0] as { err: Error }).err.name === 'SnapshotSupplyDecryptError',
+    );
+    expect(call).toBeTruthy();
+    expect(call![0].severity).toBe('error');
+    expect(call![0].tokenAddress).toBe('0xabcdef0000000000000000000000000000000001');
+  });
+
+  it('fires a WARN SnapshotSupplyExceedsCapError when the runner clamps to the cap', async () => {
+    RUN_YIELD_EPOCH.mockResolvedValueOnce({
+      epochId: 1n,
+      status: 'success',
+      resumed: false,
+      computedYield: 969_013n,
+      clampedToCapCeiling: true,
+    } as any);
+    const { cron, notifyYieldCronFailure } = makeCron({ snapshotBasedFunding: true });
+    const result = await cron.tick();
+    expect(result.succeeded).toBe(1);
+    const call = notifyYieldCronFailure.execute.mock.calls.find(
+      (c: unknown[]) => (c[0] as { err: Error }).err.name === 'SnapshotSupplyExceedsCapError',
+    );
+    expect(call).toBeTruthy();
+    expect(call![0].severity).toBe('warn');
+    expect(call![0].tokenAddress).toBe('0xabcdef0000000000000000000000000000000001');
+  });
+
+  it('escalates the decrypt-fail alert to PERSISTENT when the runner skip is on a resumed epoch', async () => {
+    RUN_YIELD_EPOCH.mockResolvedValueOnce({
+      epochId: 1n,
+      status: 'skipped',
+      skipReason: 'supply_decrypt_failed',
+      resumed: true, // finalized on a prior tick + still can't decrypt → structural
+    } as any);
+    const { cron, notifyYieldCronFailure } = makeCron({ snapshotBasedFunding: true });
+    await cron.tick();
+    const call = notifyYieldCronFailure.execute.mock.calls.find(
+      (c: unknown[]) => (c[0] as { err: Error }).err.name === 'SnapshotSupplyDecryptError',
+    );
+    expect(call).toBeTruthy();
+    expect(call![0].err.message).toContain('PERSISTENT');
+    expect(call![0].err.message).toContain('STALLED');
+  });
+
+  it('keeps the decrypt-fail alert as transient (not PERSISTENT) on a fresh-finalize skip', async () => {
+    RUN_YIELD_EPOCH.mockResolvedValueOnce({
+      epochId: 1n,
+      status: 'skipped',
+      skipReason: 'supply_decrypt_failed',
+      resumed: false,
+    } as any);
+    const { cron, notifyYieldCronFailure } = makeCron({ snapshotBasedFunding: true });
+    await cron.tick();
+    const call = notifyYieldCronFailure.execute.mock.calls.find(
+      (c: unknown[]) => (c[0] as { err: Error }).err.name === 'SnapshotSupplyDecryptError',
+    );
+    expect(call).toBeTruthy();
+    expect(call![0].err.message).not.toContain('PERSISTENT');
+  });
+
+  it('does NOT alert (log-only) on a zero_snapshot_yield skip', async () => {
+    RUN_YIELD_EPOCH.mockResolvedValueOnce({
+      epochId: 1n,
+      status: 'skipped',
+      skipReason: 'zero_snapshot_yield',
+      resumed: false,
+      computedYield: 0n,
+    } as any);
+    const { cron, notifyYieldCronFailure } = makeCron({ snapshotBasedFunding: true });
+    const result = await cron.tick();
+    expect(result.skipped).toBe(1);
+    expect(result.skipReasons.zero_yield).toBe(1);
+    // No alert for the zero-yield boundary (mirrors the cap-based skip).
+    const alerts = notifyYieldCronFailure.execute.mock.calls.filter(
+      (c: unknown[]) => (c[0] as { tokenSymbol: string }).tokenSymbol === 'USYC',
+    );
+    expect(alerts.length).toBe(0);
+  });
+
+  it('does NOT fail a token when the CAP-based estimate exceeds uint64 (cap is just a ceiling)', async () => {
+    // A very high APY pushes the cap-based encTotalYield estimate past
+    // uint64.max. In STATIC mode the cron would fail the token; in
+    // snapshot mode the cap is only a ceiling, so the cron must hand off
+    // to the runner (which guards the ACTUAL sized amount, not the
+    // estimate). Defeats the "raise the cap, stop tuning" footgun.
+    RUN_YIELD_EPOCH.mockResolvedValueOnce({
+      epochId: 1n,
+      status: 'success',
+      resumed: false,
+      computedYield: 96n,
+    });
+    const { cron, notifyYieldCronFailure } = makeCron({
+      snapshotBasedFunding: true,
+      // apyScaled × navUsd6 / 365 × cap / RATE_SCALE ≫ uint64.max:
+      // apy=1e11% → ratePerShare ≈ 3.1e18, × 10M cap / 1e6 ≈ 3.1e19 > 1.8e19.
+      oracleSnapshot: { snapshotAt: new Date(), apy7Day: '100000000000', navDollar: '1.13' },
+    });
+    const result = await cron.tick();
+    expect(result.failed).toBe(0);
+    expect(result.succeeded).toBe(1);
+    expect(RUN_YIELD_EPOCH).toHaveBeenCalledOnce();
+    // No EncTotalYieldNarrowingOverflowError alert from the cron pre-flight.
+    const overflowAlerts = notifyYieldCronFailure.execute.mock.calls.filter((c: unknown[]) =>
+      String((c[0] as { err: Error }).err.message).includes('uint64.max'),
+    );
+    expect(overflowAlerts.length).toBe(0);
+  });
+
+  it('does NOT double-decrement the float on a snapshot-mode success (runner owns it)', async () => {
+    // Two tokens, sweep-start float 200. Both return success. If the cron
+    // ALSO decremented (it must not in snapshot mode), token 2 could see a
+    // wrong remaining. The runner-mock doesn't touch the ledger here, so a
+    // cron-side decrement would be the only mutation — assert there is
+    // none by checking both tokens succeed with no float-short alert.
+    const tokens = [
+      makeToken({ address: '0xaaaa000000000000000000000000000000000001', symbol: 'A1' }),
+      makeToken({ address: '0xbbbb000000000000000000000000000000000002', symbol: 'B2' }),
+    ];
+    RUN_YIELD_EPOCH.mockResolvedValue({
+      epochId: 1n,
+      status: 'success',
+      resumed: false,
+      computedYield: 150n,
+    });
+    const { cron, notifyYieldCronFailure } = makeCron({
+      snapshotBasedFunding: true,
+      tokens,
+      floatBalance: 200n,
+      maxSupplyCapOverride: '1',
+    });
+    const result = await cron.tick();
+    expect(result.succeeded).toBe(2);
+    expect(result.failed).toBe(0);
+    const floatAlerts = notifyYieldCronFailure.execute.mock.calls.filter(
+      (c: unknown[]) => (c[0] as { err: Error }).err.name === 'InsufficientMhusdcFloatError',
+    );
+    expect(floatAlerts.length).toBe(0);
+  });
 });

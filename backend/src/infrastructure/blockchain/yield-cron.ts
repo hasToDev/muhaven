@@ -215,6 +215,63 @@ export class MissingYieldSnapshotAddressError extends Error {
     this.name = 'MissingYieldSnapshotAddressError';
   }
 }
+/**
+ * FU-1 (Wave 5 W2) — the snapshot-funding runner couldn't decrypt the
+ * on-chain `encTotalSupply` for sizing (decryptForView timeout / cofhe
+ * coprocessor not ready). The runner skips the token WITHOUT funding;
+ * the cron raises this so the operator sees the transient. Self-healing:
+ * the next tick resumes the finalized-but-unfunded epoch and re-decrypts
+ * (encTotalSupply is immutable post-finalize), so a one-tick lag is the
+ * worst case. Persistent firing ⇒ investigate the coprocessor / RPC.
+ */
+export class SnapshotSupplyDecryptError extends Error {
+  /**
+   * @param persistent true when the skip is for a RESUMED epoch (finalized
+   *   on a PRIOR tick). A fresh-finalize decrypt-fail is likely transient
+   *   same-tick ACL-propagation lag and self-heals next tick; a resumed one
+   *   means the ACL has had ≥1 full tick to propagate and STILL can't be
+   *   decrypted — that's structural (un-indexable handle / coprocessor /
+   *   RPC), NOT lag, and yield for this token is now STALLED.
+   */
+  constructor(symbol: string, tokenAddr: string, persistent = false) {
+    super(
+      persistent
+        ? `SnapshotSupplyDecryptError(${symbol}=${tokenAddr}): PERSISTENT — the ` +
+            `epoch finalized on a prior tick and encTotalSupply STILL can't be ` +
+            `decrypted. This is NOT transient lag; yield for this token is ` +
+            `STALLED. Investigate the cofhe coprocessor / RPC, or roll back ` +
+            `(YIELD_CRON_SNAPSHOT_FUNDING=false → legacy cap-based funding).`
+        : `SnapshotSupplyDecryptError(${symbol}=${tokenAddr}): could not decrypt ` +
+            `on-chain encTotalSupply to size the epoch — funding skipped this ` +
+            `tick. Likely transient (supply is immutable post-finalize); should ` +
+            `self-heal next tick. If it repeats, it's structural — investigate.`,
+    );
+    this.name = 'SnapshotSupplyDecryptError';
+  }
+}
+/**
+ * FU-1 (Wave 5 W2) — snapshot-funding only. The snapshotted supply
+ * exceeded `YIELD_CRON_MAX_SUPPLY_CAP`, so the epoch was funded at the
+ * CAP CEILING — LESS than the total claimable. Late claimants will
+ * silent-fail their claim. This is the cap's intended bound, but it's
+ * money-affecting, so the operator must see it: raise the cap. A clamp
+ * that fires EVERY tick also flags a decimal-scale mismatch (the on-chain
+ * supply lives in a larger unit than the cap envelope assumes — see the
+ * UNIT-CONVENTION NOTE in handleToken). WARN, not error — the epoch DID
+ * fund (partially); nothing crashed.
+ */
+export class SnapshotSupplyExceedsCapError extends Error {
+  constructor(symbol: string, tokenAddr: string, fundedAmount: bigint, cap: bigint) {
+    super(
+      `SnapshotSupplyExceedsCapError(${symbol}=${tokenAddr}): snapshot supply ` +
+        `exceeded the cap ${cap} — funded the cap ceiling (${fundedAmount} base ` +
+        `units), which is BELOW the claimable total. Late claimants will ` +
+        `silent-fail. Raise YIELD_CRON_MAX_SUPPLY_CAP (or verify the on-chain ` +
+        `supply decimal scale if this fires every tick).`,
+    );
+    this.name = 'SnapshotSupplyExceedsCapError';
+  }
+}
 
 /**
  * Daily-heartbeat payload class — named so the operator's Telegram
@@ -260,6 +317,15 @@ export interface YieldCronConfig {
   /** node-cron expression; falls back to `'0 0 * * *'` UTC if invalid. */
   cronExpr: string;
   dryRun: boolean;
+  /** FU-1 (Wave 5 W2) — when true, fund each epoch to the ACTUAL
+   *  snapshotted supply (`min(decryptedSupply, effectiveCap) × ratePerShare
+   *  / RATE_SCALE`) instead of the cleartext cap. The cap stays a safety
+   *  ceiling. The runner does the supply decrypt + float check + ledger
+   *  decrement post-finalize (the amount isn't known until then); the
+   *  cron's own float pre-flight + post-runner consume run only in the
+   *  static (cap-based) fallback. `YIELD_CRON_SNAPSHOT_FUNDING`, default
+   *  true. */
+  snapshotBasedFunding: boolean;
 }
 
 export interface YieldCronDeps {
@@ -308,6 +374,11 @@ export interface YieldCronDeps {
  *    skip (Code-Reviewer H-1, 2026-05-22).
  *  - `dry_run` — runner returned `skipped: dry_run` (cron is in
  *    dry-run mode).
+ *  - `supply_decrypt` — FU-1 snapshot-funding only: the runner could
+ *    not decrypt the on-chain `encTotalSupply` to size the epoch
+ *    (decryptForView timeout / coprocessor not ready). Fires an ERROR
+ *    alert; self-heals next tick (supply is immutable post-finalize).
+ *    Maps from the runner's `supply_decrypt_failed` skip.
  *  - `other` — fallback bucket; an unexpected runner-side skip
  *    reason that doesn't map to the above. Surfaces as a warn in the
  *    log so future drift can be promoted to a named bucket.
@@ -323,6 +394,7 @@ export type YieldCronSkipReason =
   | 'pending_fund'
   | 'float_short'
   | 'dry_run'
+  | 'supply_decrypt'
   | 'other';
 
 const ALL_SKIP_REASONS: readonly YieldCronSkipReason[] = [
@@ -336,6 +408,7 @@ const ALL_SKIP_REASONS: readonly YieldCronSkipReason[] = [
   'pending_fund',
   'float_short',
   'dry_run',
+  'supply_decrypt',
   'other',
 ];
 
@@ -397,6 +470,13 @@ function bucketRunnerSkipReason(reason: string | undefined): YieldCronSkipReason
       return 'float_short';
     case 'orphaned_audit':
       return 'pending_fund';
+    // FU-1 (Wave 5 W2) — snapshot-funding runner skips:
+    case 'supply_decrypt_failed':
+      return 'supply_decrypt';
+    case 'zero_snapshot_yield':
+      // Same operator remediation as the cap-based zero (tiny supply ×
+      // sub-scale rate); reuse the existing log-only bucket.
+      return 'zero_yield';
     default:
       return 'other';
   }
@@ -495,6 +575,7 @@ export class YieldDistributionCron {
         cronExpr: expr,
         timezone: DEFAULT_TIMEZONE,
         dryRun: this.config.dryRun,
+        snapshotBasedFunding: this.config.snapshotBasedFunding,
         signer: this.signer.address,
         chainId: this.config.chainId,
         maxSupplyCap: this.config.maxSupplyCap.toString(),
@@ -664,17 +745,23 @@ export class YieldDistributionCron {
           { count: tokens.length, dryRun: this.config.dryRun },
           `Sweeping ${tokens.length} active token(s)`,
         );
+        // Sweep float ledger — shape matches the runner's `floatLedger`
+        // interface so `handleToken` forwards it straight through. In
+        // snapshot-funding mode the RUNNER reads `remaining` + calls
+        // `consume()` post-finalize (the amount isn't known until then);
+        // in the static fallback the cron drives both itself.
+        const floatLedger = {
+          get remaining(): bigint | null {
+            return floatRemaining;
+          },
+          consume(amount: bigint): void {
+            if (floatRemaining !== null) floatRemaining -= amount;
+          },
+        };
         for (const token of tokens) {
           result.attempted++;
           try {
-            const outcome = await this.handleToken(token, {
-              get floatRemaining() {
-                return floatRemaining;
-              },
-              consumeFloat(amount: bigint) {
-                if (floatRemaining !== null) floatRemaining -= amount;
-              },
-            });
+            const outcome = await this.handleToken(token, floatLedger);
             if (outcome.kind === 'success') result.succeeded++;
             else if (outcome.kind === 'skipped') {
               result.skipped++;
@@ -746,9 +833,9 @@ export class YieldDistributionCron {
       issuerAddress: string;
       yieldSnapshotAddress?: string;
     },
-    sweepCtx: {
-      readonly floatRemaining: bigint | null;
-      consumeFloat(amount: bigint): void;
+    floatLedger: {
+      readonly remaining: bigint | null;
+      consume(amount: bigint): void;
     },
   ): Promise<HandleTokenOutcome> {
     // Round-1 Backend-Arch H-2 (2026-05-21): null-guard at handleToken
@@ -923,6 +1010,9 @@ export class YieldDistributionCron {
           effectiveCap = overrideRaw;
         }
       }
+      // Cap-based estimate. In SNAPSHOT mode this is only the audit-insert
+      // estimate (the runner re-stamps the actual at snapshot_done); in
+      // STATIC mode it's the funded amount.
       const encTotalYield = (effectiveCap * ratePerShare) / RATE_SCALE;
       // Solidity narrowing guard — `YieldSnapshot.fundEpoch` narrows
       // input to `euint64` via `FHE.asEuint64`. Above uint64.max →
@@ -930,7 +1020,15 @@ export class YieldDistributionCron {
       // (small) value. This guard duplicates the runner's B.3 check
       // so the cron's catch path emits the structured warn instead
       // of the runner throw → catch chain.
-      if (encTotalYield > UINT64_MAX) {
+      //
+      // FU-1 (Wave 5 W2): SKIP this pre-fail in snapshot mode. There the
+      // cap is just a CEILING — the funded amount is `min(supply, cap) ×
+      // rate`, which is ≤ the cap-based estimate. Failing the token on a
+      // large-cap estimate would defeat FU-1's "raise the cap, stop
+      // tuning" benefit (a $10B ceiling with a tiny real supply would
+      // spuriously fail here). The runner does the AUTHORITATIVE uint64
+      // guard on the actual sized amount instead.
+      if (!this.config.snapshotBasedFunding && encTotalYield > UINT64_MAX) {
         await this.deps.notifyYieldCronFailure.execute({
           err: new Error(
             `EncTotalYieldNarrowingOverflowError(${token.symbol}=${tokenAddrLower}): ` +
@@ -987,8 +1085,17 @@ export class YieldDistributionCron {
       // Dry-run paths skip the check entirely: `floatRemaining` is
       // `null` on dry-run + we never call fundEpoch, so accounting
       // is moot.
-      if (!this.config.dryRun) {
-        const remaining = sweepCtx.floatRemaining;
+      //
+      // FU-1 (Wave 5 W2): in SNAPSHOT-funding mode this check moves
+      // INTO the runner — the amount to compare against
+      // (`min(decryptedSupply, cap) × rate`) isn't known until after
+      // openEpoch→snapshot→finalize, which happens inside the runner.
+      // The cron forwards `floatLedger` so the runner reads the same
+      // sweep-start balance + decrements it. This pre-flight + the
+      // post-runner `consumeFloat` below run ONLY in the static
+      // (cap-based) fallback.
+      if (!this.config.snapshotBasedFunding && !this.config.dryRun) {
+        const remaining = floatLedger.remaining;
         if (remaining === null) {
           // Sweep-start read failed — caller already alerted + would
           // have skipped the entire sweep. Defensive only.
@@ -1043,6 +1150,14 @@ export class YieldDistributionCron {
         operatorGrantSeconds: 2n * 24n * 60n * 60n,
         revokeOperatorAfterFund: true,
         dryRun: this.config.dryRun,
+        // FU-1 (Wave 5 W2): snapshot-based fund sizing. When on, the
+        // runner decrypts the on-chain encTotalSupply post-finalize and
+        // funds `min(supply, effectiveCap) × rate` instead of the
+        // cap-based `encTotalYield` above (which becomes the audit-row
+        // estimate). The runner also owns the float check + ledger
+        // decrement in this mode (see the gated pre-flight above).
+        snapshotBasedFunding: this.config.snapshotBasedFunding,
+        floatLedger,
         logger: this.logger as RunEpochInput['logger'],
         audit: this.auditWriter,
         tokenLock: lock,
@@ -1058,6 +1173,24 @@ export class YieldDistributionCron {
         },
         'runYieldEpoch returned',
       );
+      // FU-1 (Wave 5 W2): the runner funded at the CAP ceiling because the
+      // snapshot supply exceeded the cap — funded LESS than claimable, so
+      // late claimants silent-fail. WARN the operator (raise the cap; or, if
+      // it fires every tick, the on-chain supply decimal scale is off). Set
+      // only on a funded success/resumed_success.
+      if (result.clampedToCapCeiling) {
+        await this.deps.notifyYieldCronFailure.execute({
+          err: new SnapshotSupplyExceedsCapError(
+            token.symbol,
+            tokenAddrLower,
+            result.computedYield ?? 0n,
+            effectiveCap,
+          ),
+          tokenSymbol: token.symbol,
+          tokenAddress: tokenAddrLower,
+          severity: 'warn',
+        });
+      }
       if (result.status === 'success') {
         // Round-2 Reality B-1 (2026-05-21): decrement ONLY on fresh
         // fund (`'success'`), NOT on `'resumed_success'`. A resumed-
@@ -1067,7 +1200,16 @@ export class YieldDistributionCron {
         // double-counts → subsequent tokens see too-low remaining
         // float → spurious InsufficientMhusdcFloatError skips +
         // operator alert noise claiming float is short when it isn't.
-        if (!this.config.dryRun) sweepCtx.consumeFloat(encTotalYield);
+        //
+        // FU-1 (Wave 5 W2): in snapshot-funding mode the RUNNER already
+        // decremented the ledger by the amount it actually funded
+        // (`result.computedYield`) — decrementing here too would
+        // double-count. So this static-path decrement is gated off in
+        // snapshot mode. (Snapshot mode also uses the actual funded
+        // amount, not the cap-based `encTotalYield` estimate.)
+        if (!this.config.snapshotBasedFunding && !this.config.dryRun) {
+          floatLedger.consume(encTotalYield);
+        }
         return { kind: 'success' };
       }
       if (result.status === 'resumed_success') {
@@ -1087,6 +1229,42 @@ export class YieldDistributionCron {
         return { kind: 'success' };
       }
       if (result.status === 'skipped') {
+        // FU-1 (Wave 5 W2): the snapshot-funding runner owns two skips
+        // that warrant an operator alert (the cap-based path fired
+        // these from the cron's own pre-flight). Fire them here, then
+        // bucket as usual. `zero_snapshot_yield` stays log-only (mirrors
+        // the cap-based `zero_yield` skip — no Telegram noise).
+        if (result.skipReason === 'insufficient_mhusdc_float') {
+          await this.deps.notifyYieldCronFailure.execute({
+            err: new InsufficientMhusdcFloatError(
+              token.symbol,
+              tokenAddrLower,
+              // `floatRemaining`/`computedYield` are set by the runner on
+              // this skip; `?? 0n` is a defensive floor for the alert copy.
+              result.floatRemaining ?? 0n,
+              result.computedYield ?? 0n,
+            ),
+            tokenSymbol: token.symbol,
+            tokenAddress: tokenAddrLower,
+            severity: 'warn',
+          });
+        } else if (result.skipReason === 'supply_decrypt_failed') {
+          // `result.resumed === true` ⇒ the epoch finalized on a PRIOR tick
+          // and still can't be decrypted → persistent (structural), not
+          // same-tick lag. Word the alert so the operator triages it as
+          // "halt + roll back" rather than "wait it out" (Reality Checker
+          // GAP-1 tail risk, FU-1 review round 2).
+          await this.deps.notifyYieldCronFailure.execute({
+            err: new SnapshotSupplyDecryptError(
+              token.symbol,
+              tokenAddrLower,
+              result.resumed === true,
+            ),
+            tokenSymbol: token.symbol,
+            tokenAddress: tokenAddrLower,
+            severity: 'error',
+          });
+        }
         return {
           kind: 'skipped',
           reason: bucketRunnerSkipReason(result.skipReason),
@@ -1149,6 +1327,10 @@ export class YieldDistributionCron {
       return null;
     }
     const FLOAT_READ_TIMEOUT_MS = 60_000;
+    // Cleared in the finally so the 60s timer doesn't dangle on the
+    // success path (FU-1 review M-3, 2026-05-25 — same fix applied to the
+    // runner's encTotalSupply decrypt).
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     try {
       const stable = new Contract(this.config.stableAddress, STABLE_BALANCE_ABI, this.signer);
       const handle = (await stable.confidentialBalanceOf(this.signer.address)) as bigint;
@@ -1161,8 +1343,8 @@ export class YieldDistributionCron {
         .decryptForView(handle, FheTypes.Uint64)
         .withPermit()
         .execute();
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(
           () =>
             reject(
               new Error(
@@ -1170,8 +1352,8 @@ export class YieldDistributionCron {
               ),
             ),
           FLOAT_READ_TIMEOUT_MS,
-        ),
-      );
+        );
+      });
       // Round-2 Solidity B-1 (2026-05-21) — `confidentialBalanceOf`
       // returns `euint64` per MuHavenStable.sol:561 (NOT euint128 as
       // the cron's earlier draft assumed). The cofhe coprocessor uses
@@ -1193,6 +1375,8 @@ export class YieldDistributionCron {
         severity: 'error',
       });
       return null;
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
     }
   }
 

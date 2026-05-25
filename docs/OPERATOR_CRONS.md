@@ -175,9 +175,46 @@ In-process, starts with the backend container. Toggled by env:
 YIELD_CRON_ENABLED=true
 YIELD_CRON_PRIVATE_KEY=<signer>
 YIELD_CRON_DRY_RUN=true|false
+YIELD_CRON_SNAPSHOT_FUNDING=true   # FU-1 (Wave 5 W2); default true
+YIELD_CRON_MAX_SUPPLY_CAP=10000    # safety ceiling under snapshot funding
 ```
 
 No registration step — `pnpm run deploy:homelab` brings it up with the backend.
+
+**Funding model (FU-1, Wave 5 W2):** with `YIELD_CRON_SNAPSHOT_FUNDING=true`
+(default) the cron sizes each epoch to the ACTUAL snapshotted supply —
+`min(decryptedSupply, YIELD_CRON_MAX_SUPPLY_CAP) × ratePerShare /
+RATE_SCALE` — by decrypting the on-chain `YieldSnapshot.encTotalSupply`
+post-finalize. The cap is now a SAFETY CEILING, not the funded amount. Set
+`YIELD_CRON_SNAPSHOT_FUNDING=false` to roll back to legacy cap-based funding
+(no per-tick decrypt). New operator alerts to watch:
+
+| Alert | Severity | Meaning / action |
+|---|---|---|
+| `SnapshotSupplyDecryptError` (message: *"…Likely transient…"*) | error | A FRESH-finalize tick couldn't decrypt `encTotalSupply` — likely same-tick ACL-propagation lag; self-heals next tick (supply is immutable post-finalize). |
+| `SnapshotSupplyDecryptError` (message: *"PERSISTENT … STALLED"*) | error | The epoch finalized on a PRIOR tick and STILL can't be decrypted → the ACL has had ≥1 full tick to propagate, so this is **structural** (un-indexable handle at that token's holder scale / coprocessor / RPC), NOT lag. Yield for the token is stalled. **Halt + roll back** (`YIELD_CRON_SNAPSHOT_FUNDING=false`) and investigate; do not wait it out. |
+| `SnapshotSupplyExceedsCapError` | warn | Snapshot supply exceeded the cap → funded the ceiling, BELOW the claimable total, so late claimants silent-fail. **Raise `YIELD_CRON_MAX_SUPPLY_CAP`.** If it fires every tick, the on-chain supply is in a larger decimal scale than the cap envelope — verify before raising. |
+
+**⚠️ Enable FU-1 safely — smoke ONE token BEFORE the first unattended midnight tick.**
+The same-tick `encTotalSupply` decrypt is sound by construction but had no live
+proof at implementation time, and the funded amount depends on the on-chain
+supply's (unverified) decimal scale. Because the cron is **default-on**, the
+00:00 UTC tick will fund automatically — so before deploying with snapshot
+funding live, run the one-token smoke and confirm the magnitudes:
+
+```
+docker compose -f docker-compose.yml -p muhaven exec backend \
+  pnpm tsx scripts/run-daily-yield.ts --snapshot-funding --token=USYC
+```
+
+Confirm the INFO log `snapshot funding: sized epoch to actual on-chain supply`
+shows a real `decryptedSupply`, `clamped:false`, and a `computedYield` that
+matches the proven cap-based epoch magnitude (~$0.093 for CETES). A
+`clamped:true` (or a decrypt failure) means **do not enable yet** — the decimal
+scale is off or the decrypt doesn't resolve. (`--cap-funding` forces the legacy
+path; NEVER pair the smoke with `--dry-run` against prod Postgres — FU-3 poison
+row.) If you'd rather gate it, deploy with `YIELD_CRON_SNAPSHOT_FUNDING=false`
+first, smoke, then flip to `true` and restart.
 
 ### nav-publisher (homelab)
 

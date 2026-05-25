@@ -100,7 +100,7 @@
  *     check, not the source of truth.
  */
 import { Contract, Interface, ZeroAddress, type ContractRunner } from 'ethers';
-import { Encryptable } from '@cofhe/sdk';
+import { Encryptable, FheTypes } from '@cofhe/sdk';
 import type { Address } from 'viem';
 
 /** Inlined from `@muhaven/sdk` (1e6, mirrors `YieldSnapshot.RATE_SCALE`).
@@ -169,6 +169,14 @@ export interface AuditWriter {
       lastResumedAt?: Date;
       errorClass?: string;
       errorMessage?: string;
+      /** FU-1 (Wave 5 W2) — overwrite the stored fund amount with the
+       *  snapshot-sized ACTUAL once it's computed post-finalize. The
+       *  `insertInProgress` write stamps the cap-based ESTIMATE (the
+       *  actual supply isn't known until after the snapshot phase); the
+       *  runner re-stamps the real `min(supply, cap) × rate / RATE_SCALE`
+       *  at the `snapshot_done` transition so the audit trail records
+       *  what was actually funded, not the ceiling estimate. */
+      encTotalYieldUsd6?: bigint;
     },
   ): Promise<void>;
 
@@ -190,15 +198,47 @@ export interface RunEpochInput {
   ratePerShare: bigint;
   /** mhUSDC committed to the snapshot proxy (base units * 1e6). */
   encTotalYield: bigint;
-  /** Per-token effective max supply cap (override ?? global). Carried
-   *  for the audit-row trail only — documents what cap was used to
-   *  compute `encTotalYield` (cron-path math: `cap × ratePerShare /
-   *  RATE_SCALE`). The original "cap-vs-supply pre-flight" was dropped
-   *  in round 2 review (unit mismatch + dead code at realistic supply;
-   *  Reality Checker H1). Loud footgun protection now comes from the
-   *  uint64-narrowing bound on `encTotalYield`. Optional; cron passes
-   *  it for traceability, script omits. */
+  /** Per-token effective max supply cap (override ?? global).
+   *
+   *  Static path: carried for the audit-row trail only — documents what
+   *  cap was used to compute `encTotalYield` (`cap × ratePerShare /
+   *  RATE_SCALE`).
+   *
+   *  Snapshot-funding path (FU-1, Wave 5 W2): this is the SAFETY CEILING
+   *  for the snapshot-sized amount — the runner funds `min(decryptedSupply,
+   *  effectiveMaxSupplyCap) × ratePerShare / RATE_SCALE`. REQUIRED when
+   *  `snapshotBasedFunding` is true (the runner throws if it's unset). */
   effectiveMaxSupplyCap?: bigint;
+
+  /** FU-1 (Wave 5 W2) — snapshot-based fund sizing. When true, the runner
+   *  IGNORES the static `encTotalYield` input as the fund amount; instead,
+   *  post-`finalizeSnapshot` (pre-`fundEpoch`) it decrypts the on-chain
+   *  `getEpoch(epochId).encTotalSupply` (issuer-ACL granted in
+   *  `finalizeSnapshot`, YieldSnapshot.sol:485) and funds `min(
+   *  decryptedSupply, effectiveMaxSupplyCap) × ratePerShare / RATE_SCALE`.
+   *  This funds exactly the claimable total per ADR-038 (encTotalSupply ==
+   *  sum of snapshot balances), auto-adapting to holders without cap
+   *  tuning; the cap stays a ceiling that bounds float exposure.
+   *
+   *  Requires `effectiveMaxSupplyCap`; requires a `floatLedger` when
+   *  `!dryRun`. Decrypt failure → skip (`supply_decrypt_failed`); the
+   *  runner NEVER funds blind. `ratePerShare` (cleartext) + per-claim math
+   *  are unchanged. Cron + `run-daily-yield` pass true; the legacy hardhat
+   *  `run-yield-epoch.ts` does not use this runner so is unaffected. */
+  snapshotBasedFunding?: boolean;
+
+  /** FU-1 (Wave 5 W2) — sweep-level issuer mhUSDC float ledger. Read ONCE
+   *  at sweep start by the caller; the runner checks `remaining >=
+   *  computedAmount` (pre-fund) and calls `consume(computedAmount)` after a
+   *  fresh `fundEpoch` settles. Decrement happens HERE (not in the caller)
+   *  because snapshot funding only knows the amount post-decrypt, inside
+   *  the runner. Required when `snapshotBasedFunding && !dryRun`; a `null`
+   *  `remaining` in live mode makes the runner refuse to fund (skips
+   *  `insufficient_mhusdc_float`) rather than fund blind. */
+  floatLedger?: {
+    readonly remaining: bigint | null;
+    consume(amount: bigint): void;
+  };
   /** Oracle snapshot at the time the rate was computed; written to the
    *  audit row for post-hoc reconcile. Pass empty strings if unknown
    *  (script path may not have these). */
@@ -241,7 +281,10 @@ export type RunEpochSkipReason =
   | 'no_holders'
   | 'insufficient_mhusdc_float'
   | 'orphaned_audit'
-  | 'dry_run';
+  | 'dry_run'
+  // FU-1 (Wave 5 W2) — snapshot-funding skips:
+  | 'supply_decrypt_failed' // encTotalSupply decryptForView timed out / failed → retry next tick
+  | 'zero_snapshot_yield'; // min(supply, cap) × rate floored to 0 → funding 0 would silent-fail claims
 
 export interface RunEpochResult {
   epochId: bigint;
@@ -249,6 +292,21 @@ export interface RunEpochResult {
   status: 'success' | 'skipped' | 'resumed_success' | 'partial';
   skipReason?: RunEpochSkipReason;
   resumed: boolean;
+  /** FU-1 — the snapshot-sized amount the runner computed (and funded,
+   *  on a fresh `success`/`resumed_success`). Also present on the
+   *  `insufficient_mhusdc_float` + `zero_snapshot_yield` skips so the
+   *  caller can build the operator alert + audit log without re-deriving. */
+  computedYield?: bigint;
+  /** FU-1 — issuer mhUSDC float remaining at the float check. Present only
+   *  on the `insufficient_mhusdc_float` skip (lets the cron compose the
+   *  `InsufficientMhusdcFloatError` warn alert with both numbers). */
+  floatRemaining?: bigint;
+  /** FU-1 — true when the snapshot-sized amount was CLAMPED to the cap
+   *  ceiling (`decryptedSupply > cap`). The epoch is funded under the
+   *  claimable total → late claimants silent-fail. The caller fires a WARN
+   *  (raise the cap, or the on-chain supply is in an unexpected decimal
+   *  scale). Set only on a funded `success`/`resumed_success`. */
+  clampedToCapCeiling?: boolean;
 }
 
 // ── B.3 bounds-check error classes ───────────────────────────────────
@@ -397,6 +455,49 @@ const UINT128_MAX = 2n ** 128n - 1n;
 // pre-flight must reject loud at this boundary (Solidity review M-1).
 const UINT64_MAX = 2n ** 64n - 1n;
 
+/**
+ * FU-1 (Wave 5 W2) — snapshot-based fund sizing. Pure (no I/O) so the
+ * math is unit-testable in isolation.
+ *
+ * Returns the mhUSDC base-unit amount to fund:
+ *   `min(decryptedSupply, cap) × ratePerShare / RATE_SCALE`.
+ *
+ * The `cap` is a SAFETY CEILING that bounds the issuer's float exposure.
+ *
+ * - Normal case (`decryptedSupply <= cap`, the W1-raised-cap regime): the
+ *   amount is `floor(Σ snapshotBalanceᵢ × rate / RATE_SCALE)`. Each
+ *   on-chain claim is `floor(balanceᵢ × rate / RATE_SCALE)`, so by
+ *   sum-of-floors ≤ floor-of-sum, `Σ claims <= amount` — conservation
+ *   holds and the epoch funds exactly the claimable total (zero trapped
+ *   float). This is the intended FU-1 behaviour.
+ *
+ * - Clamp case (`decryptedSupply > cap`, returned `clamped: true`): the
+ *   amount is `floor(cap × rate / RATE_SCALE)`, which is STRICTLY LESS
+ *   than `floor(supply × rate / RATE_SCALE) >= Σ claims`. So the epoch is
+ *   UNDER-funded relative to total claims, and the LAST claimants
+ *   silent-fail (the wrapper's `_encRemaining` `FHE.sub` underflows to
+ *   zero). This is the deliberate ceiling tradeoff — NOT conservation —
+ *   so the caller MUST surface it (we fire a WARN alert): a binding clamp
+ *   means "raise the cap" (or, if it binds every tick, the on-chain
+ *   supply is in a different decimal scale than the cap envelope — see
+ *   the cron's UNIT-CONVENTION NOTE).
+ *
+ * Callers MUST still apply the uint64-narrowing guard + the zero-amount
+ * skip on the returned `amount` (the contract narrows to euint64, and
+ * funding 0 silent-fails every claim) — this helper is intentionally
+ * total and side-effect-free.
+ */
+export function sizeSnapshotYield(args: {
+  decryptedSupply: bigint;
+  cap: bigint;
+  ratePerShare: bigint;
+}): { sizedSupply: bigint; amount: bigint; clamped: boolean } {
+  const clamped = args.decryptedSupply > args.cap;
+  const sizedSupply = clamped ? args.cap : args.decryptedSupply;
+  const amount = (sizedSupply * args.ratePerShare) / RATE_SCALE;
+  return { sizedSupply, amount, clamped };
+}
+
 export async function runYieldEpoch(input: RunEpochInput): Promise<RunEpochResult> {
   const {
     symbol,
@@ -418,11 +519,25 @@ export async function runYieldEpoch(input: RunEpochInput): Promise<RunEpochResul
   const operatorGrantSeconds = input.operatorGrantSeconds ?? 365n * 24n * 60n * 60n;
   const snapshotBatchSize = input.snapshotBatchSize ?? 50;
   const revokeOperatorAfterFund = input.revokeOperatorAfterFund ?? false;
+  // FU-1 (Wave 5 W2) — snapshot-based funding mode + sweep float ledger.
+  const snapshotBasedFunding = input.snapshotBasedFunding ?? false;
+  const floatLedger = input.floatLedger;
 
   // Tracks the epoch ID once resolved; the catch block uses it to write
   // a `failure` audit row (Backend Arch H-4, 2026-05-20). null if the
   // throw landed before resume detection — no audit row to update.
   let currentEpochId: bigint | null = null;
+  // The rate ACTUALLY submitted to fundEpoch. Hoisted to the outer scope
+  // (Backend-Arch H-1, FU-1 review 2026-05-25) so the catch-path reconcile
+  // can compare the on-chain `ep.ratePerShare` against the rate we funded
+  // — NOT the raw input `ratePerShare`. On a resume the funded rate is the
+  // STORED `auditRow.ratePerShare`, which (because the cron recomputes the
+  // input rate from the current oracle each tick) generally differs from
+  // today's input. Comparing the catch reconcile against the input would
+  // mis-classify an actually-funded resume epoch as `failure` → next tick
+  // opens a FRESH epoch → double-fund. Default to the input rate for the
+  // pre-resume / fresh path; reassigned once `auditRow` is known.
+  let fundRate: bigint = ratePerShare;
 
   try {
     // Assert the injected signer has a provider attached — needed by
@@ -441,6 +556,16 @@ export async function runYieldEpoch(input: RunEpochInput): Promise<RunEpochResul
       );
     }
 
+    // FU-1 (Wave 5 W2) — snapshot funding needs the cap as a safety
+    // ceiling. Fail loud at the boundary if the caller forgot it (rather
+    // than silently falling through to fund the full decrypted supply).
+    if (snapshotBasedFunding && input.effectiveMaxSupplyCap === undefined) {
+      throw new Error(
+        `runYieldEpoch(${symbol}): snapshotBasedFunding requires ` +
+          `effectiveMaxSupplyCap (the min(supply, cap) safety ceiling).`,
+      );
+    }
+
     // ── B.3 bounds checks (BEFORE any on-chain side effect) ─────────
     if (ratePerShare === 0n) {
       throw new ZeroRateError(symbol, String(tokenAddr));
@@ -453,7 +578,13 @@ export async function runYieldEpoch(input: RunEpochInput): Promise<RunEpochResul
     // narrows the input to `euint64` via `FHE.asEuint64`; the prior
     // 2^127 bound let through values that would silently truncate
     // on-chain and silent-fail every claim.
-    if (encTotalYield > UINT64_MAX) {
+    //
+    // FU-1: in snapshot-funding mode the fund amount isn't the static
+    // `encTotalYield` input — it's computed post-finalize from the
+    // decrypted supply. The authoritative uint64 guard therefore runs in
+    // the fund-sizing block below; the static input is only a cap-based
+    // estimate (audit trail), so skipping its guard here is correct.
+    if (!snapshotBasedFunding && encTotalYield > UINT64_MAX) {
       throw new EncTotalYieldNarrowingOverflowError(
         symbol,
         String(tokenAddr),
@@ -781,10 +912,59 @@ export async function runYieldEpoch(input: RunEpochInput): Promise<RunEpochResul
       };
     }
 
-    // ── Fund phase ──────────────────────────────────────────────────
-    // Use the resumed audit row's stored rate if present, else inputs.
-    const fundRate = auditRow?.ratePerShare ?? ratePerShare;
-    const fundEncTotalYield = auditRow?.encTotalYieldUsd6 ?? encTotalYield;
+    // ── Fund sizing ─────────────────────────────────────────────────
+    // Rate is always the resumed audit row's stored rate if present, else
+    // the input (v3.1 idempotency — stored rate wins). Assigned to the
+    // outer-scoped `fundRate` so the catch reconcile compares the right
+    // value (Backend-Arch H-1).
+    fundRate = auditRow?.ratePerShare ?? ratePerShare;
+
+    // The amount funded:
+    //  - Static path: the audit row's stored amount (resume) or the
+    //    caller's input (`cap × rate / RATE_SCALE`, computed by the caller).
+    //  - Snapshot path (FU-1): `min(decryptedSupply, cap) × fundRate /
+    //    RATE_SCALE`, where `decryptedSupply` is read from the now-
+    //    finalized on-chain `encTotalSupply`. The SUPPLY is re-decrypted
+    //    every run (incl. resume) — `encTotalSupply` is immutable
+    //    post-finalize (ADR-038) so that recompute is idempotent. The RATE
+    //    on a resume is the STORED `auditRow.ratePerShare` (idempotency),
+    //    so the sized amount is `fresh_supply × stored_rate` — fresh on
+    //    the supply axis, pinned on the rate axis (Backend-Arch M-4).
+    let fundEncTotalYield: bigint;
+    let clampedToCapCeiling = false;
+    if (snapshotBasedFunding) {
+      const sized = await sizeAndCheckSnapshotFunding({
+        snapshot,
+        epochId,
+        cap: input.effectiveMaxSupplyCap!,
+        ratePerShare: fundRate,
+        cofheClient,
+        floatLedger,
+        resumed,
+        symbol,
+        tokenAddr: String(tokenAddr),
+        tokenAddrLower,
+        audit,
+        logger,
+      });
+      // A skip decision short-circuits the fund phase. The audit row stays
+      // at `snapshot_done` (no fund); the next tick resumes + retries
+      // (decrypt) or re-evaluates (float). Caller alerts on the reason.
+      if ('skip' in sized) {
+        return {
+          epochId,
+          status: 'skipped',
+          skipReason: sized.skip,
+          resumed,
+          ...(sized.computedYield !== undefined ? { computedYield: sized.computedYield } : {}),
+          ...(sized.floatRemaining !== undefined ? { floatRemaining: sized.floatRemaining } : {}),
+        };
+      }
+      fundEncTotalYield = sized.amount;
+      clampedToCapCeiling = sized.clamped;
+    } else {
+      fundEncTotalYield = auditRow?.encTotalYieldUsd6 ?? encTotalYield;
+    }
 
     logger.info(
       {
@@ -813,6 +993,19 @@ export async function runYieldEpoch(input: RunEpochInput): Promise<RunEpochResul
       fundEpochTxHash: String(fundTx.hash),
     });
     await fundTx.wait();
+    // FU-1 (Wave 5 W2) — decrement the sweep float ledger the MOMENT the
+    // on-chain drain is committed (fundTx confirmed), BEFORE the success
+    // audit write. Backend-Arch H-2 (2026-05-25): if `updateStatus('success')`
+    // throws (DB blip) the in-memory ledger must STILL reflect the drain,
+    // else the next token in the sweep over-commits the float against a
+    // balance that's already been spent → its `fundEpoch` pull silent-fails
+    // (the wrapper's `_silentFailBound`, runner-header KNOWN GAP). Only on a
+    // FRESH fundEpoch this tick — the no-fund resume paths returned earlier
+    // without touching the ledger; the sweep-start balance already reflects
+    // prior-tick drains. Static path has no ledger (gated off in the cron).
+    if (snapshotBasedFunding) {
+      floatLedger?.consume(fundEncTotalYield);
+    }
     await audit.updateStatus(epochId, tokenAddrLower, 'success', {
       finishedAt: new Date(),
     });
@@ -843,6 +1036,8 @@ export async function runYieldEpoch(input: RunEpochInput): Promise<RunEpochResul
       fundTxHash: String(fundTx.hash),
       status: resumed ? 'resumed_success' : 'success',
       resumed,
+      computedYield: fundEncTotalYield,
+      ...(clampedToCapCeiling ? { clampedToCapCeiling: true } : {}),
     };
   } catch (err) {
     // Backend Arch H-4 (2026-05-20). Flip the audit row to `failure`
@@ -870,7 +1065,12 @@ export async function runYieldEpoch(input: RunEpochInput): Promise<RunEpochResul
           const ep = await snapshot.getEpoch(currentEpochId);
           if (
             ep.funded === true &&
-            (ep.ratePerShare as bigint) === ratePerShare
+            // Compare against the rate we ACTUALLY funded (Backend-Arch
+            // H-1, 2026-05-25). On a resume that's the stored
+            // `auditRow.ratePerShare` (== `fundRate`), which differs from
+            // today's input `ratePerShare`; comparing the input would
+            // mis-classify the funded epoch as `failure` → double-fund.
+            (ep.ratePerShare as bigint) === fundRate
           ) {
             terminalStatus = 'success';
             logger.warn(
@@ -928,6 +1128,219 @@ export async function runYieldEpoch(input: RunEpochInput): Promise<RunEpochResul
         'tokenLock.release threw — advisory lock may be leaked',
       );
     }
+  }
+}
+
+/**
+ * FU-1 (Wave 5 W2) — fund-sizing + pre-fund gates for snapshot-based
+ * funding. Runs post-`finalizeSnapshot`, pre-`fundEpoch`, ONLY in live
+ * mode (dry-run returns before the fund phase, so this is never reached
+ * under `dryRun`).
+ *
+ * Returns either:
+ *   - `{ amount }` — proceed to fund this amount (the audit row's stored
+ *     `encTotalYieldUsd6` has been re-stamped to it), OR
+ *   - `{ skip, computedYield?, floatRemaining? }` — short-circuit (no
+ *     fund). The caller surfaces the skip; the next tick resumes the
+ *     finalized-but-unfunded epoch and retries.
+ *
+ * Skip reasons:
+ *   - `supply_decrypt_failed` — `encTotalSupply` decryptForView timed out
+ *     / failed (the ACL grant may not have propagated to the coprocessor
+ *     yet on a same-tick finalize). NEVER fund blind; retry next tick.
+ *   - `zero_snapshot_yield`   — `min(supply, cap) × rate` floored to 0;
+ *     funding 0 silent-fails every claim.
+ *   - `insufficient_mhusdc_float` — issuer float < computed amount (or the
+ *     sweep-start float read failed → `remaining === null`).
+ */
+async function sizeAndCheckSnapshotFunding(args: {
+  snapshot: Contract;
+  epochId: bigint;
+  cap: bigint;
+  ratePerShare: bigint;
+  cofheClient: any;
+  floatLedger?: { readonly remaining: bigint | null; consume(amount: bigint): void };
+  resumed: boolean;
+  symbol: string;
+  tokenAddr: string;
+  tokenAddrLower: LowerAddress;
+  audit: AuditWriter;
+  logger: RunnerLogger;
+}): Promise<
+  | { amount: bigint; clamped: boolean }
+  | { skip: RunEpochSkipReason; computedYield?: bigint; floatRemaining?: bigint }
+> {
+  const { snapshot, epochId, cap, ratePerShare, cofheClient, floatLedger, symbol, logger } = args;
+
+  // Re-read the now-finalized epoch to get the sealed encTotalSupply
+  // handle. ACL to the issuer EOA was granted in finalizeSnapshot
+  // (YieldSnapshot.sol:485); the cofhe client's self-permit can read it.
+  const finalizedEpoch = await snapshot.getEpoch(epochId);
+  const supplyHandleRaw = String(finalizedEpoch.encTotalSupply);
+  // Defensive: a zero-hash handle means the snapshot accumulated nothing.
+  // Can't happen post-finalize (holderCount > 0 → finalize reverts
+  // EmptySnapshot), but never hand a zero handle to decryptForView.
+  if (!supplyHandleRaw || /^0x0{64}$/i.test(supplyHandleRaw)) {
+    logger.warn(
+      { symbol, epochId: epochId.toString() },
+      'snapshot funding: encTotalSupply handle is zero post-finalize — skipping (no fund)',
+    );
+    return { skip: 'supply_decrypt_failed' };
+  }
+
+  const decryptedSupply = await decryptSnapshotSupply(
+    cofheClient,
+    supplyHandleRaw,
+    logger,
+    symbol,
+    epochId,
+  );
+  if (decryptedSupply === null) {
+    return { skip: 'supply_decrypt_failed' };
+  }
+
+  const { sizedSupply, amount, clamped } = sizeSnapshotYield({
+    decryptedSupply,
+    cap,
+    ratePerShare,
+  });
+  logger.info(
+    {
+      symbol,
+      epochId: epochId.toString(),
+      decryptedSupply: decryptedSupply.toString(),
+      cap: cap.toString(),
+      sizedSupply: sizedSupply.toString(),
+      computedYield: amount.toString(),
+      clamped,
+    },
+    'snapshot funding: sized epoch to actual on-chain supply',
+  );
+  if (clamped) {
+    // The cap is binding (supply > cap): the epoch funds LESS than the
+    // claimable total → late claimants silent-fail. Surface loud (the
+    // caller raises a WARN). A clamp that binds EVERY tick also flags the
+    // unit-scale hazard (on-chain supply in a different decimal scale than
+    // the cap envelope — see the cron's UNIT-CONVENTION NOTE).
+    logger.warn(
+      {
+        symbol,
+        epochId: epochId.toString(),
+        decryptedSupply: decryptedSupply.toString(),
+        cap: cap.toString(),
+      },
+      'snapshot funding: supply > cap — funding CLAMPED to the ceiling; ' +
+        'late claimants will silent-fail. Raise YIELD_CRON_MAX_SUPPLY_CAP ' +
+        '(or verify the on-chain supply decimal scale).',
+    );
+  }
+
+  // Authoritative uint64-narrowing guard on the ACTUAL amount — the
+  // contract narrows to euint64 in fundEpoch. `amount <= cap × rate /
+  // RATE_SCALE`, which the caller already conservatively pre-checked, so
+  // this should never trip; it's the load-bearing guard regardless.
+  if (amount > UINT64_MAX) {
+    throw new EncTotalYieldNarrowingOverflowError(symbol, args.tokenAddr, amount);
+  }
+  // Supply-based zero: tiny supply × sub-scale rate floors to 0. Funding 0
+  // silent-fails every claim (FHE.sub underflow). Skip log-only (mirrors
+  // the cap-based `zero_yield` skip) — no operator alert noise.
+  if (amount === 0n) {
+    logger.warn(
+      {
+        symbol,
+        epochId: epochId.toString(),
+        decryptedSupply: decryptedSupply.toString(),
+        ratePerShare: ratePerShare.toString(),
+      },
+      'snapshot funding: computed yield floored to 0 — skipping (no fund)',
+    );
+    return { skip: 'zero_snapshot_yield', computedYield: 0n };
+  }
+
+  // Multi-token-safe float gate. `remaining === null` in live mode means
+  // the caller's sweep-start read failed — refuse to fund blind.
+  const remaining = floatLedger?.remaining ?? null;
+  if (remaining === null || remaining < amount) {
+    logger.warn(
+      {
+        symbol,
+        epochId: epochId.toString(),
+        remaining: remaining === null ? 'null' : remaining.toString(),
+        needed: amount.toString(),
+      },
+      'snapshot funding: issuer mhUSDC float short — skipping (no fund)',
+    );
+    return {
+      skip: 'insufficient_mhusdc_float',
+      computedYield: amount,
+      ...(remaining !== null ? { floatRemaining: remaining } : {}),
+    };
+  }
+
+  // Proceeding to fund. Re-stamp the audit row's amount to the actual
+  // (insertInProgress stamped the cap-based estimate) so the trail records
+  // what was funded. Idempotent: status stays `snapshot_done`.
+  await args.audit.updateStatus(epochId, args.tokenAddrLower, 'snapshot_done', {
+    encTotalYieldUsd6: amount,
+  });
+  return { amount, clamped };
+}
+
+/**
+ * FU-1 — decrypt the on-chain `encTotalSupply` handle via the cofhe
+ * client's self-permit. Mirrors the cron's `readMhUsdcFloat` timeout
+ * shape: single attempt wrapped in a 60s `Promise.race` so a stalled
+ * coprocessor can't wedge the runner. Returns `null` on any failure (the
+ * caller skips + the next tick retries — `encTotalSupply` is immutable
+ * post-finalize so the recompute is safe).
+ */
+async function decryptSnapshotSupply(
+  cofheClient: any,
+  handleHex: string,
+  logger: RunnerLogger,
+  symbol: string,
+  epochId: bigint,
+): Promise<bigint | null> {
+  const DECRYPT_TIMEOUT_MS = 60_000;
+  // Cleared in the finally so the 60s timer doesn't dangle on the (common)
+  // success path — once per token per tick across an 11-token sweep would
+  // otherwise keep the event loop armed + delay clean shutdown
+  // (Backend-Arch M-3, 2026-05-25).
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // `getEpoch` returns encTotalSupply as bytes32; decryptForView wants
+    // the numeric ctHash handle (same as the cron's confidentialBalanceOf
+    // uint256 handle). encTotalSupply is euint128 → FheTypes.Uint128.
+    const handle = BigInt(handleHex);
+    const decryptPromise = cofheClient
+      .decryptForView(handle, FheTypes.Uint128)
+      .withPermit()
+      .execute();
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(
+        () =>
+          reject(
+            new Error(
+              `encTotalSupply decryptForView timed out after ${DECRYPT_TIMEOUT_MS}ms`,
+            ),
+          ),
+        DECRYPT_TIMEOUT_MS,
+      );
+    });
+    return (await Promise.race([decryptPromise, timeoutPromise])) as bigint;
+  } catch (err) {
+    logger.error(
+      {
+        symbol,
+        epochId: epochId.toString(),
+        err: err instanceof Error ? err.message : String(err),
+      },
+      'snapshot funding: encTotalSupply decryptForView failed — skipping + retrying next tick',
+    );
+    return null;
+  } finally {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
   }
 }
 

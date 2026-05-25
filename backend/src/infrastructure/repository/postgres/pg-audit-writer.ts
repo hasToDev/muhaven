@@ -117,6 +117,7 @@ export class PgAuditWriter implements AuditWriter {
       lastResumedAt?: Date;
       errorClass?: string;
       errorMessage?: string;
+      encTotalYieldUsd6?: bigint;
     },
   ): Promise<void> {
     // Build the SET clause from the union of `status` + any provided
@@ -140,6 +141,12 @@ export class PgAuditWriter implements AuditWriter {
     // they land in the audit row. See top-of-file rationale.
     if (fields?.errorMessage !== undefined)
       set.errorMessage = redactAuditErrorMessage(fields.errorMessage);
+    // FU-1 (Wave 5 W2): the snapshot-funding runner re-stamps the
+    // actually-funded amount at the `snapshot_done` transition. Serialise
+    // via `.toString()` (numeric(39,0) holds uint128 widths beyond JS
+    // safe-integer range — same boundary rule as `insertInProgress`).
+    if (fields?.encTotalYieldUsd6 !== undefined)
+      set.encTotalYieldUsd6 = fields.encTotalYieldUsd6.toString();
     await this.db
       .update(yieldDistributions)
       .set(set)

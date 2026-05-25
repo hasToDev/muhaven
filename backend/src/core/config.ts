@@ -457,6 +457,16 @@ const EnvSchema = z.object({
   // narrowing in the runner; a typo'd `0` cap would short-circuit
   // every distribution to zero).
   YIELD_CRON_MAX_SUPPLY_CAP: z.coerce.bigint().min(1n).max(10_000_000_000n).default(10_000_000n),
+  // FU-1 (Wave 5 W2) — snapshot-based fund sizing. When true (default),
+  // the cron funds each epoch to the ACTUAL snapshotted supply
+  // (`min(decryptedSupply, YIELD_CRON_MAX_SUPPLY_CAP) × ratePerShare /
+  // RATE_SCALE`) instead of the cleartext cap. The runner decrypts the
+  // on-chain `encTotalSupply` (issuer-ACL granted at finalizeSnapshot)
+  // post-finalize; the cap stays a SAFETY CEILING bounding float
+  // exposure. Set to `false` to roll back to the legacy cap-based funding
+  // (no per-tick decrypt). Uses `zEnvBool` so `=false` actually disables
+  // (NOT `z.coerce.boolean()`, which is the W2 footgun — see top-of-file).
+  YIELD_CRON_SNAPSHOT_FUNDING: zEnvBool(true),
   // Hard ceiling on oracle snapshot staleness — beyond this many days
   // the cron skips the token + fires WARN alert (v3.1 A5). Default 7d
   // matches the plan; lower it on prod once nav-worker reliability is
