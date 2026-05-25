@@ -221,6 +221,54 @@ describe('checkPolicy', () => {
     });
     expect(res.ok).toBe(true);
   });
+
+  // Wave 5 Slice 1 (MCP sell) — the cap check is selector-AGNOSTIC: the
+  // broker reads `capArgIndex` from the matched cap, so redeem (word 2, same
+  // as purchase) and queue-submit (word 1, no leading token arg) both work
+  // through the SAME generic path. These fixtures pin that the cap arg index
+  // is honoured per-selector.
+  it('redeem cap (capArgIndex 2) accepts within cap and rejects over cap', () => {
+    const REDEEM = '0xaabbccdd';
+    const within = (
+      REDEEM + '0'.repeat(64) + '0'.repeat(64) + uint256Arg(50n) // word2 = 50
+    ) as `0x${string}`;
+    const over = (
+      REDEEM + '0'.repeat(64) + '0'.repeat(64) + uint256Arg(101n) // word2 = 101
+    ) as `0x${string}`;
+    const snapshot = snap({
+      selectorCaps: [{ selector: REDEEM, capArgIndex: 2, maxAmount: '100' }],
+    });
+    expect(
+      checkPolicy({ snapshot, innerCall: { target: snapshot.targetContracts[0]!, callData: within }, activeSigner: ACTIVE_SIGNER, nowSec: NOW }).ok,
+    ).toBe(true);
+    const rej = checkPolicy({ snapshot, innerCall: { target: snapshot.targetContracts[0]!, callData: over }, activeSigner: ACTIVE_SIGNER, nowSec: NOW });
+    expect(rej.ok).toBe(false);
+    if (!rej.ok) expect(rej.code).toBe('max_spend_exceeded');
+  });
+
+  it('queue-submit cap (capArgIndex 1, no token arg) reads maxSharesHint at word 1', () => {
+    const SUBMIT = '0x11223344';
+    // submit(encShares, maxSharesHint, ephemeralEOA): word0 = encShares
+    // dynamic-offset, word1 = maxSharesHint, word2 = ephemeralEOA.
+    const within = (
+      SUBMIT + '0'.repeat(64) + uint256Arg(80n) + '0'.repeat(64) // word1 = 80
+    ) as `0x${string}`;
+    const over = (
+      SUBMIT + '0'.repeat(64) + uint256Arg(200n) + '0'.repeat(64) // word1 = 200
+    ) as `0x${string}`;
+    const snapshot = snap({
+      // The queue address is a distinct target; add it to the allowlist.
+      targetContracts: ['0x3333333333333333333333333333333333333333'],
+      selectorCaps: [{ selector: SUBMIT, capArgIndex: 1, maxAmount: '100' }],
+    });
+    const target = '0x3333333333333333333333333333333333333333' as const;
+    expect(
+      checkPolicy({ snapshot, innerCall: { target, callData: within }, activeSigner: ACTIVE_SIGNER, nowSec: NOW }).ok,
+    ).toBe(true);
+    const rej = checkPolicy({ snapshot, innerCall: { target, callData: over }, activeSigner: ACTIVE_SIGNER, nowSec: NOW });
+    expect(rej.ok).toBe(false);
+    if (!rej.ok) expect(rej.code).toBe('max_spend_exceeded');
+  });
 });
 
 describe('FilePolicyStore', () => {

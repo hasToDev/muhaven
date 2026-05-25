@@ -134,6 +134,20 @@ const EnvSchema = z.object({
   // watches all addresses in these JSON arrays. Empty = disable that path.
   REDEMPTION_QUEUE_ADDRESSES_JSON: z.string().optional(),
   YIELD_SNAPSHOT_ADDRESSES_JSON: z.string().optional(),
+  // ── Wave 5 Slice 1 (MCP sell) — per-token RedemptionQueue MAP ──────
+  // A JSON object mapping lower-cased RWA token address → its
+  // RedemptionQueue proxy address, e.g.
+  //   {"0x8d77…":"0x435a…","0x…gold":"0x6f2D…"}
+  // Mirrors the frontend's `VITE_QUEUES_JSON` (copy the same value).
+  // UNLIKE `REDEMPTION_QUEUE_ADDRESSES_JSON` (a flat array for the
+  // tax-event indexer), this is the token→queue MAP the tokens API +
+  // the Scoped-session sell-cap injection need to resolve a specific
+  // token's queue. Empty/unset → `redemption_queue_address` is null on
+  // the tokens API and the autonomous queued-sell (`viaQueue`) cap is
+  // not injected, so explicit queued sells degrade to a Path-C deep-link
+  // (instant redeem is unaffected — it auto-escalates to the queue
+  // on-chain). Parsed via `parseTokenAddressMap`.
+  REDEMPTION_QUEUE_BY_TOKEN_JSON: z.string().optional(),
   // Phase 9.A · Option Z follow-up — per-RWA MuHavenToken proxies. The
   // indexer subscribes to broadened `Transfer(from, to, amount)` logs,
   // filters out mints / burns / protocol-mediated moves, and stores two
@@ -552,4 +566,54 @@ export function getEnv(): Env {
  */
 export function resetEnvCacheForTesting(): void {
   _env = null;
+}
+
+/**
+ * Wave 5 Slice 1 (MCP sell) — parse a JSON token→queue address map (the
+ * `REDEMPTION_QUEUE_BY_TOKEN_JSON` env) into a lower-cased
+ * `Record<tokenAddress, queueAddress>`. Mirrors the frontend's
+ * `parsePerTokenMap`. Returns `{}` on absent / malformed input (the feature
+ * degrades gracefully — see the env-var JSDoc), and drops any entry whose
+ * key OR value isn't a 0x-prefixed 20-byte hex (defensive against a
+ * hand-edited env). Pure (modulo a one-time stderr warn on a set-but-bad
+ * value) + idempotent. Called ONCE at module load by the token/scoped-session
+ * routes (NOT per request).
+ *
+ * To avoid a silent total feature-off on a fat-fingered env (the failure
+ * mode BE Arch review flagged), it logs a single `console.warn` when `raw` is
+ * non-empty but yields zero usable entries — so the operator sees WHY queued
+ * sells degraded to a deep-link.
+ */
+export function parseTokenAddressMap(
+  raw: string | undefined,
+): Record<string, `0x${string}`> {
+  if (!raw) return {};
+  const warnUnusable = (why: string): void => {
+    // stderr only — surfaces in backend container logs, never user-facing.
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[config] a token→address map env is set but ${why} — ignoring it (dependent feature, e.g. autonomous queued sells, degrades to its fallback)`,
+    );
+  };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    warnUnusable('is not valid JSON');
+    return {};
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    warnUnusable('is not a JSON object {tokenAddress: queueAddress}');
+    return {};
+  }
+  const out: Record<string, `0x${string}`> = {};
+  const addrRe = /^0x[0-9a-fA-F]{40}$/;
+  for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof v !== 'string' || !addrRe.test(k) || !addrRe.test(v)) continue;
+    out[k.toLowerCase()] = v.toLowerCase() as `0x${string}`;
+  }
+  if (Object.keys(out).length === 0) {
+    warnUnusable('produced zero valid 0x-address→0x-address entries');
+  }
+  return out;
 }

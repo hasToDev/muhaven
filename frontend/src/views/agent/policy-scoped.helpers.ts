@@ -101,6 +101,68 @@ export const SUBSCRIPTION_PURCHASE_SELECTOR: `0x${string}` = toFunctionSelector(
  *  192-201` layout diagram). Static encoding — see RD-6 invariant. */
 export const PURCHASE_MAX_SHARES_HINT_WORD_INDEX = 2
 
+/** Wave 5 Slice 1 (MCP sell) — `MuHavenSubscription.redeem(address token,
+ *  InEuint128 encShares, uint128 maxSharesHint, address ephemeralEOA)` 4-byte
+ *  selector. SAME arg shape as purchase, so `maxSharesHint` is at word index
+ *  2 too. The on-chain Scoped CallPolicy already authorizes redeem
+ *  (`scoped-permissions.ts:181-187`); adding this OFF-CHAIN selectorCap lets
+ *  the broker sign instant sells WITHOUT changing the permissionId (it's a
+ *  hash of the on-chain policy set + signer, not the off-chain caps). */
+export const SUBSCRIPTION_REDEEM_SELECTOR: `0x${string}` = toFunctionSelector({
+  name: 'redeem',
+  type: 'function',
+  stateMutability: 'nonpayable',
+  outputs: [],
+  inputs: [
+    { name: 'token', type: 'address' },
+    {
+      name: 'encShares',
+      type: 'tuple',
+      components: [
+        { name: 'ctHash', type: 'uint256' },
+        { name: 'securityZone', type: 'uint8' },
+        { name: 'utype', type: 'uint8' },
+        { name: 'signature', type: 'bytes' },
+      ],
+    },
+    { name: 'maxSharesHint', type: 'uint128' },
+    { name: 'ephemeralEOA', type: 'address' },
+  ],
+}).toLowerCase() as `0x${string}`
+
+/** Word index of `maxSharesHint` for redeem — same shape as purchase. */
+export const REDEEM_MAX_SHARES_HINT_WORD_INDEX = 2
+
+/** Wave 5 Slice 1 (explicit queued sell) — `RedemptionQueue.submit(InEuint128
+ *  encShares, uint128 maxSharesHint, address ephemeralEOA)` 4-byte selector.
+ *  NO leading token arg (the queue is per-token), so `maxSharesHint` is at
+ *  word index 1, NOT 2. Queue submit/claim are in the on-chain envelope
+ *  (`scoped-permissions.ts:194-199`). */
+export const REDEMPTION_QUEUE_SUBMIT_SELECTOR: `0x${string}` = toFunctionSelector({
+  name: 'submit',
+  type: 'function',
+  stateMutability: 'nonpayable',
+  outputs: [],
+  inputs: [
+    {
+      name: 'encShares',
+      type: 'tuple',
+      components: [
+        { name: 'ctHash', type: 'uint256' },
+        { name: 'securityZone', type: 'uint8' },
+        { name: 'utype', type: 'uint8' },
+        { name: 'signature', type: 'bytes' },
+      ],
+    },
+    { name: 'maxSharesHint', type: 'uint128' },
+    { name: 'ephemeralEOA', type: 'address' },
+  ],
+}).toLowerCase() as `0x${string}`
+
+/** Word index of `maxSharesHint` for queue submit — 1, because submit has no
+ *  leading token arg (unlike purchase/redeem). */
+export const QUEUE_SUBMIT_MAX_SHARES_HINT_WORD_INDEX = 1
+
 /**
  * Parse a user-typed mhUSDC ceiling into a base-6 BigInt.
  *
@@ -259,8 +321,20 @@ export interface BuildScopedMintBodyInput {
   subscriptionAddress: `0x${string}`
   /** mhUSDC base-6 ceiling (user-intent display). */
   maxPerOpUsd6: bigint
-  /** Per-selector cap on `maxSharesHint` — in SHARES (selector-native unit). */
+  /** Per-selector cap on `maxSharesHint` — in SHARES (selector-native unit).
+   *  Applied to purchase, redeem AND queue-submit (same per-op ceiling). */
   maxSharesPerOp: bigint
+  /**
+   * Wave 5 Slice 1 (MCP sell) — every per-token `RedemptionQueue` proxy
+   * address (`Object.values(v35Addresses.queues)`). Added to
+   * `targetContracts` so the broker authorizes autonomous `submit` to each
+   * token's queue. Lower-cased + deduped internally. MAY be empty (no
+   * queues onboarded yet) — then the explicit queued-sell cap is omitted and
+   * `viaQueue` sells degrade to a Path-C deep-link. The on-chain CallPolicy
+   * already authorizes submit/claim on every queue (`scoped-permissions.ts`),
+   * so this carries no re-mint cost.
+   */
+  redemptionQueueAddresses: readonly `0x${string}`[]
   mintedAtSec: number
   validUntilSec: number
   /**
@@ -357,8 +431,14 @@ export interface ScopedMintBodyShape {
  * **Invariants enforced** (every callout below maps to a backend Zod or
  * MintScopedSessionUseCase pre-condition):
  *   - `mode: 'scoped'` literal — matches `MintScopedSessionDtoSchema:233`.
- *   - `selectorCaps[0]` is the single `subscription.purchase` entry with
- *     `capArgIndex = 2` + `maxAmount` in SHARES.
+ *   - `selectorCaps` carries `subscription.purchase` (capArgIndex 2) +
+ *     `subscription.redeem` (capArgIndex 2) + — when ≥1 RedemptionQueue is in
+ *     scope — `RedemptionQueue.submit` (capArgIndex **1**, no token arg). All
+ *     `maxAmount` in SHARES. Wave 5 Slice 1 (MCP sell): redeem/submit are
+ *     already in the on-chain envelope so adding the off-chain caps does NOT
+ *     change the permissionId (no re-mint).
+ *   - `targetContracts` = `[subscription, ...redemptionQueues]` (deduped,
+ *     lower-cased). Queues from `Object.values(v35Addresses.queues)`.
  *   - `maxPerOpUsd6` serialized as decimal string (uint256 base-6).
  *   - `consentActionHash` is `0x`-prefixed when present (caller
  *     responsibility — the helper does NOT prefix; verify shape with
@@ -417,19 +497,52 @@ export function buildScopedMintBody(input: BuildScopedMintBodyInput): ScopedMint
       `buildScopedMintBody: validatorNonce must be a uint32 integer; got ${input.validatorNonce}`,
     )
   }
+  // Wave 5 Slice 1 — dedupe + lower-case the per-token queue addresses, drop
+  // any that fail the 20-byte shape (defensive against a malformed
+  // VITE_QUEUES_JSON env). The subscription is always target[0].
+  const subscriptionLower = input.subscriptionAddress.toLowerCase() as `0x${string}`
+  const seenTargets = new Set<string>([subscriptionLower])
+  const queueTargets: `0x${string}`[] = []
+  for (const q of input.redemptionQueueAddresses) {
+    const lower = q.toLowerCase() as `0x${string}`
+    if (!/^0x[0-9a-f]{40}$/.test(lower) || seenTargets.has(lower)) continue
+    seenTargets.add(lower)
+    queueTargets.push(lower)
+  }
+
+  const maxAmountStr = input.maxSharesPerOp.toString()
+  // selectorCaps: purchase + redeem always (subscription targets); submit
+  // ONLY when at least one queue is in scope (no target → a submit cap would
+  // be dead weight). All three share the same per-op share ceiling.
+  const selectorCaps: ScopedMintBodyShape['snapshot']['selectorCaps'] = [
+    {
+      selector: SUBSCRIPTION_PURCHASE_SELECTOR,
+      capArgIndex: PURCHASE_MAX_SHARES_HINT_WORD_INDEX,
+      maxAmount: maxAmountStr,
+    },
+    {
+      selector: SUBSCRIPTION_REDEEM_SELECTOR,
+      capArgIndex: REDEEM_MAX_SHARES_HINT_WORD_INDEX,
+      maxAmount: maxAmountStr,
+    },
+    ...(queueTargets.length > 0
+      ? [
+          {
+            selector: REDEMPTION_QUEUE_SUBMIT_SELECTOR,
+            capArgIndex: QUEUE_SUBMIT_MAX_SHARES_HINT_WORD_INDEX,
+            maxAmount: maxAmountStr,
+          },
+        ]
+      : []),
+  ]
+
   return {
     snapshot: {
       sessionId: input.sessionId,
       mode: 'scoped',
       signerAddress: input.signerAddress,
-      targetContracts: [input.subscriptionAddress],
-      selectorCaps: [
-        {
-          selector: SUBSCRIPTION_PURCHASE_SELECTOR,
-          capArgIndex: PURCHASE_MAX_SHARES_HINT_WORD_INDEX,
-          maxAmount: input.maxSharesPerOp.toString(),
-        },
-      ],
+      targetContracts: [subscriptionLower, ...queueTargets],
+      selectorCaps,
       validUntilSec: input.validUntilSec,
       mintedAtSec: input.mintedAtSec,
       // Omitted from the snapshot when undefined (OPEN-A direct re-mint) —

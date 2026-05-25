@@ -17,6 +17,7 @@ import { withScope } from '../../../../src/interface/middleware/with-scope.js';
 import { Response } from '../../../../src/interface/response.js';
 import { ApplicationHttpError } from '../../../../src/core/errors.js';
 import { getLogger } from '../../../../src/core/logger.js';
+import { getEnv, parseTokenAddressMap } from '../../../../src/core/config.js';
 import { ZodError } from 'zod';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
@@ -52,8 +53,13 @@ const mintUseCase = new MintScopedSessionUseCase(
   container.appendAuditEvent,
 );
 
+// Wave 5 Slice 1 (MCP sell) — pass the per-token RedemptionQueue addresses
+// (so the GET-mirror read can derive queued-sell caps + queue targets) and
+// the audit sink (for the one-time platform-derived-consent provenance row).
 const getActiveUseCase = new GetActiveScopedSessionUseCase(
   container.scopedSessionRepo,
+  Object.values(parseTokenAddressMap(getEnv().REDEMPTION_QUEUE_BY_TOKEN_JSON)),
+  container.appendAuditEvent,
 );
 
 const postHandler = createHandler({

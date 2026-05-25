@@ -135,7 +135,7 @@ const TIER_OPTIONS: ReadonlyArray<{
   {
     value: 'scoped',
     title: 'Scoped autonomy',
-    blurb: 'Autonomous buys within a per-op mhUSDC ceiling, time-bounded by TTL. The agent signs without prompting up to the ceiling.',
+    blurb: 'Autonomous buys & sells within a per-op ceiling, time-bounded by TTL. The agent signs without prompting up to the ceiling.',
     icon: KeyRound,
   },
 ]
@@ -904,6 +904,11 @@ async function mintScopedSession(
     subscriptionAddress: v35Addresses.subscription.toLowerCase() as `0x${string}`,
     maxPerOpUsd6: cap,
     maxSharesPerOp,
+    // Wave 5 Slice 1 (MCP sell) — authorize autonomous queued-sell to every
+    // per-token RedemptionQueue. The on-chain envelope already permits
+    // submit/claim on each, so this is no-re-mint. Empty when no queues are
+    // onboarded → the helper omits the submit cap.
+    redemptionQueueAddresses: Object.values(v35Addresses.queues),
     mintedAtSec: installed.mintedAtSec,
     validUntilSec: installed.validUntilSec,
     // null (OPEN-A direct re-mint — no transition token) → undefined so the
@@ -1316,7 +1321,7 @@ function humaniseError(e: unknown, fallback: string): string {
               Active scoped session
             </p>
             <h2 class="font-accent text-[1.15rem] leading-tight text-midnight dark:text-white">
-              Your agent can sign autonomous buys right now
+              Your agent can sign autonomous buys & sells right now
             </h2>
           </div>
         </div>
@@ -1367,7 +1372,7 @@ function humaniseError(e: unknown, fallback: string): string {
           class="text-[12px] text-compute dark:text-body-dark leading-relaxed"
         >
           Revoking flips the backend mirror to <span class="font-mono">revoked</span> so the
-          broker stops receiving your policy. Restoring autonomous buys afterwards means
+          broker stops receiving your policy. Restoring autonomous trading afterwards means
           re-walking the Scoped consent (one confirm tap), minting + pasting a fresh broker
           key, and restarting the broker daemon — typically ~2–3 minutes hands-on.
         </p>
@@ -1426,7 +1431,7 @@ function humaniseError(e: unknown, fallback: string): string {
 
         <label class="flex flex-col gap-1.5">
           <span class="font-sans text-[12px] font-semibold text-midnight dark:text-white">
-            Max mhUSDC per autonomous buy
+            Max mhUSDC per autonomous trade
           </span>
           <input
             v-model="maxPerOpUsd6Input"
@@ -1444,7 +1449,7 @@ function humaniseError(e: unknown, fallback: string): string {
                    disabled:opacity-60 disabled:cursor-not-allowed"
           />
           <span class="font-sans text-[11px] text-cool leading-relaxed">
-            The agent signs autonomous buys up to this mhUSDC value per call.
+            The agent signs autonomous buys & sells up to this per-op ceiling.
           </span>
         </label>
 
@@ -1621,7 +1626,7 @@ function humaniseError(e: unknown, fallback: string): string {
         </p>
         <label class="flex flex-col gap-1.5">
           <span class="font-sans text-[12px] font-semibold text-midnight dark:text-white">
-            Max mhUSDC per autonomous buy
+            Max mhUSDC per autonomous trade
           </span>
           <input
             v-model="maxPerOpUsd6Input"
@@ -1639,7 +1644,7 @@ function humaniseError(e: unknown, fallback: string): string {
                    disabled:opacity-60 disabled:cursor-not-allowed"
           />
           <span class="font-sans text-[11px] text-cool leading-relaxed">
-            The agent signs autonomous buys up to this mhUSDC value per call.
+            The agent signs autonomous buys & sells up to this per-op ceiling.
             A cumulative spend ledger is on the roadmap.
           </span>
         </label>
@@ -1815,7 +1820,7 @@ function humaniseError(e: unknown, fallback: string): string {
                  pl-4 list-disc space-y-0.5"
         >
           <li>
-            Max per autonomous buy:
+            Max per autonomous trade:
             <span class="font-mono">{{ formatPendingMhUsdc(pendingScopedParams.maxPerOpUsd6) }}</span>
             mhUSDC
           </li>

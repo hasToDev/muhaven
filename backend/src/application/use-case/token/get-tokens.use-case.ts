@@ -24,6 +24,7 @@ function toDto(
   token: RwaToken,
   latestNav: NavSnapshot | null,
   issuerDisplayName: string | null,
+  redemptionQueueByToken: Record<string, string>,
 ): TokenResponseDto {
   return {
     id: token.id,
@@ -39,6 +40,9 @@ function toDto(
     min_investment: token.minInvestment ?? null,
     status: token.status,
     yield_snapshot_address: token.yieldSnapshotAddress ?? null,
+    // Wave 5 Slice 1 (MCP sell) — resolve the per-token queue from the env
+    // map (lower-cased keys; see `parseTokenAddressMap`). `null` when unset.
+    redemption_queue_address: redemptionQueueByToken[token.address.toLowerCase()] ?? null,
     created_at: token.createdAt.toISOString(),
     updated_at: token.updatedAt.toISOString(),
     latest_nav: latestNav ? navToDto(latestNav) : null,
@@ -76,6 +80,10 @@ export class GetTokensUseCase {
     private readonly navRepo?: INavHistoryRepository,
     private readonly userRepo?: IUserRepository,
     private readonly oracleRepo?: IOracleRepository,
+    /** Wave 5 Slice 1 — token→queue address map (`parseTokenAddressMap`
+     *  of `REDEMPTION_QUEUE_BY_TOKEN_JSON`). Defaults to `{}` so existing
+     *  callers + tests compile unchanged (queue address resolves to null). */
+    private readonly redemptionQueueByToken: Record<string, string> = {},
   ) {}
 
   async execute(): Promise<{ tokens: TokenResponseDto[] }> {
@@ -121,6 +129,7 @@ export class GetTokensUseCase {
           t,
           navMap.get(t.address) ?? null,
           issuerNameMap.get(t.issuerAddress.toLowerCase()) ?? null,
+          this.redemptionQueueByToken,
         ),
       ),
     };
@@ -133,6 +142,7 @@ export class GetTokenByAddressUseCase {
     private readonly navRepo?: INavHistoryRepository,
     private readonly userRepo?: IUserRepository,
     private readonly oracleRepo?: IOracleRepository,
+    private readonly redemptionQueueByToken: Record<string, string> = {},
   ) {}
 
   async execute(address: string): Promise<TokenResponseDto | null> {
@@ -158,6 +168,6 @@ export class GetTokenByAddressUseCase {
       issuerDisplayName = issuer?.issuerDisplayName ?? null;
     }
 
-    return toDto(token, latestNav, issuerDisplayName);
+    return toDto(token, latestNav, issuerDisplayName, this.redemptionQueueByToken);
   }
 }

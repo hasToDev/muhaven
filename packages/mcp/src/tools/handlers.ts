@@ -24,6 +24,7 @@ import {
   parseAbi,
   toEventSelector,
   toFunctionSelector,
+  type Abi,
 } from 'viem';
 import { getUserOperationHash } from 'viem/account-abstraction';
 import type { BackendClient } from '../clients/backend-client.js';
@@ -156,6 +157,139 @@ export const SUBSCRIPTION_PURCHASE_SELECTOR = toFunctionSelector(
 const SUBSCRIPTION_PURCHASE_ABI = parseAbi([
   'function purchase(address token, (uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) encShares, uint128 maxSharesHint, address ephemeralEOA)',
 ]);
+
+/**
+ * Wave 5 Slice 1 (MCP sell) — `MuHavenSubscription.redeem` selector + ABI.
+ *
+ * The redeem ABI is byte-IDENTICAL in shape to `purchase` — `redeem(address
+ * token, InEuint128 encShares, uint128 maxSharesHint, address ephemeralEOA)`
+ * (`contracts/MuHavenSubscription.sol:386-391`; SDK encoder
+ * `packages/sdk/src/clients/subscription.ts:108-162`). The cap arg
+ * (`maxSharesHint`) sits at word index 2, same as purchase, so the broker's
+ * `decodeUint256ArgAt(callData, 2)` is unchanged.
+ *
+ * The on-chain Scoped CallPolicy already authorizes redeem
+ * (`frontend/src/providers/zerodev/scoped-permissions.ts:181-187`), so adding
+ * sell needs NO per-user re-mint. The off-chain gating is the broker's
+ * per-session `selectorCaps` snapshot (delivered server-side, no re-mint).
+ */
+export const SUBSCRIPTION_REDEEM_SELECTOR = toFunctionSelector(
+  'function redeem(address,(uint256,uint8,uint8,bytes),uint128,address)',
+).toLowerCase() as `0x${string}`;
+
+const SUBSCRIPTION_REDEEM_ABI = parseAbi([
+  'function redeem(address token, (uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) encShares, uint128 maxSharesHint, address ephemeralEOA)',
+]);
+
+/**
+ * Wave 5 Slice 1 (MCP sell, explicit queue) — `RedemptionQueue.submit`
+ * selector + ABI.
+ *
+ * UNLIKE purchase/redeem, `submit` has NO leading token arg — the queue is
+ * deployed one-per-token so the token is implicit
+ * (`packages/sdk/src/clients/redemptionQueue.ts:55-96`;
+ * `frontend/.../scoped-permissions.ts:194-199`). The arg layout is
+ * `submit(InEuint128 encShares, uint128 maxSharesHint, address ephemeralEOA)`,
+ * which puts `maxSharesHint` at word index **1**, not 2 — so the snapshot's
+ * submit selectorCap carries `capArgIndex: 1`. The kernel.execute target is
+ * the per-token RedemptionQueue address (resolved from the token catalog's
+ * `redemption_queue_address`), NOT the subscription.
+ */
+export const REDEMPTION_QUEUE_SUBMIT_SELECTOR = toFunctionSelector(
+  'function submit((uint256,uint8,uint8,bytes),uint128,address)',
+).toLowerCase() as `0x${string}`;
+
+const REDEMPTION_QUEUE_SUBMIT_ABI = parseAbi([
+  'function submit((uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) encShares, uint128 maxSharesHint, address ephemeralEOA)',
+]);
+
+/**
+ * Wave 5 Slice 1 — `RedemptionQueue.submit` (and the on-chain auto-escalation
+ * from `redeem`) emits
+ * `QueueSubmitted(address indexed investor, uint256 indexed requestId,
+ * uint256 indexed epochId)` — ALL THREE params indexed
+ * (`packages/sdk/src/abi/redemptionQueue.ts:116-124`). So `requestId` is
+ * `topics[2]` and there is no non-indexed data word. Path D parses the
+ * receipt logs for this event's topic0 to surface the queue `requestId` to
+ * the user (see `parseQueueRequestIdFromReceipt`).
+ */
+export const QUEUE_SUBMITTED_TOPIC0 = toEventSelector(
+  'QueueSubmitted(address,uint256,uint256)',
+).toLowerCase() as `0x${string}`;
+
+/**
+ * Wave 5 Slice 1 (MCP sell) — the three autonomous Path D operations.
+ *  - `buy`         → `MuHavenSubscription.purchase`  (target: subscription)
+ *  - `sell`        → `MuHavenSubscription.redeem`    (target: subscription)
+ *  - `sell-queued` → `RedemptionQueue.submit`        (target: per-token queue)
+ */
+export type PathDOp = 'buy' | 'sell' | 'sell-queued';
+
+/**
+ * Per-op binding for `attemptPathD`. Captures everything that differs
+ * between the buy / instant-sell / queued-sell pipelines so the shared
+ * pipeline body stays op-agnostic. Selector + ABI + capArgIndex are pinned
+ * here; the kernel.execute TARGET is supplied by the caller (it's the
+ * subscription for buy/sell, the per-token queue for sell-queued).
+ */
+interface PathDOpSpec {
+  readonly op: PathDOp;
+  /** 4-byte selector the broker snapshot must carry a cap for. */
+  readonly selector: `0x${string}`;
+  /** viem ABI fragment used to encode the inner calldata. Typed as the
+   *  broad `Abi` so the three per-op fragments (purchase/redeem/submit,
+   *  which have distinct `name` literals) all assign. */
+  readonly abi: Abi;
+  readonly functionName: 'purchase' | 'redeem' | 'submit';
+  /** Word index of `maxSharesHint` in the inner calldata (2 for
+   *  purchase/redeem, 1 for submit — submit has no leading token arg). */
+  readonly capArgIndex: number;
+  /** Whether the inner call's arg0 is the token address. Purchase/redeem
+   *  carry it; submit does not (the queue is per-token). */
+  readonly hasTokenArg: boolean;
+  /** `intent.tool` the broker records in its sign-time audit. */
+  readonly intentTool: 'muhaven.position.buy' | 'muhaven.position.sell';
+  /** Human verb for the broker audit `intent.summary`. */
+  readonly intentVerb: string;
+  /** Result-shape discriminator surfaced to the LLM. */
+  readonly resultAction: 'buy' | 'sell';
+}
+
+export const PATH_D_OP_SPECS: Readonly<Record<PathDOp, PathDOpSpec>> = {
+  buy: {
+    op: 'buy',
+    selector: SUBSCRIPTION_PURCHASE_SELECTOR,
+    abi: SUBSCRIPTION_PURCHASE_ABI,
+    functionName: 'purchase',
+    capArgIndex: 2,
+    hasTokenArg: true,
+    intentTool: 'muhaven.position.buy',
+    intentVerb: 'buy',
+    resultAction: 'buy',
+  },
+  sell: {
+    op: 'sell',
+    selector: SUBSCRIPTION_REDEEM_SELECTOR,
+    abi: SUBSCRIPTION_REDEEM_ABI,
+    functionName: 'redeem',
+    capArgIndex: 2,
+    hasTokenArg: true,
+    intentTool: 'muhaven.position.sell',
+    intentVerb: 'sell',
+    resultAction: 'sell',
+  },
+  'sell-queued': {
+    op: 'sell-queued',
+    selector: REDEMPTION_QUEUE_SUBMIT_SELECTOR,
+    abi: REDEMPTION_QUEUE_SUBMIT_ABI,
+    functionName: 'submit',
+    capArgIndex: 1,
+    hasTokenArg: false,
+    intentTool: 'muhaven.position.sell',
+    intentVerb: 'queue-sell',
+    resultAction: 'sell',
+  },
+};
 
 /**
  * Stub signature for the `zd_sponsorUserOperation` pre-sign UserOp.
@@ -542,11 +676,33 @@ export type PathDFallbackReason =
  * need to widen mid-slice.
  */
 interface PositionSubmittedData {
-  readonly action: 'buy';
+  /** Wave 5 Slice 1 — widened from `'buy'` to cover autonomous sell. */
+  readonly action: 'buy' | 'sell';
   readonly status: 'submitted';
   readonly txHash: `0x${string}`;
   readonly userOpHash: `0x${string}`;
   readonly path: 'D';
+  /**
+   * Wave 5 Slice 1 — when the op was an explicit `RedemptionQueue.submit`
+   * (`viaQueue`), OR an instant `redeem` that auto-escalated to the queue
+   * on cap overflow, the parsed `QueueSubmitted.requestId`. Surfaced so the
+   * LLM can tell the user which queue entry to track. Best-effort: `null`
+   * when the receipt carried no `QueueSubmitted` log (e.g. an in-cap instant
+   * redeem that settled immediately). Decimal string.
+   */
+  readonly queueRequestId?: string | null;
+  /** Wave 5 Slice 1 — `'instant'` (redeem settled now), `'queued'` (explicit
+   *  submit), or `'escalated'` (instant redeem overflowed to the queue).
+   *  Omitted for buys. */
+  readonly settlement?: 'instant' | 'queued' | 'escalated';
+  /**
+   * Wave 5 Slice 1 — standing over-sell reminder on the AUTONOMOUS (Path D)
+   * sell-success payload, so the LLM gets the same reactive guidance it gets
+   * on the Path-C deep-link path. The on-chain redeem silently burns ZERO on
+   * an over-balance request (no FHE.min clamp until Slice 1.5), and Path D
+   * returns `ok` regardless — so a zero-burn over-sell looks like success
+   * here. Omitted for buys. */
+  readonly sellWarning?: string;
 }
 
 interface PositionPrefillData {
@@ -721,6 +877,15 @@ interface TokenCatalogEntry {
   readonly latest_nav: {
     readonly nav: string;
   } | null;
+  /**
+   * Wave 5 Slice 1 — per-token `RedemptionQueue` proxy address. Populated
+   * by the backend from the operator's `REDEMPTION_QUEUE_BY_TOKEN_JSON`
+   * map. `null`/absent when unconfigured → the MCP cannot autonomously
+   * submit to the queue, so explicit `viaQueue` sells degrade to a Path-C
+   * deep-link. (Instant `redeem` is unaffected — its target is the
+   * subscription, and it auto-escalates to the queue on-chain on overflow.)
+   */
+  readonly redemption_queue_address?: string | null;
 }
 
 interface TokenCatalogResponse {
@@ -1557,19 +1722,101 @@ function buildPathDDecodedCall(
   };
 }
 
+/**
+ * Wave 5 Slice 1 — best-effort parse of the `QueueSubmitted.requestId` from
+ * a UserOp receipt's logs. Fires for both the explicit `RedemptionQueue.submit`
+ * path AND an instant `redeem` that auto-escalated to the queue on cap
+ * overflow (the queue emits the same event in both cases). Returns the
+ * decimal requestId string, or `null` when no `QueueSubmitted` log is present
+ * (e.g. an in-cap instant redeem that settled immediately).
+ *
+ * `requestId` is the SECOND indexed param → `topics[2]`. We do NOT filter by
+ * emitter address: an instant redeem escalates inside the per-token queue
+ * (not the subscription), so the emitter is the queue either way, and a
+ * receipt only ever carries one queue's `QueueSubmitted` for a single-leg op.
+ */
+export function parseQueueRequestIdFromReceipt(receipt: unknown): string | null {
+  const r = receipt as {
+    logs?: { address?: string; topics?: readonly string[] }[];
+  } | null;
+  if (!r || !Array.isArray(r.logs)) return null;
+  for (const log of r.logs) {
+    if (
+      log.topics?.[0]?.toLowerCase() === QUEUE_SUBMITTED_TOPIC0 &&
+      typeof log.topics[2] === 'string'
+    ) {
+      try {
+        return BigInt(log.topics[2]).toString();
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Wave 5 Slice 1 — derive the sell-only result fields (`settlement` +
+ * `queueRequestId`) from the op + receipt. Returns an empty object for buys
+ * (the fields are omitted from the result via spread). For an explicit
+ * `sell-queued` the disposition is always `'queued'`; for an instant `sell`
+ * (redeem) it's `'escalated'` when the receipt carried a `QueueSubmitted`
+ * log (on-chain cap-overflow escalation) else `'instant'`.
+ */
+export /** Concise over-sell reminder carried on the autonomous sell-success payload
+ *  (the full guidance is in the tool description + the Path-C instructions).
+ *  Until the Slice 1.5 FHE.min clamp lands, an over-balance redeem silently
+ *  burns ZERO and still returns `ok` here. */
+const SELL_SUCCESS_OVERSELL_NOTE =
+  'Verify this settled via muhaven.read.activity — an over-balance sell silently burns ZERO ' +
+  '(no partial fill, balances are encrypted) and still reports success here. If no balance ' +
+  'change landed, the amount likely exceeded the holdings.';
+
+export function buildSellExtras(
+  op: PathDOp,
+  receipt: unknown,
+): Pick<PositionSubmittedData, 'queueRequestId' | 'settlement' | 'sellWarning'> {
+  if (op === 'buy') return {};
+  const requestId = parseQueueRequestIdFromReceipt(receipt);
+  if (op === 'sell-queued') {
+    return {
+      settlement: 'queued',
+      queueRequestId: requestId,
+      sellWarning: SELL_SUCCESS_OVERSELL_NOTE,
+    };
+  }
+  // Instant redeem: escalated to the queue iff a QueueSubmitted log exists.
+  return requestId !== null
+    ? { settlement: 'escalated', queueRequestId: requestId, sellWarning: SELL_SUCCESS_OVERSELL_NOTE }
+    : { settlement: 'instant', queueRequestId: null, sellWarning: SELL_SUCCESS_OVERSELL_NOTE };
+}
+
 async function attemptPathD(
   args: {
+    /** Which autonomous op to attempt (Wave 5 Slice 1). Selects the
+     *  selector / ABI / capArgIndex / intent / result shape. */
+    readonly op: PathDOp;
     /** Cleartext share count the LLM proposed. Already passed the
      *  per-op cap check; broker validates again at sign time. */
     readonly shares: bigint;
-    /** 0x-prefixed RWA token address from the catalog. */
+    /** 0x-prefixed RWA token address from the catalog. For `sell-queued`
+     *  this is the token whose queue we submit to — NOT the inner-call
+     *  target (the queue is). Carried for the encrypt-shares binding +
+     *  the audit intent. */
     readonly tokenAddress: `0x${string}`;
     /** Token symbol — only used in the audit intent payload. */
     readonly tokenSymbol: string;
+    /** The per-token RedemptionQueue address. REQUIRED for `sell-queued`
+     *  (it's the kernel.execute target); IGNORED for `buy`/`sell` (whose
+     *  target is the subscription). The caller resolves it from the token
+     *  catalog's `redemption_queue_address` and only dispatches
+     *  `sell-queued` when it's present. */
+    readonly queueAddress?: `0x${string}`;
   },
   deps: ToolDeps,
 ): Promise<PathDAttempt> {
-  const { shares, tokenAddress, tokenSymbol } = args;
+  const { op, shares, tokenAddress, tokenSymbol, queueAddress } = args;
+  const spec = PATH_D_OP_SPECS[op];
   if (!deps.broker || !deps.bundler) {
     return { kind: 'unconfigured' };
   }
@@ -1579,18 +1826,10 @@ async function attemptPathD(
   // Stale trace from a prior failed smoke would otherwise mix into
   // the echo and confuse the LLM's diagnosis.
   deps.bundler.drainTrace();
-  // Slice 1 Commit 3.5 — the new sub-pipeline needs a target address
-  // (the MuHavenSubscription contract) + an entry point + a chain id.
-  // Without all three the new path can't compose a valid UserOp; fall
-  // through with a distinct reason so the operator sees what to fix.
-  if (!deps.subscriptionAddress) {
-    return {
-      kind: 'fallback',
-      reason: 'subscription_address_unset',
-      message:
-        'MUHAVEN_SUBSCRIPTION_ADDRESS not configured — Path D autonomous-buy disabled until the operator sets it in the MCP env',
-    };
-  }
+  // Slice 1 Commit 3.5 — the new sub-pipeline needs a target address + an
+  // entry point + a chain id. Without all three the path can't compose a
+  // valid UserOp; fall through with a distinct reason so the operator sees
+  // what to fix.
   if (!deps.entryPointAddress) {
     return {
       kind: 'fallback',
@@ -1604,12 +1843,38 @@ async function attemptPathD(
       kind: 'fallback',
       reason: 'chain_id_unset',
       message:
-        'MUHAVEN_CHAIN_ID not configured — Path D autonomous-buy requires a chain id for userOpHash',
+        'MUHAVEN_CHAIN_ID not configured — Path D autonomous-trade requires a chain id for userOpHash',
     };
   }
-  const subscriptionAddress = deps.subscriptionAddress;
   const entryPointAddress = deps.entryPointAddress;
   const chainId = deps.chainId;
+  // Resolve the kernel.execute target. `buy`/`sell` target the subscription
+  // (MUST be configured); `sell-queued` targets the per-token queue (the
+  // caller only dispatches it when the catalog carried one — guard
+  // defensively). Gating buy/sell — but NOT sell-queued — on
+  // `subscriptionAddress` (CR review: a queue-only flow doesn't need it).
+  let targetAddress: `0x${string}`;
+  if (spec.op === 'sell-queued') {
+    if (!queueAddress) {
+      return {
+        kind: 'fallback',
+        reason: 'target_not_in_snapshot',
+        message:
+          'sell-queued requires the per-token RedemptionQueue address but none was resolved — falling back to Path C deep-link',
+      };
+    }
+    targetAddress = queueAddress;
+  } else {
+    if (!deps.subscriptionAddress) {
+      return {
+        kind: 'fallback',
+        reason: 'subscription_address_unset',
+        message:
+          'MUHAVEN_SUBSCRIPTION_ADDRESS not configured — Path D autonomous-trade disabled until the operator sets it in the MCP env',
+      };
+    }
+    targetAddress = deps.subscriptionAddress;
+  }
   // 1. Daemon reachable AND protocol 0.4.0+ AND session-key loaded?
   const preflight = await deps.broker.preflight();
   if (!preflight.supported) {
@@ -1677,7 +1942,11 @@ async function attemptPathD(
   }
   // 3. Snapshot still readable (defensive — the broker may GC between
   //    getActiveSessionId() and now)?
-  let snapshot;
+  // Explicit annotation (not evolving-any): the `findOpCap`/`targetInAllowlist`
+  // closures below capture `snapshot`, and closures don't inherit the
+  // evolving-any narrowing a bare `let snapshot;` would give — so the
+  // selectorCap / targetContract element types must be pinned here.
+  let snapshot: import('../broker/protocol.js').PolicySnapshotWire | null;
   try {
     const res = await deps.broker.getPolicySnapshot(activeId);
     snapshot = res.snapshot;
@@ -1707,54 +1976,112 @@ async function attemptPathD(
       message: `snapshot ${activeId} is bound to signer ${snapshot.signerAddress}, broker is currently signing as ${preflight.signerAddress} — broker session-key likely rotated mid-flight; re-mint the scoped tier from the dashboard`,
     };
   }
-  // 4. Snapshot has a selectorCap for subscription.purchase?
-  //    Two distinct failures: (a) selector absent, (b) selector present
-  //    but uncapped (capArgIndex/maxAmount === null). The protocol
-  //    supports (b) for nullary selectors (claim() in future slices),
-  //    but `purchase` is a CAP-bearing call by design — an uncapped
-  //    purchase snapshot is operator misconfiguration, not the LLM's
-  //    fault. Distinct reasons surface distinct remediations (CR H-2).
-  const purchaseCap = snapshot.selectorCaps.find(
-    (c) => c.selector.toLowerCase() === SUBSCRIPTION_PURCHASE_SELECTOR,
-  );
-  if (!purchaseCap) {
+  // 4. Snapshot carries a selectorCap for the OP's selector + the op's
+  //    target in the allowlist?
+  //
+  //    Wave 5 Slice 1 self-heal: a session minted before sell shipped has
+  //    only the `purchase` cap in the broker's file-backed snapshot. The
+  //    backend now serves the redeem/submit caps (+ queue targets) on the
+  //    mirror — platform-derived from the pre-authorized on-chain envelope
+  //    (the Scoped CallPolicy already allows redeem/submit). So when the
+  //    op's cap/target is MISSING, we re-sync the snapshot from the mirror
+  //    ONCE (overwriting the broker's stale file) and retry — gaining sell
+  //    with NO re-mint. `buy` snapshots already carry the purchase cap +
+  //    subscription target, so buy never enters the re-sync branch
+  //    (behaviour unchanged).
+  const targetLower = targetAddress.toLowerCase();
+  const findOpCap = () =>
+    snapshot!.selectorCaps.find((c) => c.selector.toLowerCase() === spec.selector);
+  const targetInAllowlist = () =>
+    snapshot!.targetContracts.some((t) => t.toLowerCase() === targetLower);
+  let opCap = findOpCap();
+  // The re-sync self-heal is SELL-ONLY. `buy` snapshots always carry the
+  // purchase cap + subscription target (they were minted that way), so a
+  // missing cap/target on a buy is a genuine misconfiguration the mirror
+  // can't fix — fail directly (preserves the pre-Slice-1 buy behaviour +
+  // its distinct reasons). Only sell/sell-queued can legitimately predate
+  // the redeem/submit caps + queue targets the backend now serves.
+  if (spec.op !== 'buy' && (!opCap || !targetInAllowlist())) {
+    const synced = await syncSnapshotFromMirror(deps, preflight.signerAddress);
+    if (synced.kind === 'fallback') {
+      // The mirror couldn't supply the cap (revoked / empty / transient).
+      // Surface the sync's own reason — it's a more precise refusal than a
+      // generic "selector_not_in_snapshot" (e.g. `no_active_session_key`
+      // when the session was revoked, `mirror_sync_failed` on a backend
+      // blip). Buy never reaches here so this can't regress the buy path.
+      return synced;
+    }
+    activeId = synced.sessionId;
+    try {
+      const res = await deps.broker.getPolicySnapshot(activeId);
+      snapshot = res.snapshot;
+    } catch (err) {
+      return mapBrokerCallFailure(err, 'get_policy_snapshot', 'snapshot_lookup_failed');
+    }
+    if (!snapshot) {
+      return {
+        kind: 'fallback',
+        reason: 'no_active_snapshot',
+        message: `broker reported session ${activeId} active but get_policy_snapshot returned null after re-sync (race? — refresh tier from dashboard)`,
+      };
+    }
+    // Re-validate the signer binding after the snapshot swap (the
+    // re-synced row is a fresh object; CR H-1 invariant must still hold).
+    if (
+      snapshot.signerAddress.toLowerCase() !== preflight.signerAddress.toLowerCase()
+    ) {
+      return {
+        kind: 'fallback',
+        reason: 'signer_mismatch',
+        message: `re-synced snapshot ${activeId} is bound to signer ${snapshot.signerAddress}, broker is currently signing as ${preflight.signerAddress} — re-mint the scoped tier from the dashboard`,
+      };
+    }
+    opCap = findOpCap();
+  }
+  if (!opCap) {
     return {
       kind: 'fallback',
       reason: 'selector_not_in_snapshot',
       message:
-        'active scoped session does not authorize subscription.purchase — re-mint the session with a purchase cap',
+        `active scoped session does not authorize ${spec.functionName} (selector ${spec.selector}) ` +
+        `even after a mirror re-sync — ` +
+        (spec.op === 'sell-queued'
+          ? 'the backend may not have the per-token RedemptionQueue address configured; falling back to Path C deep-link'
+          : 're-mint the session, or fall back to Path C deep-link'),
     };
   }
-  if (purchaseCap.maxAmount === null) {
+  if (opCap.maxAmount === null) {
     return {
       kind: 'fallback',
       reason: 'selector_uncapped',
       message:
-        'active scoped session lists subscription.purchase but with no per-op cap (capArgIndex/maxAmount both null) — Slice 1 refuses to autonomy-buy without an explicit ceiling; re-mint with a maxAmount',
+        `active scoped session lists ${spec.functionName} but with no per-op cap (capArgIndex/maxAmount both null) — ` +
+        'Slice 1 refuses to autonomy-trade without an explicit ceiling; re-mint with a maxAmount',
     };
   }
   // 5. Computed shares within cap?
-  const maxShares = BigInt(purchaseCap.maxAmount);
+  const maxShares = BigInt(opCap.maxAmount);
   if (shares > maxShares) {
     return {
       kind: 'fallback',
       reason: 'out_of_scope',
-      message: `requested ${shares} shares exceeds the active session's per-op cap of ${maxShares} shares — fall back to Path C dashboard deep-link for this larger buy`,
+      message: `requested ${shares} shares exceeds the active session's per-op cap of ${maxShares} shares — fall back to Path C dashboard deep-link for this larger ${spec.intentVerb}`,
     };
   }
-  // 5b. Subscription contract MUST also appear in the snapshot's
-  //     target allowlist. The broker re-validates this at sign time —
-  //     a mismatch on the broker side returns `policy_violation`; we
-  //     catch it earlier with a clear remediation message.
-  if (
-    !snapshot.targetContracts.some(
-      (t) => t.toLowerCase() === subscriptionAddress.toLowerCase(),
-    )
-  ) {
+  // 5b. The op's target contract MUST also appear in the snapshot's target
+  //     allowlist. The broker re-validates this at sign time — a mismatch
+  //     on the broker side returns `policy_violation`; we catch it earlier
+  //     with a clear remediation message. (For `sell-queued` the target is
+  //     the per-token RedemptionQueue, not the subscription.)
+  if (!targetInAllowlist()) {
     return {
       kind: 'fallback',
       reason: 'target_not_in_snapshot',
-      message: `subscription target ${subscriptionAddress} not in active session's target allowlist — re-mint the session with subscription in scope`,
+      message: `target ${targetAddress} not in active session's target allowlist (op=${spec.op}) — ${
+        spec.op === 'sell-queued'
+          ? 'the backend RedemptionQueue map may be unconfigured; falling back to Path C deep-link'
+          : 're-mint the session with this contract in scope'
+      }`,
     };
   }
 
@@ -2133,29 +2460,29 @@ async function attemptPathD(
     };
   }
 
-  // 8. Build the inner subscription.purchase calldata. The broker's
-  //    policy check decodes word 2 (maxSharesHint) and compares to the
-  //    snapshot's cap — we set `maxSharesHint = shares` (tight) which
-  //    is <= cap because we already gated above.
+  // 8. Build the inner calldata for the op. The broker's policy check
+  //    decodes word `spec.capArgIndex` (maxSharesHint) and compares to the
+  //    snapshot's cap — we set `maxSharesHint = shares` (tight) which is
+  //    <= cap because we already gated above. purchase/redeem carry the
+  //    token as arg0; submit does not (the queue is per-token).
+  const encSharesArg = {
+    ctHash: BigInt(encShares.ctHash),
+    securityZone: encShares.securityZone,
+    utype: encShares.utype,
+    signature: encShares.signature,
+  };
   const innerCallData = encodeFunctionData({
-    abi: SUBSCRIPTION_PURCHASE_ABI,
-    functionName: 'purchase',
-    args: [
-      tokenAddress,
-      {
-        ctHash: BigInt(encShares.ctHash),
-        securityZone: encShares.securityZone,
-        utype: encShares.utype,
-        signature: encShares.signature,
-      },
-      shares, // maxSharesHint — tight per spec
-      ephemeralEOA,
-    ],
-  }) as `0x${string}`;
+    abi: spec.abi,
+    functionName: spec.functionName,
+    args: spec.hasTokenArg
+      ? [tokenAddress, encSharesArg, shares, ephemeralEOA]
+      : [encSharesArg, shares, ephemeralEOA],
+  } as Parameters<typeof encodeFunctionData>[0]) as `0x${string}`;
 
-  // 9. Wrap in kernel.execute (single-call, default execType).
+  // 9. Wrap in kernel.execute (single-call, default execType). Target is
+  //    the subscription for buy/sell, the per-token queue for sell-queued.
   const kernelCallData = encodeKernelExecuteSingleCall({
-    target: subscriptionAddress,
+    target: targetAddress,
     value: 0n,
     callData: innerCallData,
   });
@@ -2331,10 +2658,10 @@ async function attemptPathD(
     const signed = await deps.broker.signUserOp({
       sessionId: activeId,
       userOpHash,
-      innerCall: { target: subscriptionAddress, callData: innerCallData },
+      innerCall: { target: targetAddress, callData: innerCallData },
       intent: {
-        tool: 'muhaven.position.buy',
-        summary: `${shares.toString()} shares of ${sanitizeSymbolForLlmContext(tokenSymbol)}`,
+        tool: spec.intentTool,
+        summary: `${spec.intentVerb} ${shares.toString()} shares of ${sanitizeSymbolForLlmContext(tokenSymbol)}`,
       },
     });
     brokerSig = signed.signature;
@@ -2506,14 +2833,20 @@ async function attemptPathD(
         // authoritative source of truth. The buy itself succeeded.
       }
     }
+    // Wave 5 Slice 1 — for sell paths, surface the queue requestId +
+    // settlement disposition. An explicit submit is always 'queued'; an
+    // instant redeem is 'escalated' when a QueueSubmitted log is present
+    // (cap-overflow on-chain escalation) else 'instant'.
+    const sellExtras = buildSellExtras(spec.op, receipt.receipt);
     return {
       kind: 'ok',
       data: {
-        action: 'buy',
+        action: spec.resultAction,
         status: 'submitted',
         txHash: receipt.receipt.transactionHash,
         userOpHash,
         path: 'D',
+        ...sellExtras,
       },
     };
   } catch (err) {
@@ -2528,14 +2861,16 @@ async function attemptPathD(
     try {
       const lateReceipt = await deps.bundler.getReceipt(userOpHash);
       if (lateReceipt) {
+        const sellExtras = buildSellExtras(spec.op, lateReceipt.receipt);
         return {
           kind: 'ok',
           data: {
-            action: 'buy',
+            action: spec.resultAction,
             status: 'submitted',
             txHash: lateReceipt.receipt.transactionHash,
             userOpHash,
             path: 'D',
+            ...sellExtras,
           },
         };
       }
@@ -2680,7 +3015,12 @@ export async function positionBuy(
   let pathDBundlerTrace: readonly BundlerTraceEvent[] | undefined;
   let pathDDecodedCall: PathDDecodedCall | undefined;
   const pathD = await attemptPathD(
-    { shares, tokenAddress: token.address as `0x${string}`, tokenSymbol: token.symbol },
+    {
+      op: 'buy',
+      shares,
+      tokenAddress: token.address as `0x${string}`,
+      tokenSymbol: token.symbol,
+    },
     deps,
   );
   if (pathD.kind === 'ok') {
@@ -2754,14 +3094,98 @@ export async function positionBuy(
   });
 }
 
+/**
+ * Wave 5 Slice 1 — standing over-sell guidance for the LLM. The `FHE.min`
+ * over-sell CLAMP is deferred to Slice 1.5, so today an over-balance redeem
+ * silent-fails to a ZERO burn on-chain (`MuHavenToken._burnInternal`
+ * `FHE.select(gte, amount, 0)`), NOT a partial sale. The MCP cannot read the
+ * user's (encrypted) balance, so it can't pre-flight this. This reactive
+ * guidance tells the LLM to confirm settlement after the fact.
+ */
+const OVERSELL_GUIDANCE =
+  'NOTE on over-selling: if the requested shares EXCEED the holder balance, the on-chain redeem ' +
+  'silently burns ZERO (it does NOT partially fill) — a no-op, not a partial sale. Balances are ' +
+  'encrypted, so this cannot be checked before submitting. After the sell, call muhaven.read.activity ' +
+  'to confirm a settled redeem actually landed; if it shows no balance change / no proceeds, warn the ' +
+  'user that the amount likely exceeded their holdings and offer to sell a smaller amount.';
+
 export async function positionSell(
   input: PositionSellInput,
   deps: ToolDeps,
-): Promise<ToolResult<PositionPrefillData>> {
-  // 0.2.0: schema now enforces positive integer (no fractional shares
-  // since fhERC-20 shares are integer base units per
-  // `project_decimals_lie_wave4_p0`). Defense-in-depth runtime check
-  // dropped — schema is the boundary.
+): Promise<ToolResult<PositionPrefillData | PositionSubmittedData>> {
+  // Schema enforces a positive-integer share string (fhERC-20 shares are
+  // integer base units per `project_decimals_lie_wave4_p0`). Unlike buy,
+  // sell takes the share count directly — no NAV→shares conversion.
+  const shares = BigInt(input.amountShares);
+  const viaQueue = input.viaQueue === true;
+
+  // Resolve the token from the public catalog so Path D can target the RWA
+  // token (instant redeem) / the per-token queue (explicit submit). A
+  // catalog miss or outage doesn't block the sell — we fall through to the
+  // Path C deep-link (the dashboard resolves the symbol/address itself).
+  let token: TokenCatalogEntry | null = null;
+  try {
+    const catalog = await deps.backend.getUnauth<TokenCatalogResponse>('/api/v1/tokens');
+    token = resolveTokenInCatalog(input.token, catalog.tokens ?? []);
+  } catch {
+    token = null; // catalog unreachable → Path C only
+  }
+  const safeSymbol = sanitizeSymbolForLlmContext(token?.symbol ?? input.token);
+
+  const queueAddress =
+    token?.redemption_queue_address &&
+    /^0x[0-9a-fA-F]{40}$/.test(token.redemption_queue_address)
+      ? (token.redemption_queue_address.toLowerCase() as `0x${string}`)
+      : undefined;
+
+  // Wave 5 Slice 1 — attempt Path D autonomous redeem / queued-submit.
+  // Skipped when the token didn't resolve (no inner-call target) OR when
+  // `viaQueue` was asked but no queue address is configured for this token
+  // (can't autonomously submit → deep-link instead).
+  let pathDFallbackReason: PathDFallbackReason | undefined;
+  let pathDFallbackDetail: string | undefined;
+  let pathDSubmittedUserOpHash: `0x${string}` | undefined;
+  let pathDBundlerTrace: readonly BundlerTraceEvent[] | undefined;
+  let pathDDecodedCall: PathDDecodedCall | undefined;
+
+  if (token && (!viaQueue || queueAddress)) {
+    const pathD = await attemptPathD(
+      {
+        op: viaQueue ? 'sell-queued' : 'sell',
+        shares,
+        tokenAddress: token.address as `0x${string}`,
+        tokenSymbol: token.symbol,
+        ...(queueAddress ? { queueAddress } : {}),
+      },
+      deps,
+    );
+    if (pathD.kind === 'ok') {
+      return ok(pathD.data);
+    }
+    if (pathD.kind === 'fallback') {
+      pathDFallbackReason = pathD.reason;
+      pathDFallbackDetail = pathD.message;
+      if (pathD.submittedUserOpHash) {
+        pathDSubmittedUserOpHash = pathD.submittedUserOpHash;
+      }
+      if (deps.bundler) {
+        const trace = deps.bundler.drainTrace();
+        if (trace.length > 0) {
+          pathDBundlerTrace = trace;
+          pathDDecodedCall = buildPathDDecodedCall(trace, deps);
+        }
+      }
+    }
+    // 'unconfigured' → silent skip to Path C (no Path D in this install).
+  } else if (viaQueue && token && !queueAddress) {
+    // viaQueue requested but the backend exposes no RedemptionQueue address
+    // for this token — surface WHY autonomy didn't fire (free-form detail,
+    // no enum reason since no Path D UserOp was attempted).
+    pathDFallbackDetail =
+      'viaQueue requested but no RedemptionQueue address is configured for this token — ' +
+      'using the Path C dashboard deep-link instead (instant redeem still auto-escalates to the queue on overflow).';
+  }
+
   const dashboardUrl = buildPositionDeeplink(resolveDashboardBaseUrl(deps), 'sell', {
     token: input.token,
     shares: input.amountShares,
@@ -2770,8 +3194,18 @@ export async function positionSell(
     dashboardUrl,
     action: 'sell',
     instructions:
-      `Open this link to review and authorize the sale of ${input.amountShares} shares of ${input.token}:\n${dashboardUrl}`,
-    echo: { action: 'sell', token: input.token, shares: input.amountShares },
+      `Open this link to review and authorize the ${viaQueue ? 'queued ' : ''}sale of ${input.amountShares} shares of ${safeSymbol}:\n${dashboardUrl}\n\n${OVERSELL_GUIDANCE}`,
+    echo: {
+      action: 'sell',
+      token: input.token,
+      shares: input.amountShares,
+      ...(viaQueue ? { viaQueue: true } : {}),
+      ...(pathDFallbackReason ? { pathDFallbackReason } : {}),
+      ...(pathDFallbackDetail ? { pathDFallbackDetail } : {}),
+      ...(pathDSubmittedUserOpHash ? { pathDSubmittedUserOpHash } : {}),
+      ...(pathDBundlerTrace ? { pathDBundlerTrace } : {}),
+      ...(pathDDecodedCall ? { pathDDecodedCall } : {}),
+    },
   });
 }
 

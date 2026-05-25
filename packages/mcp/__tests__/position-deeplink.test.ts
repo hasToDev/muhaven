@@ -625,6 +625,145 @@ describe('positionSell', () => {
   // runtime check was deleted because the schema is now the boundary.
   // Bad inputs throw at MCP-server schema-parse time, not inside the
   // handler — these are pinned in the schema describe block above.
+
+  // Wave 5 Slice 1 (MCP sell) — Path D not configured (no broker/bundler in
+  // makeDeps) → falls through to the Path C deep-link, with the standing
+  // over-sell guidance appended to the instructions.
+  it('instant sell deep-link carries the over-sell guidance (no clamp until Slice 1.5)', async () => {
+    const result = await positionSell(
+      { token: 'TBILL1', amountShares: '7' } as never,
+      makeDeps(),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && 'instructions' in result.data) {
+      expect(result.data.instructions).toMatch(/over-sell/i);
+      expect(result.data.instructions).toMatch(/read\.activity/);
+      expect(new URL(result.data.dashboardUrl).searchParams.get('shares')).toBe('7');
+    }
+  });
+
+  it('viaQueue with no configured queue address degrades to a Path C deep-link + records why', async () => {
+    // catalogBackend's TBILL1 has no redemption_queue_address → can't
+    // autonomously submit → deep-link, with a free-form detail explaining it.
+    const result = await positionSell(
+      { token: 'TBILL1', amountShares: '4', viaQueue: true } as never,
+      makeDeps(),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && 'echo' in result.data) {
+      expect(result.data.echo.viaQueue).toBe(true);
+      expect(result.data.echo.pathDFallbackDetail).toMatch(/RedemptionQueue address/i);
+    }
+  });
+});
+
+// ---------- Wave 5 Slice 1 op-spec + selector pins ----------
+
+describe('Path D op-spec table (Wave 5 Slice 1 MCP sell)', () => {
+  it('pins the three op selectors to their canonical signatures (distinct, lower-case)', () => {
+    for (const s of [
+      SUBSCRIPTION_PURCHASE_SELECTOR,
+      SUBSCRIPTION_REDEEM_SELECTOR,
+      REDEMPTION_QUEUE_SUBMIT_SELECTOR,
+    ]) {
+      expect(s).toMatch(/^0x[0-9a-f]{8}$/);
+    }
+    expect(
+      new Set([
+        SUBSCRIPTION_PURCHASE_SELECTOR,
+        SUBSCRIPTION_REDEEM_SELECTOR,
+        REDEMPTION_QUEUE_SUBMIT_SELECTOR,
+      ]).size,
+    ).toBe(3);
+    // Redeem shares the purchase ARG shape (token first) so its selector is
+    // derived from a different name but the SAME 4-arg signature.
+    expect(SUBSCRIPTION_REDEEM_SELECTOR).not.toBe(SUBSCRIPTION_PURCHASE_SELECTOR);
+  });
+
+  it('binds buy→purchase@2, sell→redeem@2, sell-queued→submit@1 with the right targets/intents', () => {
+    expect(PATH_D_OP_SPECS.buy).toMatchObject({
+      selector: SUBSCRIPTION_PURCHASE_SELECTOR,
+      functionName: 'purchase',
+      capArgIndex: 2,
+      hasTokenArg: true,
+      intentTool: 'muhaven.position.buy',
+      resultAction: 'buy',
+    });
+    expect(PATH_D_OP_SPECS.sell).toMatchObject({
+      selector: SUBSCRIPTION_REDEEM_SELECTOR,
+      functionName: 'redeem',
+      capArgIndex: 2,
+      hasTokenArg: true,
+      intentTool: 'muhaven.position.sell',
+      resultAction: 'sell',
+    });
+    expect(PATH_D_OP_SPECS['sell-queued']).toMatchObject({
+      selector: REDEMPTION_QUEUE_SUBMIT_SELECTOR,
+      functionName: 'submit',
+      // submit has NO leading token arg → maxSharesHint at word index 1.
+      capArgIndex: 1,
+      hasTokenArg: false,
+      intentTool: 'muhaven.position.sell',
+      resultAction: 'sell',
+    });
+  });
+
+  it('pins the QueueSubmitted topic0 (requestId parse depends on it)', () => {
+    expect(QUEUE_SUBMITTED_TOPIC0).toMatch(/^0x[0-9a-f]{64}$/);
+  });
+});
+
+describe('parseQueueRequestIdFromReceipt + buildSellExtras (Wave 5 Slice 1)', () => {
+  // requestId is the SECOND indexed param → topics[2]. A 32-byte hex of
+  // decimal 789.
+  const reqIdTopic = '0x' + (789).toString(16).padStart(64, '0');
+  const queueLog = {
+    address: '0x' + 'e'.repeat(40),
+    topics: [QUEUE_SUBMITTED_TOPIC0, '0x' + 'a'.repeat(64), reqIdTopic],
+  };
+
+  it('extracts the requestId from a QueueSubmitted log (topics[2], decimal)', () => {
+    expect(parseQueueRequestIdFromReceipt({ logs: [queueLog] })).toBe('789');
+  });
+
+  it('returns null when no QueueSubmitted log is present', () => {
+    expect(parseQueueRequestIdFromReceipt({ logs: [] })).toBeNull();
+    expect(parseQueueRequestIdFromReceipt({ logs: undefined })).toBeNull();
+    expect(parseQueueRequestIdFromReceipt({})).toBeNull();
+    // A different event (topic0 mismatch) is ignored.
+    expect(
+      parseQueueRequestIdFromReceipt({
+        logs: [{ topics: ['0x' + 'f'.repeat(64), '0x0', reqIdTopic] }],
+      }),
+    ).toBeNull();
+  });
+
+  it('buildSellExtras: buy → empty (no sell fields, no sellWarning)', () => {
+    expect(buildSellExtras('buy', { logs: [queueLog] })).toEqual({});
+  });
+
+  it('buildSellExtras: instant redeem with a QueueSubmitted log → escalated + requestId + over-sell note', () => {
+    const out = buildSellExtras('sell', { logs: [queueLog] });
+    expect(out).toMatchObject({ settlement: 'escalated', queueRequestId: '789' });
+    expect(out.sellWarning).toMatch(/read\.activity/);
+  });
+
+  it('buildSellExtras: instant redeem with NO queue log → instant + null + over-sell note', () => {
+    const out = buildSellExtras('sell', { logs: [] });
+    expect(out).toMatchObject({ settlement: 'instant', queueRequestId: null });
+    expect(out.sellWarning).toMatch(/over-balance sell/i);
+  });
+
+  it('buildSellExtras: explicit sell-queued → always queued, with the parsed requestId + over-sell note', () => {
+    const withLog = buildSellExtras('sell-queued', { logs: [queueLog] });
+    expect(withLog).toMatchObject({ settlement: 'queued', queueRequestId: '789' });
+    expect(withLog.sellWarning).toBeTruthy();
+    // queued even if the log somehow isn't parseable (requestId null).
+    expect(buildSellExtras('sell-queued', { logs: [] })).toMatchObject({
+      settlement: 'queued',
+      queueRequestId: null,
+    });
+  });
 });
 
 // ---------- positionClaim handler ----------
@@ -724,7 +863,15 @@ describe('cashWrap', () => {
 // probe surfaces `path_d_userop_build_pending` and falls through to
 // Path C. There is no positive Path D test in this slice.
 
-import { SUBSCRIPTION_PURCHASE_SELECTOR } from '../src/tools/handlers.js';
+import {
+  SUBSCRIPTION_PURCHASE_SELECTOR,
+  SUBSCRIPTION_REDEEM_SELECTOR,
+  REDEMPTION_QUEUE_SUBMIT_SELECTOR,
+  QUEUE_SUBMITTED_TOPIC0,
+  PATH_D_OP_SPECS,
+  parseQueueRequestIdFromReceipt,
+  buildSellExtras,
+} from '../src/tools/handlers.js';
 import type { BrokerClient, PreflightResult } from '../src/clients/broker-client.js';
 import type { BundlerClient } from '../src/clients/bundler-client.js';
 import type {

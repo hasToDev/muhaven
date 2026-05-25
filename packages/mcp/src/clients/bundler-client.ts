@@ -170,6 +170,21 @@ export interface UserOperationReceipt {
     readonly transactionHash: `0x${string}`;
     readonly blockNumber: `0x${string}`;
     readonly blockHash: `0x${string}`;
+    /**
+     * Wave 5 Slice 1 (MCP sell) — the bundled tx's event logs, passed
+     * through from `eth_getUserOperationReceipt.receipt.logs`. Needed so
+     * the sell path can parse `RedemptionQueue.QueueSubmitted` for the
+     * queue `requestId` (instant-redeem escalation + explicit queued
+     * submit). `undefined` when the bundler omits logs OR the array is
+     * malformed — callers treat absence as "no queue event" (settlement
+     * falls back to `instant`). Each entry carries only the fields the
+     * topic-match needs; bundlers return more, which we ignore.
+     */
+    readonly logs?: readonly {
+      readonly address?: string;
+      readonly topics?: readonly string[];
+      readonly data?: string;
+    }[];
   };
 }
 
@@ -771,6 +786,27 @@ function parseReceipt(raw: unknown): UserOperationReceipt {
       'receipt.receipt.blockHash malformed',
     );
   }
+  // Wave 5 Slice 1 (MCP sell) — preserve the bundled tx's event logs so the
+  // sell path can parse `QueueSubmitted` for the queue requestId. Tolerate
+  // absence (some bundlers omit logs) + a non-array shape; only keep the
+  // three fields the topic-match reads. Without this pass-through,
+  // `parseQueueRequestIdFromReceipt` would see `logs === undefined` on every
+  // receipt and `queueRequestId`/`settlement:'escalated'` would ship dead
+  // (CR review HIGH, 2026-05-25).
+  const rawLogs = innerObj.logs;
+  const logs = Array.isArray(rawLogs)
+    ? rawLogs
+        .filter((l): l is Record<string, unknown> => typeof l === 'object' && l !== null)
+        .map((l) => ({
+          ...(typeof l.address === 'string' ? { address: l.address } : {}),
+          ...(Array.isArray(l.topics) &&
+          l.topics.every((t) => typeof t === 'string')
+            ? { topics: l.topics as string[] }
+            : {}),
+          ...(typeof l.data === 'string' ? { data: l.data } : {}),
+        }))
+    : undefined;
+
   return {
     userOpHash: userOpHash.toLowerCase() as `0x${string}`,
     sender: sender.toLowerCase() as `0x${string}`,
@@ -780,6 +816,7 @@ function parseReceipt(raw: unknown): UserOperationReceipt {
       transactionHash: txHash.toLowerCase() as `0x${string}`,
       blockNumber: blockNumber.toLowerCase() as `0x${string}`,
       blockHash: blockHash.toLowerCase() as `0x${string}`,
+      ...(logs ? { logs } : {}),
     },
   };
 }

@@ -8,12 +8,20 @@ import { withAuth } from '../../../src/interface/middleware/with-auth.js';
 import { withRole } from '../../../src/interface/middleware/with-role.js';
 import { withCors } from '../../../src/interface/middleware/with-cors.js';
 import { Response } from '../../../src/interface/response.js';
+import { getEnv, parseTokenAddressMap } from '../../../src/core/config.js';
+
+// Wave 5 Slice 1 (MCP sell) — resolve the token→RedemptionQueue map once at
+// module load so every /tokens response surfaces each token's queue address.
+const redemptionQueueByToken = parseTokenAddressMap(
+  getEnv().REDEMPTION_QUEUE_BY_TOKEN_JSON,
+);
 
 const getTokensUseCase = new GetTokensUseCase(
   container.rwaTokenRepo,
   container.navHistoryRepo,
   container.userRepo,
   container.oracleRepo,
+  redemptionQueueByToken,
 );
 const createTokenUseCase = new CreateTokenUseCase(container.rwaTokenRepo);
 

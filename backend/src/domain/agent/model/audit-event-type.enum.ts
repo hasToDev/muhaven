@@ -75,6 +75,26 @@ export const AuditEventType = {
    * column distinguishes the cause.
    */
   ScopedSessionRevokedByPolicyMigration: 'scoped_session_revoked_by_policy_migration',
+  /**
+   * Wave 5 Slice 1 (MCP sell) — emitted ONCE per legacy Scoped session the
+   * first time the GET-mirror read derives the redeem + queue-submit
+   * selectorCaps (+ per-token queue targets) for it.
+   *
+   * Provenance marker for the LOCKED #1 audit caveat: those sell caps are
+   * **platform-derived from the pre-authorized on-chain Scoped CallPolicy
+   * envelope** (the D-1 broadening already authorized redeem + queue
+   * submit/claim at mint), NOT a fresh per-redeem user consent. The original
+   * mint's consent copy was buy-framed; this row records that the platform
+   * extended the broker's signable selector set to the sell ops the on-chain
+   * envelope already permitted. NEW mints carry these caps natively (frontend
+   * `buildScopedMintBody`), so this only fires for pre-Slice-1 rows.
+   *
+   * MUST stay in lockstep with the `agent_audit_event_type` pgEnum
+   * (`schema.ts`) — adding here without the pgEnum value makes the audit
+   * INSERT throw `invalid input value for enum`. See the
+   * `ValidatorInstallFailed` drift note above.
+   */
+  ScopedSessionSellCapsDerived: 'scoped_session_sell_caps_derived',
 } as const;
 
 export type AuditEventType = (typeof AuditEventType)[keyof typeof AuditEventType];
@@ -97,4 +117,5 @@ export const AUDIT_EVENT_TYPE_VALUES: readonly AuditEventType[] = [
   AuditEventType.ScopedSessionRevoked,
   AuditEventType.ScopedSessionExpired,
   AuditEventType.ScopedSessionRevokedByPolicyMigration,
+  AuditEventType.ScopedSessionSellCapsDerived,
 ] as const;

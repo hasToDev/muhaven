@@ -559,6 +559,17 @@ export const agentAuditEventTypeEnum = pgEnum('agent_audit_event_type', [
   // closes the drift; subsequent watchdog flips will land the audit
   // row cleanly.
   'validator_install_failed',
+  // Wave 5 Slice 1 (MCP sell) — emitted ONCE per legacy Scoped session the
+  // first time the GET-mirror read derives redeem + queue-submit selectorCaps
+  // (+ queue targets) for it. Provenance marker (LOCKED #1 audit caveat): the
+  // sell caps are PLATFORM-DERIVED from the already-authorized on-chain Scoped
+  // CallPolicy envelope (redeem + submit/claim are in the D-1 envelope), NOT a
+  // fresh per-redeem user consent. NEW mints carry these caps natively (the
+  // frontend mint body), so this fires only for pre-Slice-1 rows. MUST stay in
+  // lockstep with `AuditEventType.ScopedSessionSellCapsDerived` (TS enum) — see
+  // the `validator_install_failed` drift incident above; operator `db:push`
+  // applies the ALTER TYPE...ADD VALUE before the first emit.
+  'scoped_session_sell_caps_derived',
 ]);
 
 export const agentUserState = pgTable(

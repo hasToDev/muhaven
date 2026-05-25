@@ -74,6 +74,22 @@ export interface TokenResponseDto {
    * always populate this at the `deploy_yield_snapshot` step.
    */
   yield_snapshot_address: string | null;
+  /**
+   * Wave 5 Slice 1 (MCP sell) — per-token `RedemptionQueue` proxy address,
+   * resolved from the `REDEMPTION_QUEUE_BY_TOKEN_JSON` env map (NOT a DB
+   * column). `null` when the env is unset or has no entry for this token.
+   * The MCP server reads this to target the per-token queue for autonomous
+   * `viaQueue` sells; when null, queued sells degrade to a Path-C deep-link
+   * (instant redeem is unaffected — its target is the subscription).
+   *
+   * TODO(post-Slice-1): this is intentionally an ENV map for now (no
+   * migration/backfill), but it's asymmetric with `yield_snapshot_address`
+   * (a DB column written by `deploy-token.library.ts`). Once wizard-deployed
+   * tokens become sell-eligible, migrate the queue address to a DB column
+   * populated at the same deploy step — otherwise new tokens silently miss
+   * the env map and their queued sells degrade to deep-link. (BE Arch review.)
+   */
+  redemption_queue_address: string | null;
   created_at: string;
   updated_at: string;
   latest_nav: LatestNavDto | null;

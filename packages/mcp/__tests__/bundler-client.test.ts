@@ -241,6 +241,64 @@ describe('BundlerClient.getReceipt', () => {
     expect(r!.receipt.blockNumber).toBe('0xab');
   });
 
+  it('preserves receipt.logs (Wave 5 Slice 1 — needed to parse QueueSubmitted requestId)', async () => {
+    const logs = [
+      {
+        address: '0x' + 'e'.repeat(40),
+        topics: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64), '0x' + 'c'.repeat(64)],
+        data: '0x',
+        // bundlers return extra fields (logIndex, blockNumber, …) we ignore:
+        logIndex: '0x2',
+      },
+    ];
+    const fetchImpl = makeMockFetch(async () =>
+      jsonResponse({
+        jsonrpc: '2.0',
+        id: 1,
+        result: receiptFixture({
+          receipt: {
+            transactionHash: '0x' + 'c'.repeat(64),
+            blockNumber: '0x10',
+            blockHash: '0x' + 'd'.repeat(64),
+            logs,
+          },
+        }),
+      }),
+    );
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      fetchImpl,
+    });
+    const r = await client.getReceipt(('0x' + '1'.repeat(64)) as `0x${string}`);
+    expect(r!.receipt.logs).toHaveLength(1);
+    expect(r!.receipt.logs![0].topics?.[2]).toBe('0x' + 'c'.repeat(64));
+  });
+
+  it('tolerates a missing / non-array receipt.logs (omits the field, no throw)', async () => {
+    const fetchImpl = makeMockFetch(async () =>
+      jsonResponse({
+        jsonrpc: '2.0',
+        id: 1,
+        result: receiptFixture({
+          receipt: {
+            transactionHash: '0x' + 'c'.repeat(64),
+            blockNumber: '0x10',
+            blockHash: '0x' + 'd'.repeat(64),
+            logs: 'not-an-array',
+          },
+        }),
+      }),
+    );
+    const client = new BundlerClient({
+      endpoint: 'http://localhost:4337',
+      requestTimeoutMs: 5_000,
+      fetchImpl,
+    });
+    const r = await client.getReceipt(('0x' + '1'.repeat(64)) as `0x${string}`);
+    expect(r!.receipt.logs).toBeUndefined();
+  });
+
   it('rejects receipt missing transactionHash', async () => {
     const fetchImpl = makeMockFetch(async () =>
       jsonResponse({

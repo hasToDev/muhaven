@@ -290,6 +290,38 @@ describe('GetTokensUseCase · NAV-source split fallback', () => {
     const { tokens } = await useCase.execute();
     expect(tokens[0].latest_nav?.apy).toBe('4.80');
   });
+
+  // Wave 5 Slice 1 (MCP sell) — per-token RedemptionQueue resolution.
+  it('resolves redemption_queue_address from the env map (case-insensitive on token key)', async () => {
+    const tbill = token('TBILL1', TBILL_ADDR);
+    const cetes = token('CETES', CETES_ADDR);
+    const QUEUE = '0x435af5af238abe80dd4dc571c38c167f407c4e9c';
+    const useCase = new GetTokensUseCase(
+      makeTokenRepo([tbill, cetes]),
+      makeNavRepo([]),
+      makeUserRepo(),
+      undefined,
+      // Map key is lower-cased per parseTokenAddressMap; TBILL_ADDR is
+      // already lower-case here, but toDto lower-cases the token address too.
+      { [TBILL_ADDR]: QUEUE },
+    );
+    const { tokens } = await useCase.execute();
+    const tbillDto = tokens.find((t) => t.symbol === 'TBILL1');
+    const cetesDto = tokens.find((t) => t.symbol === 'CETES');
+    expect(tbillDto?.redemption_queue_address).toBe(QUEUE);
+    // No map entry for CETES → null (graceful — viaQueue degrades to Path C).
+    expect(cetesDto?.redemption_queue_address).toBeNull();
+  });
+
+  it('defaults redemption_queue_address to null when no queue map is supplied', async () => {
+    const useCase = new GetTokensUseCase(
+      makeTokenRepo([token('TBILL1', TBILL_ADDR)]),
+      makeNavRepo([]),
+      makeUserRepo(),
+    );
+    const { tokens } = await useCase.execute();
+    expect(tokens[0].redemption_queue_address).toBeNull();
+  });
 });
 
 describe('GetTokenByAddressUseCase · NAV-source split fallback', () => {

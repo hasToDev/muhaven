@@ -60,7 +60,16 @@ vi.mock('vue-sonner', () => {
 // Non-zero subscription address so the mint guard
 // ("Subscription contract address is not configured") passes.
 vi.mock('@/contracts/addresses', () => ({
-  v35Addresses: { subscription: '0x1234567890123456789012345678901234567890' },
+  // `queues` mirrors the real `v35Addresses` shape (a per-token map);
+  // `buildScopedMintBody` reads `Object.values(v35Addresses.queues)` for the
+  // Wave 5 Slice 1 (MCP sell) queued-submit targets.
+  v35Addresses: {
+    subscription: '0x1234567890123456789012345678901234567890',
+    queues: {
+      '0x8d77ccf0a3a56c976a7deae59af1d27f27407b0d':
+        '0x435af5af238abe80dd4dc571c38c167f407c4e9c',
+    },
+  },
 }))
 
 import PolicyTransitionPage from '../PolicyTransitionPage.vue'

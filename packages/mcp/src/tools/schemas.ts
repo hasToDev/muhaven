@@ -168,6 +168,18 @@ export const PositionSellInputSchema = z
     amountShares: z
       .string()
       .regex(/^[1-9]\d*$/, 'must be a positive integer share count'),
+    /**
+     * Wave 5 Slice 1 — when `true`, submit the shares DIRECTLY to the
+     * token's `RedemptionQueue` (explicit queued sell) instead of an
+     * instant `redeem`. Use this when the user wants to queue regardless of
+     * instant-redeem capacity. The default (`false`/omitted) attempts an
+     * instant redeem, which on-chain auto-escalates to the queue if it
+     * overflows the instant cap — so most "sell" intents need NOT set this.
+     * Autonomous (Path D) queued-submit requires the backend to expose the
+     * token's queue address; if it doesn't, the sell degrades to a Path C
+     * deep-link.
+     */
+    viaQueue: z.boolean().optional(),
   })
   .strict();
 

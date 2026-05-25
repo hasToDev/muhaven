@@ -48,6 +48,10 @@ function toDto(
     min_investment: token.minInvestment ?? null,
     status: token.status,
     yield_snapshot_address: token.yieldSnapshotAddress ?? null,
+    // Wave 5 Slice 1 — the issuer view doesn't surface the per-token queue
+    // address (it's an investor-side sell concern). Always null here; the
+    // public /api/v1/tokens response is the one that resolves it from the env.
+    redemption_queue_address: null,
     created_at: token.createdAt.toISOString(),
     updated_at: token.updatedAt.toISOString(),
     latest_nav: latestNav ? navToDto(latestNav) : null,

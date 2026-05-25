@@ -1,9 +1,18 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ScopedSession } from '../../../../../domain/agent/model/scoped-session.js';
 import { ScopedSessionStatus } from '../../../../../domain/agent/model/scoped-session-status.enum.js';
 import { Surface } from '../../../../../domain/agent/model/surface.enum.js';
 import { MemoryScopedSessionRepository } from '../../../../../infrastructure/repository/memory/memory-scoped-session.repository.js';
 import { GetActiveScopedSessionUseCase } from '../get-active-scoped-session.use-case.js';
+import type { AppendAuditEventUseCase } from '../append-audit-event.use-case.js';
+import { AuditEventType } from '../../../../../domain/agent/model/audit-event-type.enum.js';
+import {
+  SUBSCRIPTION_PURCHASE_SELECTOR,
+  SUBSCRIPTION_REDEEM_SELECTOR,
+  REDEMPTION_QUEUE_SUBMIT_SELECTOR,
+} from '../scoped-sell-caps.js';
+
+const QUEUE_A = '0xaaaa0000000000000000000000000000000000a1' as `0x${string}`;
 
 const NOW = new Date('2026-05-22T12:00:00.000Z');
 const NOW_SEC = Math.floor(NOW.getTime() / 1000);
@@ -115,5 +124,79 @@ describe('GetActiveScopedSessionUseCase', () => {
       now: NOW,
     });
     expect(result).toBeNull();
+  });
+});
+
+// Wave 5 Slice 1 (MCP sell) — server-side derivation of the autonomous sell
+// caps on the GET-mirror read path. A purchase-cap session (the marker of a
+// Path-D autonomy session) is served with redeem + queue-submit caps added.
+describe('GetActiveScopedSessionUseCase — Slice 1 sell-cap injection', () => {
+  // Distinct (userId, sessionId) per test so the module-level one-time audit
+  // dedup Set in the use-case doesn't cross-contaminate cases.
+  function purchaseCapSession(
+    overrides: Partial<ConstructorParameters<typeof ScopedSession>[0]> = {},
+  ): ScopedSession {
+    return makeSession({
+      selectorCaps: [
+        { selector: SUBSCRIPTION_PURCHASE_SELECTOR, capArgIndex: 2, maxAmount: '100' },
+      ],
+      ...overrides,
+    });
+  }
+
+  it('injects the redeem cap into the served session (no queues configured)', async () => {
+    const repo = new MemoryScopedSessionRepository();
+    await repo.create(purchaseCapSession({ sessionId: 's-redeem', userId: 'ur' }));
+    const useCase = new GetActiveScopedSessionUseCase(repo, []);
+    const result = await useCase.execute({ userId: 'ur', surface: Surface.MCP, now: NOW });
+    const selectors = result!.selectorCaps.map((c) => c.selector);
+    expect(selectors).toContain(SUBSCRIPTION_REDEEM_SELECTOR);
+    expect(selectors).not.toContain(REDEMPTION_QUEUE_SUBMIT_SELECTOR);
+  });
+
+  it('injects redeem + submit caps + the queue target when queues are configured', async () => {
+    const repo = new MemoryScopedSessionRepository();
+    await repo.create(purchaseCapSession({ sessionId: 's-queue', userId: 'uq' }));
+    const useCase = new GetActiveScopedSessionUseCase(repo, [QUEUE_A]);
+    const result = await useCase.execute({ userId: 'uq', surface: Surface.MCP, now: NOW });
+    const selectors = result!.selectorCaps.map((c) => c.selector);
+    expect(selectors).toContain(SUBSCRIPTION_REDEEM_SELECTOR);
+    expect(selectors).toContain(REDEMPTION_QUEUE_SUBMIT_SELECTOR);
+    expect(result!.targetContracts).toContain(QUEUE_A);
+  });
+
+  it('emits the platform-derived-consent audit exactly ONCE across repeated reads', async () => {
+    const repo = new MemoryScopedSessionRepository();
+    await repo.create(purchaseCapSession({ sessionId: 's-audit-once', userId: 'ua' }));
+    const execute = vi.fn().mockResolvedValue(undefined);
+    const auditStub = { execute } as unknown as AppendAuditEventUseCase;
+    const useCase = new GetActiveScopedSessionUseCase(repo, [QUEUE_A], auditStub);
+
+    await useCase.execute({ userId: 'ua', surface: Surface.MCP, now: NOW });
+    await useCase.execute({ userId: 'ua', surface: Surface.MCP, now: NOW });
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls[0][0]).toMatchObject({
+      userId: 'ua',
+      eventType: AuditEventType.ScopedSessionSellCapsDerived,
+    });
+  });
+
+  it('does NOT emit the audit when nothing is derived (no purchase cap)', async () => {
+    const repo = new MemoryScopedSessionRepository();
+    await repo.create(
+      makeSession({
+        sessionId: 's-no-derive',
+        userId: 'und',
+        selectorCaps: [{ selector: '0xdeadbeef', capArgIndex: 2, maxAmount: '100' }],
+      }),
+    );
+    const execute = vi.fn().mockResolvedValue(undefined);
+    const auditStub = { execute } as unknown as AppendAuditEventUseCase;
+    const useCase = new GetActiveScopedSessionUseCase(repo, [QUEUE_A], auditStub);
+    const result = await useCase.execute({ userId: 'und', surface: Surface.MCP, now: NOW });
+    expect(execute).not.toHaveBeenCalled();
+    // Session served unchanged.
+    expect(result!.selectorCaps.map((c) => c.selector)).toEqual(['0xdeadbeef']);
   });
 });

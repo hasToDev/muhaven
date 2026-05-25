@@ -48,6 +48,11 @@ export class CreateTokenUseCase {
       asset_class: token.assetClass,
       min_investment: token.minInvestment ?? null,
       status: token.status,
+      // Wave 5 Slice 1 — both are per-token addresses this legacy admin-seed
+      // endpoint doesn't populate (the wizard deploy flow owns yield_snapshot;
+      // the queue is env-mapped on the public read path). Null here.
+      yield_snapshot_address: token.yieldSnapshotAddress ?? null,
+      redemption_queue_address: null,
       created_at: token.createdAt.toISOString(),
       updated_at: token.updatedAt.toISOString(),
       latest_nav: null,

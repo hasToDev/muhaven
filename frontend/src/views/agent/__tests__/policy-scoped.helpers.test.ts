@@ -5,6 +5,10 @@ import {
   SCOPED_DEFAULT_TTL_SEC,
   SUBSCRIPTION_PURCHASE_SELECTOR,
   PURCHASE_MAX_SHARES_HINT_WORD_INDEX,
+  SUBSCRIPTION_REDEEM_SELECTOR,
+  REDEEM_MAX_SHARES_HINT_WORD_INDEX,
+  REDEMPTION_QUEUE_SUBMIT_SELECTOR,
+  QUEUE_SUBMIT_MAX_SHARES_HINT_WORD_INDEX,
   parseMhUsdcBase6,
   prefixConsentActionHash,
   newScopedSessionId,
@@ -331,6 +335,11 @@ describe('policy-scoped.helpers — buildScopedMintBody', () => {
     subscriptionAddress: '0x1234567890123456789012345678901234567890' as `0x${string}`,
     maxPerOpUsd6: 100_000_000n, // $100
     maxSharesPerOp: 100n,
+    // Wave 5 Slice 1 (MCP sell) — two per-token RedemptionQueue addresses.
+    redemptionQueueAddresses: [
+      '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    ] as `0x${string}`[],
     mintedAtSec: 1_700_000_000,
     validUntilSec: 1_700_014_400,
     consentActionHash: `0x${'a'.repeat(64)}` as `0x${string}`,
@@ -352,23 +361,66 @@ describe('policy-scoped.helpers — buildScopedMintBody', () => {
     expect(body.snapshot.signerAddress).toBe(baseInput.signerAddress)
   })
 
-  it('sets targetContracts to [subscriptionAddress] (single-entry Slice 1)', () => {
+  it('sets targetContracts to [subscription, ...lower-cased queues] (Slice 1 MCP sell)', () => {
     const body = buildScopedMintBody(baseInput)
-    expect(body.snapshot.targetContracts).toEqual([baseInput.subscriptionAddress])
+    expect(body.snapshot.targetContracts).toEqual([
+      baseInput.subscriptionAddress.toLowerCase(),
+      '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    ])
   })
 
-  it('emits exactly ONE selectorCap, on purchase, capArgIndex 2, maxAmount in SHARES (not mhUSDC)', () => {
+  it('emits purchase + redeem (capArgIndex 2) + submit (capArgIndex 1) caps, maxAmount in SHARES (not mhUSDC)', () => {
     const body = buildScopedMintBody(baseInput)
-    expect(body.snapshot.selectorCaps.length).toBe(1)
-    const cap = body.snapshot.selectorCaps[0]
-    expect(cap.selector).toBe(SUBSCRIPTION_PURCHASE_SELECTOR)
-    expect(cap.capArgIndex).toBe(PURCHASE_MAX_SHARES_HINT_WORD_INDEX)
-    // maxAmount MUST be the SHARES value, not the mhUSDC value. If we
-    // ever regress to passing `maxPerOpUsd6` here, the broker's per-arg
-    // cap would compare 100_000_000 shares against a uint128 — every
-    // small purchase would pass, defeating the cap.
-    expect(cap.maxAmount).toBe('100')
-    expect(cap.maxAmount).not.toBe('100000000')
+    expect(body.snapshot.selectorCaps.length).toBe(3)
+    const bySelector = new Map(
+      body.snapshot.selectorCaps.map((c) => [c.selector, c]),
+    )
+    const purchase = bySelector.get(SUBSCRIPTION_PURCHASE_SELECTOR)
+    const redeem = bySelector.get(SUBSCRIPTION_REDEEM_SELECTOR)
+    const submit = bySelector.get(REDEMPTION_QUEUE_SUBMIT_SELECTOR)
+    expect(purchase?.capArgIndex).toBe(PURCHASE_MAX_SHARES_HINT_WORD_INDEX)
+    expect(redeem?.capArgIndex).toBe(REDEEM_MAX_SHARES_HINT_WORD_INDEX)
+    // submit's maxSharesHint is at word index 1 (no leading token arg).
+    expect(submit?.capArgIndex).toBe(QUEUE_SUBMIT_MAX_SHARES_HINT_WORD_INDEX)
+    expect(submit?.capArgIndex).toBe(1)
+    // maxAmount MUST be the SHARES value, not the mhUSDC value. If we ever
+    // regress to passing `maxPerOpUsd6` here, the broker's per-arg cap would
+    // compare 100_000_000 shares against a uint128 — every small trade would
+    // pass, defeating the cap. All three share the same per-op ceiling.
+    for (const c of body.snapshot.selectorCaps) {
+      expect(c.maxAmount).toBe('100')
+      expect(c.maxAmount).not.toBe('100000000')
+    }
+  })
+
+  it('OMITS the submit cap (and adds no queue targets) when no queues are in scope', () => {
+    const body = buildScopedMintBody({ ...baseInput, redemptionQueueAddresses: [] })
+    expect(body.snapshot.targetContracts).toEqual([
+      baseInput.subscriptionAddress.toLowerCase(),
+    ])
+    const selectors = body.snapshot.selectorCaps.map((c) => c.selector)
+    expect(selectors).toContain(SUBSCRIPTION_PURCHASE_SELECTOR)
+    expect(selectors).toContain(SUBSCRIPTION_REDEEM_SELECTOR)
+    expect(selectors).not.toContain(REDEMPTION_QUEUE_SUBMIT_SELECTOR)
+    expect(body.snapshot.selectorCaps.length).toBe(2)
+  })
+
+  it('dedupes + lower-cases queue targets and drops malformed entries', () => {
+    const body = buildScopedMintBody({
+      ...baseInput,
+      redemptionQueueAddresses: [
+        '0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' as `0x${string}`, // dup of base (mixed case)
+        '0xCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC' as `0x${string}`,
+        '0xnot-an-address' as `0x${string}`, // malformed → dropped
+        baseInput.subscriptionAddress, // collides with subscription → dropped
+      ],
+    })
+    expect(body.snapshot.targetContracts).toEqual([
+      baseInput.subscriptionAddress.toLowerCase(),
+      '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      '0xcccccccccccccccccccccccccccccccccccccccc',
+    ])
   })
 
   it('preserves uint256 precision via toString() (no JSON BigInt loss)', () => {
