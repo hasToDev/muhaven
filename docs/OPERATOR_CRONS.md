@@ -181,6 +181,18 @@ YIELD_CRON_MAX_SUPPLY_CAP=10000    # safety ceiling under snapshot funding
 
 No registration step — `pnpm run deploy:homelab` brings it up with the backend.
 
+**Shared issuer EOA / nonce collisions (FU-4):** the yield issuer EOA
+(`YIELD_CRON_PRIVATE_KEY`) is shared with the nav crons on prod, so a
+concurrent NAV tx can advance the account nonce and reject a yield tx with
+`NONCE_EXPIRED` ("nonce too low"). The runner now absorbs this: it logs
+`nonce collision on send … re-querying nonce + retrying` (warn) and retries
+the send (backoff 500/1500/3000ms, up to 4 attempts) — a nonce-rejected tx
+never executed, so re-sending is safe. Occasional retry warns at 00:00 UTC
+are expected and benign. A run that still fails self-heals on the next tick's
+resume. If collisions become frequent, the deeper fix is a dedicated yield EOA
+(it must remain the on-chain `tokenRegistry.getConfig(token).issuer`) or
+schedule separation from the nav cadence.
+
 **Funding model (FU-1, Wave 5 W2):** with `YIELD_CRON_SNAPSHOT_FUNDING=true`
 (default) the cron sizes each epoch to the ACTUAL snapshotted supply —
 `min(decryptedSupply, YIELD_CRON_MAX_SUPPLY_CAP) × ratePerShare /
