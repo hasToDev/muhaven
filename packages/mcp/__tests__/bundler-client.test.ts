@@ -241,26 +241,29 @@ describe('BundlerClient.getReceipt', () => {
     expect(r!.receipt.blockNumber).toBe('0xab');
   });
 
-  it('preserves receipt.logs (Wave 5 Slice 1 — needed to parse QueueSubmitted requestId)', async () => {
-    const logs = [
-      {
-        address: '0x' + 'e'.repeat(40),
-        topics: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64), '0x' + 'c'.repeat(64)],
-        data: '0x',
-        // bundlers return extra fields (logIndex, blockNumber, …) we ignore:
-        logIndex: '0x2',
-      },
-    ];
+  it('preserves BOTH the top-level per-UserOp logs and the whole-tx receipt.logs (Wave 5 Slice 1)', async () => {
+    // Top-level `logs` = this UserOp's logs (the correct source for the
+    // QueueSubmitted requestId). `receipt.logs` = the whole bundled tx.
+    const perUserOpLog = {
+      address: '0x' + 'e'.repeat(40),
+      topics: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64), '0x' + 'c'.repeat(64)],
+      data: '0x',
+      // bundlers return extra fields (logIndex, blockNumber, …) we ignore:
+      logIndex: '0x2',
+    };
     const fetchImpl = makeMockFetch(async () =>
       jsonResponse({
         jsonrpc: '2.0',
         id: 1,
         result: receiptFixture({
+          logs: [perUserOpLog],
           receipt: {
             transactionHash: '0x' + 'c'.repeat(64),
             blockNumber: '0x10',
             blockHash: '0x' + 'd'.repeat(64),
-            logs,
+            // whole-tx logs carry an UNRELATED extra entry that must NOT
+            // bleed into the top-level per-UserOp set.
+            logs: [perUserOpLog, { address: '0x' + '9'.repeat(40), topics: ['0x' + '8'.repeat(64)] }],
           },
         }),
       }),
@@ -271,21 +274,26 @@ describe('BundlerClient.getReceipt', () => {
       fetchImpl,
     });
     const r = await client.getReceipt(('0x' + '1'.repeat(64)) as `0x${string}`);
-    expect(r!.receipt.logs).toHaveLength(1);
-    expect(r!.receipt.logs![0].topics?.[2]).toBe('0x' + 'c'.repeat(64));
+    // Top-level: exactly this op's one log.
+    expect(r!.logs).toHaveLength(1);
+    expect(r!.logs![0].topics?.[2]).toBe('0x' + 'c'.repeat(64));
+    // Whole-tx receipt.logs: both entries preserved (emitter-filtered
+    // consumers like the SelectorSet search rely on it).
+    expect(r!.receipt.logs).toHaveLength(2);
   });
 
-  it('tolerates a missing / non-array receipt.logs (omits the field, no throw)', async () => {
+  it('tolerates missing / non-array logs at both levels (omits the field, no throw)', async () => {
     const fetchImpl = makeMockFetch(async () =>
       jsonResponse({
         jsonrpc: '2.0',
         id: 1,
         result: receiptFixture({
+          logs: 'not-an-array',
           receipt: {
             transactionHash: '0x' + 'c'.repeat(64),
             blockNumber: '0x10',
             blockHash: '0x' + 'd'.repeat(64),
-            logs: 'not-an-array',
+            // receipt.logs omitted entirely
           },
         }),
       }),
@@ -296,6 +304,7 @@ describe('BundlerClient.getReceipt', () => {
       fetchImpl,
     });
     const r = await client.getReceipt(('0x' + '1'.repeat(64)) as `0x${string}`);
+    expect(r!.logs).toBeUndefined();
     expect(r!.receipt.logs).toBeUndefined();
   });
 

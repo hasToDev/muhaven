@@ -1723,17 +1723,21 @@ function buildPathDDecodedCall(
 }
 
 /**
- * Wave 5 Slice 1 — best-effort parse of the `QueueSubmitted.requestId` from
- * a UserOp receipt's logs. Fires for both the explicit `RedemptionQueue.submit`
- * path AND an instant `redeem` that auto-escalated to the queue on cap
- * overflow (the queue emits the same event in both cases). Returns the
- * decimal requestId string, or `null` when no `QueueSubmitted` log is present
- * (e.g. an in-cap instant redeem that settled immediately).
+ * Wave 5 Slice 1 — best-effort parse of the `QueueSubmitted.requestId` from a
+ * UserOp receipt's TOP-LEVEL `logs` (the per-UserOp log set from
+ * `eth_getUserOperationReceipt.logs`, NOT the whole-tx `receipt.logs`). Fires
+ * for both the explicit `RedemptionQueue.submit` path AND an instant `redeem`
+ * that auto-escalated to the queue on cap overflow (the queue emits the same
+ * event in both cases). Returns the decimal requestId string, or `null` when
+ * no `QueueSubmitted` log is present (e.g. an in-cap instant redeem that
+ * settled immediately, or a bundler that omits the per-UserOp `logs`).
  *
- * `requestId` is the SECOND indexed param → `topics[2]`. We do NOT filter by
- * emitter address: an instant redeem escalates inside the per-token queue
- * (not the subscription), so the emitter is the queue either way, and a
- * receipt only ever carries one queue's `QueueSubmitted` for a single-leg op.
+ * `requestId` is the SECOND indexed param → `topics[2]`. We don't filter by
+ * emitter address — because we read the PER-UserOp logs, the only
+ * `QueueSubmitted` present is this op's (an instant redeem escalates inside
+ * the per-token queue, so the emitter is the queue either way). Reading the
+ * per-UserOp logs (not whole-tx) is what makes the no-emitter-filter safe
+ * under multi-UserOp bundling.
  */
 export function parseQueueRequestIdFromReceipt(receipt: unknown): string | null {
   const r = receipt as {
@@ -2836,8 +2840,10 @@ async function attemptPathD(
     // Wave 5 Slice 1 — for sell paths, surface the queue requestId +
     // settlement disposition. An explicit submit is always 'queued'; an
     // instant redeem is 'escalated' when a QueueSubmitted log is present
-    // (cap-overflow on-chain escalation) else 'instant'.
-    const sellExtras = buildSellExtras(spec.op, receipt.receipt);
+    // (cap-overflow on-chain escalation) else 'instant'. Pass the FULL
+    // receipt — buildSellExtras reads the top-level per-UserOp `logs` (not
+    // the whole-tx `receipt.logs`, which could misattribute under bundling).
+    const sellExtras = buildSellExtras(spec.op, receipt);
     return {
       kind: 'ok',
       data: {
@@ -2861,7 +2867,7 @@ async function attemptPathD(
     try {
       const lateReceipt = await deps.bundler.getReceipt(userOpHash);
       if (lateReceipt) {
-        const sellExtras = buildSellExtras(spec.op, lateReceipt.receipt);
+        const sellExtras = buildSellExtras(spec.op, lateReceipt);
         return {
           kind: 'ok',
           data: {
