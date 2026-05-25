@@ -11,10 +11,15 @@ import { z } from 'zod';
  * anything unrecognised loudly (so a typo boot-fails rather than silently
  * defaulting to a surprising value).
  *
- * Applied 2026-05-25 to `YIELD_CRON_ENABLED` + `YIELD_CRON_DRY_RUN` only — the
- * other 8 `z.coerce.boolean()` flags below share the identical bug and are
- * tracked as a follow-up (see development/DEV_WAVE_5 log). Do NOT add new
- * boolean env flags with `z.coerce.boolean()`; use `zEnvBool(...)`.
+ * Applied 2026-05-25 to `YIELD_CRON_ENABLED` + `YIELD_CRON_DRY_RUN` (W2), then
+ * extended (FU-2, same day) to ALL remaining boolean env flags:
+ * `BLOCK_POLLER_ENABLED`, `NAV_CRON_ENABLED`, `TAX_EVENT_POLLER_ENABLED`,
+ * `CHECKOUT_SETTLEMENT_POLLER_ENABLED`, `PERMISSION_INSTALLED_POLLER_ENABLED`,
+ * `VALIDATOR_ENABLE_WATCHDOG_ENABLED`, `ISSUER_ONBOARDING_ENABLED`,
+ * `AGENT_POLICY_CRON_ENABLED`. There should now be ZERO `z.coerce.boolean()`
+ * in this file (enforced by a config.test.ts source-scan regression guard).
+ * Do NOT add new boolean env flags with `z.coerce.boolean()`; use `zEnvBool(...)`.
+ * (`z.coerce.number()` for numeric env vars is fine — the footgun is boolean-only.)
  */
 export const zEnvBool = (def: boolean) =>
   z.preprocess((v) => {
@@ -66,7 +71,7 @@ const EnvSchema = z.object({
   RELAY_WEBHOOK_SECRET: z.string().optional(),
 
   // Block event poller
-  BLOCK_POLLER_ENABLED: z.coerce.boolean().default(false),
+  BLOCK_POLLER_ENABLED: zEnvBool(false),
   BLOCK_POLLER_INTERVAL_MS: z.coerce.number().default(15000),
 
   // MuHaven Contract Addresses (Arb Sepolia)
@@ -109,7 +114,7 @@ const EnvSchema = z.object({
 
   // NAV writer cron — pulls a fresh NAV from the Chainlink Functions
   // oracle for every registered Wave 3.5 token. Leave disabled in dev.
-  NAV_CRON_ENABLED: z.coerce.boolean().default(false),
+  NAV_CRON_ENABLED: zEnvBool(false),
   NAV_CRON_INTERVAL_MS: z.coerce.number().default(60 * 60 * 1000), // 1h
   // EOA that has been granted `navRequester` on the ChainlinkFunctionsOracle.
   // Without it the cron logs a warning and stays idle.
@@ -118,7 +123,7 @@ const EnvSchema = z.object({
   // Tax-event indexer — polls Wave 3.5 contract events and stores
   // plaintext markers per ADR-020. Independent of the Wave 3 escrow
   // poller toggle so each can be turned on/off in isolation.
-  TAX_EVENT_POLLER_ENABLED: z.coerce.boolean().default(false),
+  TAX_EVENT_POLLER_ENABLED: zEnvBool(false),
   TAX_EVENT_POLLER_INTERVAL_MS: z.coerce.number().default(15_000),
   SUBSCRIPTION_ADDRESS: z.string().optional(),
 
@@ -130,7 +135,7 @@ const EnvSchema = z.object({
   // + `RPC_URL` above. Disabled by default — operator enables once
   // the buyer-page P3 ceremony is producing real Subscription.purchase
   // txes (otherwise the indexer polls for nothing and burns RPC).
-  CHECKOUT_SETTLEMENT_POLLER_ENABLED: z.coerce.boolean().default(false),
+  CHECKOUT_SETTLEMENT_POLLER_ENABLED: zEnvBool(false),
   CHECKOUT_SETTLEMENT_POLLER_INTERVAL_MS: z.coerce.number().default(8_000),
   // Wave 5 Option D · Commit 3 — PermissionInstalled chain indexer.
   // AUTHORITATIVE source-of-truth for `agent_scoped_sessions.enable_status`
@@ -139,7 +144,7 @@ const EnvSchema = z.object({
   // net. Re-uses `RPC_URL`; no address allowlist (every kernel emits
   // the event from its own address — filtering would require sweeping
   // the kernel list every tick).
-  PERMISSION_INSTALLED_POLLER_ENABLED: z.coerce.boolean().default(false),
+  PERMISSION_INSTALLED_POLLER_ENABLED: zEnvBool(false),
   PERMISSION_INSTALLED_POLLER_INTERVAL_MS: z.coerce.number().default(8_000),
   /**
    * Wave 5 Option D Commit 3 (multi-agent review HIGH-2-BE) — reorg
@@ -155,7 +160,7 @@ const EnvSchema = z.object({
   // Telegram operator alert. Independent of the indexer toggle —
   // operator can run the watchdog in dev (off the indexer) to fail
   // closed during diagnosis.
-  VALIDATOR_ENABLE_WATCHDOG_ENABLED: z.coerce.boolean().default(false),
+  VALIDATOR_ENABLE_WATCHDOG_ENABLED: zEnvBool(false),
   VALIDATOR_ENABLE_WATCHDOG_INTERVAL_MS: z.coerce.number().default(60_000),
   VALIDATOR_ENABLE_WATCHDOG_STALE_SEC: z.coerce.number().default(720),
   VALIDATOR_ENABLE_WATCHDOG_BATCH_LIMIT: z.coerce.number().default(20),
@@ -208,7 +213,7 @@ const EnvSchema = z.object({
   // / IdentityRegistry / IssuerControlledOracle — the indexer's
   // `*_JSON` lists are per-token *subscriptions*, while the platform
   // contracts here are single-deployment singletons.
-  ISSUER_ONBOARDING_ENABLED: z.coerce.boolean().default(false),
+  ISSUER_ONBOARDING_ENABLED: zEnvBool(false),
   PLATFORM_DEPLOYER_PRIVATE_KEY: z.string().optional(),
   INVESTOR_REGISTRY_V35_ADDRESS: z.string().optional(),
   YIELD_SNAPSHOT_ADDRESS: z.string().optional(),
@@ -233,7 +238,7 @@ const EnvSchema = z.object({
   // (default 60s per ADR-0). When disabled the engine never fires —
   // useful for dev environments without DB or for surfacing the cron
   // exclusively via on-demand tick endpoints later.
-  AGENT_POLICY_CRON_ENABLED: z.coerce.boolean().default(false),
+  AGENT_POLICY_CRON_ENABLED: zEnvBool(false),
   AGENT_POLICY_CRON_INTERVAL_MS: z.coerce.number().default(60_000),
 
   // ── Wave 4 Phase P6 — RiskParams adapter selection ─────────────────

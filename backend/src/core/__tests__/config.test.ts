@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { zEnvBool } from '../config.js';
 
@@ -70,5 +72,51 @@ describe('zEnvBool — robust env boolean coercion', () => {
     expect(flag.parse('false')).toBe(false);
     expect(flag.parse('off')).toBe(false);
     expect(flag.parse('true')).toBe(true);
+  });
+});
+
+/**
+ * FU-2 (Wave 5 W2) — source-scan regression guards. The footgun is
+ * platform-wide: EVERY boolean env flag must use `zEnvBool(...)`, never
+ * `z.coerce.boolean()` (where the string "false" silently coerces to `true`).
+ * These read the config.ts source so a future flag that re-introduces
+ * `z.coerce.boolean()` — or drops a known flag's conversion — boot-fails CI
+ * here rather than silently shipping an undisable-able toggle to prod.
+ */
+describe('config.ts boolean-flag hygiene (FU-2)', () => {
+  const CONFIG_SRC = readFileSync(
+    fileURLToPath(new URL('../config.ts', import.meta.url)),
+    'utf8',
+  );
+
+  // The full set of boolean env flags. W2 converted the first three; FU-2
+  // converted the remaining eight. There should be no others.
+  const BOOLEAN_FLAGS = [
+    'YIELD_CRON_ENABLED',
+    'YIELD_CRON_DRY_RUN',
+    'YIELD_CRON_SNAPSHOT_FUNDING',
+    'BLOCK_POLLER_ENABLED',
+    'NAV_CRON_ENABLED',
+    'TAX_EVENT_POLLER_ENABLED',
+    'CHECKOUT_SETTLEMENT_POLLER_ENABLED',
+    'PERMISSION_INSTALLED_POLLER_ENABLED',
+    'VALIDATOR_ENABLE_WATCHDOG_ENABLED',
+    'ISSUER_ONBOARDING_ENABLED',
+    'AGENT_POLICY_CRON_ENABLED',
+  ] as const;
+
+  it('defines ZERO schema fields with z.coerce.boolean() (footgun eradicated)', () => {
+    // Match only schema FIELD definitions (`<KEY>: z.coerce.boolean(`), so the
+    // header comment's prose mention of `z.coerce.boolean()` doesn't count.
+    // `z.coerce.number()` for numeric vars is intentionally allowed.
+    const offenders = CONFIG_SRC.match(/^\s*\w+:\s*z\.coerce\.boolean\(/gm) ?? [];
+    expect(offenders).toEqual([]);
+  });
+
+  it('defines every boolean flag with zEnvBool(...)', () => {
+    for (const flag of BOOLEAN_FLAGS) {
+      const re = new RegExp(`\\b${flag}:\\s*zEnvBool\\(`);
+      expect(re.test(CONFIG_SRC), `${flag} must use zEnvBool(...)`).toBe(true);
+    }
   });
 });
