@@ -83,3 +83,11 @@ scripts/deploy-homelab.sh
 
 # Project-scoped MCP server config — operator-local; embeds dev URLs + keyring choice.
 .mcp.json
+
+# Operator-local funding ops scripts (2026-05-25) — keep untracked, internal use only.
+scripts/wrap-issuer-mhusdc.ts
+scripts/wrap-usdc-to-mhusdc.ts
+
+# Operator-local Wave 5 instant-sell ops scripts (2026-05-25) — keep untracked, internal use only.
+scripts/set-instant-cap.ts
+scripts/seed-treasury.ts
