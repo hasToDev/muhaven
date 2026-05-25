@@ -1,0 +1,6 @@
+# Shell scripts run on the Linux homelab (Ubuntu 24.04). With core.autocrlf=true
+# on a Windows checkout they'd be CRLF in the working tree, and `deploy-homelab.sh`
+# rsyncs the working tree as-is — so a CRLF `*.sh` ships to the homelab and bash
+# dies with `$'\r': command not found` (broke the Wave 5 Q2 oracle-refresh cron,
+# 2026-05-25). Force LF regardless of the checking-out platform's autocrlf.
+*.sh text eol=lf
