@@ -445,4 +445,47 @@ describe('runYieldEpoch snapshot-based funding', () => {
     expect(contractImpl.fundEpoch).toHaveBeenCalledOnce();
     expect(consume).toHaveBeenCalledWith(expectedAmount);
   });
+
+  // FU-4 (Wave 5 W2): the yield issuer EOA is shared with the nav crons, so a
+  // concurrent NAV tx can reject our fundEpoch with NONCE_EXPIRED. The runner
+  // re-queries the nonce + retries the send rather than failing the tick.
+  it('retries the fundEpoch send on a NONCE_EXPIRED collision, then succeeds', async () => {
+    const consume = vi.fn();
+    const input = makeInput({
+      cofheClient: makeCofheClient({ supply: 100n }),
+      floatLedger: { remaining: 10_000_000_000n, consume },
+    });
+    let calls = 0;
+    contractImpl.fundEpoch = vi.fn().mockImplementation(() => {
+      calls += 1;
+      if (calls === 1) {
+        const err = new Error('nonce too low: next nonce 1393, tx nonce 1392') as Error & {
+          code?: string;
+        };
+        err.code = 'NONCE_EXPIRED';
+        return Promise.reject(err);
+      }
+      return Promise.resolve({ hash: '0xfund', wait: vi.fn().mockResolvedValue({ status: 1 }) });
+    });
+    const result = await runYieldEpoch(input);
+    expect(result.status).toBe('resumed_success');
+    expect(contractImpl.fundEpoch).toHaveBeenCalledTimes(2); // 1 rejected + 1 retry
+    const expectedAmount = (100n * 96_901_369n) / RATE_SCALE;
+    expect(consume).toHaveBeenCalledWith(expectedAmount);
+  });
+
+  it('does NOT retry the fundEpoch send on a non-nonce error (propagates immediately)', async () => {
+    const consume = vi.fn();
+    const input = makeInput({
+      cofheClient: makeCofheClient({ supply: 100n }),
+      floatLedger: { remaining: 10_000_000_000n, consume },
+    });
+    contractImpl.fundEpoch = vi
+      .fn()
+      .mockRejectedValue(new Error('execution reverted: EpochAlreadyFunded'));
+    await expect(runYieldEpoch(input)).rejects.toThrow(/EpochAlreadyFunded/);
+    // No retry for a non-nonce revert — would otherwise mask a real failure.
+    expect(contractImpl.fundEpoch).toHaveBeenCalledTimes(1);
+    expect(consume).not.toHaveBeenCalled();
+  });
 });

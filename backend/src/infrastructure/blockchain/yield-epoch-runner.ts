@@ -658,7 +658,10 @@ export async function runYieldEpoch(input: RunEpochInput): Promise<RunEpochResul
         'granting pusdc operator → YieldSnapshot',
       );
       if (!dryRun) {
-        const tx = await (pusdc as any).setOperator(snapshotAddr, expiry);
+        const tx = await sendWithNonceRetry(
+          () => (pusdc as any).setOperator(snapshotAddr, expiry),
+          { label: 'setOperator(grant)', symbol, logger },
+        );
         await tx.wait();
       }
     } else {
@@ -876,7 +879,10 @@ export async function runYieldEpoch(input: RunEpochInput): Promise<RunEpochResul
           'snapshotBatch',
         );
         if (!dryRun) {
-          const tx = await (snapshot as any).snapshotBatch(epochId, investors);
+          const tx = await sendWithNonceRetry(
+            () => (snapshot as any).snapshotBatch(epochId, investors),
+            { label: 'snapshotBatch', symbol, logger },
+          );
           await tx.wait();
         }
         captured += BigInt(investors.length);
@@ -888,7 +894,10 @@ export async function runYieldEpoch(input: RunEpochInput): Promise<RunEpochResul
 
       logger.info({ symbol, epochId: epochId.toString() }, 'finalizeSnapshot');
       if (!dryRun) {
-        const finTx = await (snapshot as any).finalizeSnapshot(epochId);
+        const finTx = await sendWithNonceRetry(
+          () => (snapshot as any).finalizeSnapshot(epochId),
+          { label: 'finalizeSnapshot', symbol, logger },
+        );
         await finTx.wait();
       }
       await audit.updateStatus(epochId, tokenAddrLower, 'snapshot_done');
@@ -979,15 +988,24 @@ export async function runYieldEpoch(input: RunEpochInput): Promise<RunEpochResul
       .encryptInputs([Encryptable.uint128(fundEncTotalYield)])
       .setAccount(issuerAddr)
       .execute();
-    const fundTx = await (snapshot as any).fundEpoch(
-      epochId,
-      {
-        ctHash: enc.ctHash,
-        securityZone: enc.securityZone,
-        utype: enc.utype,
-        signature: enc.signature,
-      },
-      fundRate,
+    // FU-4: retry the fundEpoch SEND on a shared-EOA nonce collision (the
+    // most expensive tx to lose to the race — a rejected send here would
+    // otherwise fail the tick + force a next-tick resume). The retry re-uses
+    // the same encrypted input; the audit `funded_no_audit` write below only
+    // runs once a send actually succeeds.
+    const fundTx = await sendWithNonceRetry(
+      () =>
+        (snapshot as any).fundEpoch(
+          epochId,
+          {
+            ctHash: enc.ctHash,
+            securityZone: enc.securityZone,
+            utype: enc.utype,
+            signature: enc.signature,
+          },
+          fundRate,
+        ),
+      { label: 'fundEpoch', symbol, logger },
     );
     await audit.updateStatus(epochId, tokenAddrLower, 'funded_no_audit', {
       fundEpochTxHash: String(fundTx.hash),
@@ -1344,6 +1362,70 @@ async function decryptSnapshotSupply(
   }
 }
 
+/**
+ * FU-4 (Wave 5 W2, 2026-05-25) — is this a "nonce too low / already used"
+ * rejection? The yield issuer EOA is SHARED with the nav crons (nav-publisher
+ * / nav-worker) on prod, so a NAV tx fired from the same address between the
+ * runner reading the pending nonce and broadcasting can advance the account
+ * nonce and get our tx rejected. Such a tx is DEFINITIVELY rejected (never
+ * entered the mempool) — so it's safe to re-send with a freshly-queried
+ * nonce. We deliberately do NOT treat network/timeout errors as retryable:
+ * those may have broadcast-then-lost-the-response, and re-sending a
+ * state-changing tx (fundEpoch) could double-fund. Network blips fail the
+ * tick and self-heal via the resume path instead.
+ */
+function isNonceCollisionError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as {
+    code?: string;
+    message?: string;
+    shortMessage?: string;
+    error?: { message?: string };
+  };
+  if (e.code === 'NONCE_EXPIRED') return true;
+  const msg = `${e.message ?? ''} ${e.shortMessage ?? ''} ${e.error?.message ?? ''}`.toLowerCase();
+  return msg.includes('nonce too low') || msg.includes('nonce has already been used');
+}
+
+/**
+ * FU-4 — send an on-chain tx with bounded retry ON NONCE COLLISION ONLY.
+ * Wraps just the SEND (`contract.method(...)`), not `tx.wait()` — a
+ * nonce-too-low is rejected at broadcast, never at mining. Each retry
+ * re-invokes `send`, which re-queries the pending nonce via ethers' default
+ * per-call population (NO `NonceManager` — its locally-cached nonce would
+ * stay stale against the OTHER process's tx and never converge). Backoff
+ * gives the mempool time to reflect the concurrent tx so the re-query lands
+ * a fresh nonce. Non-nonce errors propagate immediately (caller's catch →
+ * audit `failure` → next-tick resume).
+ */
+async function sendWithNonceRetry(
+  // Returns an ethers tx response (`.hash` / `.wait()`); the runner's send
+  // sites already go through `(contract as any).method(...)`, so the tx is
+  // `any` here too — the caller awaits `.wait()` / reads `.hash` as before.
+  send: () => Promise<any>,
+  ctx: { label: string; symbol: string; logger: RunnerLogger; maxAttempts?: number },
+): Promise<any> {
+  const maxAttempts = ctx.maxAttempts ?? 4;
+  const backoffMs = [500, 1500, 3000];
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await send();
+    } catch (err) {
+      lastErr = err;
+      if (!isNonceCollisionError(err) || attempt === maxAttempts) throw err;
+      const delayMs = backoffMs[attempt - 1] ?? 3000;
+      ctx.logger.warn(
+        { symbol: ctx.symbol, label: ctx.label, attempt, maxAttempts, delayMs },
+        'nonce collision on send (shared issuer EOA?) — re-querying nonce + retrying',
+      );
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  // Unreachable (the loop either returns or throws), but satisfies the type.
+  throw lastErr;
+}
+
 async function openEpochAndCapture(
   snapshot: Contract,
   tokenAddr: Address,
@@ -1358,7 +1440,10 @@ async function openEpochAndCapture(
     );
     return 0n;
   }
-  const openTx = await (snapshot as any).openEpoch(tokenAddr);
+  const openTx = await sendWithNonceRetry(
+    () => (snapshot as any).openEpoch(tokenAddr),
+    { label: 'openEpoch', symbol, logger },
+  );
   const rcpt = await openTx.wait();
   let opened: bigint | null = null;
   for (const log of rcpt?.logs ?? []) {
