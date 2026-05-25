@@ -95,16 +95,52 @@ export class PgAuditWriter implements AuditWriter {
     apyAtTimePercent: string;
   }): Promise<void> {
     const tokenAddress = row.tokenAddress.toLowerCase();
-    await this.db.insert(yieldDistributions).values({
-      id: randomUUID(),
-      tokenAddress,
-      epochId: row.epochId.toString(),
-      ratePerShare: row.ratePerShare.toString(),
-      encTotalYieldUsd6: row.encTotalYieldUsd6.toString(),
-      navAtTimeUsd: row.navAtTimeUsd,
-      apyAtTimePercent: row.apyAtTimePercent,
-      status: 'in_progress',
-    });
+    // UPSERT, not a bare insert (fix 2026-05-25, surfaced by the first prod
+    // FU-1 force tick). The runner's back-fill resume path
+    // (`currentEpoch > 0 && !funded`, yield-epoch-runner.ts) calls this for
+    // an on-chain finalized-but-unfunded epoch when `findLatestUnresolved`
+    // returns null. But `findLatestUnresolved` EXCLUDES terminal rows
+    // ('success'/'failure'), so a PRIOR failed attempt on the same epoch
+    // (e.g. fundEpoch reverted NONCE_EXPIRED) leaves a `failure` row that
+    // this insert collides with on `yld_dist_token_epoch_uniq` → a failed
+    // fund could never be resumed (the cron would throw a confusing
+    // duplicate-key error every tick instead of retrying the fund).
+    //
+    // On conflict we RESET the row to a fresh `in_progress` retry: re-stamp
+    // the recomputed math, bump `started_at`, and CLEAR the stale terminal
+    // fields from the prior attempt. Safe against clobbering a `success`
+    // row: the back-fill path only runs for `!funded` epochs, and a fresh
+    // openEpoch always allocates a new (conflict-free) epochId — so the
+    // only row this ever overwrites is a non-`success` one for an epoch
+    // we're legitimately re-attempting.
+    await this.db
+      .insert(yieldDistributions)
+      .values({
+        id: randomUUID(),
+        tokenAddress,
+        epochId: row.epochId.toString(),
+        ratePerShare: row.ratePerShare.toString(),
+        encTotalYieldUsd6: row.encTotalYieldUsd6.toString(),
+        navAtTimeUsd: row.navAtTimeUsd,
+        apyAtTimePercent: row.apyAtTimePercent,
+        status: 'in_progress',
+      })
+      .onConflictDoUpdate({
+        target: [yieldDistributions.tokenAddress, yieldDistributions.epochId],
+        set: {
+          status: 'in_progress',
+          ratePerShare: row.ratePerShare.toString(),
+          encTotalYieldUsd6: row.encTotalYieldUsd6.toString(),
+          navAtTimeUsd: row.navAtTimeUsd,
+          apyAtTimePercent: row.apyAtTimePercent,
+          startedAt: new Date(),
+          errorClass: null,
+          errorMessage: null,
+          finishedAt: null,
+          lastResumedAt: null,
+          fundEpochTxHash: null,
+        },
+      });
   }
 
   async updateStatus(

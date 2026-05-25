@@ -9,6 +9,7 @@ import type { Db } from '../db.js';
 function makeDbMock(): {
   db: Db;
   insertValuesMock: ReturnType<typeof vi.fn>;
+  insertOnConflictMock: ReturnType<typeof vi.fn>;
   updateSetMock: ReturnType<typeof vi.fn>;
   updateWhereMock: ReturnType<typeof vi.fn>;
   selectRows: unknown[];
@@ -16,7 +17,13 @@ function makeDbMock(): {
   // Drizzle's fluent builder is a series of `then`-able chained methods.
   // We mock the leaf methods we exercise + chain them via objects that
   // return `this`-equivalents.
-  const insertValuesMock = vi.fn().mockResolvedValue(undefined);
+  //
+  // insertInProgress now upserts: `.insert(...).values(...).onConflictDoUpdate(...)`,
+  // so `.values()` returns the onConflict builder (NOT a resolved promise).
+  const insertOnConflictMock = vi.fn().mockResolvedValue(undefined);
+  const insertValuesMock = vi
+    .fn()
+    .mockReturnValue({ onConflictDoUpdate: insertOnConflictMock });
   const updateSetMock = vi.fn();
   const updateWhereMock = vi.fn().mockResolvedValue(undefined);
   let selectRows: unknown[] = [];
@@ -42,6 +49,7 @@ function makeDbMock(): {
   return {
     db,
     insertValuesMock,
+    insertOnConflictMock,
     updateSetMock,
     updateWhereMock,
     get selectRows() {
@@ -77,6 +85,38 @@ describe('PgAuditWriter.insertInProgress', () => {
       status: 'in_progress',
     });
     expect(row.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  });
+
+  it('UPSERTs on (token, epoch) conflict — resets to in_progress + clears terminal fields (failed-fund resume)', async () => {
+    // Regression for the duplicate-key-on-resume bug (surfaced by the first
+    // prod FU-1 force tick): a prior failed fundEpoch leaves a `failure`
+    // row, and the runner's back-fill resume re-`insertInProgress`es the
+    // same epoch. Without the upsert this throws on `yld_dist_token_epoch_uniq`.
+    const { db, insertOnConflictMock } = makeDbMock();
+    const writer = new PgAuditWriter(db);
+    await writer.insertInProgress({
+      tokenAddress: '0xAbCdEf0000000000000000000000000000000007',
+      epochId: 7n,
+      ratePerShare: 9_215_635n,
+      encTotalYieldUsd6: 1105n,
+      navAtTimeUsd: '1.00',
+      apyAtTimePercent: '3.13',
+    });
+    expect(insertOnConflictMock).toHaveBeenCalledOnce();
+    const arg = insertOnConflictMock.mock.calls[0][0];
+    // Conflict target is the (token_address, epoch_id) unique index.
+    expect(Array.isArray(arg.target)).toBe(true);
+    expect(arg.target).toHaveLength(2);
+    // Reset to a clean in_progress retry; stale terminal/tx fields cleared.
+    expect(arg.set.status).toBe('in_progress');
+    expect(arg.set.ratePerShare).toBe('9215635');
+    expect(arg.set.encTotalYieldUsd6).toBe('1105');
+    expect(arg.set.errorClass).toBeNull();
+    expect(arg.set.errorMessage).toBeNull();
+    expect(arg.set.finishedAt).toBeNull();
+    expect(arg.set.lastResumedAt).toBeNull();
+    expect(arg.set.fundEpochTxHash).toBeNull();
+    expect(arg.set.startedAt).toBeInstanceOf(Date);
   });
 });
 
