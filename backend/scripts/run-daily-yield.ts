@@ -80,7 +80,12 @@ import { getDb, getPool } from '../src/infrastructure/repository/postgres/db.js'
 import { rwaTokens } from '../src/infrastructure/repository/postgres/schema.js';
 import { PgAuditWriter } from '../src/infrastructure/repository/postgres/pg-audit-writer.js';
 import { acquireTokenLock } from '../src/infrastructure/repository/postgres/pg-advisory-lock-handle.js';
-import { runYieldEpoch, type RunEpochInput } from '../src/infrastructure/blockchain/yield-epoch-runner.js';
+import {
+  runYieldEpoch,
+  NoOpAuditWriter,
+  type RunEpochInput,
+  type AuditWriter,
+} from '../src/infrastructure/blockchain/yield-epoch-runner.js';
 import { createNodeCofheClient } from '../src/infrastructure/blockchain/node-cofhe-client.js';
 import { PgRwaTokenRepository } from '../src/infrastructure/repository/postgres/pg-rwa-token.repository.js';
 import { PgOracleRepository } from '../src/infrastructure/repository/postgres/pg-oracle.repository.js';
@@ -263,7 +268,12 @@ interface SweepCtx {
    *  the script's own float pre-flight + post-runner decrement run only in
    *  the static (cap-based) fallback. */
   snapshotBasedFunding: boolean;
-  auditWriter: PgAuditWriter;
+  /** FU-3 (Wave 5 W2): `PgAuditWriter` live, `NoOpAuditWriter` in dry-run so
+   *  a `--dry-run` against prod Postgres never strands an `epoch_id=0` poison
+   *  row (the runner's dry-run `openEpoch` synthesises 0 but the row would
+   *  otherwise still advance). Reads still hit the real DB; only the audit
+   *  WRITES are suppressed. */
+  auditWriter: AuditWriter;
 }
 
 async function readMhUsdcFloat(ctx: SweepCtx): Promise<bigint | null> {
@@ -560,7 +570,19 @@ async function main(): Promise<void> {
     privateKey: privateKey as `0x${string}`,
   });
 
-  const auditWriter = new PgAuditWriter(getDb());
+  // FU-3 (Wave 5 W2): a `--dry-run` against prod Postgres must NOT persist
+  // audit rows — the runner's dry-run `openEpoch` returns a synthesised
+  // epochId 0, and a real writer would strand an `epoch_id=0 / snapshot_done`
+  // poison row that wedges the next LIVE tick (`snapshotBatch(0)` →
+  // InvalidEpoch). Swap in the NoOp writer for dry-run; DB reads (tokens,
+  // oracle snapshots, cap overrides) still go to the real DB so the preview
+  // is faithful.
+  const auditWriter: AuditWriter = args.dryRun
+    ? new NoOpAuditWriter()
+    : new PgAuditWriter(getDb());
+  if (args.dryRun) {
+    console.log('[run-daily-yield] dry-run → audit writes suppressed (NoOpAuditWriter); no prod-Postgres writes');
+  }
 
   const ctx: SweepCtx = {
     floatRemaining: null,

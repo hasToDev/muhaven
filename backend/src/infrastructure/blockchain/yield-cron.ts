@@ -125,7 +125,12 @@ import type { Address } from 'viem';
  *  or the cron's pre-flight math diverges from the runner's. */
 const RATE_SCALE = 1_000_000n;
 
-import { runYieldEpoch, type RunEpochInput } from './yield-epoch-runner.js';
+import {
+  runYieldEpoch,
+  NoOpAuditWriter,
+  type RunEpochInput,
+  type AuditWriter,
+} from './yield-epoch-runner.js';
 import { createNodeCofheClient } from './node-cofhe-client.js';
 import { PgAuditWriter } from '../repository/postgres/pg-audit-writer.js';
 import {
@@ -484,7 +489,14 @@ function bucketRunnerSkipReason(reason: string | undefined): YieldCronSkipReason
 
 export class YieldDistributionCron {
   private readonly logger: Logger;
-  private readonly auditWriter: PgAuditWriter;
+  /** FU-3 (Wave 5 W2) — `PgAuditWriter` live; `NoOpAuditWriter` in dry-run
+   *  so a dry-run tick NEVER writes to prod Postgres. Without this, the
+   *  runner's dry-run path (`openEpoch` no-ops → synthesised epochId 0)
+   *  still advances the audit row, stranding an `epoch_id=0` poison row
+   *  that wedges the next LIVE tick (`snapshotBatch(0)` → InvalidEpoch).
+   *  See the runner's `classifyStrandedAuditEpoch` for the defensive
+   *  cleanup of any row that slips through. */
+  private readonly auditWriter: AuditWriter;
   private scheduledTask: ScheduledTask | null = null;
   private cofheClient: Awaited<ReturnType<typeof createNodeCofheClient>> | null = null;
   private provider: Provider | null = null;
@@ -498,7 +510,13 @@ export class YieldDistributionCron {
     private readonly config: YieldCronConfig,
   ) {
     this.logger = getLogger('YieldDistributionCron');
-    this.auditWriter = new PgAuditWriter(deps.db);
+    // FU-3 (Wave 5 W2): dry-run NEVER persists to prod Postgres. The runner
+    // still iterates + heartbeats in dry-run (I-6), but its `insertInProgress`
+    // / `updateStatus` writes become no-ops so no `epoch_id=0` poison row is
+    // ever created. Live runs use the real Postgres-backed writer.
+    this.auditWriter = config.dryRun
+      ? new NoOpAuditWriter()
+      : new PgAuditWriter(deps.db);
   }
 
   /**
@@ -575,6 +593,8 @@ export class YieldDistributionCron {
         cronExpr: expr,
         timezone: DEFAULT_TIMEZONE,
         dryRun: this.config.dryRun,
+        // FU-3: dry-run swaps in a NoOp audit writer (no prod-Postgres writes).
+        auditMode: this.config.dryRun ? 'noop (dry-run)' : 'postgres',
         snapshotBasedFunding: this.config.snapshotBasedFunding,
         signer: this.signer.address,
         chainId: this.config.chainId,

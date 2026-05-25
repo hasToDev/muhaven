@@ -224,9 +224,15 @@ shows a real `decryptedSupply`, `clamped:false`, and a `computedYield` that
 matches the proven cap-based epoch magnitude (~$0.093 for CETES). A
 `clamped:true` (or a decrypt failure) means **do not enable yet** — the decimal
 scale is off or the decrypt doesn't resolve. (`--cap-funding` forces the legacy
-path; NEVER pair the smoke with `--dry-run` against prod Postgres — FU-3 poison
-row.) If you'd rather gate it, deploy with `YIELD_CRON_SNAPSHOT_FUNDING=false`
-first, smoke, then flip to `true` and restart.
+path. Avoid pairing the smoke with `--dry-run` against prod Postgres — it
+historically stranded an `epoch_id=0` poison row that wedged the next live tick.
+As of **FU-3** (2026-05-25) this is code-fixed two ways: dry-run swaps in a NoOp
+audit writer so it never writes to prod Postgres, and the runner auto-resolves
+any pre-existing stranded `epoch_id=0` row to `failure` on the next live tick —
+look for the `FU-3: audit row references a non-existent on-chain epoch` log line.
+Still prefer a live one-token smoke to a dry-run for funding validation.) If
+you'd rather gate it, deploy with `YIELD_CRON_SNAPSHOT_FUNDING=false` first,
+smoke, then flip to `true` and restart.
 
 ### nav-publisher (homelab)
 

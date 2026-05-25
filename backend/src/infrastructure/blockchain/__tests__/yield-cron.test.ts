@@ -45,7 +45,9 @@ vi.mock('../node-cofhe-client.js', () => ({
 }));
 
 import { YieldDistributionCron } from '../yield-cron.js';
-import { runYieldEpoch } from '../yield-epoch-runner.js';
+// `NoOpAuditWriter` is the real export (the mock above spreads `...actual`).
+import { runYieldEpoch, NoOpAuditWriter } from '../yield-epoch-runner.js';
+import { PgAuditWriter } from '../../repository/postgres/pg-audit-writer.js';
 import type { RwaToken } from '../../../domain/token-registry/model/rwa-token.js';
 
 const RUN_YIELD_EPOCH = vi.mocked(runYieldEpoch);
@@ -440,6 +442,22 @@ describe('YieldDistributionCron multi-token float ledger (Sec M-4)', () => {
     });
     await cron.tick();
     expect(readFloatSpy).not.toHaveBeenCalled();
+  });
+});
+
+// FU-3 (Wave 5 W2) — dry-run must NEVER write to prod Postgres. The cron
+// swaps in a NoOp audit writer in dry-run so the runner's dry-run path
+// (`openEpoch` no-ops → synthesised epochId 0) can't strand an `epoch_id=0`
+// poison row that wedges the next LIVE tick.
+describe('YieldDistributionCron FU-3 dry-run audit writer', () => {
+  it('uses NoOpAuditWriter in dry-run (no prod-Postgres audit writes)', () => {
+    const { cron } = makeCron({ dryRun: true });
+    expect((cron as any).auditWriter).toBeInstanceOf(NoOpAuditWriter);
+  });
+
+  it('uses PgAuditWriter in live mode', () => {
+    const { cron } = makeCron({ dryRun: false });
+    expect((cron as any).auditWriter).toBeInstanceOf(PgAuditWriter);
   });
 });
 

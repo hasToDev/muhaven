@@ -674,8 +674,65 @@ export async function runYieldEpoch(input: RunEpochInput): Promise<RunEpochResul
     // ── Resume detection: prefer audit row, fall back to on-chain ───
     let epochId: bigint;
     let resumed = false;
-    const auditRow = await audit.findLatestUnresolved(tokenAddrLower);
+    let auditRow = await audit.findLatestUnresolved(tokenAddrLower);
     const currentForToken: bigint = await snapshot.currentEpoch(tokenAddr);
+
+    // FU-3 (Wave 5 W2) — resolve a stranded "invalid epoch" audit row
+    // BEFORE the resume logic runs. A `--dry-run` against prod Postgres
+    // synthesises `openEpoch` → epochId 0 (the on-chain call no-ops under
+    // dryRun, returning 0) yet still advances the audit row to
+    // in_progress/snapshot_done. Epochs are 1-indexed on-chain (openEpoch's
+    // first id is 1; `getEpoch(0).token == address(0)`), so a stranded
+    // epoch-0 row wedges the token every tick in one of two ways:
+    //   - `currentEpoch == 0 == auditRow.epochId`: the OrphanedAuditError
+    //     guard below MISSES it (0 == 0), the resume path runs
+    //     `snapshotBatch(0)` → `InvalidEpoch()` revert.
+    //   - a real epoch was later opened (`currentEpoch != 0`): the guard
+    //     throws `OrphanedAuditError` forever — and that throw lands before
+    //     `currentEpochId` is set, so the catch path writes NO `failure`
+    //     row, leaving the poison non-terminal so it re-surfaces next tick.
+    // Detect + resolve the poison row to `failure`, then treat it as absent
+    // so the normal open/resume logic proceeds (greenfield → open epoch 1;
+    // a real on-chain epoch → resume it). The root-cause guard is the
+    // dry-run NoOp audit writer in the cron + CLI (no prod-Postgres writes
+    // in dry-run); this is the cleanup + defense for any already-stranded
+    // row (e.g. from a pre-fix dry-run) or any future path that persists a
+    // bogus epochId. SIBLING of the `insertInProgress` UPSERT fix (b1692d1):
+    // that one handles "real epoch, failed fund, retry" (duplicate-key on a
+    // terminal row); this one handles "fake epoch 0 that never existed
+    // on-chain" — the upsert does NOT cover it (epoch 0 is a different
+    // shape, and `findLatestUnresolved` would never surface a terminal row).
+    if (auditRow) {
+      const strandedReason = await classifyStrandedAuditEpoch(
+        snapshot,
+        auditRow.epochId,
+      );
+      if (strandedReason) {
+        logger.warn(
+          {
+            symbol,
+            token: tokenAddr,
+            strandedEpochId: auditRow.epochId.toString(),
+            currentForToken: currentForToken.toString(),
+            reason: strandedReason,
+          },
+          'FU-3: audit row references a non-existent on-chain epoch (likely ' +
+            'a --dry-run-against-prod-Postgres poison) — resolving it failure ' +
+            'and falling through to the fresh open/resume path',
+        );
+        await audit.updateStatus(auditRow.epochId, tokenAddrLower, 'failure', {
+          errorClass: 'StrandedAuditEpoch',
+          errorMessage:
+            `audit row epochId=${auditRow.epochId} (${strandedReason}) does ` +
+            `not exist on-chain — resolved so the token can resume. Never ` +
+            `--dry-run the yield runner against prod Postgres (FU-3).`,
+          finishedAt: new Date(),
+        });
+        // Treat as no resume → the open/resume logic below opens a fresh
+        // epoch (or resumes the real on-chain `currentForToken` epoch).
+        auditRow = null;
+      }
+    }
 
     if (auditRow) {
       // Audit-led resume: the audit row's stored rate is authoritative.
@@ -1424,6 +1481,45 @@ async function sendWithNonceRetry(
   }
   // Unreachable (the loop either returns or throws), but satisfies the type.
   throw lastErr;
+}
+
+/**
+ * FU-3 (Wave 5 W2) — classify whether an audit row's `epochId` is a
+ * stranded reference to a non-existent on-chain epoch (the signature of a
+ * `--dry-run`-against-prod-Postgres poison row, where the dry-run
+ * `openEpoch` synthesised epochId 0 but the audit row still advanced).
+ *
+ * Returns a short reason string when stranded (for the audit/log trail),
+ * or `null` when the epoch is a real on-chain epoch the runner can resume:
+ *
+ *   - `epoch_id_zero`     — epoch 0 is never real (openEpoch's first id is
+ *                           1). Cheap short-circuit (NO RPC) for the common
+ *                           dry-run-poison case, and robust even if a given
+ *                           YieldSnapshot impl were to revert on getEpoch(0).
+ *   - `epoch_not_onchain` — a >0 id whose `getEpoch(...).token == address(0)`
+ *                           was never opened on-chain (defense for any
+ *                           future path that persists a bogus non-zero id).
+ *   - `get_epoch_reverted`— `getEpoch` threw; treat as stranded (a real
+ *                           resumable epoch always reads back cleanly).
+ *
+ * NOTE: for a >0 id this costs one extra `getEpoch` view call on the happy
+ * resume path (the resume branch reads it again). That's negligible at the
+ * once-per-23h cron cadence and buys full defense-in-depth.
+ */
+async function classifyStrandedAuditEpoch(
+  snapshot: Contract,
+  epochId: bigint,
+): Promise<string | null> {
+  if (epochId === 0n) return 'epoch_id_zero';
+  try {
+    const ep = await snapshot.getEpoch(epochId);
+    if (String(ep.token).toLowerCase() === ZeroAddress.toLowerCase()) {
+      return 'epoch_not_onchain';
+    }
+    return null;
+  } catch {
+    return 'get_epoch_reverted';
+  }
 }
 
 async function openEpochAndCapture(

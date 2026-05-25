@@ -17,10 +17,11 @@ vi.mock('ethers', async (orig) => {
   };
 });
 
-// `Interface` resolves to the REAL ethers export (the mock spreads
-// `...actual` and only overrides `Contract`) — used to encode a genuine
-// EpochOpened log for the fresh-tick path test.
-import { Interface } from 'ethers';
+// `Interface` + `ZeroAddress` resolve to the REAL ethers exports (the mock
+// spreads `...actual` and only overrides `Contract`) — `Interface` encodes a
+// genuine EpochOpened log for the fresh-tick path test; `ZeroAddress` backs
+// the FU-3 stranded-epoch (`getEpoch.token == address(0)`) assertion.
+import { Interface, ZeroAddress } from 'ethers';
 import {
   runYieldEpoch,
   sizeSnapshotYield,
@@ -487,5 +488,157 @@ describe('runYieldEpoch snapshot-based funding', () => {
     // No retry for a non-nonce revert — would otherwise mask a real failure.
     expect(contractImpl.fundEpoch).toHaveBeenCalledTimes(1);
     expect(consume).not.toHaveBeenCalled();
+  });
+});
+
+// ── FU-3: stranded-epoch resume guard ────────────────────────────────
+//
+// A `--dry-run` against prod Postgres synthesises `openEpoch` → epochId 0
+// (the on-chain call no-ops under dryRun) yet still advances the audit row.
+// Epochs are 1-indexed on-chain (`getEpoch(0).token == address(0)`), so the
+// stranded row wedges the next LIVE tick. The runner must resolve it
+// `failure` and fall through to the fresh open path instead of re-running
+// `snapshotBatch(0)` (→ InvalidEpoch) or throwing OrphanedAuditError forever.
+
+/** Wire `contractImpl` for a fresh open → snapshot → finalize → fund flow
+ *  (currentEpoch 0, openEpoch emits the given id, epoch not finalized). The
+ *  `getEpoch` override lets a caller make a specific stranded id read back as
+ *  token==address(0) while the freshly-opened id reads back valid. */
+function wireFreshOpen(openedId: bigint, getEpochImpl?: (id: bigint) => any) {
+  const epochIface = new Interface([
+    'event EpochOpened(address indexed token, uint256 indexed epochId)',
+  ]);
+  const opened = epochIface.encodeEventLog('EpochOpened', [TOKEN_ADDR, openedId]);
+  contractImpl.currentEpoch = vi.fn().mockResolvedValue(0n);
+  contractImpl.openEpoch = vi.fn().mockResolvedValue({
+    wait: vi.fn().mockResolvedValue({ logs: [{ topics: opened.topics, data: opened.data }] }),
+  });
+  contractImpl.getHoldersPaginated = vi
+    .fn()
+    .mockResolvedValue(['0x000000000000000000000000000000000000aaa1']);
+  contractImpl.snapshotBatch = vi.fn().mockResolvedValue({ wait: vi.fn().mockResolvedValue({}) });
+  contractImpl.finalizeSnapshot = vi
+    .fn()
+    .mockResolvedValue({ wait: vi.fn().mockResolvedValue({}) });
+  contractImpl.getEpoch = vi
+    .fn()
+    .mockImplementation((id: bigint) =>
+      Promise.resolve(
+        getEpochImpl?.(id) ?? {
+          token: TOKEN_ADDR,
+          finalized: false, // not finalized → snapshot phase runs
+          funded: false,
+          encTotalSupply: SUPPLY_HANDLE,
+          ratePerShare: 0n,
+        },
+      ),
+    );
+}
+
+describe('runYieldEpoch FU-3 stranded-epoch resume guard', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('resolves a stranded epoch_id=0 audit row to failure, then opens a fresh epoch', async () => {
+    const audit = makeAudit({ ...auditRowFinalized(), epochId: 0n });
+    const input = makeInput({ cofheClient: makeCofheClient({ supply: 100n }), audit });
+    wireFreshOpen(7n);
+
+    const result = await runYieldEpoch(input);
+
+    // The poison row was resolved to `failure` with the FU-3 errorClass.
+    const failureWrite = audit.updateStatus.mock.calls.find(
+      (c: any[]) => c[0] === 0n && c[2] === 'failure',
+    );
+    expect(failureWrite).toBeTruthy();
+    expect(failureWrite![3].errorClass).toBe('StrandedAuditEpoch');
+    // Never ran snapshotBatch against epoch 0 — opened a fresh epoch instead.
+    expect(contractImpl.snapshotBatch).not.toHaveBeenCalledWith(0n, expect.anything());
+    expect(contractImpl.openEpoch).toHaveBeenCalledOnce();
+    expect(result.status).toBe('success');
+    expect(result.epochId).toBe(7n);
+  });
+
+  it('resolves a stranded >0 audit row whose epoch never existed on-chain (token==address(0))', async () => {
+    const audit = makeAudit({ ...auditRowFinalized(), epochId: 9n });
+    const input = makeInput({ cofheClient: makeCofheClient({ supply: 100n }), audit });
+    // Epoch 9 reads back token==address(0) (never opened); the freshly-opened
+    // epoch (7) reads back valid so the open→fund flow completes.
+    wireFreshOpen(7n, (id) =>
+      id === 9n
+        ? {
+            token: ZeroAddress,
+            finalized: false,
+            funded: false,
+            encTotalSupply: '0x' + '00'.repeat(32),
+            ratePerShare: 0n,
+          }
+        : undefined,
+    );
+
+    const result = await runYieldEpoch(input);
+
+    const failureWrite = audit.updateStatus.mock.calls.find(
+      (c: any[]) => c[0] === 9n && c[2] === 'failure',
+    );
+    expect(failureWrite).toBeTruthy();
+    expect(failureWrite![3].errorClass).toBe('StrandedAuditEpoch');
+    expect(contractImpl.snapshotBatch).not.toHaveBeenCalledWith(9n, expect.anything());
+    expect(contractImpl.openEpoch).toHaveBeenCalledOnce();
+    expect(result.status).toBe('success');
+    expect(result.epochId).toBe(7n);
+  });
+
+  it('resolves an epoch_id=0 poison then RESUMES the real on-chain epoch (no OrphanedAuditError)', async () => {
+    // Second wedge mode: a real epoch (7, finalized-but-unfunded) exists
+    // on-chain but the latest UNRESOLVED audit row is the epoch-0 poison.
+    // Pre-fix, `currentEpoch(7) !== auditRow.epochId(0)` threw
+    // OrphanedAuditError forever. Post-fix: resolve the poison, then the
+    // currentForToken branch resumes epoch 7 (back-fills via the UPSERT).
+    const audit = makeAudit({ ...auditRowFinalized(), epochId: 0n });
+    const input = makeInput({ cofheClient: makeCofheClient({ supply: 100n }), audit });
+    contractImpl.currentEpoch = vi.fn().mockResolvedValue(7n);
+    // Epoch 7 reads back finalized-but-unfunded → resume + fund (no open).
+    // `holderCount` is logged by the back-fill resume branch.
+    contractImpl.getEpoch = vi.fn().mockResolvedValue({
+      token: TOKEN_ADDR,
+      finalized: true,
+      funded: false,
+      encTotalSupply: SUPPLY_HANDLE,
+      ratePerShare: 0n,
+      holderCount: 2n,
+    });
+
+    const result = await runYieldEpoch(input);
+
+    const failureWrite = audit.updateStatus.mock.calls.find(
+      (c: any[]) => c[0] === 0n && c[2] === 'failure',
+    );
+    expect(failureWrite).toBeTruthy();
+    expect(failureWrite![3].errorClass).toBe('StrandedAuditEpoch');
+    // Back-filled the REAL epoch 7 (no OrphanedAuditError throw, no fresh open).
+    expect(audit.insertInProgress).toHaveBeenCalledWith(
+      expect.objectContaining({ epochId: 7n }),
+    );
+    expect(contractImpl.openEpoch).toBeUndefined();
+    expect(contractImpl.fundEpoch).toHaveBeenCalledOnce();
+    expect(result.status).toBe('resumed_success');
+    expect(result.epochId).toBe(7n);
+  });
+
+  it('does NOT flag a valid on-chain epoch as stranded (normal resume proceeds)', async () => {
+    // Default makeInput: epoch 5, getEpoch returns token=TOKEN_ADDR finalized
+    // → a clean resume. The guard must leave it alone.
+    const audit = makeAudit(auditRowFinalized());
+    const input = makeInput({ cofheClient: makeCofheClient({ supply: 100n }), audit });
+
+    const result = await runYieldEpoch(input);
+
+    expect(result.status).toBe('resumed_success');
+    const failureWrite = audit.updateStatus.mock.calls.find((c: any[]) => c[2] === 'failure');
+    expect(failureWrite).toBeUndefined();
+    // No fresh open — it resumed the existing epoch 5.
+    expect(contractImpl.openEpoch).toBeUndefined();
   });
 });
