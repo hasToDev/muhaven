@@ -96,10 +96,21 @@ const showModeToggle = computed(() =>
   wrapperAvailable.value && assetModeRequested.value,
 )
 
+// `?mode=unwrap` is an explicit cash-mode intent (the MCP `cash.unwrap`
+// deep-link target). Honor it even when `wrapperAvailable` is initially
+// false — otherwise the page would silently land in asset mode while
+// `direction` stayed `'withdraw'` (the Direction toggle's `v-if` hides
+// the visual mismatch, but the `?amount=` pre-fill below would land in
+// an unbound `withdrawAmount` ref instead of the visible deposit input).
+// Sequence: assetMode wins (issuer/dev opt-in) → unwrapMode forces cash →
+// otherwise fall back to wrapperAvailable. The wrapper-availability check
+// itself is async (the `MuHavenStable` proxy resolves lazily); once it
+// flips true the user is already in the right mode.
 const mode = ref<Mode>(
   assetModeRequested.value ? 'asset'
-    : wrapperAvailable.value ? 'cash'
-      : 'asset',
+    : unwrapModeRequested.value ? 'cash'
+      : wrapperAvailable.value ? 'cash'
+        : 'asset',
 )
 
 // Direction is independent of mode but only the Cash mode renders the

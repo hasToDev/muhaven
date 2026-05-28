@@ -250,6 +250,30 @@ describe('buildPositionDeeplink', () => {
     expect(parsed.searchParams.get('amount')).toBe('100');
   });
 
+  it('unwrap → /cash?mode=unwrap (Wave 5 W3 — Withdraw form deep-link)', () => {
+    // Direct builder-level pin so a future hand-edit that consolidates
+    // the `mode` conditionals (e.g. converts the two `if` blocks at
+    // handlers.ts:813-818 into a switch and drops the unwrap case) is
+    // caught here without relying on the cashUnwrap handler test.
+    const url = buildPositionDeeplink('https://muhaven.app', 'unwrap', { amount: '50' });
+    const parsed = new URL(url);
+    expect(parsed.pathname).toBe('/cash');
+    expect(parsed.searchParams.get('mode')).toBe('unwrap');
+    expect(parsed.searchParams.get('amount')).toBe('50');
+    expect(parsed.searchParams.get('from')).toBe('mcp');
+  });
+
+  it('unwrap with no params → /cash?mode=unwrap&from=mcp', () => {
+    // Empty params still gets mode=unwrap + from=mcp (the no-amount
+    // cashUnwrap path emits exactly this shape).
+    const url = buildPositionDeeplink('https://muhaven.app', 'unwrap', {});
+    const parsed = new URL(url);
+    expect(parsed.pathname).toBe('/cash');
+    expect(parsed.searchParams.get('mode')).toBe('unwrap');
+    expect(parsed.searchParams.has('amount')).toBe(false);
+    expect(parsed.searchParams.get('from')).toBe('mcp');
+  });
+
   it('trims trailing slash on dashboardBaseUrl', () => {
     const url = buildPositionDeeplink('https://muhaven.app/', 'buy', {
       token: 'TBILL1',
@@ -917,6 +941,13 @@ describe('cashUnwrap', () => {
     // Same decimal envelope as cash.wrap.
     expect(CashUnwrapInputSchema.safeParse({ amountUsdc: '5' }).success).toBe(true);
     expect(CashUnwrapInputSchema.safeParse({ amountUsdc: '0.000001' }).success).toBe(true);
+    // 6-dp boundary exactly — the max precision the regex permits.
+    // Pins the regression surface for any future tighten that would
+    // silently floor the LLM's emitted amount (the LLM-footgun fix
+    // codified in schemas.ts:135-143).
+    expect(
+      CashUnwrapInputSchema.safeParse({ amountUsdc: '1234.567890' }).success,
+    ).toBe(true);
     // Too-precise → rejected (URL-bloat + on-chain floor footgun).
     expect(
       CashUnwrapInputSchema.safeParse({ amountUsdc: '5.0000001' }).success,
@@ -926,6 +957,12 @@ describe('cashUnwrap', () => {
     // Extra props → rejected (strict).
     expect(
       CashUnwrapInputSchema.safeParse({ amountUsdc: '5', foo: 'bar' }).success,
+    ).toBe(false);
+    // `null` rejected — `.optional()` permits `undefined`/missing only.
+    // Pins the surface against a hand-edit to `.nullable()` that would
+    // change the contract a host expects.
+    expect(
+      CashUnwrapInputSchema.safeParse({ amountUsdc: null }).success,
     ).toBe(false);
   });
 });

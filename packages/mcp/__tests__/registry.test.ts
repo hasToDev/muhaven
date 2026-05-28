@@ -21,6 +21,13 @@ describe('tool registry', () => {
     const ro = registryForReadOnly();
     expect(ro.length).toBe(8);
     for (const e of ro) expect(e.descriptor.group).toBe('read');
+    // Explicit pin: a future maintainer who broadens the filter
+    // predicate (e.g. `group !== 'position'`) would silently expose
+    // cash.* / policy.* tools that mutate user state. Named exclusion
+    // tests fail clearly on that drift.
+    const roNames = ro.map((e) => e.descriptor.name);
+    expect(roNames).not.toContain('muhaven.cash.unwrap');
+    expect(roNames).not.toContain('muhaven.cash.wrap');
   });
 
   it('selectRegistry(false) === full', () => {
@@ -80,5 +87,36 @@ describe('tool registry', () => {
     );
     expect(reads.length).toBe(2);
     expect(reads.every((e) => !e.descriptor.sensitive)).toBe(true);
+  });
+
+  // Wave 5 W3 / 0.5.1 — the three-source drift trap that the manifest
+  // suffered before this release (cash.wrap was registered + descriptor'd +
+  // hashed but missing from `manifest.json:tools`). This test fails LOUDLY
+  // when any of the three surfaces gain/lose a tool without the other two
+  // catching up.
+  it('manifest.json, TOOL_DESCRIPTORS, and tool-hashes.json agree on tool names', async () => {
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    const url = await import('node:url');
+    const here = path.dirname(url.fileURLToPath(import.meta.url));
+    const root = path.join(here, '..');
+
+    const manifestRaw = await fs.readFile(path.join(root, 'manifest.json'), 'utf8');
+    const hashesRaw = await fs.readFile(path.join(root, 'tool-hashes.json'), 'utf8');
+    const manifest = JSON.parse(manifestRaw) as {
+      tools: { name: string }[];
+    };
+    const hashes = JSON.parse(hashesRaw) as {
+      tools: { name: string; sha256: string }[];
+    };
+
+    const registryNames = fullToolRegistry()
+      .map((e) => e.descriptor.name)
+      .sort();
+    const manifestNames = manifest.tools.map((t) => t.name).sort();
+    const hashNames = hashes.tools.map((t) => t.name).sort();
+
+    expect(manifestNames, 'manifest.json#tools vs registry').toEqual(registryNames);
+    expect(hashNames, 'tool-hashes.json vs registry').toEqual(registryNames);
   });
 });

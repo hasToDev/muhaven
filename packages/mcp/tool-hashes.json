@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-05-28T12:14:15.307Z",
+  "generatedAt": "2026-05-28T12:27:26.578Z",
   "tools": [
     {
       "name": "muhaven.read.portfolio",
@@ -47,7 +47,7 @@
     },
     {
       "name": "muhaven.cash.unwrap",
-      "sha256": "6d05686c5633b6351a3fe15b071942d5cdb9da7b7dcc3fb8117f347e87de375f"
+      "sha256": "4ae519bbee0db7e84197bfb3705433c76e06122d91734f1aba5ba036fec3d694"
     },
     {
       "name": "muhaven.policy.set_tier",

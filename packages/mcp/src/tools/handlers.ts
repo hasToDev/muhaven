@@ -3319,10 +3319,13 @@ export async function cashUnwrap(
 
   // Human-readable phrasing. The two-phase note in the instructions
   // matches the Withdraw form's own copy so the user isn't surprised
-  // by the ~30-60s wait between Withdraw and Claim.
+  // by the ~30-60s wait between Withdraw and Claim. The no-amount
+  // branch reads grammatically when slotted into "the conversion of <X>"
+  // — adding a determiner ("some of your") keeps the sentence well-
+  // formed where bare "mhUSDC into USDC" would parse awkwardly.
   const amountClause = input.amountUsdc !== undefined
     ? `${input.amountUsdc} mhUSDC into USDC`
-    : 'mhUSDC into USDC (the form lets you pick the amount)';
+    : 'some of your mhUSDC back to USDC (the form lets you pick the amount)';
 
   return ok({
     dashboardUrl,
