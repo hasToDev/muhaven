@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useMediaQuery } from '@vueuse/core'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
 import { StableClient } from '@muhaven/sdk'
 import { useWallet } from '@/composables/useWallet'
@@ -23,8 +23,9 @@ import { formatUSD } from '@/lib/utils'
 import MButton from '@/components/ui/MButton.vue'
 import MAddressQR from '@/components/ui/MAddressQR.vue'
 import {
-  CheckCircle2, Lock, Shield, EyeOff, ArrowRight, Loader2, Copy, Check,
-  RefreshCw, ExternalLink, Coins, Layers, Wallet, Sparkles, Eye,
+  CheckCircle2, Lock, Shield, EyeOff, ArrowRight, ArrowDownToLine,
+  ArrowUpFromLine, Loader2, Copy, Check, RefreshCw, ExternalLink, Coins,
+  Layers, Wallet, Sparkles, Eye, AlertTriangle,
 } from 'lucide-vue-next'
 
 // CashPage — Phase 9.A first-run cockpit + wrap wizard.
@@ -44,8 +45,14 @@ import {
 // and pairs naturally with "Portfolio" as the second nav item.
 
 type Mode = 'cash' | 'asset'
+// Wave 5 W3 — direction is orthogonal to mode and only meaningful in Cash:
+//   deposit  = USDC → mhUSDC   (existing wrap flow, unchanged)
+//   withdraw = mhUSDC → USDC   (NEW direct exit; two-phase async claim)
+// `?mode=unwrap` is the MCP deep-link target → cash + withdraw.
+type Direction = 'deposit' | 'withdraw'
 
 const route = useRoute()
+const router = useRouter()
 const { address, connected } = useWallet()
 const { initialize: initFhe, getEphemeralEOA } = useFhe()
 
@@ -78,7 +85,13 @@ const wrapperAvailable = computed(() => MuHavenStableService.isAvailable())
 // Asset mode is opt-in via `?mode=asset` so the investor view stays single-
 // purpose. When the query param is absent we force cash mode AND hide the
 // toggle. Issuer/dev flows that need vault wrap reach it explicitly.
+//
+// Wave 5 W3 — `?mode=unwrap` is the third value: cash mode with the
+// withdraw direction pre-selected. The MCP `cash.unwrap` Path-C deep-link
+// lands here; the user just confirms amount + taps Withdraw. Asset and
+// unwrap are mutually exclusive (no withdraw flow on the vault path yet).
 const assetModeRequested = computed(() => route.query.mode === 'asset')
+const unwrapModeRequested = computed(() => route.query.mode === 'unwrap')
 const showModeToggle = computed(() =>
   wrapperAvailable.value && assetModeRequested.value,
 )
@@ -89,6 +102,49 @@ const mode = ref<Mode>(
       : 'asset',
 )
 
+// Direction is independent of mode but only the Cash mode renders the
+// Withdraw flow today (Asset has no inverse — vault unwrap is its own
+// fhERC-20 → ERC-20 path, out of W3 scope). The Direction toggle is
+// hidden when `mode === 'asset'`.
+const direction = ref<Direction>(unwrapModeRequested.value ? 'withdraw' : 'deposit')
+
+/** Update the URL when the user toggles direction. Keeps `?mode=unwrap`
+ *  shareable + survives back/forward navigation. Strips the param when
+ *  returning to deposit (cleaner URL for the default case).
+ *
+ *  Refuses when mode !== 'cash' — the Direction toggle's `v-if` hides the
+ *  buttons in asset mode, but the function is reachable from any
+ *  programmatic caller (deep-link, future MCP path). Without this guard,
+ *  `?mode=unwrap` could overwrite an `?mode=asset` URL state and a refresh
+ *  would silently flip the user from asset to cash. */
+function setDirection(next: Direction) {
+  if (mode.value !== 'cash') return
+  if (direction.value === next) return
+  direction.value = next
+  // Reset both forms when toggling so a stale amount / error doesn't bleed
+  // across directions. Pending claims are NOT cleared — they're independent
+  // of which form is currently visible.
+  amount.value = ''
+  withdrawAmount.value = ''
+  currentStep.value = 0
+  showSuccess.value = false
+  txHash.value = null
+  errMsg.value = null
+  withdrawSuccess.value = false
+  withdrawTxHash.value = null
+  withdrawErrMsg.value = null
+  const nextQuery = { ...route.query }
+  if (next === 'withdraw') {
+    nextQuery.mode = 'unwrap'
+  } else {
+    // Returning to deposit: only drop the `mode` param if it was `unwrap`.
+    // Don't clobber `?mode=asset` (different axis entirely — though the
+    // toggle should not be visible in that state to begin with).
+    if (nextQuery.mode === 'unwrap') delete nextQuery.mode
+  }
+  void router.replace({ query: nextQuery })
+}
+
 const amount = ref('')
 const currentStep = ref(0)
 const isProcessing = ref(false)
@@ -98,6 +154,106 @@ const errMsg = ref<string | null>(null)
 
 // Cash-mode operator state — once granted, future wraps skip the approval.
 const operatorSet = ref<boolean | null>(null)
+
+// ── Wave 5 W3 — Withdraw (mhUSDC → USDC) state ──────────────────────────
+//
+// Two-phase async flow (FHE necessity — see `reference_mhusdc_usdc_exit_is_async_fhe`):
+//   1. `withdrawToUsdc(amount, eph) → claimId` burns mhUSDC + requests
+//      coprocessor decryption. Returns a monotonic claimId.
+//   2. After the decrypt lands (`withdrawDecryptResult.ready === true`),
+//      `claimUsdc(claimId)` settles real USDC from the wrapper's reserve
+//      to the user.
+//
+// State separation:
+//   - `withdrawAmount` / `withdrawIsProcessing` / `withdrawSuccess` /
+//     `withdrawTxHash` / `withdrawErrMsg` mirror the deposit-flow refs but
+//     are kept distinct so a stale deposit result doesn't bleed across the
+//     direction toggle.
+//   - `pendingClaims` is the per-user re-discoverable list of in-flight
+//     claims (re-built from `getUserWithdrawClaims` on mount + on every
+//     successful withdraw). Settled claims are pruned by the contract from
+//     `_userWithdrawClaims` so the list is always "what's still owed."
+const withdrawAmount = ref('')
+const withdrawIsProcessing = ref(false)
+const withdrawSuccess = ref(false)
+const withdrawTxHash = ref<string | null>(null)
+const withdrawErrMsg = ref<string | null>(null)
+
+/** Per-claim UI shape. `amount` is null while the coprocessor decrypt is
+ *  still in flight (the contract stores `amount = 0` until `claimUsdc`
+ *  settles it, so the polled `withdrawDecryptResult.amount` IS the source
+ *  of truth for the burned figure). */
+interface PendingClaim {
+  claimId: bigint
+  ready: boolean
+  amount: bigint | null
+  claiming: boolean
+  /** Last-known error from claimUsdc, if the user tried + the reserve was
+   *  short / kill-switch was on / etc. Cleared on next retry. */
+  errMsg: string | null
+}
+
+const pendingClaims = ref<PendingClaim[]>([])
+const pendingDiscoveryError = ref<string | null>(null)
+const claimsKillSwitch = ref<boolean>(false)
+// `paused()` is the whole-wrapper kill-switch (blocks wrap, transfer, AND
+// withdrawToUsdc request leg). Separate from `claimsPaused()` which only
+// blocks `claimUsdc` settlement. Both surfaced in the Withdraw UI so the
+// user sees WHY their CTA / Claim button is disabled before touching it.
+const wrapperPaused = ref<boolean>(false)
+const numericWithdrawAmount = computed(
+  () => parseFloat(withdrawAmount.value.replace(/,/g, '')) || 0,
+)
+const hasMhUsdcBalance = computed(() => {
+  const bal = portfolio.pusdcConfidentialBalance
+  return bal !== null && bal !== undefined && bal > 0n
+})
+const withdrawSubmitDisabled = computed(() =>
+  withdrawIsProcessing.value
+  || !withdrawAmount.value.trim()
+  || numericWithdrawAmount.value <= 0
+  // Hard-gate the submit on the wrapper-wide pause so the user gets a
+  // clear UI affordance instead of a tx revert. The kill-switch banner
+  // above the form explains why.
+  || wrapperPaused.value,
+)
+
+// Poll handle for `withdrawDecryptResult` on non-ready claims. Started
+// whenever the pending list has any non-ready entry; stopped when all
+// claims are ready (or the list empties). 5s cadence — cofhe testnet
+// decrypts usually land in <60s, so a few polls covers the typical case.
+let claimPollTimer: ReturnType<typeof setInterval> | null = null
+const CLAIM_POLL_INTERVAL_MS = 5_000
+// Precomputed seconds for the template (avoids `Math.round(... / 1000)`
+// inline in JSX-like bindings — minor clarity bump).
+const CLAIM_POLL_INTERVAL_SECONDS = Math.round(CLAIM_POLL_INTERVAL_MS / 1000)
+
+// Round-2 review (FE Dev HIGH) — guard against late Promise resolutions
+// after the component unmounts. Async loops inside `pollPendingDecrypts`
+// + `loadPendingClaims` still resolve after teardown, and the post-resolve
+// code could call `toast.success` etc. on a component the user already
+// navigated away from. Short-circuit at the top of each async map callback.
+let isUnmounted = false
+
+// Round-2 review (CR H-1) — in-flight guard for `loadPendingClaims`. With
+// four reactive triggers (watch address immediate + connected + route.path +
+// manual Refresh) the discovery can stampede on first /cash mount; a user
+// with 64 pending claims × N concurrent loads = pathological RPC burst that
+// can clobber state mid-rebuild. Coalesce concurrent calls into one in-flight
+// promise; later callers get the same result.
+let inFlightDiscovery: Promise<void> | null = null
+
+// Round-2 review (A11y F7) — focus management targets for state transitions.
+// On state swap (success → form, error → form, etc.) we `nextTick` then
+// `.focus()` the relevant element so a screen-reader user isn't orphaned at
+// document root. Three refs cover the withdraw success/error/form chain
+// primary actions; pending-claims doesn't need it (the list grows in place;
+// no element unmounts under the user's cursor). Component refs (MButton)
+// resolve to the component instance via Vue's string-ref mechanism — the
+// focus helper unwraps `.$el` if it's a component proxy.
+const withdrawAmountInputRef = ref<HTMLInputElement | null>(null)
+const withdrawAgainButtonRef = ref<any>(null)
+const withdrawTryAgainButtonRef = ref<any>(null)
 
 // Steps shown only while a wrap is in flight (inline above the Convert
 // button). "Enter Amount" intentionally dropped — by the time the rail
@@ -402,21 +558,60 @@ function setupInboundWatchers(kernelAddress: `0x${string}`) {
 watch(
   () => address.value,
   (addr) => {
-    if (addr) setupInboundWatchers(addr as `0x${string}`)
-    else teardownWatchers()
+    if (addr) {
+      setupInboundWatchers(addr as `0x${string}`)
+      // Wave 5 W3 — re-discover pending USDC claims for the new account.
+      // Stops any prior account's poll loop via loadPendingClaims's empty-list
+      // path (or its ensurePollingActive call for the new account).
+      void loadPendingClaims()
+    } else {
+      teardownWatchers()
+      pendingClaims.value = []
+      stopPolling()
+    }
   },
   { immediate: true },
 )
-onBeforeUnmount(teardownWatchers)
+onBeforeUnmount(() => {
+  // Round-2 (FE Dev HIGH) — flip the flag BEFORE teardown so any in-flight
+  // Promise.all resolutions in pollPendingDecrypts / loadPendingClaims /
+  // claimWithdrawal short-circuit before mutating refs / firing toasts.
+  isUnmounted = true
+  teardownWatchers()
+  stopPolling()
+})
 
 watch(connected, (val) => {
   if (val) {
     loadBalances()
     refreshOperatorStatus()
+    void loadPendingClaims()
   }
 })
 
-watch(mode, () => {
+// Re-discover when the user navigates back to /cash (e.g. from /portfolio)
+// since the watcher above only fires on address change, not route change.
+// Cheap — single read for users with no pending claims.
+watch(
+  () => route.path,
+  (path) => {
+    if (path === '/cash' && address.value) void loadPendingClaims()
+  },
+)
+
+// Wave 5 W3 — keep the `direction` ref in sync with the URL on back/forward
+// navigation + MCP deep-links that fire after mount. setDirection() owns
+// the user-driven path (writes URL + resets forms); this watcher covers the
+// browser-history / external-link path (read URL, don't reset forms so any
+// in-flight withdraw state survives a back-button glance). Same-value
+// guards prevent a feedback loop with setDirection's own URL write.
+watch(unwrapModeRequested, (isUnwrap) => {
+  if (mode.value !== 'cash') return
+  const desired: Direction = isUnwrap ? 'withdraw' : 'deposit'
+  if (direction.value !== desired) direction.value = desired
+})
+
+watch(mode, (m) => {
   // Reset progress + scoped state when toggling between flows so a half-
   // finished asset wrap doesn't leak into a cash-mode progress rail.
   currentStep.value = 0
@@ -425,12 +620,28 @@ watch(mode, () => {
   txHash.value = null
   errMsg.value = null
   refreshOperatorStatus()
+  // Round-2 (CR M-1 + H-2) — direction is meaningful only in cash mode.
+  // On mode → asset transition, reset direction so a later flip back to
+  // cash doesn't show the withdraw branch unexpectedly. On mode → cash
+  // transition, re-evaluate the URL intent so a deep-link with both
+  // `?mode=cash` (a no-op no longer reached via setMode) and an external
+  // URL change to `?mode=unwrap` correctly land on the withdraw form.
+  if (m !== 'cash') {
+    if (direction.value !== 'deposit') direction.value = 'deposit'
+  } else if (unwrapModeRequested.value && direction.value !== 'withdraw') {
+    direction.value = 'withdraw'
+  }
 })
 
 onMounted(() => {
   if (connected.value) {
     loadBalances()
     refreshOperatorStatus()
+    // Round-2 (FE Dev HIGH) — explicit mount-path discovery for the case
+    // where `watch(address, immediate)` raced ahead of the wallet adapter
+    // resolving `address.value`. The in-flight guard coalesces duplicates
+    // if both paths fire.
+    void loadPendingClaims()
   } else {
     // No wallet on mount — render the page immediately so the user sees
     // the form rather than a blank column while we wait for an event
@@ -456,9 +667,14 @@ onMounted(() => {
   // USDC units (e.g. "100" for $100), matching the form's own unit
   // convention. Reject non-numeric / negative values silently — a bad
   // pre-fill just leaves the field empty.
+  //
+  // Round-2 (CR L-5) — when the deep-link also requests the withdraw
+  // direction (`?mode=unwrap&amount=100`), pre-fill the WITHDRAW input
+  // instead. Same MCP Path-C pattern, applied to the active form.
   const queryAmount = route.query.amount as string | undefined
   if (queryAmount && /^\d+(\.\d+)?$/.test(queryAmount)) {
-    amount.value = queryAmount
+    if (direction.value === 'withdraw') withdrawAmount.value = queryAmount
+    else amount.value = queryAmount
   }
 })
 
@@ -591,6 +807,470 @@ async function handleCashWrap() {
     isProcessing.value = false
   }
 }
+
+// ── Wave 5 W3 — Withdraw flow (mhUSDC → USDC) ───────────────────────────
+
+/**
+ * Phase 1 of a direct mhUSDC → USDC withdrawal. Burns
+ * `min(balance, requested)` mhUSDC (the contract clamps via FHE.min — an
+ * over-request takes the full balance, not zero, so a "Max" affordance is
+ * naturally safe even if the user enters a stale balance) and requests
+ * async coprocessor decryption of the burned amount. Returns a `claimId`
+ * that gets appended to the pending list; the user (or a future auto-claim
+ * poller) calls `claimUsdc(claimId)` once decrypt lands.
+ *
+ * Error mapping is intentionally explicit for the two recoverable contract
+ * reverts the user might hit:
+ *   - `UsdcReserveNotSet` — pre-cutover state; should be impossible on prod
+ *     once the seed runbook ran, but kept as a guard.
+ *   - `TooManyPendingWithdrawals` (cap 64/user) — user must claim or wait
+ *     for an existing claim to settle before opening a new one.
+ *   - `NoBalance` — user has no mhUSDC; the form already disables submit
+ *     in this case via `hasMhUsdcBalance`, but the contract revert is the
+ *     authoritative gate.
+ *   - `PausedSurface` — wrapper-wide pause; affects wrap + transfer too.
+ */
+async function handleWithdraw() {
+  if (!withdrawAmount.value || withdrawIsProcessing.value || !address.value) return
+  if (!wrapperAvailable.value) {
+    withdrawErrMsg.value = 'MuHavenStable wrapper not configured for this build.'
+    return
+  }
+  withdrawIsProcessing.value = true
+  withdrawErrMsg.value = null
+
+  try {
+    // mhUSDC + USDC are both 6-decimal — same scaling, no rate conversion.
+    const amountUnits = BigInt(Math.round(numericWithdrawAmount.value * 1_000_000))
+    if (amountUnits <= 0n) throw new Error('Amount must be positive')
+
+    await initFhe()
+    const ctx = await buildWriteContext()
+    const stable = new StableClient(ctx, v35Addresses.muHavenStable)
+    const eph = getEphemeralEOA() as `0x${string}`
+
+    const { hash, claimId } = await stable.withdrawToUsdc(amountUnits, eph)
+    withdrawTxHash.value = hash
+
+    if (claimId !== null) {
+      // Optimistically append to the pending list so the user sees the new
+      // row immediately (no need to wait for a re-fetch + RPC round-trip).
+      // The re-discovery on next mount picks it up authoritatively. A poll
+      // tick fires `withdrawDecryptResult(claimId)` within 5s to flip
+      // `ready` once the coprocessor catches up.
+      pendingClaims.value = [
+        ...pendingClaims.value,
+        { claimId, ready: false, amount: null, claiming: false, errMsg: null },
+      ]
+      ensurePollingActive()
+    } else {
+      // Defensive: the SDK returns null only if the receipt had no
+      // WithdrawRequested log (shouldn't happen on a successful tx). The
+      // burn still happened on-chain; surface a clear recovery instruction.
+      console.warn('[CashPage] withdrawToUsdc tx returned null claimId — receipt missing event')
+      withdrawErrMsg.value =
+        'Withdrawal submitted but the claim id was not in the receipt. ' +
+        'Refresh the page — pending claims will re-discover from the chain.'
+    }
+
+    withdrawSuccess.value = true
+    toast.success('Withdrawal requested', {
+      description: 'Burning mhUSDC + waiting for the coprocessor to decrypt the amount. ' +
+        'You can claim your USDC from the list below once it\'s ready (~30-60s).',
+    })
+    // Refresh mhUSDC display — the burn already dropped the encrypted
+    // balance handle, but only the user can decrypt the new value.
+    if (portfolio.pusdcConfidentialBalance !== null && address.value) {
+      void portfolio.decryptPusdc(address.value as `0x${string}`)
+    }
+  } catch (e) {
+    // Same chain-walk diagnostic as the cash wrap — surfaces the underlying
+    // viem / sender error instead of just the top-level TxFailedError.
+    console.error('[CashPage] withdrawToUsdc failed — full chain:')
+    let cur: unknown = e
+    let depth = 0
+    while (cur && depth < 8) {
+      if (cur instanceof Error) {
+        console.error(`  [${depth}] ${cur.constructor.name}:`, cur)
+        const next = (cur as Error & { cause?: unknown }).cause
+        if (next) { cur = next; depth += 1; continue }
+      } else {
+        console.error(`  [${depth}] ${typeof cur}:`, cur)
+      }
+      break
+    }
+    withdrawErrMsg.value = withdrawErrorMessage(e)
+    toast.error('Withdrawal failed', { description: withdrawErrMsg.value })
+  } finally {
+    withdrawIsProcessing.value = false
+  }
+}
+
+/**
+ * Settle a pending claim: read the coprocessor result and (if ready) pay
+ * USDC from the wrapper reserve to the user. Permissionless on-chain — the
+ * funds always go to the original requester, so a stranger could in
+ * principle settle on the user's behalf; we still surface a Claim button
+ * because there's no backend auto-claim poller in W3 (deferred per plan).
+ *
+ * The two recoverable reverts get user-readable copy + KEEP the claim in
+ * the pending list (the burn already happened; the claim is retriable):
+ *   - `WithdrawClaimNotReady` — decrypt hasn't landed yet; should be
+ *     unreachable because the button is disabled until `ready === true`,
+ *     but defensive.
+ *   - `ReserveInsufficient` — reserve drained; owner must top up. The
+ *     wrapper preserves the claim state (only effects + transfer happen
+ *     after the sufficiency check) so a retry once the reserve is topped
+ *     up settles cleanly.
+ *   - `ClaimsPaused` — settlement kill-switch engaged by owner.
+ */
+async function claimWithdrawal(claim: PendingClaim) {
+  if (claim.claiming || !claim.ready) return
+  claim.claiming = true
+  claim.errMsg = null
+
+  try {
+    await initFhe()
+    const ctx = await buildWriteContext()
+    const stable = new StableClient(ctx, v35Addresses.muHavenStable)
+
+    const hash = await stable.claimUsdc(claim.claimId)
+    if (isUnmounted) return
+
+    // Settled — remove from the pending list. The contract pruned the
+    // claimId from `_userWithdrawClaims[caller]` (swap-pop), so a fresh
+    // `getUserWithdrawClaims` on next mount agrees with this local state.
+    pendingClaims.value = pendingClaims.value.filter((c) => c.claimId !== claim.claimId)
+    if (pendingClaims.value.length === 0) stopPolling()
+
+    toast.success('USDC claimed', {
+      description: claim.amount !== null
+        ? `${formatBase6(claim.amount)} USDC transferred to your wallet.`
+        : 'USDC transferred to your wallet.',
+      action: { label: 'View tx', onClick: () => window.open(arbiscanTx(hash), '_blank') },
+    })
+
+    // Refresh USDC + mhUSDC tiles in the aside.
+    void loadBalances()
+    if (portfolio.pusdcConfidentialBalance !== null && address.value) {
+      void portfolio.decryptPusdc(address.value as `0x${string}`)
+    }
+  } catch (e) {
+    if (isUnmounted) return
+    console.error('[CashPage] claimUsdc failed — full chain:')
+    let cur: unknown = e
+    let depth = 0
+    while (cur && depth < 8) {
+      if (cur instanceof Error) {
+        console.error(`  [${depth}] ${cur.constructor.name}:`, cur)
+        const next = (cur as Error & { cause?: unknown }).cause
+        if (next) { cur = next; depth += 1; continue }
+      } else {
+        console.error(`  [${depth}] ${typeof cur}:`, cur)
+      }
+      break
+    }
+    // Round-2 (CR L-3) — `WithdrawClaimAlreadyClaimed` is a benign two-tab
+    // race (or a stale-row replay); surface it as info, not red error, and
+    // auto-refresh so the orphan row disappears. The error mapper already
+    // emits user-friendly copy ("This claim was already settled. Refresh
+    // to update the list.") — promote it to an actionable info toast.
+    const errStr = walkErrorMessage(e)
+    if (/WithdrawClaimAlreadyClaimed/i.test(errStr)) {
+      toast.info('Claim already settled', {
+        description: 'This claim was settled in another session. Refreshing the list…',
+      })
+      void loadPendingClaims()
+      return
+    }
+    const msg = claimErrorMessage(e)
+    // Re-find by stable claimId in case loadPendingClaims rebuilt the array
+    // mid-await (orphan-reference safety — same pattern as pollPendingDecrypts).
+    const live = pendingClaims.value.find((c) => c.claimId === claim.claimId)
+    if (live) live.errMsg = msg
+    toast.error('Claim failed', { description: msg })
+  } finally {
+    // Round-2 (CR L-2) — dropped the dead `else claim.claiming = false`
+    // branch. The two real cases are handled correctly: (a) success path
+    // pruned the claim → row is gone from the UI, no-op needed; (b) error
+    // path keeps the claim, `find()` returns the live row, clear the flag.
+    if (!isUnmounted) {
+      const live = pendingClaims.value.find((c) => c.claimId === claim.claimId)
+      if (live) live.claiming = false
+    }
+  }
+}
+
+/** Re-discover the user's pending claims from chain. Called on mount + on
+ *  account-switch. Settled claims are pruned by the contract from the
+ *  per-user list, so this is always "what's still owed".
+ *
+ *  Per-claim: fetch `withdrawDecryptResult(claimId)` to populate `ready` +
+ *  `amount` (or leave `amount=null` while the decrypt is still in flight).
+ *  The kill-switch `claimsPaused()` is read once and surfaced as a banner
+ *  (the per-row Claim button stays clickable but the user sees why claims
+ *  would currently revert ClaimsPaused on broadcast). */
+async function loadPendingClaims(): Promise<void> {
+  // Round-2 (CR H-1) — coalesce concurrent callers onto a single in-flight
+  // promise. Returns the same promise to all callers so the Refresh button
+  // can `await` it for a future loading-state indicator.
+  if (inFlightDiscovery) return inFlightDiscovery
+  inFlightDiscovery = (async () => {
+    await loadPendingClaimsImpl()
+  })().finally(() => { inFlightDiscovery = null })
+  return inFlightDiscovery
+}
+
+async function loadPendingClaimsImpl() {
+  if (!address.value || !wrapperAvailable.value) {
+    pendingClaims.value = []
+    stopPolling()
+    return
+  }
+  pendingDiscoveryError.value = null
+  // Best-effort reads of the two pause flags — informational + drives the
+  // banners + the submit-button disabled state. Failures degrade silently
+  // (banners hide); a console.warn helps debugging if the stale `false`
+  // surprises an operator (round-2 CR L-4).
+  try { claimsKillSwitch.value = await MuHavenStableService.claimsPaused() }
+  catch (e) { console.warn('[CashPage] claimsPaused read failed', e) }
+  try { wrapperPaused.value = await MuHavenStableService.paused() }
+  catch (e) { console.warn('[CashPage] paused read failed', e) }
+
+  try {
+    const ids = await MuHavenStableService.getUserWithdrawClaims(address.value as `0x${string}`)
+    if (ids.length === 0) {
+      pendingClaims.value = []
+      stopPolling()
+      return
+    }
+    // Batch the per-claim decrypt reads in parallel — `Promise.all` is fine
+    // for typical pending-count (<= MAX_PENDING_WITHDRAWALS=64). Failures
+    // per-claim degrade to "pending unknown" rather than nuking the list.
+    const results = await Promise.all(
+      ids.map(async (id) => {
+        try {
+          const r = await MuHavenStableService.withdrawDecryptResult(id)
+          return { id, ready: r.ready, amount: r.ready ? r.amount : null }
+        } catch (e) {
+          console.warn('[CashPage] withdrawDecryptResult read failed for claim', id, e)
+          return { id, ready: false, amount: null }
+        }
+      }),
+    )
+    // Preserve the in-flight `claiming` flag for any existing row so a
+    // re-discovery during an in-flight claim doesn't reset the spinner.
+    const prev = new Map(pendingClaims.value.map((c) => [c.claimId, c]))
+    pendingClaims.value = results.map((r) => {
+      const existing = prev.get(r.id)
+      return {
+        claimId: r.id,
+        ready: r.ready,
+        amount: r.amount,
+        claiming: existing?.claiming ?? false,
+        errMsg: existing?.errMsg ?? null,
+      }
+    })
+    ensurePollingActive()
+  } catch (e) {
+    console.warn('[CashPage] pending-claim discovery failed', e)
+    pendingDiscoveryError.value = e instanceof Error ? e.message : 'Failed to load pending claims'
+  }
+}
+
+/** Refresh the `ready` + `amount` fields on any pending claim that's not
+ *  yet ready. Called on a 5s interval while any non-ready claim exists.
+ *  Skipping ready/claiming rows reduces RPC chatter; the interval stops
+ *  itself once every row is ready. */
+async function pollPendingDecrypts() {
+  if (!wrapperAvailable.value) return
+  const targets = pendingClaims.value.filter((c) => !c.ready)
+  if (targets.length === 0) {
+    stopPolling()
+    return
+  }
+  await Promise.all(
+    targets.map(async (claim) => {
+      try {
+        const r = await MuHavenStableService.withdrawDecryptResult(claim.claimId)
+        // Round-2 (FE Dev HIGH) — short-circuit if the component unmounted
+        // mid-await; the toast.success would otherwise fire for a page the
+        // user already navigated away from.
+        if (isUnmounted) return
+        // Re-find the claim in the CURRENT list before mutating — a
+        // concurrent `loadPendingClaims()` (Refresh button, address change,
+        // route revisit) may have reassigned `pendingClaims.value` with
+        // brand-new PendingClaim objects mid-await, leaving `claim` as an
+        // orphaned reference whose writes never reach the template. Match
+        // by `claimId` (the stable identity); if the user has since
+        // claimed/settled and the id is gone, the toast just doesn't fire.
+        const live = pendingClaims.value.find((c) => c.claimId === claim.claimId)
+        if (!live) return
+        if (r.ready && !live.ready) {
+          live.ready = true
+          live.amount = r.amount
+          toast.success('USDC ready to claim', {
+            description: `${formatBase6(r.amount)} USDC unlocked — tap Claim below.`,
+          })
+        }
+      } catch (e) {
+        // Per-claim transient read failure — keep polling; don't surface
+        // a toast for every blip (RPC dropouts on Arb Sepolia are common).
+        console.warn('[CashPage] poll withdrawDecryptResult failed', claim.claimId, e)
+      }
+    }),
+  )
+  // Re-evaluate; if everything is now ready, kill the interval.
+  if (pendingClaims.value.every((c) => c.ready)) stopPolling()
+}
+
+function ensurePollingActive() {
+  if (claimPollTimer) return
+  if (pendingClaims.value.every((c) => c.ready)) return // nothing to wait for
+  claimPollTimer = setInterval(() => { void pollPendingDecrypts() }, CLAIM_POLL_INTERVAL_MS)
+}
+
+function stopPolling() {
+  if (claimPollTimer) {
+    clearInterval(claimPollTimer)
+    claimPollTimer = null
+  }
+}
+
+function resetWithdrawForm() {
+  withdrawAmount.value = ''
+  withdrawSuccess.value = false
+  withdrawTxHash.value = null
+  withdrawErrMsg.value = null
+  // Round-2 (A11y F7) — after the user dismisses success/error, the form
+  // re-mounts. Move focus to the amount input so SR + keyboard users land
+  // on the primary entry point of the freshly-rendered form.
+  void focusElement(withdrawAmountInputRef.value)
+}
+
+/** Pre-fill the withdraw input with the user's decrypted mhUSDC balance.
+ *  Round-2 (CR M-3) — formats from bigint directly (NOT via Number()) to
+ *  preserve 6-decimal precision end-to-end. The handler that parses the
+ *  input on submit still goes via parseFloat, so a sub-6-dp round-trip is
+ *  the only precision loss; the contract's FHE.min clamp absorbs any
+ *  slight under-request (burns less) or over-request (burns the full
+ *  balance). */
+function setWithdrawMax() {
+  const bal = portfolio.pusdcConfidentialBalance
+  if (bal === null || bal === undefined || bal <= 0n) return
+  const whole = bal / 1_000_000n
+  const frac = (bal % 1_000_000n).toString().padStart(6, '0').replace(/0+$/, '')
+  withdrawAmount.value = frac.length === 0 ? whole.toString() : `${whole}.${frac}`
+}
+
+/** Map a thrown error from `withdrawToUsdc` to user-readable copy. Walks
+ *  the cause chain looking for known contract-revert markers. Falls back
+ *  to the raw message. */
+function withdrawErrorMessage(e: unknown): string {
+  const m = walkErrorMessage(e)
+  if (/UsdcReserveNotSet/i.test(m)) {
+    return 'The USDC reserve is not configured yet — contact the operator. (UsdcReserveNotSet)'
+  }
+  if (/TooManyPendingWithdrawals/i.test(m)) {
+    return 'You\'ve hit the per-user cap of 64 pending withdrawals. Claim or wait for one to settle before opening another.'
+  }
+  if (/NoBalance/i.test(m)) {
+    return 'You have no mhUSDC to withdraw. Convert USDC first.'
+  }
+  if (/PausedSurface/i.test(m) || /\bPaused\b/i.test(m)) {
+    return 'The wrapper is currently paused — withdrawals + wraps are temporarily disabled.'
+  }
+  if (/InvalidEphemeralEOA/i.test(m)) {
+    return 'No active session — sign in again to refresh your ephemeral key.'
+  }
+  return m || 'Withdrawal failed.'
+}
+
+/** Map a thrown error from `claimUsdc` to user-readable copy. */
+function claimErrorMessage(e: unknown): string {
+  const m = walkErrorMessage(e)
+  if (/ReserveInsufficient/i.test(m)) {
+    return 'The wrapper\'s USDC reserve is short right now — the claim is retriable. ' +
+      'The operator has been notified; try again in a few minutes.'
+  }
+  if (/ClaimsPaused/i.test(m)) {
+    return 'Settlement is temporarily halted (operator kill-switch). The claim is retriable once it\'s lifted.'
+  }
+  if (/WithdrawClaimNotReady/i.test(m)) {
+    return 'The decryption hasn\'t landed yet — wait a few seconds and try again.'
+  }
+  if (/WithdrawClaimAlreadyClaimed/i.test(m)) {
+    return 'This claim was already settled. Refresh to update the list.'
+  }
+  if (/WithdrawClaimNotFound/i.test(m)) {
+    return 'No matching claim on-chain — refresh to re-discover.'
+  }
+  return m || 'Claim failed.'
+}
+
+function walkErrorMessage(e: unknown): string {
+  let cur: unknown = e
+  let depth = 0
+  const seen: string[] = []
+  while (cur && depth < 8) {
+    if (cur instanceof Error) {
+      if (cur.message) seen.push(cur.message)
+      const next = (cur as Error & { cause?: unknown }).cause
+      if (next) { cur = next; depth += 1; continue }
+    } else if (typeof cur === 'string') {
+      seen.push(cur)
+    }
+    break
+  }
+  return seen.join(' :: ')
+}
+
+/** Format a base-6 USDC amount as a $X.XX string for display. */
+function formatBase6(units: bigint): string {
+  const dollars = Number(units) / 1_000_000
+  return `$${dollars.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}`
+}
+
+/** Round-2 (A11y F4) — click guard for the Claim button when it carries
+ *  `aria-disabled` instead of native `disabled` (so the button stays
+ *  focusable + the contextual aria-label is reachable). The guards mirror
+ *  the visual `disabled` state below. */
+function tryClaimWithdrawal(claim: PendingClaim) {
+  if (!claim.ready || claim.claiming || claimsKillSwitch.value) return
+  void claimWithdrawal(claim)
+}
+
+/** Round-2 (A11y F10) — sort pending claims with ready-to-claim first,
+ *  then by ascending claimId. Reduces cognitive load for screen-reader
+ *  users: actionable rows surface at the top of the list. */
+const sortedPendingClaims = computed(() =>
+  [...pendingClaims.value].sort((a, b) => {
+    if (a.ready !== b.ready) return a.ready ? -1 : 1
+    return a.claimId < b.claimId ? -1 : a.claimId > b.claimId ? 1 : 0
+  }),
+)
+
+/** Round-2 (A11y F7) — focus a target on the next render tick. Accepts
+ *  either an HTMLElement directly OR a Vue component instance (in which
+ *  case we unwrap its `.$el` to reach the underlying DOM). Defensive:
+ *  noops if the target hasn't mounted yet (state swap is mid-frame).
+ *  `focus()` lets the browser scroll the element into view if offscreen,
+ *  which is the right behavior for a success/error card that just appeared. */
+async function focusElement(target: HTMLElement | { $el?: HTMLElement } | null) {
+  if (!target) return
+  await nextTick()
+  const el = (target as { $el?: HTMLElement }).$el ?? (target as HTMLElement)
+  if (el && typeof (el as HTMLElement).focus === 'function') (el as HTMLElement).focus()
+}
+
+// Move focus on withdraw success/error transitions so screen-reader users
+// land on the relevant action button without a focus reset to <body>.
+watch(withdrawSuccess, (isSuccess) => {
+  if (isSuccess) void focusElement(withdrawAgainButtonRef.value)
+})
+watch(withdrawErrMsg, (msg) => {
+  if (msg) void focusElement(withdrawTryAgainButtonRef.value)
+})
 
 /** Existing RWA wrap — underlying ERC-20 → fhERC-20 via MuHavenVault. */
 async function handleAssetWrap() {
@@ -733,11 +1413,83 @@ const successCopy = computed(() =>
              :class="mode === 'cash' ? 'bg-compute/8 dark:bg-signal/8' : 'bg-gold/8 dark:bg-signal/8'" />
 
         <div class="p-8 md:p-10 relative">
+          <!-- Wave 5 W3 — Direction toggle (Deposit / Withdraw). Cash mode
+               only; hidden during in-flight + success + error states so the
+               result card owns the card surface. The Withdraw side calls
+               `MuHavenStable.withdrawToUsdc` → async claim → `claimUsdc`
+               (paid in real USDC from the wrapper reserve). MCP deep-link
+               `cash.unwrap` lands here via `?mode=unwrap`. -->
+          <!-- Round-2 (A11y F1 + FE Dev HIGH): use the "toggle button group"
+               pattern (role="group" + aria-pressed on each button) rather than
+               the tablist pattern. No tabpanel exists (the "panel" is the rest
+               of the card containing form/success/error states), so tablist
+               semantics misled screen readers. aria-pressed announces the
+               binary state correctly + each button stays in the natural
+               Tab/Shift+Tab order without needing arrow-key handling. -->
+          <div
+            v-if="mode === 'cash' && !isProcessing && !showSuccess && !errMsg && !withdrawIsProcessing && !withdrawSuccess && !withdrawErrMsg"
+            data-testid="cash-direction-toggle"
+            role="group"
+            aria-label="Deposit or withdraw direction"
+            class="relative inline-flex items-center gap-1 mb-6
+                   rounded-full border border-haze dark:border-white/10
+                   bg-mist/40 dark:bg-[#1c1b1b]/80 p-1
+                   shadow-[inset_0_1px_2px_rgba(63,46,12,0.04)]
+                   dark:shadow-[inset_0_1px_2px_rgba(0,0,0,0.4)]"
+          >
+            <div
+              aria-hidden="true"
+              class="absolute top-1 bottom-1 w-[calc(50%-0.25rem)] rounded-full
+                     bg-gradient-to-r transition-all duration-300 ease-out
+                     shadow-[0_2px_10px_-2px_rgba(255,186,32,0.45)]
+                     dark:shadow-[0_2px_14px_-2px_rgba(255,220,161,0.35)]"
+              :class="[
+                direction === 'deposit'
+                  ? 'left-1 from-compute to-gold dark:from-signal dark:to-signal/85'
+                  : 'left-[calc(50%+0.05rem)] from-gold to-gold/90 dark:from-signal dark:to-signal/70',
+              ]"
+            />
+            <button
+              type="button"
+              :aria-pressed="direction === 'deposit'"
+              @click="setDirection('deposit')"
+              data-testid="cash-direction-deposit"
+              :class="[
+                'relative z-10 inline-flex items-center justify-center gap-2 px-5 py-2 min-w-[150px] rounded-full',
+                'font-sans text-[11px] uppercase tracking-[0.22em] font-semibold cursor-pointer',
+                'transition-colors duration-200',
+                direction === 'deposit'
+                  ? 'text-midnight'
+                  : 'text-cool hover:text-midnight dark:hover:text-white',
+              ]"
+            >
+              <ArrowDownToLine :size="13" :stroke-width="2" aria-hidden="true" />
+              Deposit · USDC → mhUSDC
+            </button>
+            <button
+              type="button"
+              :aria-pressed="direction === 'withdraw'"
+              @click="setDirection('withdraw')"
+              data-testid="cash-direction-withdraw"
+              :class="[
+                'relative z-10 inline-flex items-center justify-center gap-2 px-5 py-2 min-w-[150px] rounded-full',
+                'font-sans text-[11px] uppercase tracking-[0.22em] font-semibold cursor-pointer',
+                'transition-colors duration-200',
+                direction === 'withdraw'
+                  ? 'text-midnight'
+                  : 'text-cool hover:text-midnight dark:hover:text-white',
+              ]"
+            >
+              <ArrowUpFromLine :size="13" :stroke-width="2" aria-hidden="true" />
+              Withdraw · mhUSDC → USDC
+            </button>
+          </div>
+
           <!-- Mode toggle — investor view defaults to cash with the toggle
                hidden. Pass `?mode=asset` to surface the asset (vault wrap)
                flow alongside cash for issuer/dev use. -->
           <div
-            v-if="!showSuccess && !errMsg && showModeToggle"
+            v-if="!showSuccess && !errMsg && !withdrawSuccess && !withdrawErrMsg && showModeToggle"
             data-testid="wrap-mode-toggle"
             class="relative inline-flex items-center gap-1 mb-8
                    rounded-full border border-haze dark:border-white/10
@@ -793,6 +1545,8 @@ const successCopy = computed(() =>
             </button>
           </div>
 
+          <!-- ── Deposit branch (Cash + Asset) — existing form chain ── -->
+          <template v-if="direction === 'deposit' || mode === 'asset'">
           <div v-if="showSuccess" data-testid="wrap-success-card" class="flex flex-col items-center gap-5 py-6">
             <div
               v-motion
@@ -961,6 +1715,370 @@ const successCopy = computed(() =>
               <ArrowRight v-if="!isProcessing" :size="16" :stroke-width="2" />
             </button>
           </div>
+          </template>
+
+          <!-- ── Withdraw branch (Cash only) — Wave 5 W3 ───────────────── -->
+          <template v-else>
+          <!-- Pause-state banners — visible across success / error / form
+               states so the user always sees WHY their next action is
+               blocked, not just at the form layer. `wrapperPaused()` blocks
+               the request leg (deposit + withdraw); `claimsPaused()` only
+               blocks the settle leg (claimUsdc). Either one renders a
+               banner; both can show simultaneously. -->
+          <!-- Round-2 (A11y F6): role="alert" so screen-readers preempt
+               on mount — these are blocking conditions, not informational.
+               Decorative AlertTriangle icons get aria-hidden so the SR
+               announcement isn't "alert, alert, Wrapper is paused" (the
+               role already conveys severity). -->
+          <div
+            v-if="wrapperPaused"
+            data-testid="withdraw-wrapper-paused-banner"
+            role="alert"
+            class="mb-5 rounded-lg p-3 border border-amber-400/30 bg-amber-500/8 flex items-start gap-2.5"
+          >
+            <AlertTriangle :size="14" class="text-amber-500 flex-shrink-0 mt-0.5" :stroke-width="2" aria-hidden="true" />
+            <p class="font-sans text-[11px] text-cool leading-relaxed">
+              <span class="font-semibold text-midnight dark:text-white">Wrapper is paused.</span>
+              All wraps, transfers, and withdrawal requests are temporarily disabled.
+              Existing pending claims can still be settled once the operator resumes the
+              wrapper.
+            </p>
+          </div>
+          <div
+            v-if="claimsKillSwitch"
+            data-testid="withdraw-kill-switch-banner"
+            role="alert"
+            class="mb-5 rounded-lg p-3 border border-amber-400/30 bg-amber-500/8 flex items-start gap-2.5"
+          >
+            <AlertTriangle :size="14" class="text-amber-500 flex-shrink-0 mt-0.5" :stroke-width="2" aria-hidden="true" />
+            <p class="font-sans text-[11px] text-cool leading-relaxed">
+              <span class="font-semibold text-midnight dark:text-white">USDC settlement temporarily halted.</span>
+              You can still request a withdrawal — your mhUSDC will burn and the claim will
+              wait in the list below until the operator resumes settlement.
+            </p>
+          </div>
+
+          <div v-if="withdrawSuccess" data-testid="withdraw-success-card" class="flex flex-col items-center gap-5 py-6">
+            <div
+              v-motion
+              :initial="{ opacity: 0, scale: 0.5 }"
+              :enter="{ opacity: 1, scale: 1, transition: { type: 'spring', stiffness: 200, damping: 15 } }"
+              class="w-16 h-16 rounded-full bg-positive/15 border border-positive/30 flex items-center justify-center"
+              aria-hidden="true"
+            >
+              <CheckCircle2 :size="32" :stroke-width="1.8" class="text-positive" />
+            </div>
+            <div class="text-center space-y-1.5">
+              <h2 class="font-accent italic text-2xl md:text-3xl text-midnight dark:text-white tracking-tight">
+                Withdrawal requested
+              </h2>
+              <p class="font-sans text-sm text-cool max-w-md">
+                Your mhUSDC is burned and the coprocessor is decrypting the amount. Your USDC
+                claim will appear in the list below; once it's ready (~30–60s), tap
+                <span class="font-medium text-midnight dark:text-white">Claim</span> to receive
+                the USDC into your wallet.
+              </p>
+            </div>
+            <p v-if="withdrawTxHash" class="font-mono text-[11px] text-cool">
+              tx:
+              <a :href="arbiscanTx(withdrawTxHash)" target="_blank" rel="noopener"
+                 class="text-compute dark:text-signal hover:underline">
+                {{ withdrawTxHash.slice(0, 10) }}…{{ withdrawTxHash.slice(-8) }}
+              </a>
+            </p>
+            <MButton variant="outline" ref="withdrawAgainButtonRef" @click="resetWithdrawForm">
+              Withdraw again
+            </MButton>
+          </div>
+
+          <div v-else-if="withdrawErrMsg" data-testid="withdraw-error-card" class="flex flex-col items-center gap-5 py-8">
+            <div
+              class="w-14 h-14 rounded-full bg-negative/12 border border-negative/30 flex items-center justify-center"
+              aria-hidden="true"
+            >
+              <Lock :size="26" :stroke-width="1.8" class="text-negative" />
+            </div>
+            <h2 class="font-accent italic text-xl text-midnight dark:text-white tracking-tight text-center">Withdrawal failed</h2>
+            <p class="font-sans text-sm text-cool text-center max-w-md">{{ withdrawErrMsg }}</p>
+            <MButton variant="outline" ref="withdrawTryAgainButtonRef" @click="resetWithdrawForm">Try again</MButton>
+          </div>
+
+          <div v-else class="flex flex-col gap-8">
+            <div class="flex items-center gap-3">
+              <div
+                class="w-10 h-10 rounded-lg bg-gold/15 dark:bg-signal/15 text-compute dark:text-signal flex items-center justify-center"
+                aria-hidden="true"
+              >
+                <ArrowUpFromLine :size="18" :stroke-width="1.8" />
+              </div>
+              <div>
+                <h2 class="font-accent italic text-xl text-midnight dark:text-white leading-tight">
+                  Withdraw mhUSDC to USDC
+                </h2>
+                <p class="font-sans text-[11px] text-cool mt-0.5 leading-relaxed">
+                  Burn your encrypted mhUSDC and receive real USDC into your wallet. Two-phase
+                  for privacy: the burn fires now, the coprocessor decrypts the amount, then
+                  you claim the USDC from the list below (~30–60s end-to-end).
+                </p>
+              </div>
+            </div>
+
+            <div class="flex flex-col gap-3">
+              <label for="withdraw-amount-input" class="font-sans text-[11px] uppercase tracking-[0.22em] text-cool font-medium">
+                Amount (mhUSDC)
+              </label>
+              <div class="flex items-end gap-2 border-b border-haze dark:border-white/10 pb-2 transition-colors focus-within:border-gold dark:focus-within:border-signal">
+                <span aria-hidden="true" class="font-accent italic text-3xl md:text-4xl text-cool pb-0.5 leading-none">$</span>
+                <!-- Round-2 (A11y F9): dropped redundant aria-label — the
+                     visible <label for="…"> already names this input.
+                     Round-2 (CR M-4): pattern + aria-describedby surface the
+                     6-decimal precision limit so a power user typing 9 digits
+                     of decimal won't be silently truncated. -->
+                <input
+                  id="withdraw-amount-input"
+                  ref="withdrawAmountInputRef"
+                  v-model="withdrawAmount"
+                  placeholder="0.00"
+                  inputmode="decimal"
+                  pattern="^\d*(\.\d{0,6})?$"
+                  aria-describedby="withdraw-amount-hint"
+                  :disabled="withdrawIsProcessing"
+                  data-testid="withdraw-amount-input"
+                  class="w-full bg-transparent border-0 font-accent italic
+                         text-4xl md:text-5xl text-midnight dark:text-white tabular-nums tracking-tight
+                         placeholder:text-cool/40 focus:outline-none focus:ring-0 p-0 leading-none disabled:opacity-50"
+                />
+              </div>
+              <div class="flex flex-wrap items-center gap-2 pt-1">
+                <!-- Round-2 (A11y F8): py-2 (≥28px) clears WCAG 2.2 AA 2.5.8
+                     target-size minimum (24×24). Was py-1.5 (~22-24px). -->
+                <button
+                  type="button"
+                  @click="setWithdrawMax"
+                  :disabled="withdrawIsProcessing || !hasMhUsdcBalance"
+                  data-testid="withdraw-max"
+                  class="font-sans text-[10px] uppercase tracking-[0.2em] font-medium
+                         bg-mist/60 dark:bg-white/5 hover:bg-gold/15 dark:hover:bg-signal/15
+                         text-slate dark:text-body-dark/80 hover:text-compute dark:hover:text-signal
+                         border border-haze dark:border-white/10
+                         px-3 py-2 rounded transition-all duration-200 cursor-pointer
+                         disabled:opacity-50 disabled:cursor-not-allowed"
+                  :title="hasMhUsdcBalance ? 'Withdraw your full mhUSDC balance' : 'Reveal your mhUSDC balance first to enable Max'"
+                >
+                  Max
+                </button>
+                <p
+                  id="withdraw-amount-hint"
+                  v-if="!hasMhUsdcBalance"
+                  class="font-sans text-[10px] text-cool/80 leading-relaxed"
+                  data-testid="withdraw-zero-balance-hint"
+                >
+                  Reveal your mhUSDC balance (right) to see what's withdrawable. Convert USDC first if you have none.
+                </p>
+                <p
+                  id="withdraw-amount-hint"
+                  v-else
+                  class="font-sans text-[10px] text-cool/80 leading-relaxed"
+                  data-testid="withdraw-cash-hint"
+                >
+                  1:1 unwrap, 6-decimal precision. Confidential balance, public payout —
+                  every mhUSDC becomes one USDC paid from the protocol reserve.
+                </p>
+              </div>
+            </div>
+
+            <!-- Single-step rail — visible while in flight. The on-chain
+                 path is one tx (burn + request decrypt); the "wait for
+                 decryption" stage happens off-form, in the pending list
+                 below. Round-2 (A11y F2): role="status" announces the
+                 "sign in your wallet" instruction to screen-reader users. -->
+            <transition
+              enter-active-class="transition-all duration-300 ease-out"
+              leave-active-class="transition-all duration-200 ease-in"
+              enter-from-class="opacity-0 -translate-y-1"
+              leave-to-class="opacity-0 -translate-y-1"
+            >
+              <div
+                v-if="withdrawIsProcessing"
+                data-testid="withdraw-inline-rail"
+                role="status"
+                class="rounded-lg p-4 border border-gold/25 dark:border-signal/20
+                       bg-gold/6 dark:bg-signal/5 flex items-center gap-3"
+              >
+                <Loader2 :size="14" class="animate-spin text-compute dark:text-signal flex-shrink-0" aria-hidden="true" />
+                <p class="font-sans text-[11px] text-cool leading-tight">
+                  <span class="font-semibold text-compute dark:text-signal">Burning mhUSDC + requesting decryption…</span>
+                  Sign in your wallet to confirm.
+                </p>
+              </div>
+            </transition>
+
+            <button
+              type="button"
+              @click="handleWithdraw"
+              :disabled="withdrawSubmitDisabled"
+              data-testid="withdraw-cta"
+              class="btn-gold-sweep w-full py-4 rounded-lg font-sans font-semibold text-sm tracking-wide
+                     flex items-center justify-center gap-2.5 cursor-pointer
+                     transition-all duration-300 hover:-translate-y-0.5 mt-2"
+            >
+              <Loader2 v-if="withdrawIsProcessing" :size="16" class="animate-spin" aria-hidden="true" />
+              <ArrowUpFromLine v-else :size="16" :stroke-width="2" aria-hidden="true" />
+              <span class="uppercase tracking-[0.18em]">
+                {{ withdrawIsProcessing ? 'Submitting…' : 'Withdraw to USDC' }}
+              </span>
+              <ArrowRight v-if="!withdrawIsProcessing" :size="16" :stroke-width="2" aria-hidden="true" />
+            </button>
+          </div>
+          </template>
+        </div>
+      </section>
+
+      <!-- ── Pending USDC claims — Wave 5 W3 ───────────────────────────────
+           Re-discovered from chain on mount via `getUserWithdrawClaims`;
+           one row per pending claim. Each row polls
+           `withdrawDecryptResult(claimId)` every 5s until ready, then the
+           Claim button settles via `claimUsdc(claimId)`. Visible regardless
+           of the current direction so a user mid-flight always sees their
+           in-progress USDC even if they flip back to Deposit. -->
+      <!-- Round-2 (A11y F5): dropped `aria-live="polite"` from the section.
+           A whole-section live region churns with every 5s poll × N rows;
+           the per-row pill below gets its own role="status" so only the
+           specific status changes get announced. The toast.success on
+           ready transition (in pollPendingDecrypts) is the global cue. -->
+      <section
+        v-if="pendingClaims.length > 0 || pendingDiscoveryError"
+        data-testid="cash-pending-claims-section"
+        class="max-w-2xl mx-auto mt-6 rounded-2xl overflow-hidden border border-haze dark:border-white/5
+               bg-white/90 dark:bg-[#1c1b1b]/80 backdrop-blur-lg
+               shadow-[0_14px_40px_-12px_rgba(63,46,12,0.08)]
+               dark:shadow-[0_20px_60px_-20px_rgba(0,0,0,0.65)]"
+      >
+        <div class="p-6 md:p-8 relative">
+          <div class="flex items-center justify-between mb-5">
+            <div class="flex items-center gap-3">
+              <div
+                class="w-8 h-8 rounded-lg bg-gold/15 dark:bg-signal/15 text-compute dark:text-signal flex items-center justify-center"
+                aria-hidden="true"
+              >
+                <ArrowUpFromLine :size="14" :stroke-width="1.8" />
+              </div>
+              <div>
+                <h2 class="font-accent italic text-lg text-midnight dark:text-white leading-tight">
+                  Pending USDC claims
+                </h2>
+                <p class="font-sans text-[11px] text-cool mt-0.5">
+                  {{ pendingClaims.length }} in flight · checks every {{ CLAIM_POLL_INTERVAL_SECONDS }}s
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              @click="loadPendingClaims"
+              data-testid="cash-pending-claims-refresh"
+              class="inline-flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-[0.18em] font-medium
+                     text-cool hover:text-compute dark:hover:text-signal transition-colors px-2 py-2"
+              aria-label="Refresh pending claims"
+            >
+              <RefreshCw :size="11" :stroke-width="2" aria-hidden="true" />
+              Refresh
+            </button>
+          </div>
+
+          <p
+            v-if="pendingDiscoveryError"
+            data-testid="cash-pending-claims-error"
+            role="alert"
+            class="font-sans text-[11px] text-negative bg-negative/5 border border-negative/20 rounded px-3 py-2 mb-3"
+          >
+            Couldn't load pending claims: {{ pendingDiscoveryError }}
+          </p>
+
+          <ul class="flex flex-col gap-3">
+            <li
+              v-for="claim in sortedPendingClaims"
+              :key="claim.claimId.toString()"
+              :data-testid="`cash-pending-claim-${claim.claimId}`"
+              class="rounded-lg border border-haze dark:border-white/10 bg-mist/30 dark:bg-white/[0.02]
+                     p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3"
+            >
+              <div class="flex flex-col gap-1 min-w-0">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="font-mono text-[11px] text-cool">claim #{{ claim.claimId }}</span>
+                  <!-- Round-2 (A11y F5): role="status" on the pill so each
+                       claim's individual state-change is announced, without
+                       the whole list re-announcing on every render. -->
+                  <span
+                    v-if="!claim.ready"
+                    role="status"
+                    class="inline-flex items-center gap-1 font-sans text-[9px] uppercase tracking-[0.18em] font-semibold
+                           text-amber-600 dark:text-amber-400 bg-amber-500/10 border border-amber-500/25
+                           px-2 py-0.5 rounded"
+                  >
+                    <Loader2 :size="10" class="animate-spin" aria-hidden="true" />
+                    Decrypting
+                  </span>
+                  <span
+                    v-else
+                    role="status"
+                    class="inline-flex items-center gap-1 font-sans text-[9px] uppercase tracking-[0.18em] font-semibold
+                           text-positive bg-positive/10 border border-positive/25
+                           px-2 py-0.5 rounded"
+                  >
+                    <CheckCircle2 :size="10" aria-hidden="true" />
+                    Ready to claim
+                  </span>
+                </div>
+                <p class="font-accent italic text-lg text-midnight dark:text-white leading-tight">
+                  {{ claim.ready && claim.amount !== null ? formatBase6(claim.amount) : '— USDC' }}
+                </p>
+                <p
+                  v-if="claim.errMsg"
+                  role="alert"
+                  class="font-sans text-[10px] text-negative leading-snug max-w-md"
+                >
+                  {{ claim.errMsg }}
+                </p>
+              </div>
+              <div class="flex items-center gap-2 shrink-0">
+                <!-- Round-2 (A11y F4): replaced MButton with a raw button so
+                     `aria-disabled` keeps the element FOCUSABLE while
+                     non-actionable. Native `disabled` removes from the focus
+                     order and (in some SR/browser combos) suppresses the
+                     accessible name — meaning the contextual aria-label
+                     never reaches the user. The click guard mirrors what
+                     `disabled` did. Style mirrors MButton primary-sm. -->
+                <button
+                  type="button"
+                  :aria-disabled="!claim.ready || claim.claiming || claimsKillSwitch"
+                  @click="tryClaimWithdrawal(claim)"
+                  :data-testid="`cash-pending-claim-${claim.claimId}-claim`"
+                  :aria-label="
+                    claim.ready && claim.amount !== null
+                      ? `Claim ${formatBase6(claim.amount)} USDC for claim ${claim.claimId}`
+                      : claimsKillSwitch
+                        ? `Claim ${claim.claimId} paused — settlement temporarily halted`
+                        : `Claim ${claim.claimId} not ready yet`
+                  "
+                  :class="[
+                    'inline-flex items-center justify-center gap-1.5 font-sans font-semibold transition-all duration-200 rounded-md',
+                    'text-xs px-3.5 py-2',
+                    'bg-compute text-white hover:bg-compute-hover hover:-translate-y-0.5 active:scale-[0.98]',
+                    'shadow-[0_4px_14px_rgba(184,134,11,0.22)] hover:shadow-[0_8px_24px_rgba(184,134,11,0.32)]',
+                    'dark:bg-signal dark:text-[#412d00] dark:hover:bg-signal-hover',
+                    'dark:shadow-[0_4px_14px_rgba(255,220,161,0.20)] dark:hover:shadow-[0_8px_28px_rgba(255,220,161,0.32)]',
+                    (!claim.ready || claim.claiming || claimsKillSwitch)
+                      ? 'opacity-50 cursor-not-allowed hover:translate-y-0 hover:shadow-[0_4px_14px_rgba(184,134,11,0.22)]'
+                      : 'cursor-pointer',
+                  ]"
+                >
+                  <Loader2 v-if="claim.claiming" :size="14" class="animate-spin" aria-hidden="true" />
+                  <ArrowDownToLine v-else :size="12" :stroke-width="2" aria-hidden="true" />
+                  {{ claim.claiming ? 'Claiming…' : claimsKillSwitch ? 'Paused' : claim.ready ? 'Claim USDC' : 'Waiting' }}
+                </button>
+              </div>
+            </li>
+          </ul>
         </div>
       </section>
       </template>

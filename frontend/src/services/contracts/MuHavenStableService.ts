@@ -9,14 +9,26 @@
  * This service stays close to the metal — direct ABI calls via
  * `contractRead` / `contractWrite`, no SDK indirection — to keep parity
  * with the existing service layer style. For session/UserOp-aware writes
- * (`wrap` / `unwrap` / `transfer`) consumers should reach into the SDK's
- * `StableClient` instead, since those calls need a cofhe-encrypted input
- * and an `ephemeralEOA` grant. This service exposes:
+ * (`wrap` / `unwrap` / `withdrawToUsdc` / `transfer`) consumers should
+ * reach into the SDK's `StableClient` instead, since those calls need a
+ * cofhe-encrypted input and an `ephemeralEOA` grant. This service exposes:
  *   - `confidentialBalanceOf(addr)` — encrypted handle for decrypt-for-view
  *   - `isOperator(holder, spender)` — pre-flight check for transferFrom
  *   - `setOperator(spender, until)` — operator approval for issuer flows
  *   - `paused()` — emergency-pause readout for the dev-mode banner
  *   - `refreshDecryptGrant(eph)` — self-service ACL refresh (ADR-042 mirror)
+ *
+ * Wave 5 W3 (direct mhUSDC → USDC exit) — read helpers for the async
+ * pending-claim surface in CashPage's Withdraw flow:
+ *   - `getUserWithdrawClaims(addr)` — re-discover in-flight claims on mount
+ *   - `getWithdrawClaim(claimId)` — per-claim record (recipient + handle +
+ *     amount-once-claimed + claimed-flag)
+ *   - `withdrawDecryptResult(claimId)` — poll the coprocessor decrypt for a
+ *     claim; returns `{ amount, ready }`
+ *   - `usdcReserveBalance()` — readout for "is the reserve healthy?" hints
+ *   - `claimsPaused()` — settlement kill-switch state (separate from the
+ *     wrap/transfer `paused()`)
+ *   - `usdc()` — configured USDC reserve token address (zero until owner sets it)
  */
 
 import type { Address } from 'viem'
@@ -89,6 +101,107 @@ export async function paused(): Promise<boolean> {
     [],
     CONTRACT,
   ) as Promise<boolean>
+}
+
+// ── Wave 5 W3 — direct USDC-exit reads ────────────────────────────────
+
+/**
+ * Pending withdrawal-claim ids for `account`. Empty array if none — returned
+ * by the contract verbatim from `_userWithdrawClaims[account]`. Settled
+ * claims are pruned from this list at `claimUsdc` time (swap-pop), so the
+ * frontend re-mounts can rebuild the "in-flight" view in one read.
+ */
+export async function getUserWithdrawClaims(account: Address): Promise<readonly bigint[]> {
+  return contractRead(
+    requireWrapperAddress(),
+    muHavenStableAbi,
+    'getUserWithdrawClaims',
+    [account],
+    CONTRACT,
+  ) as Promise<readonly bigint[]>
+}
+
+/**
+ * Per-claim record — `{ to, handle, amount, claimed }`. `to == zeroAddress`
+ * means "no such claim" (defensive); `amount` is 0 until `claimUsdc`
+ * settles it. The `handle` is the burned `euint64` ciphertext (what the
+ * coprocessor decrypts); it's exposed for completeness but UI consumers
+ * rarely need it — `withdrawDecryptResult` is the polling primitive.
+ */
+export async function getWithdrawClaim(claimId: bigint): Promise<{
+  to: Address
+  handle: `0x${string}`
+  amount: bigint
+  claimed: boolean
+}> {
+  return contractRead(
+    requireWrapperAddress(),
+    muHavenStableAbi,
+    'getWithdrawClaim',
+    [claimId],
+    CONTRACT,
+  ) as Promise<{ to: Address; handle: `0x${string}`; amount: bigint; claimed: boolean }>
+}
+
+/**
+ * Poll the coprocessor decrypt for a withdrawal claim. Returns
+ * `{ amount, ready }`: `ready` flips `true` once decryption lands, at
+ * which point `claimUsdc(claimId)` will settle. `(0n, false)` for an
+ * unknown claim. Designed for a 5–15s frontend poll loop while pending.
+ */
+export async function withdrawDecryptResult(claimId: bigint): Promise<{
+  amount: bigint
+  ready: boolean
+}> {
+  const [amount, ready] = (await contractRead(
+    requireWrapperAddress(),
+    muHavenStableAbi,
+    'withdrawDecryptResult',
+    [claimId],
+    CONTRACT,
+  )) as [bigint, boolean]
+  return { amount, ready }
+}
+
+/** Current USDC reserve balance held by the wrapper (0 if reserve unset). */
+export async function usdcReserveBalance(): Promise<bigint> {
+  return contractRead(
+    requireWrapperAddress(),
+    muHavenStableAbi,
+    'usdcReserveBalance',
+    [],
+    CONTRACT,
+  ) as Promise<bigint>
+}
+
+/**
+ * Settlement kill-switch state. Distinct from `paused()`:
+ *   - `paused()` blocks wrap / transfer / `withdrawToUsdc` (request leg);
+ *     `claimUsdc` still settles.
+ *   - `claimsPaused()` blocks ONLY `claimUsdc`, so the owner can freeze
+ *     USDC outflow in a reserve emergency without freezing deposits.
+ * UI surfaces this in the Withdraw flow's "Claim USDC" button (disable +
+ * tooltip "settlement temporarily halted").
+ */
+export async function claimsPaused(): Promise<boolean> {
+  return contractRead(
+    requireWrapperAddress(),
+    muHavenStableAbi,
+    'claimsPaused',
+    [],
+    CONTRACT,
+  ) as Promise<boolean>
+}
+
+/** Configured USDC reserve token address (zero address until the owner sets it). */
+export async function usdcReserveToken(): Promise<Address> {
+  return contractRead(
+    requireWrapperAddress(),
+    muHavenStableAbi,
+    'usdc',
+    [],
+    CONTRACT,
+  ) as Promise<Address>
 }
 
 // ── Writes ───────────────────────────────────────────────────────────
