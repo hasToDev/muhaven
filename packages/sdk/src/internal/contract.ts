@@ -67,3 +67,25 @@ export function parseEscrowCreatedIds(logs: import('viem').Log[], escrowAbi: rea
   }
   return ids
 }
+
+/**
+ * Extract the `claimId` from the `WithdrawRequested` event in a
+ * `MuHavenStable.withdrawToUsdc` receipt. Returns null if absent (defensive —
+ * a successful withdraw always emits exactly one).
+ */
+export function parseWithdrawClaimId(
+  logs: import('viem').Log[],
+  stableAbi: readonly unknown[],
+  stableAddress: Address,
+): bigint | null {
+  const parsed = parseEventLogs({
+    abi: stableAbi as any,
+    eventName: 'WithdrawRequested',
+    logs,
+  })
+  for (const log of parsed) {
+    if (log.address.toLowerCase() !== stableAddress.toLowerCase()) continue
+    return (log as unknown as { args: { claimId: bigint } }).args.claimId
+  }
+  return null
+}

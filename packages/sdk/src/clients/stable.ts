@@ -2,7 +2,7 @@ import type { Address, Hash } from 'viem'
 import type { MuHavenClientContext, ProgressCallback } from '../types.js'
 import { ConfigError } from '../errors.js'
 import { muHavenStableAbi } from '../abi/muHavenStable.js'
-import { writeAndWait } from '../internal/contract.js'
+import { writeAndWait, parseWithdrawClaimId } from '../internal/contract.js'
 import { encryptUint64 } from '../internal/encryption.js'
 import { requireContext, requireEphemeralEOA } from './_context.js'
 
@@ -149,6 +149,174 @@ export class StableClient {
     })
 
     return hash
+  }
+
+  // ── Direct USDC exit (Wave 5 W3 — two-phase async, no PUSDC) ─────────
+
+  /**
+   * Phase 1 of a direct mhUSDC → USDC withdrawal. Burns `min(balance, amount)`
+   * mhUSDC (clamp-to-balance — an over-request withdraws the full balance, and
+   * a deliberately-large `amount` does "withdraw all") and requests async
+   * coprocessor decryption, returning the `claimId` of the new pending claim.
+   *
+   * Settle later with {@link claimUsdc} once {@link withdrawDecryptResult}
+   * reports `ready`. Unlike {@link unwrap} (which returns legacy PUSDC), this
+   * pays real USDC from the wrapper's reserve — PUSDC never enters the user's
+   * path. `claimId` is null only if the receipt carried no `WithdrawRequested`
+   * (defensive; a successful withdraw always emits one).
+   */
+  async withdrawToUsdc(
+    amount: bigint,
+    ephemeralEOA: Address,
+    opts?: { onProgress?: ProgressCallback },
+  ): Promise<{ hash: Hash; claimId: bigint | null }> {
+    if (amount <= 0n) throw new ConfigError(`amount must be > 0, got ${amount}`)
+    if (amount > (1n << 64n) - 1n) {
+      throw new ConfigError(`amount exceeds 2^64 - 1, got ${amount}`)
+    }
+    requireEphemeralEOA(ephemeralEOA)
+
+    opts?.onProgress?.({
+      stage: 'encrypt',
+      current: 0,
+      total: 1,
+      message: 'Encrypting withdrawal amount',
+    })
+
+    const enc = await encryptUint64(this.ctx.cofheClient, amount)
+
+    const { hash, logs } = await writeAndWait({
+      publicClient: this.ctx.publicClient,
+      sender: this.ctx.sender,
+      address: this.address,
+      abi: muHavenStableAbi,
+      functionName: 'withdrawToUsdc',
+      args: [
+        {
+          ctHash: enc.ctHash,
+          securityZone: enc.securityZone,
+          utype: enc.utype,
+          signature: enc.signature,
+        },
+        ephemeralEOA,
+      ],
+      operation: 'MuHavenStable.withdrawToUsdc',
+    })
+
+    const claimId = parseWithdrawClaimId(logs, muHavenStableAbi, this.address)
+
+    opts?.onProgress?.({
+      stage: 'unwrap',
+      current: 1,
+      total: 1,
+      message: 'Withdrawal requested — awaiting decryption, then claim',
+      txHash: hash,
+    })
+
+    return { hash, claimId }
+  }
+
+  /**
+   * Phase 2 of a direct withdrawal. Once the coprocessor result is ready
+   * (poll {@link withdrawDecryptResult}), settles claim `claimId`: transfers
+   * the decrypted USDC (1:1, 6-dp) from the reserve to the claim's recipient.
+   * Permissionless — anyone may call it; funds always go to the recorded
+   * recipient (so a backend auto-claim poller can settle on the user's behalf).
+   */
+  async claimUsdc(
+    claimId: bigint,
+    opts?: { onProgress?: ProgressCallback },
+  ): Promise<Hash> {
+    if (claimId <= 0n) throw new ConfigError(`claimId must be > 0, got ${claimId}`)
+
+    const { hash } = await writeAndWait({
+      publicClient: this.ctx.publicClient,
+      sender: this.ctx.sender,
+      address: this.address,
+      abi: muHavenStableAbi,
+      functionName: 'claimUsdc',
+      args: [claimId],
+      operation: 'MuHavenStable.claimUsdc',
+    })
+
+    opts?.onProgress?.({
+      stage: 'unwrap',
+      current: 1,
+      total: 1,
+      message: 'USDC withdrawal settled',
+      txHash: hash,
+    })
+
+    return hash
+  }
+
+  /** Current USDC reserve balance held by the wrapper (0 if unset). */
+  async usdcReserveBalance(): Promise<bigint> {
+    return (await this.ctx.publicClient.readContract({
+      address: this.address,
+      abi: muHavenStableAbi,
+      functionName: 'usdcReserveBalance',
+    })) as bigint
+  }
+
+  /** The configured USDC reserve token (zero address until the owner sets it). */
+  async usdcReserveToken(): Promise<Address> {
+    return (await this.ctx.publicClient.readContract({
+      address: this.address,
+      abi: muHavenStableAbi,
+      functionName: 'usdc',
+    })) as Address
+  }
+
+  /** Whether the settlement kill-switch is engaged (`claimUsdc` reverts). */
+  async claimsPaused(): Promise<boolean> {
+    return (await this.ctx.publicClient.readContract({
+      address: this.address,
+      abi: muHavenStableAbi,
+      functionName: 'claimsPaused',
+    })) as boolean
+  }
+
+  /** The pending/settled withdrawal claim for `claimId` (`to` is zero if none). */
+  async getWithdrawClaim(claimId: bigint): Promise<{
+    to: Address
+    handle: `0x${string}`
+    amount: bigint
+    claimed: boolean
+  }> {
+    const c = (await this.ctx.publicClient.readContract({
+      address: this.address,
+      abi: muHavenStableAbi,
+      functionName: 'getWithdrawClaim',
+      args: [claimId],
+    })) as { to: Address; handle: `0x${string}`; amount: bigint; claimed: boolean }
+    return c
+  }
+
+  /** An account's pending (unsettled) withdrawal claim ids — for re-discovery. */
+  async getUserWithdrawClaims(account: Address): Promise<readonly bigint[]> {
+    return (await this.ctx.publicClient.readContract({
+      address: this.address,
+      abi: muHavenStableAbi,
+      functionName: 'getUserWithdrawClaims',
+      args: [account],
+    })) as readonly bigint[]
+  }
+
+  /**
+   * Poll the coprocessor decrypt result for a withdrawal `claimId`. Returns
+   * `{ amount, ready }` — `ready` flips true once decryption completes, at
+   * which point `claimUsdc(claimId)` will settle. `(0n, false)` for an
+   * unknown claim.
+   */
+  async withdrawDecryptResult(claimId: bigint): Promise<{ amount: bigint; ready: boolean }> {
+    const [amount, ready] = (await this.ctx.publicClient.readContract({
+      address: this.address,
+      abi: muHavenStableAbi,
+      functionName: 'withdrawDecryptResult',
+      args: [claimId],
+    })) as [bigint, boolean]
+    return { amount, ready }
   }
 
   // ── Confidential transfers ──────────────────────────────────────────

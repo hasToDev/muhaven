@@ -44,6 +44,7 @@ import {
 } from "@muhaven/sdk";
 import {
   deployMockPUSDC,
+  waitForDecrypt,
   ZERO_ADDRESS,
 } from "./helpers/setup";
 import { createEphemeralEOA } from "./helpers/fixturesV2";
@@ -195,6 +196,97 @@ describe("MuHaven SDK Wave 3.5 Phase 7.5 — StableClient (integration)", functi
 
       const aliceMh = await mhUSDC.confidentialBalanceOf(alice.address);
       await hre.cofhe.mocks.expectPlaintext(aliceMh, 50n * ONE_PUSDC);
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────
+  // Direct USDC exit (Wave 5 W3) — two-phase async via StableClient
+  // ───────────────────────────────────────────────────────────────────────
+
+  describe("withdrawToUsdc + claimUsdc (W3)", function () {
+    /** Deploy a MockUSDC, wire it as the reserve, and fund it (deployer=owner). */
+    async function setUpReserve(mhUSDC: any, deployer: any, seed: bigint) {
+      const usdc = await (await hre.ethers.getContractFactory("MockUSDC")).deploy();
+      await mhUSDC.connect(deployer).setUsdcReserveToken(await usdc.getAddress());
+      await usdc.mint(deployer.address, seed);
+      await usdc.connect(deployer).approve(await mhUSDC.getAddress(), seed);
+      await mhUSDC.connect(deployer).fundUsdcReserve(seed);
+      return usdc;
+    }
+
+    it("pre-flight: withdrawToUsdc rejects zero/overflow/zero-eph; claimUsdc rejects claimId<=0", async function () {
+      const { mhUSDC } = await loadFixture(deployStableFixture);
+      const ctx = await makeContext(HARDHAT_PK_1, 1);
+      const client = new StableClient(ctx, (mhUSDC as any).target as Address);
+      const eph = createEphemeralEOA();
+
+      await expect(client.withdrawToUsdc(0n, eph.address as Address)).to.be.rejectedWith(ConfigError, /amount/);
+      await expect(client.withdrawToUsdc(1n << 64n, eph.address as Address)).to.be.rejectedWith(ConfigError, /2\^64/);
+      await expect(client.withdrawToUsdc(10n * ONE_PUSDC, ZERO_ADDRESS as Address)).to.be.rejectedWith(ConfigError, /ephemeralEOA/);
+      await expect(client.claimUsdc(0n)).to.be.rejectedWith(ConfigError, /claimId/);
+    });
+
+    it("request → decrypt → claim pays real USDC (1:1) and returns the claimId", async function () {
+      const { deployer, alice, mhUSDC } = await loadFixture(deployStableFixture);
+      const usdc = await setUpReserve(mhUSDC, deployer, 1_000n * ONE_PUSDC);
+      const ctx = await makeContext(HARDHAT_PK_1, 1); // alice
+      const client = new StableClient(ctx, (mhUSDC as any).target as Address);
+      const eph = createEphemeralEOA();
+
+      await client.wrap(60n * ONE_PUSDC, eph.address as Address);
+
+      const { claimId } = await client.withdrawToUsdc(20n * ONE_PUSDC, eph.address as Address);
+      expect(claimId).to.be.a("bigint");
+      expect(claimId! > 0n).to.equal(true);
+
+      // mhUSDC burned immediately.
+      await hre.cofhe.mocks.expectPlaintext(
+        await mhUSDC.confidentialBalanceOf(alice.address),
+        40n * ONE_PUSDC,
+      );
+
+      // Not ready before the decrypt delay.
+      let res = await client.withdrawDecryptResult(claimId!);
+      expect(res.ready).to.equal(false);
+
+      await waitForDecrypt();
+      res = await client.withdrawDecryptResult(claimId!);
+      expect(res.ready).to.equal(true);
+      expect(res.amount).to.equal(20n * ONE_PUSDC);
+
+      // Pending list shows the claim, then prunes on settle.
+      const pendingBefore = await client.getUserWithdrawClaims(alice.address as Address);
+      expect(pendingBefore.map((x) => x.toString())).to.include(claimId!.toString());
+
+      await client.claimUsdc(claimId!);
+      expect(await usdc.balanceOf(alice.address)).to.equal(20n * ONE_PUSDC);
+
+      const pendingAfter = await client.getUserWithdrawClaims(alice.address as Address);
+      expect(pendingAfter.map((x) => x.toString())).to.not.include(claimId!.toString());
+
+      // Reserve views.
+      expect(await client.usdcReserveToken()).to.equal(await usdc.getAddress());
+      expect(await client.claimsPaused()).to.equal(false);
+    });
+
+    it("over-request clamps to balance (withdraw-all) and pays the full balance", async function () {
+      const { deployer, alice, mhUSDC } = await loadFixture(deployStableFixture);
+      const usdc = await setUpReserve(mhUSDC, deployer, 1_000n * ONE_PUSDC);
+      const ctx = await makeContext(HARDHAT_PK_1, 1);
+      const client = new StableClient(ctx, (mhUSDC as any).target as Address);
+      const eph = createEphemeralEOA();
+
+      await client.wrap(45n * ONE_PUSDC, eph.address as Address);
+      const { claimId } = await client.withdrawToUsdc(10_000n * ONE_PUSDC, eph.address as Address);
+
+      await waitForDecrypt();
+      await client.claimUsdc(claimId!);
+
+      expect(await usdc.balanceOf(alice.address)).to.equal(45n * ONE_PUSDC);
+      await hre.cofhe.mocks.expectPlaintext(
+        await mhUSDC.confidentialBalanceOf(alice.address),
+        0n,
+      );
     });
   });
 

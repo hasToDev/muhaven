@@ -52,6 +52,117 @@ export const muHavenStableAbi = [
     ],
     outputs: [],
   },
+  // ── Direct USDC exit (Wave 5 W3 — two-phase async, no PUSDC) ─────────
+  {
+    name: 'withdrawToUsdc',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'encAmount', ...inEncryptedTuple },
+      { name: 'ephemeralEOA', type: 'address' },
+    ],
+    outputs: [{ name: 'claimId', type: 'uint256' }],
+  },
+  {
+    name: 'claimUsdc',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'claimId', type: 'uint256' }],
+    outputs: [],
+  },
+  {
+    name: 'setUsdcReserveToken',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'usdc_', type: 'address' }],
+    outputs: [],
+  },
+  {
+    name: 'fundUsdcReserve',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'amount', type: 'uint256' }],
+    outputs: [],
+  },
+  {
+    name: 'withdrawUsdcReserve',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'to', type: 'address' },
+      { name: 'amount', type: 'uint256' },
+    ],
+    outputs: [],
+  },
+  {
+    name: 'setClaimsPaused',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'paused_', type: 'bool' }],
+    outputs: [],
+  },
+  {
+    name: 'usdc',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'address' }],
+  },
+  {
+    name: 'claimsPaused',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'bool' }],
+  },
+  {
+    name: 'usdcReserveBalance',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'uint256' }],
+  },
+  {
+    name: 'getWithdrawClaim',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'claimId', type: 'uint256' }],
+    outputs: [
+      {
+        type: 'tuple',
+        components: [
+          { name: 'to', type: 'address' },
+          { name: 'handle', type: 'bytes32' }, // euint64
+          { name: 'amount', type: 'uint64' },
+          { name: 'claimed', type: 'bool' },
+        ],
+      },
+    ],
+  },
+  {
+    name: 'getUserWithdrawClaims',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'account', type: 'address' }],
+    outputs: [{ type: 'uint256[]' }],
+  },
+  {
+    name: 'withdrawDecryptResult',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'claimId', type: 'uint256' }],
+    outputs: [
+      { name: 'amount', type: 'uint64' },
+      { name: 'ready', type: 'bool' },
+    ],
+  },
+  {
+    name: 'MAX_PENDING_WITHDRAWALS',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'uint256' }],
+  },
   // ── Confidential transfers (modern surface) ─────────────────────────
   // Note: there are also `transfer(address, euint64, address)` overloads
   // but the SDK only encrypts EOA inputs so we expose the InEuint64 form
@@ -222,6 +333,34 @@ export const muHavenStableAbi = [
       { name: 'ephemeralEOA', type: 'address', indexed: true },
       { name: 'handle', type: 'bytes32', indexed: false }, // euint64
     ],
+    anonymous: false,
+  },
+  // ── Direct USDC exit (Wave 5 W3) ─────────────────────────────────────
+  {
+    name: 'WithdrawRequested',
+    type: 'event',
+    inputs: [
+      { name: 'account', type: 'address', indexed: true },
+      { name: 'ephemeralEOA', type: 'address', indexed: true },
+      { name: 'claimId', type: 'uint256', indexed: true },
+      { name: 'handle', type: 'bytes32', indexed: false }, // euint64 (audit)
+    ],
+    anonymous: false,
+  },
+  {
+    name: 'WithdrawClaimed',
+    type: 'event',
+    inputs: [
+      { name: 'account', type: 'address', indexed: true },
+      { name: 'claimId', type: 'uint256', indexed: true },
+      { name: 'amount', type: 'uint64', indexed: false }, // cleartext USDC (6-dp)
+    ],
+    anonymous: false,
+  },
+  {
+    name: 'ClaimsPausedSet',
+    type: 'event',
+    inputs: [{ name: 'paused', type: 'bool', indexed: false }],
     anonymous: false,
   },
 ] as const
