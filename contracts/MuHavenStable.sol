@@ -4,12 +4,16 @@ pragma solidity ^0.8.28;
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {ERC165Upgradeable} from "@openzeppelin/contracts-upgradeable/utils/introspection/ERC165Upgradeable.sol";
 import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
+import {IERC20} from "@openzeppelin/contracts/interfaces/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {
     FHE,
     euint64,
     ebool,
     InEuint64,
-    Common
+    Common,
+    ITaskManager,
+    TASK_MANAGER_ADDRESS
 } from "@fhenixprotocol/cofhe-contracts/FHE.sol";
 import {IMuHavenStable} from "./interfaces/IMuHavenStable.sol";
 
@@ -88,15 +92,46 @@ contract MuHavenStable is
     ///         via `scripts/grant-trusted-payer.ts`.
     mapping(address => bool) private _trustedPayer;
 
-    /// @dev Reserved storage for future upgrades (proxy-safe gap). Nine
-    ///      named slots above (3 mappings/euint + 2 strings + 2 addresses
-    ///      + 1 bool + 1 trusted-payer mapping) → reserve 41 to land at
-    ///      50 own slots, matching the `MuHavenSubscription` /
-    ///      `TokenRegistry` convention. The `_trustedPayer` slot was
-    ///      added in the Phase 8 Option B upgrade (ADR-046); the gap
-    ///      shrunk from 42 → 41 to compensate, preserving the total slot
-    ///      count + every prior slot's index.
-    uint256[41] private __gap;
+    // ── Direct USDC-exit state (Wave 5 W3) ───────────────────────────────
+    // Appended in the gap (no reordering of prior slots). See the gap
+    // accounting note below.
+
+    /// @notice USDC reserve token paid out by `claimUsdc`. Set post-upgrade
+    ///         by the owner via `setUsdcReserveToken` (address(0) until then).
+    address public usdc;
+
+    /// @notice Settlement kill-switch — when true, `claimUsdc` reverts
+    ///         `ClaimsPaused`. Owner-toggled, separate from `paused` so USDC
+    ///         outflow can be frozen in a reserve emergency without re-freezing
+    ///         deposits/transfers. Packs into the `usdc` slot (address + bool).
+    bool public claimsPaused;
+
+    /// @dev Monotonic withdrawal-claim id counter. 1-indexed (first claim is
+    ///      id 1); 0 means "no claim". Claims are keyed by this id — NOT the
+    ///      burned ciphertext handle, which is content-addressed/deterministic
+    ///      (a pure function of operand handles + opcode) and can collide
+    ///      across identical burns. A handle key would silently drop the second
+    ///      burn → fund loss; the per-id key makes every request independent.
+    uint256 private _nextWithdrawClaimId;
+
+    /// @dev Pending/settled direct-withdrawal claims, keyed by `claimId`.
+    mapping(uint256 => WithdrawClaim) private _withdrawClaims;
+
+    /// @dev Per-account list of pending claim ids (settled ids are
+    ///      swap-and-popped). Bounded by `MAX_PENDING_WITHDRAWALS`. Powers
+    ///      `getUserWithdrawClaims` so a returning frontend can re-discover
+    ///      in-flight withdrawals.
+    mapping(address => uint256[]) private _userWithdrawClaims;
+
+    /// @dev Reserved storage for future upgrades (proxy-safe gap). Named slots:
+    ///      9 pre-W3 + W3's 4 new slots ([usdc|claimsPaused] packed into one
+    ///      slot, _nextWithdrawClaimId, _withdrawClaims, _userWithdrawClaims) →
+    ///      reserve 37 to keep ~50 own slots, matching the `MuHavenSubscription`
+    ///      / `TokenRegistry` convention. History: Phase 8 Option B (ADR-046)
+    ///      added `_trustedPayer` (42→41). Wave 5 W3 added the 4 direct-USDC
+    ///      slots (41→37). Every prior slot's index is preserved (validated via
+    ///      OZ `validateUpgrade` against the deployed impl).
+    uint256[37] private __gap;
 
     // ── Constants ────────────────────────────────────────────────────────
 
@@ -111,6 +146,11 @@ contract MuHavenStable is
     ///      during `unwrap`.
     bytes4 private constant _LEGACY_TRANSFER_UINT256 =
         bytes4(keccak256("confidentialTransfer(address,uint256)"));
+
+    /// @notice Wave 5 W3 — max simultaneously-pending withdrawal claims per
+    ///         account. Bounds `_userWithdrawClaims` growth + the
+    ///         `_removeUserClaim` linear scan (anti-griefing / gas-DoS).
+    uint256 public constant MAX_PENDING_WITHDRAWALS = 64;
 
     // ── Modifiers ────────────────────────────────────────────────────────
 
@@ -291,6 +331,178 @@ contract MuHavenStable is
         if (!ok) revert UnwrapFailed();
 
         emit Unwrap(msg.sender, ephemeralEOA, actual);
+    }
+
+    // ── Direct USDC exit (Wave 5 W3 — two-phase async, no PUSDC) ─────────
+    //
+    // mhUSDC balances are encrypted, so releasing a PUBLIC USDC amount can't
+    // be synchronous — we must decrypt the burned amount first (CoFHE async).
+    // Phase 1 (`withdrawToUsdc`): burn + request decrypt + record claim.
+    // Phase 2 (`claimUsdc`): once the coprocessor result is ready, pay USDC
+    // from the contract's reserve. PUSDC never enters the user's path; the
+    // PUSDC that backed the burned mhUSDC stays in the contract (the reserve
+    // is funded separately by the owner — see the W3 reserve-model ADR).
+
+    /// @inheritdoc IMuHavenStable
+    /// @dev Clamp-to-balance via `FHE.min` (NOT `unwrap`'s select-to-zero), so
+    ///      an over-request withdraws the FULL balance and "withdraw all" works
+    ///      with a deliberately-large amount. No external call on this leg (the
+    ///      USDC transfer is in `claimUsdc`), so the request is reentrancy-free
+    ///      by construction; `nonReentrant` is belt-and-suspenders.
+    ///
+    ///      Claims are keyed by a monotonic `claimId`, NOT the burned ciphertext
+    ///      handle: CoFHE handles are content-addressed/deterministic, so two
+    ///      identical burns share a handle. Each still gets a distinct claimId
+    ///      backed by its own burn, so each settles exactly once (total burned ==
+    ///      total paid). The stored `handle` is what `claimUsdc` decrypts.
+    function withdrawToUsdc(InEuint64 calldata encAmount, address ephemeralEOA)
+        external
+        whenNotPaused
+        nonReentrant
+        returns (uint256 claimId)
+    {
+        if (ephemeralEOA == address(0)) revert InvalidEphemeralEOA();
+        if (usdc == address(0)) revert UsdcReserveNotSet();
+        if (!Common.isInitialized(_balances[msg.sender])) revert NoBalance();
+        if (_userWithdrawClaims[msg.sender].length >= MAX_PENDING_WITHDRAWALS) {
+            revert TooManyPendingWithdrawals();
+        }
+
+        euint64 requested = FHE.asEuint64(encAmount);
+        FHE.allowThis(requested);
+
+        // Clamp to available balance (sell-what-you-have).
+        euint64 burnAmount = FHE.min(_balances[msg.sender], requested);
+        FHE.allowThis(burnAmount);
+
+        // Burn from caller — decrements balance + _encryptedTotalSupply, grants
+        // caller + eph decrypt on the new balance handle, emits Transfer→0.
+        _burnInternal(msg.sender, burnAmount, ephemeralEOA);
+
+        // Make the burned amount decryptable (audit) + request async decrypt.
+        FHE.allow(burnAmount, msg.sender);
+        FHE.allow(burnAmount, ephemeralEOA);
+        bytes32 handle = euint64.unwrap(burnAmount);
+        ITaskManager(TASK_MANAGER_ADDRESS).createDecryptTask(uint256(handle), msg.sender);
+
+        // Record the pending claim under a fresh monotonic id (1-indexed).
+        claimId = ++_nextWithdrawClaimId;
+        _withdrawClaims[claimId] = WithdrawClaim({
+            to: msg.sender,
+            handle: handle,
+            amount: 0,
+            claimed: false
+        });
+        _userWithdrawClaims[msg.sender].push(claimId);
+
+        emit WithdrawRequested(msg.sender, ephemeralEOA, claimId, handle);
+    }
+
+    /// @inheritdoc IMuHavenStable
+    /// @dev Permissionless settle (pays the recorded recipient, not the
+    ///      caller). CEI: the reserve check + state effects run before the
+    ///      external `safeTransfer`. A short reserve reverts WITHOUT marking
+    ///      the claim settled, so it stays pending and is retriable after the
+    ///      owner tops up the reserve. The settled struct is retained (only
+    ///      pruned from the user list) so a replayed claimId always hits the
+    ///      `claimed` guard.
+    function claimUsdc(uint256 claimId) external nonReentrant {
+        if (claimsPaused) revert ClaimsPaused();
+        WithdrawClaim memory c = _withdrawClaims[claimId];
+        if (c.to == address(0)) revert WithdrawClaimNotFound();
+        if (c.claimed) revert WithdrawClaimAlreadyClaimed();
+
+        (uint64 amount, bool ready) = FHE.getDecryptResultSafe(euint64.wrap(c.handle));
+        if (!ready) revert WithdrawClaimNotReady();
+
+        // Reserve sufficiency BEFORE effects so a shortfall leaves the claim
+        // pending (retriable) rather than consuming it.
+        if (amount > 0 && IERC20(usdc).balanceOf(address(this)) < amount) {
+            revert ReserveInsufficient();
+        }
+
+        // Effects: settle + prune from the user list.
+        _withdrawClaims[claimId].claimed = true;
+        _withdrawClaims[claimId].amount = amount;
+        _removeUserClaim(c.to, claimId);
+
+        // Interaction: 1:1 mhUSDC→USDC (both 6-dp). A zero-amount claim (e.g.
+        // a clamp on a zero balance) settles as a state-only no-op.
+        if (amount > 0) {
+            SafeERC20.safeTransfer(IERC20(usdc), c.to, amount);
+        }
+
+        emit WithdrawClaimed(c.to, claimId, amount);
+    }
+
+    /// @dev Swap-and-pop `claimId` out of `account`'s pending-claim list.
+    ///      No-op if absent (already pruned). Bounded by MAX_PENDING_WITHDRAWALS.
+    function _removeUserClaim(address account, uint256 claimId) internal {
+        uint256[] storage list = _userWithdrawClaims[account];
+        uint256 len = list.length;
+        for (uint256 i = 0; i < len; i++) {
+            if (list[i] == claimId) {
+                list[i] = list[len - 1];
+                list.pop();
+                return;
+            }
+        }
+    }
+
+    // ── Direct USDC exit — reserve admin + views (Wave 5 W3) ─────────────
+
+    /// @inheritdoc IMuHavenStable
+    function setUsdcReserveToken(address usdc_) external onlyOwner {
+        if (usdc_ == address(0)) revert ZeroAddress();
+        usdc = usdc_;
+        emit UsdcReserveTokenSet(usdc_);
+    }
+
+    /// @inheritdoc IMuHavenStable
+    function fundUsdcReserve(uint256 amount) external onlyOwner {
+        if (usdc == address(0)) revert UsdcReserveNotSet();
+        SafeERC20.safeTransferFrom(IERC20(usdc), msg.sender, address(this), amount);
+        emit UsdcReserveFunded(msg.sender, amount);
+    }
+
+    /// @inheritdoc IMuHavenStable
+    function withdrawUsdcReserve(address to, uint256 amount) external onlyOwner {
+        if (to == address(0)) revert ZeroAddress();
+        if (usdc == address(0)) revert UsdcReserveNotSet();
+        SafeERC20.safeTransfer(IERC20(usdc), to, amount);
+        emit UsdcReserveWithdrawn(to, amount);
+    }
+
+    /// @inheritdoc IMuHavenStable
+    function setClaimsPaused(bool paused_) external onlyOwner {
+        claimsPaused = paused_;
+        emit ClaimsPausedSet(paused_);
+    }
+
+    /// @inheritdoc IMuHavenStable
+    function usdcReserveBalance() external view returns (uint256) {
+        return usdc == address(0) ? 0 : IERC20(usdc).balanceOf(address(this));
+    }
+
+    /// @inheritdoc IMuHavenStable
+    function getWithdrawClaim(uint256 claimId) external view returns (WithdrawClaim memory) {
+        return _withdrawClaims[claimId];
+    }
+
+    /// @inheritdoc IMuHavenStable
+    function getUserWithdrawClaims(address account) external view returns (uint256[] memory) {
+        return _userWithdrawClaims[account];
+    }
+
+    /// @inheritdoc IMuHavenStable
+    function withdrawDecryptResult(uint256 claimId)
+        external
+        view
+        returns (uint64 amount, bool ready)
+    {
+        bytes32 handle = _withdrawClaims[claimId].handle;
+        if (_withdrawClaims[claimId].to == address(0)) return (0, false);
+        return FHE.getDecryptResultSafe(euint64.wrap(handle));
     }
 
     // ── Confidential transfers (modern surface) ─────────────────────────

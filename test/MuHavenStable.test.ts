@@ -1234,6 +1234,19 @@ describe("MuHavenStable — Phase 7.5-A", () => {
         "function owner() view returns (address)",
         "function legacyPusdc() view returns (address)",
         "function paused() view returns (bool)",
+        // Wave 5 W3 — direct mhUSDC→USDC exit surface.
+        "function withdrawToUsdc((uint256,uint8,uint8,bytes),address) returns (uint256)",
+        "function claimUsdc(uint256)",
+        "function setUsdcReserveToken(address)",
+        "function fundUsdcReserve(uint256)",
+        "function withdrawUsdcReserve(address,uint256)",
+        "function setClaimsPaused(bool)",
+        "function usdcReserveBalance() view returns (uint256)",
+        "function getWithdrawClaim(uint256) view returns ((address,bytes32,uint64,bool))",
+        "function getUserWithdrawClaims(address) view returns (uint256[])",
+        "function withdrawDecryptResult(uint256) view returns (uint64,bool)",
+        "function usdc() view returns (address)",
+        "function claimsPaused() view returns (bool)",
       ]);
       expect(await stable.supportsInterface(interfaceId)).to.equal(true);
     });

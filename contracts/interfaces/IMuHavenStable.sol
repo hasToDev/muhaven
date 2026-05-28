@@ -58,6 +58,33 @@ interface IMuHavenStable {
     ///         handles the caller never owned.
     error NotAuditHandleOwner();
 
+    // ── Direct USDC-exit errors (Wave 5 W3) ──────────────────────────────
+
+    /// @notice `withdrawToUsdc` / `fundUsdcReserve` called before the owner
+    ///         set the USDC reserve token via `setUsdcReserveToken`.
+    error UsdcReserveNotSet();
+    /// @notice `claimUsdc` ctHash has no matching pending claim (never
+    ///         requested, or already claimed-and-pruned).
+    error WithdrawClaimNotFound();
+    /// @notice `claimUsdc` called before the coprocessor finished decrypting
+    ///         the burned amount — retry after the decrypt delay.
+    error WithdrawClaimNotReady();
+    /// @notice `claimUsdc` ctHash was already settled.
+    error WithdrawClaimAlreadyClaimed();
+    /// @notice The contract's USDC reserve is below the claim amount. The
+    ///         burn already happened; the claim stays pending — retry once
+    ///         the owner tops up the reserve (`fundUsdcReserve`).
+    error ReserveInsufficient();
+    /// @notice `claimUsdc` is halted by the owner settlement kill-switch
+    ///         (`setClaimsPaused(true)`) — separate from the wrap/transfer
+    ///         `pause` so settlement can be frozen in a reserve emergency
+    ///         without re-freezing deposits.
+    error ClaimsPaused();
+    /// @notice Caller already has `MAX_PENDING_WITHDRAWALS` unsettled
+    ///         withdrawal claims. Settle (or wait for) existing ones before
+    ///         requesting more — bounds the per-user claim list.
+    error TooManyPendingWithdrawals();
+
     // ── Events ───────────────────────────────────────────────────────────
 
     event StableInitialized(address indexed owner, address indexed legacyPusdc);
@@ -86,6 +113,49 @@ interface IMuHavenStable {
     ///         having to chase TaskManager state.
     event AuditGrantRefreshed(address indexed owner, address indexed ephemeralEOA, euint64 handle);
 
+    /// @notice Wave 5 W3 — a direct mhUSDC→USDC withdrawal was requested.
+    ///         `claimId` keys the pending claim (`getWithdrawClaim`/`claimUsdc`);
+    ///         `handle` is the burned euint64 ciphertext (clamp-bounded amount),
+    ///         permit-decryptable by `account` / `ephemeralEOA` for audit.
+    ///
+    ///         NOTE: `claimId` (a per-contract monotonic counter), NOT `handle`,
+    ///         is the claim key. CoFHE handles are content-addressed/deterministic
+    ///         (a pure function of operand handles + opcode), so two identical
+    ///         burns can share a `handle` — but each gets a distinct `claimId`
+    ///         and is backed by its own burn, so each settles exactly once. Keying
+    ///         by `handle` would silently drop the second burn (fund loss).
+    event WithdrawRequested(
+        address indexed account,
+        address indexed ephemeralEOA,
+        uint256 indexed claimId,
+        bytes32 handle
+    );
+    /// @notice Wave 5 W3 — a pending withdrawal was settled: `amount` cleartext
+    ///         USDC (6-dp) transferred to `account`. Amount is public here
+    ///         because the USDC ERC-20 Transfer reveals it on-chain anyway.
+    event WithdrawClaimed(address indexed account, uint256 indexed claimId, uint64 amount);
+    /// @notice Wave 5 W3 — owner set/rotated the USDC reserve token.
+    event UsdcReserveTokenSet(address indexed usdc);
+    /// @notice Wave 5 W3 — owner funded the USDC reserve.
+    event UsdcReserveFunded(address indexed from, uint256 amount);
+    /// @notice Wave 5 W3 — owner recovered surplus USDC reserve.
+    event UsdcReserveWithdrawn(address indexed to, uint256 amount);
+    /// @notice Wave 5 W3 — owner toggled the settlement kill-switch.
+    event ClaimsPausedSet(bool paused);
+
+    // ── Direct USDC-exit claim record (Wave 5 W3) ────────────────────────
+
+    /// @notice A pending/settled mhUSDC→USDC withdrawal, keyed by a monotonic
+    ///         `claimId`. `handle` is the burned euint64 ciphertext decrypted at
+    ///         claim time. `amount` is 0 until claimed. `to == address(0)` ⇒
+    ///         no such claim.
+    struct WithdrawClaim {
+        address to;
+        bytes32 handle;
+        uint64 amount;
+        bool claimed;
+    }
+
     // ── Wrap / unwrap (1:1 legacy PUSDC ↔ mhUSDC) ──────────────────────
 
     /// @notice Pull `encAmount` legacy PUSDC from caller and mint equivalent
@@ -108,6 +178,89 @@ interface IMuHavenStable {
     ///         balance per `FHE_ACL_CONVENTIONS.md` Rule 5 — observers
     ///         cannot distinguish a fully-funded unwrap from a truncated one.
     function unwrap(InEuint64 calldata encAmount, address ephemeralEOA) external;
+
+    // ── Direct USDC exit (Wave 5 W3 — two-phase async, no PUSDC) ────────
+
+    /// @notice Phase 1 of a direct mhUSDC→USDC withdrawal. Burns
+    ///         `min(balance, encAmount)` mhUSDC from the caller (clamp to
+    ///         balance — an over-request withdraws the full balance, not zero;
+    ///         "withdraw all" via a large amount), then requests async
+    ///         coprocessor decryption of the burned amount and records a
+    ///         pending claim keyed by the burned ciphertext handle.
+    ///         Settle later with `claimUsdc(claimId)`.
+    ///
+    ///         Unlike `unwrap` (which returns legacy PUSDC), this pays real
+    ///         USDC from the contract's reserve at claim time — PUSDC never
+    ///         enters the caller's path. Reverts `UsdcReserveNotSet` if the
+    ///         owner hasn't configured the reserve token yet, or
+    ///         `TooManyPendingWithdrawals` if the caller is at the per-user cap.
+    /// @return claimId The monotonic id keying the new pending claim.
+    function withdrawToUsdc(InEuint64 calldata encAmount, address ephemeralEOA)
+        external
+        returns (uint256 claimId);
+
+    /// @notice Phase 2 of a direct withdrawal. Reads the coprocessor decrypt
+    ///         result for the claim's stored handle; if ready, transfers that
+    ///         many USDC (6-dp, 1:1 with mhUSDC) from the reserve to the claim's
+    ///         recipient and marks it settled. Permissionless (pays the recorded
+    ///         recipient, not the caller) so a backend auto-claim poller can
+    ///         settle. Reverts `ClaimsPaused` (kill-switch),
+    ///         `WithdrawClaimNotReady` (decrypt pending — retry),
+    ///         `ReserveInsufficient` (claim stays pending — owner must top up),
+    ///         `WithdrawClaimAlreadyClaimed`, or `WithdrawClaimNotFound`.
+    function claimUsdc(uint256 claimId) external;
+
+    /// @notice Owner-only — set/rotate the USDC reserve token. Must be called
+    ///         post-upgrade before the first `withdrawToUsdc`. Rotating while
+    ///         claims are pending is an owner footgun (claims are implicitly
+    ///         1:1 in the token they were created against) — only safe with a
+    ///         like-for-like 6-dp USDC or when no claims are pending.
+    function setUsdcReserveToken(address usdc_) external;
+
+    /// @notice Owner-only — fund the USDC reserve (pulls `amount` USDC from the
+    ///         owner via `transferFrom`; owner must ERC-20-approve first).
+    function fundUsdcReserve(uint256 amount) external;
+
+    /// @notice Owner-only — recover surplus USDC reserve to `to`. The reserve
+    ///         is owner-trusted: this can pull below outstanding burned-but-
+    ///         unclaimed obligations, so the owner MUST keep the reserve funded
+    ///         to cover all pending claims (see the W3 reserve-model ADR).
+    function withdrawUsdcReserve(address to, uint256 amount) external;
+
+    /// @notice Owner-only — toggle the settlement kill-switch. When true,
+    ///         `claimUsdc` reverts `ClaimsPaused`. Separate from `pause` so the
+    ///         owner can freeze USDC outflow in a reserve emergency without
+    ///         re-freezing deposits/transfers.
+    function setClaimsPaused(bool paused_) external;
+
+    /// @notice Current USDC reserve balance held by the contract (0 if the
+    ///         reserve token isn't set yet).
+    function usdcReserveBalance() external view returns (uint256);
+
+    /// @notice The pending/settled withdrawal claim for `claimId`
+    ///         (`to == address(0)` ⇒ none).
+    function getWithdrawClaim(uint256 claimId) external view returns (WithdrawClaim memory);
+
+    /// @notice The caller-visible list of an account's pending claim ids
+    ///         (settled claims are pruned from this list). Lets a returning
+    ///         frontend re-discover in-flight withdrawals.
+    function getUserWithdrawClaims(address account) external view returns (uint256[] memory);
+
+    /// @notice Wraps `FHE.getDecryptResultSafe` for a withdrawal `claimId` so
+    ///         the frontend can poll readiness without a client-side decrypt.
+    ///         Returns (0,false) for an unknown claim.
+    /// @return amount The decrypted USDC amount (meaningful only if `ready`).
+    /// @return ready  Whether the coprocessor finished decrypting.
+    function withdrawDecryptResult(uint256 claimId)
+        external
+        view
+        returns (uint64 amount, bool ready);
+
+    /// @notice The configured USDC reserve token (address(0) until set).
+    function usdc() external view returns (address);
+
+    /// @notice Whether the settlement kill-switch is engaged.
+    function claimsPaused() external view returns (bool);
 
     // ── Confidential transfers ─────────────────────────────────────────
 
