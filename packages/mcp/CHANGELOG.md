@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-05-28
+
+### Added
+
+- **`muhaven.cash.unwrap` Path-C deep-link (Wave 5 W3 — direct mhUSDC →
+  USDC withdrawal).** Returns a `/cash?mode=unwrap[&amount=N]&from=mcp`
+  URL the user opens; the CashPage opens directly on the new Withdraw
+  form (shipped in `muhaven-web` 0.3.87) and walks the user through the
+  two-phase async flow — burn mhUSDC + request decrypt → ~30-60s
+  coprocessor wait → claim real USDC from the wrapper's on-chain USDC
+  reserve. `amountUsdc` is **optional** (omit to let the user fill the
+  amount on the form). The tool returns a deep-link only and NEVER
+  autonomously burns or claims; withdrawals are user-initiated by
+  product decision (no Path-D unwrap surface — see `ADR_W3_RESERVE_MODEL`).
+  mhUSDC↔USDC is 1:1 at 6 decimals, so the schema reuses the same
+  human-decimal regex as `cash.wrap.amountUsdc`. Registry grows 24 → 25
+  (cash group 1 → 2); read-only filter is unchanged.
+
+### Changed
+
+- Manifest now lists the cash group (`cash.wrap` was inadvertently
+  missing from `manifest.json:tools` prior to 0.5.1; `cash.unwrap` is
+  added alongside, both `sensitive: true`).
+- Tool-name regex + descriptor hashing semantics unchanged; the
+  pinned `tool-hashes.json` is regenerated to include the new entry.
+
 ## [0.4.3] — 2026-05-24
 
 ### Changed

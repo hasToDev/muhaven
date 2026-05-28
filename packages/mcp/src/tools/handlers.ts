@@ -719,7 +719,7 @@ interface PositionPrefillData {
    * Pre-built here so the prompt-engineering layer doesn't have to map
    * tool name → verb.
    */
-  readonly action: 'buy' | 'sell' | 'claim' | 'wrap';
+  readonly action: 'buy' | 'sell' | 'claim' | 'wrap' | 'unwrap';
   /**
    * Two-line, copy-paste-friendly text the LLM can show the user. The
    * MCP server pre-formats this so different hosts render it
@@ -736,7 +736,7 @@ interface PositionPrefillData {
    * that returns a misrouted URL). Cleartext, not encrypted.
    */
   readonly echo: {
-    readonly action: 'buy' | 'sell' | 'claim' | 'wrap';
+    readonly action: 'buy' | 'sell' | 'claim' | 'wrap' | 'unwrap';
     readonly token?: string;
     readonly amount?: string;
     readonly shares?: string;
@@ -799,7 +799,7 @@ interface PositionPrefillData {
  */
 export function buildPositionDeeplink(
   dashboardBaseUrl: string,
-  action: 'buy' | 'sell' | 'claim' | 'wrap',
+  action: 'buy' | 'sell' | 'claim' | 'wrap' | 'unwrap',
   params: Record<string, string>,
 ): string {
   const base = dashboardBaseUrl.replace(/\/+$/, '');
@@ -811,6 +811,11 @@ export function buildPositionDeeplink(
         : '/cash';
   const search = new URLSearchParams();
   if (action === 'buy' || action === 'sell') search.set('mode', action);
+  // `cash.unwrap` lands on the same /cash page as wrap; CashPage reads
+  // `?mode=unwrap` at mount to switch the direction toggle to Withdraw.
+  // (`wrap` has no `mode` param — that's the page's default deposit
+  // direction, kept implicit for cleaner URLs.)
+  if (action === 'unwrap') search.set('mode', 'unwrap');
   for (const [k, v] of Object.entries(params)) search.set(k, v);
   // `from=mcp` reserved for the future "originated by your MCP client"
   // badge on the dashboard pages. Today it's a no-op marker.
@@ -3265,10 +3270,13 @@ export async function positionRebalance(
 // LLM can chain: read.portfolio → notice 0 mhUSDC → cash.wrap → then
 // position.buy. Each step is a deep-link the user reviews + signs.
 //
-// `unwrap` (mhUSDC → USDC) intentionally NOT exposed in v0.1.7 —
-// there's no working unwrap surface in the dashboard today (CashPage
-// is wrap-only). When the page lands the tool can be added in one
-// edit here without an architecture change.
+// `unwrap` (mhUSDC → USDC) shipped in Wave 5 W3 once the on-chain
+// direct-exit (`withdrawToUsdc` + `claimUsdc` on MuHavenStable) + the
+// CashPage Withdraw form landed. The deep-link points at the same
+// /cash page with `?mode=unwrap` so CashPage opens directly on the
+// withdraw form; the withdrawal is two-phase async (burn → coprocessor
+// decrypt ~30-60s → claim) but the form drives both phases for the
+// user — this tool never autonomously submits a burn or claim.
 
 export async function cashWrap(
   input: import('./schemas.js').CashWrapInput,
@@ -3287,6 +3295,43 @@ export async function cashWrap(
     instructions:
       `Open this link to review and authorize the conversion of ${input.amountUsdc} USDC into mhUSDC:\n${dashboardUrl}`,
     echo: { action: 'wrap', amount: input.amountUsdc },
+  });
+}
+
+export async function cashUnwrap(
+  input: import('./schemas.js').CashUnwrapInput,
+  deps: ToolDeps,
+): Promise<ToolResult<PositionPrefillData>> {
+  // `amountUsdc` is optional — when set, pre-fills the CashPage
+  // Withdraw form (1:1: $100 mhUSDC → $100 USDC). When omitted, the
+  // deep-link still lands on the withdraw form (via ?mode=unwrap) and
+  // the user picks the amount themselves. mhUSDC↔USDC is 1:1 at 6
+  // decimals so we reuse the same `amount=` URL param the wrap form
+  // uses; CashPage routes the value into withdrawAmount when the
+  // direction toggle is on Withdraw (see Phase-5 CR L-5 wiring).
+  const params: Record<string, string> = {};
+  if (input.amountUsdc !== undefined) params.amount = input.amountUsdc;
+  const dashboardUrl = buildPositionDeeplink(
+    resolveDashboardBaseUrl(deps),
+    'unwrap',
+    params,
+  );
+
+  // Human-readable phrasing. The two-phase note in the instructions
+  // matches the Withdraw form's own copy so the user isn't surprised
+  // by the ~30-60s wait between Withdraw and Claim.
+  const amountClause = input.amountUsdc !== undefined
+    ? `${input.amountUsdc} mhUSDC into USDC`
+    : 'mhUSDC into USDC (the form lets you pick the amount)';
+
+  return ok({
+    dashboardUrl,
+    action: 'unwrap',
+    instructions:
+      `Open this link to review and authorize the conversion of ${amountClause}. The withdrawal is two-phase: the burn happens when you tap Withdraw, then USDC settles a short time later when the decrypt finishes — the page guides you through both:\n${dashboardUrl}`,
+    echo: input.amountUsdc !== undefined
+      ? { action: 'unwrap', amount: input.amountUsdc }
+      : { action: 'unwrap' },
   });
 }
 

@@ -39,10 +39,11 @@ export interface ToolDescriptor {
 }
 
 /**
- * The 23 MCP tools across five groups:
+ * The 25 MCP tools across six groups:
  *   muhaven.read.*       (8 — incl. P11 protection_coverage + kyc_attestation
  *                            + 0.2.1 read.activity for Path C settle verify)
  *   muhaven.position.*   (4)
+ *   muhaven.cash.*       (2 — Path C: wrap (0.1.7) + unwrap (Wave 5 W3 / 0.5.1))
  *   muhaven.policy.*     (4)
  *   muhaven.issuer.*     (5 — P7)
  *   muhaven.governance.* (2 — P11; cast_vote frontend runner deferred to Wave 5)
@@ -128,7 +129,14 @@ export const TOOL_DESCRIPTORS: readonly ToolDescriptor[] = [
     name: 'muhaven.cash.wrap',
     group: 'cash',
     description:
-      'Prepare a USDC → mhUSDC wrap (the encrypted-balance conversion that funds buys). Returns a dashboard deep-link URL (muhaven.app/cash?action=wrap&...) with the amount pre-filled. Input amountUsdc is human-readable USDC ("100" = $100). Common LLM chain: read.portfolio → notice 0 mhUSDC → cash.wrap → then position.buy (each is its own user-confirmed deep-link). Verify settlement by calling muhaven.read.activity (a new "wrap" row will appear with the tx hash).',
+      'Prepare a USDC → mhUSDC wrap (the encrypted-balance conversion that funds buys). Returns a dashboard deep-link URL (muhaven.app/cash?amount=...&from=mcp) with the amount pre-filled. Input amountUsdc is human-readable USDC ("100" = $100). Common LLM chain: read.portfolio → notice 0 mhUSDC → cash.wrap → then position.buy (each is its own user-confirmed deep-link). Verify settlement by calling muhaven.read.activity (a new "wrap" row will appear with the tx hash).',
+    sensitive: true,
+  },
+  {
+    name: 'muhaven.cash.unwrap',
+    group: 'cash',
+    description:
+      'User-initiated only (no autonomous Path-D). Prepare an mhUSDC → USDC withdrawal (inverse of cash.wrap; Wave 5 W3). Returns a dashboard deep-link (muhaven.app/cash?mode=unwrap&...) that lands on the Withdraw form. Input amountUsdc is the dollar amount to convert back, 1:1 at 6 decimals; optional — omit to let the user fill it on the form. Two-phase async: burn mhUSDC (request decrypt, ~30-60s) → claim real USDC from the wrapper\'s on-chain USDC reserve. The dashboard form drives both phases; this tool NEVER submits the burn or claim autonomously. Verify settlement in the same conversation by calling muhaven.read.activity (a new "unwrap" row will carry the claim tx hash once step 2 completes).',
     sensitive: true,
   },
   {

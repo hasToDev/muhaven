@@ -6,14 +6,15 @@ import {
 } from '../src/tools/registry.js';
 
 describe('tool registry', () => {
-  // Wave 4 surface evolution:
+  // Wave 4 + 5 surface evolution:
   //  - P3 shipped 13 tools (5 read + 4 position + 4 policy)
   //  - P7 added 5 issuer tools  → 18
   //  - P11 added 2 read + 2 governance → 22
   //  - 0.1.7 (Path C) added 1 cash tool (cash.wrap) → 23
   //  - 0.2.1 added 1 read tool (read.activity) — Path C settle verify → 24
-  it('full registry contains all 24 tools (P3 + P7 + P11 + Path C + 0.2.1 activity)', () => {
-    expect(fullToolRegistry().length).toBe(24);
+  //  - 0.5.1 (Wave 5 W3) added 1 cash tool (cash.unwrap) — mhUSDC → USDC → 25
+  it('full registry contains all 25 tools (P3 + P7 + P11 + Path C + 0.2.1 activity + W3 unwrap)', () => {
+    expect(fullToolRegistry().length).toBe(25);
   });
 
   it('read-only filter exposes 8 read.* tools only (5 P3 + 2 P11 + 1 activity)', () => {
@@ -23,11 +24,23 @@ describe('tool registry', () => {
   });
 
   it('selectRegistry(false) === full', () => {
-    expect(selectRegistry(false).length).toBe(24);
+    expect(selectRegistry(false).length).toBe(25);
   });
 
   it('selectRegistry(true) === read-only', () => {
     expect(selectRegistry(true).length).toBe(8);
+  });
+
+  it('cash group has 2 tools (wrap + unwrap), both sensitive=true', () => {
+    const cash = fullToolRegistry().filter(
+      (e) => e.descriptor.group === 'cash',
+    );
+    expect(cash.length).toBe(2);
+    expect(cash.map((e) => e.descriptor.name).sort()).toEqual([
+      'muhaven.cash.unwrap',
+      'muhaven.cash.wrap',
+    ]);
+    expect(cash.every((e) => e.descriptor.sensitive)).toBe(true);
   });
 
   it('every entry has a schema with .parse', () => {

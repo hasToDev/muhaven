@@ -23,6 +23,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildPositionDeeplink,
+  cashUnwrap,
   cashWrap,
   positionBuy,
   positionClaim,
@@ -31,6 +32,7 @@ import {
   type ToolDeps,
 } from '../src/tools/handlers.js';
 import {
+  CashUnwrapInputSchema,
   CashWrapInputSchema,
   PositionBuyInputSchema,
   PositionSellInputSchema,
@@ -846,6 +848,85 @@ describe('cashWrap', () => {
     if (result.ok) {
       expect(new URL(result.data.dashboardUrl).searchParams.get('amount')).toBe('1.5');
     }
+  });
+});
+
+// ---------- cashUnwrap handler (Wave 5 W3 / 0.5.1) ----------
+
+describe('cashUnwrap', () => {
+  it('returns /cash?mode=unwrap URL with amount pre-fill', async () => {
+    const result = await cashUnwrap(
+      { amountUsdc: '100' } as never,
+      makeDeps(),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.action).toBe('unwrap');
+      const url = new URL(result.data.dashboardUrl);
+      expect(url.pathname).toBe('/cash');
+      // Critical: mode=unwrap lands the CashPage on the Withdraw form
+      // (default direction otherwise is Deposit — same /cash route).
+      expect(url.searchParams.get('mode')).toBe('unwrap');
+      expect(url.searchParams.get('amount')).toBe('100');
+      expect(url.searchParams.get('from')).toBe('mcp');
+      // Instructions must use mhUSDC (never PUSDC) per CLAUDE.md naming
+      // rule, and must surface the two-phase async flow for the LLM.
+      expect(result.data.instructions).toContain('100 mhUSDC');
+      expect(result.data.instructions).toContain('USDC');
+      expect(result.data.instructions).not.toContain('PUSDC');
+      expect(result.data.echo).toEqual({ action: 'unwrap', amount: '100' });
+    }
+  });
+
+  it('returns /cash?mode=unwrap URL with NO amount when omitted (form-pick)', async () => {
+    const result = await cashUnwrap({} as never, makeDeps());
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.action).toBe('unwrap');
+      const url = new URL(result.data.dashboardUrl);
+      expect(url.pathname).toBe('/cash');
+      expect(url.searchParams.get('mode')).toBe('unwrap');
+      expect(url.searchParams.has('amount')).toBe(false);
+      // `from=mcp` is unconditional on every Path-C deep-link (set by
+      // buildPositionDeeplink regardless of params). Pin it on the
+      // no-amount branch too so a regression in the URL builder can't
+      // silently drop the audit marker just for empty-input cases.
+      expect(url.searchParams.get('from')).toBe('mcp');
+      // Echo carries the action but NO amount field (the schema lets
+      // amountUsdc be undefined; the echo mirrors that).
+      expect(result.data.echo).toEqual({ action: 'unwrap' });
+      // The instruction copy guides the user to fill the form.
+      expect(result.data.instructions).toMatch(/pick the amount/);
+    }
+  });
+
+  it('accepts fractional USDC amounts', async () => {
+    const result = await cashUnwrap(
+      { amountUsdc: '1.5' } as never,
+      makeDeps(),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(new URL(result.data.dashboardUrl).searchParams.get('amount')).toBe('1.5');
+    }
+  });
+
+  it('schema accepts optional amountUsdc with the same regex as cash.wrap', () => {
+    // No amount → valid.
+    expect(CashUnwrapInputSchema.safeParse({}).success).toBe(true);
+    // Same decimal envelope as cash.wrap.
+    expect(CashUnwrapInputSchema.safeParse({ amountUsdc: '5' }).success).toBe(true);
+    expect(CashUnwrapInputSchema.safeParse({ amountUsdc: '0.000001' }).success).toBe(true);
+    // Too-precise → rejected (URL-bloat + on-chain floor footgun).
+    expect(
+      CashUnwrapInputSchema.safeParse({ amountUsdc: '5.0000001' }).success,
+    ).toBe(false);
+    // Negative → rejected.
+    expect(CashUnwrapInputSchema.safeParse({ amountUsdc: '-1' }).success).toBe(false);
+    // Extra props → rejected (strict).
+    expect(
+      CashUnwrapInputSchema.safeParse({ amountUsdc: '5', foo: 'bar' }).success,
+    ).toBe(false);
   });
 });
 

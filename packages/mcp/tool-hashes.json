@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-05-25T02:30:00.551Z",
+  "generatedAt": "2026-05-28T12:14:15.307Z",
   "tools": [
     {
       "name": "muhaven.read.portfolio",
@@ -43,7 +43,11 @@
     },
     {
       "name": "muhaven.cash.wrap",
-      "sha256": "e74607e49092bd7090b9ce6df92936713c01e2da4ad5a728f55064d5026bcaec"
+      "sha256": "3a278af48d138cc8f638d402e706a4e80dc8e65fcd7f69f609d110454d3bbb29"
+    },
+    {
+      "name": "muhaven.cash.unwrap",
+      "sha256": "6d05686c5633b6351a3fe15b071942d5cdb9da7b7dcc3fb8117f347e87de375f"
     },
     {
       "name": "muhaven.policy.set_tier",

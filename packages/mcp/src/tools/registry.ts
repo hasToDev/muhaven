@@ -14,6 +14,7 @@
 import type { z } from 'zod';
 import { TOOL_DESCRIPTORS, type ToolDescriptor } from './descriptions.js';
 import {
+  CashUnwrapInputSchema,
   CashWrapInputSchema,
   PolicyAuditExportInputSchema,
   PolicyPauseInputSchema,
@@ -42,6 +43,7 @@ import {
   GovernanceCastVoteInputSchema,
 } from './schemas.js';
 import {
+  cashUnwrap,
   cashWrap,
   policyAuditExport,
   policyPause,
@@ -119,10 +121,14 @@ const HANDLERS: Record<string, Pick<ToolEntry, 'schema' | 'handler'>> = {
     schema: PositionRebalanceInputSchema,
     handler: positionRebalance as ToolEntry['handler'],
   },
-  // ── Path C cash group (2026-05-18) ────────────────────────────────
+  // ── Path C cash group (wrap 2026-05-18; unwrap Wave 5 W3 / 0.5.1) ──
   'muhaven.cash.wrap': {
     schema: CashWrapInputSchema,
     handler: cashWrap as ToolEntry['handler'],
+  },
+  'muhaven.cash.unwrap': {
+    schema: CashUnwrapInputSchema,
+    handler: cashUnwrap as ToolEntry['handler'],
   },
   'muhaven.policy.set_tier': {
     schema: PolicySetTierInputSchema,

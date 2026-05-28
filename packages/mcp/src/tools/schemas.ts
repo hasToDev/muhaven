@@ -210,10 +210,14 @@ export const PositionRebalanceInputSchema = z
 
 // ---------- cash group (Path C) ----------
 //
-// Path C deep-link wrapper around the dashboard's CashPage. Today's
-// only working flow is USDC → mhUSDC; the inverse (`cash.unwrap`)
-// awaits a frontend surface and is intentionally absent from the
-// v0.1.7 catalog (adding it later is a one-edit change).
+// Path C deep-link wrappers around the dashboard's CashPage. Two flows:
+//   - `cash.wrap`   — USDC → mhUSDC (deposit; one-step on-chain).
+//   - `cash.unwrap` — mhUSDC → USDC (withdraw; Wave 5 W3, two-phase
+//                     async via the wrapper's USDC reserve + CoFHE
+//                     decrypt-then-claim flow).
+// Both return a `/cash?...` deep-link the user reviews + authorizes on
+// the dashboard; neither tool submits a tx. The unwrap deep-link sets
+// `?mode=unwrap` so the CashPage lands directly on the withdraw form.
 
 export const CashWrapInputSchema = z
   .object({
@@ -225,6 +229,26 @@ export const CashWrapInputSchema = z
      * unit floor); 48-char length cap is URL-bloat defense.
      */
     amountUsdc: decimalUsdcAmountSchema,
+  })
+  .strict();
+
+/**
+ * Wave 5 W3 — `cash.unwrap` Path-C deep-link input.
+ *
+ * `amountUsdc` is **optional**: when omitted, the deep-link lands on
+ * the empty withdraw form and the user chooses the amount themselves.
+ * This matches the operator-locked product behavior: withdrawals are
+ * user-initiated (no autonomous Path-D unwrap), so a pre-fill is
+ * convenience-only.
+ *
+ * Same regex as `cash.wrap` so the LLM doesn't have to learn two unit
+ * conventions. mhUSDC↔USDC is 1:1 at 6 decimals, so the dollar amount
+ * the user wants to withdraw equals the mhUSDC the contract will burn —
+ * we keep the field name `amountUsdc` to match the wrap input.
+ */
+export const CashUnwrapInputSchema = z
+  .object({
+    amountUsdc: decimalUsdcAmountSchema.optional(),
   })
   .strict();
 
@@ -346,6 +370,7 @@ export type PositionClaimInput = z.infer<typeof PositionClaimInputSchema>;
 export type PositionRebalanceInput = z.infer<typeof PositionRebalanceInputSchema>;
 
 export type CashWrapInput = z.infer<typeof CashWrapInputSchema>;
+export type CashUnwrapInput = z.infer<typeof CashUnwrapInputSchema>;
 
 export type PolicySetTierInput = z.infer<typeof PolicySetTierInputSchema>;
 export type PolicyPauseInput = z.infer<typeof PolicyPauseInputSchema>;
