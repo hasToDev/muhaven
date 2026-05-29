@@ -320,7 +320,12 @@ describe("MuHavenToken Wave 3.5 delta", () => {
       await hre.cofhe.mocks.expectPlaintext(balHash, ONE_TOKEN);
     });
 
-    it("silent-fails when burn exceeds balance (balance stays unchanged)", async () => {
+    it("clamps to full balance (redeem-all) when burn exceeds balance", async () => {
+      // Slice 1.5b: burnFromSubscription now clamps via FHE.min, so an
+      // over-balance burn redeems the FULL balance instead of silent-failing
+      // to zero. (In production MuHavenSubscription.redeem bounds encAmount to
+      // maxSharesHint before this call, so actualBurned = min(balance, encAmount)
+      // <= encAmount <= maxSharesHint keeps the proceeds-overflow invariant.)
       const { token, issuer, investor, mockSub } = await wireMockSubscription();
 
       const issuerClient = await hre.cofhe.createClientWithBatteries(issuer);
@@ -341,8 +346,9 @@ describe("MuHavenToken Wave 3.5 delta", () => {
         eph.address
       );
 
+      // Over-balance burn (5 > 1) clamps to the full 1-token balance → 0.
       const balHash = await token.encryptedBalanceOf(investor.address);
-      await hre.cofhe.mocks.expectPlaintext(balHash, ONE_TOKEN);
+      await hre.cofhe.mocks.expectPlaintext(balHash, 0n);
     });
 
     it("reverts on zero ephemeralEOA", async () => {

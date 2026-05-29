@@ -601,7 +601,7 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
         euint128 encAmount = FHE.asEuint128(amount);
         FHE.allowThis(encAmount);
 
-        _burnInternal(from, encAmount, address(0));
+        _burnInternal(from, encAmount, address(0), false);
         _notifyBurn(from, amount);
     }
 
@@ -624,7 +624,11 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
 
         FHE.allowThis(encAmount);
 
-        actualBurned = _burnInternal(from, encAmount, ephemeralEOA);
+        // Clamp-to-balance (Slice 1.5b): an instant "sell all" / over-redeem
+        // burns the FULL balance, not zero. Safe — MuHavenSubscription.redeem
+        // bounds encAmount to maxSharesHint + guards the proceeds width before
+        // calling this (see _burnInternal's clampToBalance comment).
+        actualBurned = _burnInternal(from, encAmount, ephemeralEOA, true);
         // Subscription needs ACL to run `FHE.mul(actualBurned, nav)` for the
         // proceeds compute downstream.
         FHE.allow(actualBurned, msg.sender);
@@ -633,13 +637,33 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
     function _burnInternal(
         address from,
         euint128 encAmount,
-        address ephemeralEOA
+        address ephemeralEOA,
+        bool clampToBalance
     ) internal returns (euint128 burnAmount) {
-        // Silent failure on insufficient balance
-        ebool hasEnough = FHE.gte(_balances[from], encAmount);
-        euint128 zero = FHE.asEuint128(uint256(0));
-        FHE.allowThis(zero);
-        burnAmount = FHE.select(hasEnough, encAmount, zero);
+        if (clampToBalance) {
+            // Clamp-to-balance (redeem-all) — Slice 1.5b. An over-request burns
+            // the FULL balance, not zero, so an instant "sell all" via
+            // MuHavenSubscription.redeem actually redeems the whole position
+            // instead of silent-failing to a no-op. Mirrors pullFromInvestor
+            // (the queue path, Slice 1.5) + MuHavenStable.withdrawToUsdc.
+            //
+            // SAFE only because the sole clamping caller (burnFromSubscription ←
+            // MuHavenSubscription.redeem) bounds `encAmount` to `maxSharesHint`
+            // (Gate A: `select(within hint, requested, 0)`) AND guards
+            // `maxSharesHint*nav <= u64.max` before the burn — so
+            // burnAmount = min(balance, encAmount) <= encAmount <= maxSharesHint
+            // keeps the proceeds-overflow invariant in _settleRedeem. NOT used by
+            // burnFromVault (cleartext `amount`; the vault releases underlying for
+            // `amount`, so clamping could over-release) or burnFromQueue
+            // (`amount` == the queue's own balance, so the clamp is moot).
+            burnAmount = FHE.min(_balances[from], encAmount);
+        } else {
+            // Silent failure on insufficient balance (Rule 5).
+            ebool hasEnough = FHE.gte(_balances[from], encAmount);
+            euint128 zero = FHE.asEuint128(uint256(0));
+            FHE.allowThis(zero);
+            burnAmount = FHE.select(hasEnough, encAmount, zero);
+        }
         FHE.allowThis(burnAmount);
 
         _balances[from] = FHE.sub(_balances[from], burnAmount);
@@ -815,7 +839,7 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
 
         FHE.allowThis(encAmount);
 
-        actualBurned = _burnInternal(msg.sender, encAmount, address(0));
+        actualBurned = _burnInternal(msg.sender, encAmount, address(0), false);
         // Grant ACL on actualBurned to the queue so it can mirror into
         // downstream state-hook amount computations.
         FHE.allow(actualBurned, msg.sender);

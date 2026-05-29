@@ -380,7 +380,12 @@ describe("MuHavenSubscription.redeem", () => {
       await hre.cofhe.mocks.expectPlaintext(treasuryPUSDC, 200n * ONE_PUSDC);
     });
 
-    it("burns zero + pays zero PUSDC when investor has insufficient share balance", async () => {
+    it("clamps to full balance (redeem-all) when over-requesting within a sufficient hint", async () => {
+      // Slice 1.5b: burnFromSubscription now clamps via FHE.min, so an
+      // over-balance instant redeem (within the hint) burns the FULL balance
+      // and pays its proceeds — NOT a silent zero no-op. This is the common
+      // "sell all" path (instant, under the cap), which the queue-only Slice
+      // 1.5 clamp did not cover.
       const {
         subscription,
         investor,
@@ -392,25 +397,34 @@ describe("MuHavenSubscription.redeem", () => {
         seedShares,
       } = await loadFixture(deployRedeemFixture);
 
-      // Investor has 100 shares; ask to redeem 500 → token.burnFromSubscription
-      // silent-fails to actualBurned=0, proceeds mirror to zero.
+      // Investor has 100 shares; ask to redeem 500 with a hint that covers it
+      // (HINT_CAP=1e6 >> 100). Gate A passes (500 <= 1e6); the clamp burns
+      // min(100, 500) = 100 → redeems the whole position.
       const enc = await encUint128(investorClient, 500n);
 
       await subscription
         .connect(investor)
         .redeem(await token.getAddress(), enc, HINT_CAP, eph.address);
 
-      // Investor still holds full seed; PUSDC ledgers unchanged.
+      // Investor fully redeemed: balance → 0.
       const bal = await token.encryptedBalanceOf(investor.address);
-      await hre.cofhe.mocks.expectPlaintext(bal, seedShares);
+      await hre.cofhe.mocks.expectPlaintext(bal, 0n);
 
+      // proceeds = 100 shares * DEFAULT_NAV(1 PUSDC) = 100 PUSDC.
+      // Treasury 200 → 100; investor 200 → 300.
       const treasuryPUSDC = await pusdc.confidentialBalanceOf(
         await treasury.getAddress()
       );
-      await hre.cofhe.mocks.expectPlaintext(treasuryPUSDC, 200n * ONE_PUSDC);
+      await hre.cofhe.mocks.expectPlaintext(
+        treasuryPUSDC,
+        200n * ONE_PUSDC - seedShares * ONE_PUSDC
+      );
 
       const investorPUSDC = await pusdc.confidentialBalanceOf(investor.address);
-      await hre.cofhe.mocks.expectPlaintext(investorPUSDC, 200n * ONE_PUSDC);
+      await hre.cofhe.mocks.expectPlaintext(
+        investorPUSDC,
+        200n * ONE_PUSDC + seedShares * ONE_PUSDC
+      );
     });
   });
 
