@@ -545,7 +545,15 @@ function formatRevealedAmount(item: ActivityItemDto): string {
   const v = revealedAmounts[item.id]
   if (v === undefined) return ''
   if (isCashType(item.type) || isYieldClaimType(item.type)) {
-    return formatUSD(Number(v) / 1e6)
+    const usd = Number(v) / 1e6
+    // A confidential yield/cash amount that's >0 but rounds to $0.00 at the
+    // default 2dp (e.g. a single-holder CETES epoch yields ~$0.0004 at demo
+    // scale — `ratePerShare≈9.2e6`, snapshot balance small) would misleadingly
+    // read as "$0.00". Widen to 6dp (mhUSDC base-unit granularity) for sub-cent
+    // NON-zero values so the row shows the real figure; a genuine 0 still reads
+    // "$0". maximumFractionDigits trims trailing zeros, so $0.50 stays "$0.50".
+    if (v > 0n && usd < 0.01) return formatUSD(usd, 6)
+    return formatUSD(usd)
   }
   // Transfer — raw share count.
   const sym = tokenSymbol(item.token_address)
