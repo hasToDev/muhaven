@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] — 2026-05-29
+
+### Changed
+
+- **Over-sell guidance now reflects the LIVE FHE.min clamp (Wave 5 Slice 1.5 +
+  1.5b).** The on-chain redeem now CLAMPS an over-request to the available
+  balance and sells the FULL position on BOTH the instant
+  (`burnFromSubscription`) and queued (`pullFromInvestor`) paths — it no longer
+  silent-fails to a ZERO burn. `OVERSELL_GUIDANCE` and the autonomous
+  `sellWarning` (`SELL_SUCCESS_OVERSELL_NOTE`) were rewritten accordingly: "sell
+  everything" works by passing a large share count, the only no-op is selling
+  from a zero balance, and (since amounts are encrypted) the LLM is told to
+  verify settlement via `muhaven.read.activity` and NOT assert an exact
+  share/USD figure. The prior copy stated the opposite (over-balance "burns
+  ZERO"), which could mislead the agent into reporting a no-op as a settled
+  sale. No tool schemas, descriptions, or hashes changed (runtime copy only).
+
 ## [0.5.1] — 2026-05-28
 
 ### Added

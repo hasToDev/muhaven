@@ -1348,15 +1348,15 @@ function humaniseError(e: unknown, fallback: string): string {
             <dd class="font-mono text-midnight dark:text-white truncate">{{ scopedMintedLabel }}</dd>
           </div>
           <div>
-            <dt class="text-cool">Per-buy cap</dt>
+            <dt class="text-cool">Per-trade cap</dt>
             <dd class="font-mono text-midnight dark:text-white">
               {{ formatMhUsdc6(activeScopedSession?.maxPerOpUsd6) }} mhUSDC
             </dd>
           </div>
           <div>
-            <dt class="text-cool">Spent so far</dt>
+            <dt class="text-cool">Scope</dt>
             <dd class="font-mono text-midnight dark:text-white">
-              {{ formatMhUsdc6(activeScopedSession?.totalSpentUsd6) }} mhUSDC
+              Buys &amp; sells
             </dd>
           </div>
           <div>
@@ -1423,7 +1423,7 @@ function humaniseError(e: unknown, fallback: string): string {
             <p class="font-sans text-[12px] text-compute dark:text-body-dark leading-relaxed mt-1">
               You're set to <span class="font-mono">Scoped autonomy</span> on the
               <span class="font-mono">MCP / Broker</span> surface, but there's no live
-              session — the previous one expired or was revoked. Set the per-buy ceiling
+              session — the previous one expired or was revoked. Set the per-trade ceiling
               and length, then confirm with your passkey to mint a new broker key.
             </p>
           </div>
@@ -1449,7 +1449,8 @@ function humaniseError(e: unknown, fallback: string): string {
                    disabled:opacity-60 disabled:cursor-not-allowed"
           />
           <span class="font-sans text-[11px] text-cool leading-relaxed">
-            The agent signs autonomous buys & sells up to this per-op ceiling.
+            The agent signs autonomous buys & sells up to this per-trade ceiling
+            (mhUSDC value; for a sell it's the proceeds cap).
           </span>
         </label>
 
@@ -1644,8 +1645,9 @@ function humaniseError(e: unknown, fallback: string): string {
                    disabled:opacity-60 disabled:cursor-not-allowed"
           />
           <span class="font-sans text-[11px] text-cool leading-relaxed">
-            The agent signs autonomous buys & sells up to this per-op ceiling.
-            A cumulative spend ledger is on the roadmap.
+            The agent signs autonomous buys & sells up to this per-trade ceiling
+            (mhUSDC value; for a sell it's the proceeds cap). Each trade is checked
+            independently — there's no cumulative budget.
           </span>
         </label>
         <div class="flex flex-col gap-1.5">

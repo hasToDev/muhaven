@@ -696,12 +696,12 @@ interface PositionSubmittedData {
    *  Omitted for buys. */
   readonly settlement?: 'instant' | 'queued' | 'escalated';
   /**
-   * Wave 5 Slice 1 — standing over-sell reminder on the AUTONOMOUS (Path D)
+   * Wave 5 — standing post-sell reminder on the AUTONOMOUS (Path D)
    * sell-success payload, so the LLM gets the same reactive guidance it gets
-   * on the Path-C deep-link path. The on-chain redeem silently burns ZERO on
-   * an over-balance request (no FHE.min clamp until Slice 1.5), and Path D
-   * returns `ok` regardless — so a zero-burn over-sell looks like success
-   * here. Omitted for buys. */
+   * on the Path-C deep-link path. With the FHE.min clamp now LIVE (Slice 1.5 +
+   * 1.5b), an over-request sells the FULL balance (clamped on-chain) — only a
+   * zero balance is a no-op. Amounts are encrypted, so the note tells the LLM
+   * to verify settlement and not assert an exact figure. Omitted for buys. */
   readonly sellWarning?: string;
 }
 
@@ -1772,14 +1772,15 @@ export function parseQueueRequestIdFromReceipt(receipt: unknown): string | null 
  * (redeem) it's `'escalated'` when the receipt carried a `QueueSubmitted`
  * log (on-chain cap-overflow escalation) else `'instant'`.
  */
-export /** Concise over-sell reminder carried on the autonomous sell-success payload
+export /** Concise post-sell reminder carried on the autonomous sell-success payload
  *  (the full guidance is in the tool description + the Path-C instructions).
- *  Until the Slice 1.5 FHE.min clamp lands, an over-balance redeem silently
- *  burns ZERO and still returns `ok` here. */
+ *  The FHE.min clamp is now LIVE (Slice 1.5 + 1.5b), so an over-request sells
+ *  the FULL balance (clamped on-chain) rather than burning zero — only a zero
+ *  balance is a no-op. Amounts are encrypted, so still verify settlement. */
 const SELL_SUCCESS_OVERSELL_NOTE =
-  'Verify this settled via muhaven.read.activity — an over-balance sell silently burns ZERO ' +
-  '(no partial fill, balances are encrypted) and still reports success here. If no balance ' +
-  'change landed, the amount likely exceeded the holdings.';
+  'Verify this settled via muhaven.read.activity. An over-request now sells the FULL balance ' +
+  '(the redeem clamps on-chain), so "sell all" works; only a zero balance is a no-op. Amounts ' +
+  'are encrypted — confirm the settled redeem landed and do not assert an exact share/USD figure.';
 
 export function buildSellExtras(
   op: PathDOp,
@@ -3106,19 +3107,22 @@ export async function positionBuy(
 }
 
 /**
- * Wave 5 Slice 1 — standing over-sell guidance for the LLM. The `FHE.min`
- * over-sell CLAMP is deferred to Slice 1.5, so today an over-balance redeem
- * silent-fails to a ZERO burn on-chain (`MuHavenToken._burnInternal`
- * `FHE.select(gte, amount, 0)`), NOT a partial sale. The MCP cannot read the
- * user's (encrypted) balance, so it can't pre-flight this. This reactive
- * guidance tells the LLM to confirm settlement after the fact.
+ * Wave 5 — standing over-sell guidance for the LLM. The `FHE.min` over-sell
+ * CLAMP is now LIVE on-chain on BOTH redeem paths (Slice 1.5 = queue path
+ * `pullFromInvestor`; Slice 1.5b = instant path `burnFromSubscription` /
+ * `_burnInternal`). So an over-balance redeem now clamps to the available
+ * balance and sells the FULL position — it is NOT a zero no-op. The only
+ * genuine no-op is selling from a zero balance. The MCP cannot read the
+ * (encrypted) balance, so this reactive guidance still tells the LLM to
+ * confirm settlement after the fact rather than assert an exact amount.
  */
 const OVERSELL_GUIDANCE =
-  'NOTE on over-selling: if the requested shares EXCEED the holder balance, the on-chain redeem ' +
-  'silently burns ZERO (it does NOT partially fill) — a no-op, not a partial sale. Balances are ' +
-  'encrypted, so this cannot be checked before submitting. After the sell, call muhaven.read.activity ' +
-  'to confirm a settled redeem actually landed; if it shows no balance change / no proceeds, warn the ' +
-  'user that the amount likely exceeded their holdings and offer to sell a smaller amount.';
+  'NOTE on selling: to sell the entire position, pass a share count at or above the holding — ' +
+  'the on-chain redeem CLAMPS to the available balance and sells everything (it does not fail or ' +
+  'burn zero). The only no-op is selling from a zero balance (nothing held). Balances are ' +
+  'encrypted, so the exact amount cannot be read before or after; after the sell, call ' +
+  'muhaven.read.activity to confirm a settled redeem landed, and do NOT claim a specific share/USD ' +
+  'figure to the user (amounts stay encrypted).';
 
 export async function positionSell(
   input: PositionSellInput,

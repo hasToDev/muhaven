@@ -652,17 +652,19 @@ describe('positionSell', () => {
   // Bad inputs throw at MCP-server schema-parse time, not inside the
   // handler — these are pinned in the schema describe block above.
 
-  // Wave 5 Slice 1 (MCP sell) — Path D not configured (no broker/bundler in
-  // makeDeps) → falls through to the Path C deep-link, with the standing
-  // over-sell guidance appended to the instructions.
-  it('instant sell deep-link carries the over-sell guidance (no clamp until Slice 1.5)', async () => {
+  // Wave 5 (MCP sell) — Path D not configured (no broker/bundler in makeDeps)
+  // → falls through to the Path C deep-link, with the standing sell guidance
+  // appended (clamp-to-balance is now LIVE on-chain — Slice 1.5 + 1.5b).
+  it('instant sell deep-link carries the sell/clamp guidance', async () => {
     const result = await positionSell(
       { token: 'TBILL1', amountShares: '7' } as never,
       makeDeps(),
     );
     expect(result.ok).toBe(true);
     if (result.ok && 'instructions' in result.data) {
-      expect(result.data.instructions).toMatch(/over-sell/i);
+      // Guidance now describes clamp-to-balance ("sell everything" / no-op only
+      // on a zero balance) rather than the old zero-burn footgun.
+      expect(result.data.instructions).toMatch(/clamps|sell everything|zero balance/i);
       expect(result.data.instructions).toMatch(/read\.activity/);
       expect(new URL(result.data.dashboardUrl).searchParams.get('shares')).toBe('7');
     }
@@ -774,10 +776,10 @@ describe('parseQueueRequestIdFromReceipt + buildSellExtras (Wave 5 Slice 1)', ()
     expect(out.sellWarning).toMatch(/read\.activity/);
   });
 
-  it('buildSellExtras: instant redeem with NO queue log → instant + null + over-sell note', () => {
+  it('buildSellExtras: instant redeem with NO queue log → instant + null + sell note', () => {
     const out = buildSellExtras('sell', { logs: [] });
     expect(out).toMatchObject({ settlement: 'instant', queueRequestId: null });
-    expect(out.sellWarning).toMatch(/over-balance sell/i);
+    expect(out.sellWarning).toMatch(/over-request|sell all|clamps/i);
   });
 
   it('buildSellExtras: explicit sell-queued → always queued, with the parsed requestId + over-sell note', () => {
