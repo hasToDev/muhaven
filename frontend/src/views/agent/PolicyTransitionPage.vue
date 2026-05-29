@@ -40,6 +40,7 @@ import {
   PlayCircle,
   Clock,
   ChevronDown,
+  Repeat2,
 } from 'lucide-vue-next'
 import {
   agentPolicyApi,
@@ -212,7 +213,57 @@ const {
   session: activeScopedSession,
   refresh: refreshScopedSession,
   revoke: revokeScopedSession,
+  setReinvest: setReinvestEnabled,
 } = useScopedSession()
+
+// ── Wave 5 Slice 2c — auto-reinvest opt-in toggle ───────────────────
+// Optimistic switch: flip the view immediately, POST, roll back on error.
+// Reflects the active session's `reinvestEnabled` (default false). The
+// keyless reinvest runner only claims+buys when this is ON.
+const reinvestBusy = ref<boolean>(false)
+const reinvestError = ref<string | null>(null)
+/** The intended state while a POST is in flight (optimistic). Falls back to
+ *  the session's persisted flag when idle. */
+const reinvestOptimistic = ref<boolean | null>(null)
+const reinvestOn = computed<boolean>(() =>
+  reinvestOptimistic.value !== null
+    ? reinvestOptimistic.value
+    : activeScopedSession.value?.reinvestEnabled === true,
+)
+
+async function onToggleReinvest(): Promise<void> {
+  if (reinvestBusy.value || !hasActiveScopedSession.value) return
+  const next = !reinvestOn.value
+  reinvestBusy.value = true
+  reinvestError.value = null
+  reinvestOptimistic.value = next
+  try {
+    await setReinvestEnabled(next)
+    // Committed — drop the optimistic override so the computed reads the
+    // freshly-updated session row.
+    reinvestOptimistic.value = null
+    toast.success(
+      next ? 'Auto-reinvest enabled' : 'Auto-reinvest disabled',
+      {
+        description: next
+          ? 'Matured yield will be claimed and reinvested into the same RWA automatically — bounded by your per-trade cap.'
+          : 'The agent will no longer auto-reinvest your matured yield.',
+      },
+    )
+  } catch (e) {
+    reinvestOptimistic.value = null // roll back to the persisted value
+    reinvestError.value =
+      e instanceof ApiError
+        ? e.status === 404
+          ? 'No active session to toggle — re-mint a Scoped session first.'
+          : `Could not update auto-reinvest (HTTP ${e.status}).`
+        : e instanceof Error
+          ? e.message
+          : 'Could not update auto-reinvest.'
+  } finally {
+    reinvestBusy.value = false
+  }
+}
 
 /** A revocable Scoped session exists (status='active' + TTL live). The
  *  revoke zone + the tier-picker disclosure key off this. Re-evaluates
@@ -1366,6 +1417,80 @@ function humaniseError(e: unknown, fallback: string): string {
             </dd>
           </div>
         </dl>
+
+        <!-- Wave 5 Slice 2c — auto-reinvest opt-in. A POSITIVE control
+             nested in the (destructive-tinted) active-session zone, given
+             its own neutral surface + an explicit switch so it never reads
+             as part of the revoke action. Default OFF; the keyless runner
+             only claims+buys when this is ON. -->
+        <div
+          data-testid="policy-reinvest-toggle"
+          class="rounded-xl border border-haze/70 dark:border-white/10
+                 bg-frost/60 dark:bg-white/5 p-4 flex items-start gap-3"
+          role="group"
+          aria-labelledby="reinvest-toggle-label"
+        >
+          <div
+            class="w-9 h-9 rounded-full bg-compute/10 dark:bg-signal/10 flex items-center justify-center flex-shrink-0"
+          >
+            <Repeat2 :size="16" :stroke-width="1.8" class="text-compute dark:text-signal" aria-hidden="true" />
+          </div>
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center justify-between gap-3">
+              <p
+                id="reinvest-toggle-label"
+                class="font-sans text-[13px] font-semibold text-midnight dark:text-white"
+              >
+                Auto-reinvest matured yield
+              </p>
+              <button
+                type="button"
+                role="switch"
+                :aria-checked="reinvestOn ? 'true' : 'false'"
+                aria-labelledby="reinvest-toggle-label"
+                :aria-describedby="'reinvest-toggle-desc' + (reinvestError ? ' reinvest-toggle-error' : '')"
+                :disabled="reinvestBusy"
+                data-testid="policy-reinvest-switch"
+                @click="onToggleReinvest"
+                class="relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full
+                       transition-colors duration-150 cursor-pointer
+                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-compute/60
+                       disabled:opacity-60 disabled:cursor-wait"
+                :class="reinvestOn ? 'bg-compute dark:bg-signal' : 'bg-haze dark:bg-white/15'"
+              >
+                <span
+                  class="inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform duration-150"
+                  :class="reinvestOn ? 'translate-x-[1.375rem]' : 'translate-x-0.5'"
+                >
+                  <Loader2
+                    v-if="reinvestBusy"
+                    :size="12"
+                    class="m-1 animate-spin text-compute"
+                    aria-hidden="true"
+                  />
+                </span>
+              </button>
+            </div>
+            <p
+              id="reinvest-toggle-desc"
+              class="mt-1 text-[12px] text-compute dark:text-body-dark leading-relaxed"
+            >
+              When ON, the agent headlessly claims your matured yield and buys more of the same
+              RWA in one atomic transaction — bounded by your per-trade cap, the 8h session TTL,
+              and this kill-switch. The reinvested amount is a fixed budget (the exact yield stays
+              encrypted). Default OFF.
+            </p>
+            <p
+              v-if="reinvestError"
+              id="reinvest-toggle-error"
+              role="alert"
+              data-testid="policy-reinvest-error"
+              class="mt-1.5 text-[12px] font-medium text-negative"
+            >
+              {{ reinvestError }}
+            </p>
+          </div>
+        </div>
 
         <p
           data-testid="policy-revoke-cost"

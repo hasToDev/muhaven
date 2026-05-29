@@ -50,7 +50,7 @@ describe('publish artifact hygiene', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('dist/index.{js,cjs} embed the package.json version via __SERVER_VERSION__ inject', () => {
+  it('dist/{index,broker,reinvest}.{js,cjs} embed the package.json version via __SERVER_VERSION__ inject', () => {
     // Q2 regression guard: the tsup `define` block replaces
     // `__SERVER_VERSION__` with package.json#version at build time. A
     // future tsup config edit that drops the define would silently
@@ -62,7 +62,10 @@ describe('publish artifact hygiene', () => {
     const pkg = JSON.parse(
       readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'),
     ) as { version: string };
-    const bundles = ['index.js', 'index.cjs'];
+    // All three entries get the tsup `define` inject; a per-entry regression
+    // (or a dropped global define) would downgrade broker/reinvest `--version`
+    // to the fragile require fallback. Guard all three.
+    const bundles = ['index.js', 'index.cjs', 'broker.js', 'broker.cjs', 'reinvest.js', 'reinvest.cjs'];
     const missing: string[] = [];
     for (const f of bundles) {
       const path = join(dist, f);

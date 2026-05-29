@@ -555,6 +555,14 @@ export interface SetupDeps {
    * scripted setup runs.
    */
   sessionInput?: SessionPromptDeps;
+  /**
+   * Wave 5 Slice 2c — auto-spawn the keyless `muhaven-reinvest` runner once
+   * setup has spawned a fresh broker daemon. Best-effort (a failure is
+   * logged but does not fail setup); receives the resolved
+   * backend/dashboard/endpoint env + inherits bundler/subscription from the
+   * process env; NEVER receives the session key. Returns the runner PID.
+   */
+  spawnReinvestRunner?(env: Readonly<Record<string, string>>): number;
 }
 
 /**
@@ -1197,6 +1205,38 @@ export async function runSetup(argv: readonly string[], deps: SetupDeps): Promis
           );
           break;
       }
+    }
+  }
+
+  // 5c. Wave 5 Slice 2c — auto-spawn the keyless reinvest runner alongside
+  // a freshly-spawned broker daemon (NOT on the already-running path — that
+  // daemon was likely started by a prior setup that already spawned one).
+  // Best-effort; never fails setup.
+  if (daemonPid !== null && deps.spawnReinvestRunner) {
+    try {
+      const runnerPid = deps.spawnReinvestRunner({
+        MUHAVEN_BROKER_ENDPOINT: config.brokerEndpoint,
+        MUHAVEN_BACKEND_URL: effectiveEnv.MUHAVEN_BACKEND_URL!,
+        MUHAVEN_DASHBOARD_URL: effectiveEnv.MUHAVEN_DASHBOARD_URL!,
+        // Forward Path-D vars explicitly when present (see bring-up.ts).
+        ...(effectiveEnv.MUHAVEN_BUNDLER_URL ? { MUHAVEN_BUNDLER_URL: effectiveEnv.MUHAVEN_BUNDLER_URL } : {}),
+        ...(effectiveEnv.MUHAVEN_SUBSCRIPTION_ADDRESS
+          ? { MUHAVEN_SUBSCRIPTION_ADDRESS: effectiveEnv.MUHAVEN_SUBSCRIPTION_ADDRESS }
+          : {}),
+        ...(effectiveEnv.MUHAVEN_CHAIN_ID ? { MUHAVEN_CHAIN_ID: effectiveEnv.MUHAVEN_CHAIN_ID } : {}),
+        ...(effectiveEnv.MUHAVEN_ENTRY_POINT ? { MUHAVEN_ENTRY_POINT: effectiveEnv.MUHAVEN_ENTRY_POINT } : {}),
+        ...(effectiveEnv.MUHAVEN_REINVEST_BUDGET_USD
+          ? { MUHAVEN_REINVEST_BUDGET_USD: effectiveEnv.MUHAVEN_REINVEST_BUDGET_USD }
+          : {}),
+      });
+      deps.print(
+        `Reinvest runner: spawned (PID ${runnerPid}, keyless) — idles until you enable auto-reinvest in the dashboard. ` +
+          'Diagnose with `muhaven-reinvest doctor`; logs at ~/.muhaven/reinvest.log.',
+      );
+    } catch (err) {
+      deps.printErr(
+        `Reinvest runner: spawn failed (${(err as Error).message}) — auto-reinvest unavailable; the broker is fine.`,
+      );
     }
   }
 

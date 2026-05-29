@@ -173,6 +173,29 @@ Permissioned chains (Canton Network, JP Morgan's Onyx) provide privacy through a
 | **ERC3643KYCAdapter** | Admin manages whitelist honestly | Only affects access control, not encryption. Rogue admin can whitelist ineligible addresses but cannot decrypt any balances. |
 | **AI agent wallet** | Agent wallet is funded with capped USDC | Agent can only spend what's in the wallet. Session keys (EIP-7702) planned for production. |
 | **Client-side encryption** | Investor's browser/device is not compromised | If compromised, attacker sees plaintext before encryption. Standard client security assumption. |
+| **muhaven-broker daemon** | Holds the session-key private half; near-zero-egress (only a `currentNonce` RPC + a backend validator-enabled callback). Signs a userOpHash over a local socket; no bundler egress. | A compromised broker could sign UserOps within the on-chain Scoped envelope (no transfer, per-op cap, TTL). It cannot exfiltrate funds beyond that envelope, and the revoke kill-switch + 8h TTL bound the window. |
+| **muhaven-reinvest runner (Wave 5 Slice 2c)** | KEYLESS sidecar with backend + bundler egress; the broker auto-spawns it. Asks the broker to sign; holds no key. Reads creds live from the broker every cycle. | Neither half alone moves funds (Option-D separation of duties): the runner can build/submit but not sign; the broker can sign but not submit. A compromised runner is bounded by the same on-chain envelope + per-op cap the broker enforces per inner call. |
+
+### 5.1 Autonomous-spend boundary (Wave 5 Slice 2c — first no-LLM-in-loop spend)
+
+The auto-reinvest runner is the first headless (no LLM, no browser) autonomous
+spend. It is bounded by, in layers: (1) the on-chain Scoped **CallPolicy** — the
+no-transfer envelope + per-target allowlist enforced on the ACTUAL calldata at
+execution; (2) the broker's per-op **cap** re-checked on EVERY inner call of the
+atomic batch; (3) an 8h session **TTL**; (4) the **revoke kill-switch** (the
+runner re-reads the mirror each cycle and purges its broker snapshot on revoke,
+before any sign); (5) the **`reinvest_enabled` opt-in** (default off); and (6)
+**amount-blindness** — the reinvest buy is a fixed cleartext budget, the claimed
+yield never decrypts. **Known boundary (inherited from Path D `attemptPathD`):**
+the broker signs an opaque `userOpHash` and does NOT recompute it from the
+policy-checked inner calls, so a malicious *runner* could in principle present
+benign inner calls for the policy check while signing a hash for different
+calldata. This is mitigated structurally — the on-chain CallPolicy validates the
+real calldata at execution, so a forged hash for a transfer reverts (AA24)
+rather than moving funds — but closing it fully would require handing the broker
+the kernel calldata (not just the hash) to re-derive + bind, a protocol change
+deferred. The `reinvest_cycle_executed` audit row is **broker-asserted**
+provenance (not platform-verified); the on-chain tx is the authoritative record.
 
 ---
 

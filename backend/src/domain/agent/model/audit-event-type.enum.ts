@@ -95,6 +95,24 @@ export const AuditEventType = {
    * `ValidatorInstallFailed` drift note above.
    */
   ScopedSessionSellCapsDerived: 'scoped_session_sell_caps_derived',
+  /**
+   * Wave 5 Slice 2c (auto-reinvest runner) — emitted once per executed
+   * reinvest cycle by the keyless `muhaven-reinvest` runner after it
+   * atomically claims a matured epoch and buys more of the same RWA in a
+   * single UserOp. Correlates the claim + buy legs (one `executeBatch`
+   * UserOp → one txHash) by `reinvest_cycle_id`; deduped per `(user,
+   * epoch)` so a slow-settling UserOp re-surfaced by the gate before its
+   * receipt lands isn't double-recorded. The metadata is cleartext-by-
+   * design (epochId, token, snapshot, userOpHash, txHash, buyShares,
+   * budgetUsd6) — the claimed AMOUNT stays encrypted (amount-blind), so
+   * NO decrypted-FHE primitive ever enters this row.
+   *
+   * MUST stay in lockstep with the `agent_audit_event_type` pgEnum
+   * (`schema.ts`) — see the `validator_install_failed` drift note above;
+   * operator `db:push` applies the ALTER TYPE...ADD VALUE before the
+   * first emit.
+   */
+  ReinvestCycleExecuted: 'reinvest_cycle_executed',
 } as const;
 
 export type AuditEventType = (typeof AuditEventType)[keyof typeof AuditEventType];
@@ -118,4 +136,5 @@ export const AUDIT_EVENT_TYPE_VALUES: readonly AuditEventType[] = [
   AuditEventType.ScopedSessionExpired,
   AuditEventType.ScopedSessionRevokedByPolicyMigration,
   AuditEventType.ScopedSessionSellCapsDerived,
+  AuditEventType.ReinvestCycleExecuted,
 ] as const;

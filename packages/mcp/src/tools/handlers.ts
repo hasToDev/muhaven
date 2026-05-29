@@ -42,6 +42,22 @@ import {
   wrapEnableModeSignature,
   KERNEL_EXECUTE_ABI,
 } from '../clients/kernel-encoder.js';
+// Wave 5 Slice 2c — Path-D inner-call encoding primitives hoisted to a
+// shared module so the standalone reinvest runner can reuse them without
+// importing the whole tool surface. Re-exported below to preserve the
+// `../src/tools/handlers.js` import path for external consumers + tests.
+import {
+  SUBSCRIPTION_PURCHASE_SELECTOR,
+  SUBSCRIPTION_PURCHASE_ABI,
+  YIELD_SNAPSHOT_CLAIM_SELECTOR,
+  YIELD_SNAPSHOT_CLAIM_ABI,
+  PLACEHOLDER_SIGNATURE,
+} from '../clients/path-d-encoding.js';
+export {
+  SUBSCRIPTION_PURCHASE_SELECTOR,
+  YIELD_SNAPSHOT_CLAIM_SELECTOR,
+  PLACEHOLDER_SIGNATURE,
+} from '../clients/path-d-encoding.js';
 import {
   authRequiredPayload,
   sessionKeyRequiredPayload,
@@ -141,22 +157,8 @@ export interface ToolDeps {
  * but NOT a security regression. The on-chain CallPolicy validator is
  * the hard backstop (RD-5).
  */
-export const SUBSCRIPTION_PURCHASE_SELECTOR = toFunctionSelector(
-  'function purchase(address,(uint256,uint8,uint8,bytes),uint128,address)',
-).toLowerCase() as `0x${string}`;
-
-/**
- * Wave 5 Path D Slice 1 Commit 3.5 — narrow ABI fragment for inner-call
- * encoding. Carries just the one entry we need (subscription.purchase
- * with the v0.1.3 InEuint128 tuple shape). Hand-pinned rather than
- * imported from `@muhaven/sdk` to keep MCP package weight down +
- * decouple from SDK release cadence (selector + arg shape are stable
- * per ADR-021 / Wave 3.5 contract layout — they don't change between
- * SDK minor versions).
- */
-const SUBSCRIPTION_PURCHASE_ABI = parseAbi([
-  'function purchase(address token, (uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) encShares, uint128 maxSharesHint, address ephemeralEOA)',
-]);
+// `SUBSCRIPTION_PURCHASE_SELECTOR` + `SUBSCRIPTION_PURCHASE_ABI` are defined
+// in `../clients/path-d-encoding.ts` (imported + re-exported above).
 
 /**
  * Wave 5 Slice 1 (MCP sell) — `MuHavenSubscription.redeem` selector + ABI.
@@ -240,13 +242,8 @@ export const QUEUE_SUBMITTED_TOPIC0 = toEventSelector(
  * autonomous claim needs NO per-user re-mint — only the off-chain
  * selectorCap + snapshot target, delivered server-side (no re-mint).
  */
-export const YIELD_SNAPSHOT_CLAIM_SELECTOR = toFunctionSelector(
-  'function claimYield(uint256,address)',
-).toLowerCase() as `0x${string}`;
-
-const YIELD_SNAPSHOT_CLAIM_ABI = parseAbi([
-  'function claimYield(uint256 epochId, address ephemeralEOA)',
-]);
+// `YIELD_SNAPSHOT_CLAIM_SELECTOR` + `YIELD_SNAPSHOT_CLAIM_ABI` are defined
+// in `../clients/path-d-encoding.ts` (imported + re-exported above).
 
 /**
  * Wave 5 Slice 1 (MCP sell) + Slice 2a (claim) — the autonomous Path D
@@ -354,53 +351,9 @@ export const PATH_D_OP_SPECS: Readonly<Record<PathDOp, PathDOpSpec>> = {
   },
 };
 
-/**
- * Stub signature for the `zd_sponsorUserOperation` pre-sign UserOp.
- *
- * MUST be the EXACT bytes that `@zerodev/permissions::toPermissionValidator`
- * uses for `getStubSignature()` — the PermissionValidator's
- * `validateUserOp` simulation path recognizes this CRAFTED pattern as
- * "this is a stub, skip ecrecover" and gas-estimates as if a real
- * ECDSA-recovery would run, without actually trying to recover a
- * signer that won't match the bound session-key.
- *
- * Shape (66 bytes = `0x` + 132 hex chars):
- *   byte 0       — `0xff` (PermissionValidator "use root permission" sentinel)
- *   bytes 1..32  — r = 0xffffffffffffffffffffffffffffff0000000000000000000000000000000000
- *   bytes 33..64 — s = 0x7aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
- *   byte 65      — v = 0x1c
- *
- * Source: `@zerodev/sdk/constants::DUMMY_ECDSA_SIG` (the 65-byte
- * ECDSA part) + `@zerodev/permissions/toPermissionValidator::getStubSignature`
- * which prepends the `0xff` PermissionValidator routing byte:
- *   concat(["0xff", signer.getDummySignature()])
- *
- * History (regression trail leading to this commit):
- *  - 0.2.4 and earlier: 86-byte placeholder (`'0x' + 'fe'.repeat(86)`)
- *    — wrong LENGTH (old enable-mode shape).
- *  - 0.2.5: 66-byte placeholder (`'0xff' + 'fe'.repeat(65)`) — right
- *    length + right `0xff` prefix, but the trailing 65 bytes were
- *    random high-entropy `0xfe...` instead of the crafted DUMMY_ECDSA_SIG
- *    pattern. The PermissionValidator decodes them as a real ECDSA
- *    (r, s, v) and tries to ecrecover; recovers a garbage address;
- *    validation reverts → AA23 reverted at the paymaster simulator
- *    → `zd_sponsorUserOperation` returns rpc_error → MCP maps to
- *    `paymaster_rejected`.
- *  - 0.2.6 (this): exact bytes from @zerodev's DUMMY_ECDSA_SIG. The
- *    pattern is structured so r is at the high-end of secp256k1's
- *    field (`fff...f00...0` mask), s is the "magic" `7aa...aa`, v is
- *    `0x1c`. ZeroDev's PermissionValidator simulation path checks for
- *    this exact pattern (or similar fingerprints) and skips the
- *    ecrecover step.
- */
-const ZERODEV_DUMMY_ECDSA_SIG =
-  '0xfffffffffffffffffffffffffffffff0000000000000000000000000000000007aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1c';
-
-// Exported for the regression test that pins the exact byte sequence.
-// MUST NOT drift from @zerodev/permissions::getStubSignature output;
-// a drift here re-opens the AA23 paymaster_rejected gate.
-export const PLACEHOLDER_SIGNATURE: `0x${string}` =
-  (`0xff${ZERODEV_DUMMY_ECDSA_SIG.slice(2)}`) as `0x${string}`;
+// `PLACEHOLDER_SIGNATURE` is defined in `../clients/path-d-encoding.ts`
+// (imported + re-exported above) so the reinvest runner shares the exact
+// bytes; the byte-pinning regression test still imports it from here.
 
 export type ToolResult<T> =
   | { ok: true; data: T }

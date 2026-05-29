@@ -24,6 +24,10 @@ export default defineConfig({
   entry: {
     index: 'src/index.ts',
     broker: 'src/broker/cli.ts',
+    // Wave 5 Slice 2c — the keyless auto-reinvest runner CLI. Separate
+    // entry so its bundle stays off the MCP tool surface; the bin shim
+    // (`bin/muhaven-reinvest.cjs`) requires `dist/reinvest.cjs`.
+    reinvest: 'src/reinvest/cli.ts',
   },
   format: ['esm', 'cjs'],
   dts: true,

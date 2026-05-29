@@ -1,6 +1,6 @@
 {
   "name": "@muhaven/mcp",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "description": "MuHaven MCP server — read/position/policy toolsets bridging Claude Desktop / Cursor / Claude Code to the MuHaven backend, with a sibling muhaven-broker daemon holding the session-key private half over a local IPC socket",
   "type": "module",
   "repository": {
@@ -46,7 +46,8 @@
   },
   "bin": {
     "muhaven-mcp": "./bin/muhaven-mcp.cjs",
-    "muhaven-broker": "./bin/muhaven-broker.cjs"
+    "muhaven-broker": "./bin/muhaven-broker.cjs",
+    "muhaven-reinvest": "./bin/muhaven-reinvest.cjs"
   },
   "files": [
     "dist",

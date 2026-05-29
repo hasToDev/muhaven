@@ -141,6 +141,27 @@ export function useScopedSession() {
     }
   }
 
+  /**
+   * Wave 5 Slice 2c — flip the auto-reinvest opt-in on the active session.
+   * Updates the SHARED `session` ref from the backend's returned row so the
+   * Autonomy toggle (and any other reader) reflects the committed state
+   * without a re-fetch. Re-throws on failure so the page can surface the
+   * API error + roll back its optimistic switch.
+   */
+  async function setReinvest(enabled: boolean): Promise<void> {
+    const { session: s } = await agentPolicyApi.setReinvestEnabled({ enabled })
+    // Only adopt the returned row if it's still the active session we're
+    // showing (defends against a revoke landing mid-toggle — the kill-switch
+    // must win, same posture as `refresh`'s revokeEpoch guard). If the active
+    // session changed / vanished under us, THROW so the caller rolls back its
+    // optimistic switch + surfaces an error rather than a misleading success
+    // for a toggle that didn't durably apply to the visible session.
+    if (!session.value || session.value.sessionId !== s.sessionId) {
+      throw new Error('active session changed during the toggle — not applied')
+    }
+    session.value = s
+  }
+
   function dismissBrokerPurge(): void {
     pendingBrokerPurge.value = null
   }
@@ -161,6 +182,7 @@ export function useScopedSession() {
     pendingBrokerPurge,
     refresh,
     revoke,
+    setReinvest,
     dismissBrokerPurge,
     reset,
   }

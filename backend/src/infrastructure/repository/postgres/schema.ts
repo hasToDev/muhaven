@@ -570,6 +570,14 @@ export const agentAuditEventTypeEnum = pgEnum('agent_audit_event_type', [
   // the `validator_install_failed` drift incident above; operator `db:push`
   // applies the ALTER TYPE...ADD VALUE before the first emit.
   'scoped_session_sell_caps_derived',
+  // Wave 5 Slice 2c (auto-reinvest runner) — emitted once per executed
+  // reinvest cycle by the keyless `muhaven-reinvest` runner (atomic
+  // claim+buy in one UserOp), correlated by `reinvest_cycle_id`, deduped
+  // per (user, epoch). MUST stay in lockstep with
+  // `AuditEventType.ReinvestCycleExecuted` (TS enum) — see the
+  // `validator_install_failed` drift incident above; operator `db:push`
+  // applies the ALTER TYPE...ADD VALUE before the first emit.
+  'reinvest_cycle_executed',
 ]);
 
 export const agentUserState = pgTable(

@@ -132,6 +132,18 @@ export interface BringUpDeps {
   osRelease: string;
   /** Interactive session-key prompt deps (TTY-aware). */
   sessionPrompt: SessionPromptDeps;
+  /**
+   * Wave 5 Slice 2c — auto-spawn the keyless `muhaven-reinvest` runner
+   * alongside a freshly-started broker (`start` only — `update` leaves the
+   * already-running runner alone; it reconnects over the stable socket).
+   * Best-effort: a spawn failure is logged but does NOT fail the broker
+   * bring-up (the broker is the load-bearing artifact; the runner is an
+   * always-on-but-idle-until-opted-in add-on). Returns the runner PID.
+   * Receives the resolved backend/dashboard/endpoint env so it points at
+   * the SAME backend the broker does; it inherits bundler/subscription from
+   * the process env and NEVER receives the session key (keyless).
+   */
+  spawnReinvestRunner?(env: Readonly<Record<string, string>>): number;
 }
 
 function usageLine(mode: BringUpMode): string {
@@ -360,6 +372,45 @@ export async function runBringUp(
           '`muhaven-broker login` to retry.',
       );
       return code;
+    }
+  }
+
+  // Wave 5 Slice 2c — auto-spawn the keyless reinvest runner on a fresh
+  // `start`. `update` (key rotation) deliberately leaves any running runner
+  // alone: it's keyless + reads broker creds live, so it reconnects over
+  // the stable socket without a restart. Best-effort — never fails the
+  // bring-up.
+  if (mode === 'start' && deps.spawnReinvestRunner) {
+    try {
+      const runnerPid = deps.spawnReinvestRunner({
+        MUHAVEN_BROKER_ENDPOINT: config.brokerEndpoint,
+        MUHAVEN_BACKEND_URL: effectiveEnv.MUHAVEN_BACKEND_URL!,
+        MUHAVEN_DASHBOARD_URL: effectiveEnv.MUHAVEN_DASHBOARD_URL!,
+        // Forward the Path-D vars explicitly when the broker-start shell has
+        // them so the runner is armed deterministically (it also inherits
+        // them via the sanitized process.env, but pinning the resolved view
+        // makes the data-flow explicit + survives a future --bundler-url flag).
+        // Absent → the runner idles with a clear reason in its logfile.
+        ...(effectiveEnv.MUHAVEN_BUNDLER_URL ? { MUHAVEN_BUNDLER_URL: effectiveEnv.MUHAVEN_BUNDLER_URL } : {}),
+        ...(effectiveEnv.MUHAVEN_SUBSCRIPTION_ADDRESS
+          ? { MUHAVEN_SUBSCRIPTION_ADDRESS: effectiveEnv.MUHAVEN_SUBSCRIPTION_ADDRESS }
+          : {}),
+        ...(effectiveEnv.MUHAVEN_CHAIN_ID ? { MUHAVEN_CHAIN_ID: effectiveEnv.MUHAVEN_CHAIN_ID } : {}),
+        ...(effectiveEnv.MUHAVEN_ENTRY_POINT ? { MUHAVEN_ENTRY_POINT: effectiveEnv.MUHAVEN_ENTRY_POINT } : {}),
+        ...(effectiveEnv.MUHAVEN_REINVEST_BUDGET_USD
+          ? { MUHAVEN_REINVEST_BUDGET_USD: effectiveEnv.MUHAVEN_REINVEST_BUDGET_USD }
+          : {}),
+      });
+      deps.print(
+        `Reinvest runner: spawned (PID ${runnerPid}, keyless). Idles until you toggle ` +
+          'auto-reinvest ON in the dashboard Autonomy page. Diagnose with ' +
+          '`muhaven-reinvest doctor`; logs at ~/.muhaven/reinvest.log.',
+      );
+    } catch (err) {
+      deps.printErr(
+        `Reinvest runner: spawn failed (${(err as Error).message}) — auto-reinvest unavailable; ` +
+          'the broker itself is fine. Start it later with `muhaven-reinvest`.',
+      );
     }
   }
 

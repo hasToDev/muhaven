@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-05-29
+
+Wave 5 Slice 2 (auto-reinvest) — the agent can now claim matured yield AND,
+when you opt in, headlessly reinvest it into the same RWA.
+
+### Added
+
+- **Autonomous yield claim (Slice 2a).** `muhaven.position.claim` gained a
+  Path-D branch: with an active Scoped session AND a concrete epoch id, it
+  broker-signs `YieldSnapshot.claimYield(epochId, ephemeralEOA)` and submits it
+  to the bundler (same path as `position.buy`/`position.sell`), returning the tx
+  hash directly; without a session OR an epoch id it falls back to the dashboard
+  deep-link. The claimed amount is computed on-chain and stays encrypted
+  (amount-blind). No re-mint — the on-chain Scoped CallPolicy already authorized
+  `claimYield`.
+- **`muhaven-reinvest` runner (Slice 2c).** A new keyless sidecar (new bin
+  `muhaven-reinvest`) the broker AUTO-SPAWNS on `start`/`setup` and kills on
+  `stop`. On an interval (default 5 min) it asks the backend's public-data gate
+  (`GET /agent/reinvest/should-run`) whether you have a claimable epoch and have
+  opted in; if so it builds ONE atomic `executeBatch` UserOp —
+  `[claimYield, purchase]` — asks the broker to sign it, and submits it. The buy
+  leg is a cleartext per-cycle budget (`MUHAVEN_REINVEST_BUDGET_USD`, default $1)
+  converted to shares via public NAV and clamped to the per-op cap; the exact
+  claimed yield never decrypts. v1 acts only on an ENABLED validator (your first
+  manual buy/sell/claim installs it). The runner is STATELESS re: credentials
+  (reads the JWT + session live from the broker every cycle) and KEYLESS (asks
+  the broker to sign) — preserving the Option-D separation of duties (neither the
+  egress-capable runner nor the key-holding zero-egress broker can move funds
+  alone).
+- **Broker `sign_userop` `innerCalls[]` (protocol 0.6.0).** For an atomic batch
+  the broker now `checkPolicy`'s EVERY inner call (per-op cap enforced on the buy
+  leg) instead of just the first — a `>=0.6.0` daemon is required for reinvest.
+  Plus the batch kernel encoder (`encodeKernelExecuteBatch`, callType 0x01).
+- **Reinvest CLI verbs.** `muhaven-reinvest` (run loop), `muhaven-reinvest stop`,
+  `muhaven-reinvest doctor`. Env knobs: `MUHAVEN_REINVEST_BUDGET_USD` (default
+  1), `MUHAVEN_REINVEST_POLL_INTERVAL_SEC` (default 300),
+  `MUHAVEN_REINVEST_COOLDOWN_SEC` (default 1800).
+
+### Changed
+
+- Path-D inner-call encoding primitives (`SUBSCRIPTION_PURCHASE_*`,
+  `YIELD_SNAPSHOT_CLAIM_*`, `PLACEHOLDER_SIGNATURE`) hoisted to a shared
+  `clients/path-d-encoding.ts` (re-exported from `tools/handlers.ts` — import
+  paths unchanged) so the keyless runner reuses them without the tool surface.
+
 ## [0.5.2] — 2026-05-29
 
 ### Added

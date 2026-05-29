@@ -88,6 +88,7 @@ interface Harness {
   waitForBroker: ReturnType<typeof vi.fn>;
   stopDaemon: ReturnType<typeof vi.fn>;
   runLogin: ReturnType<typeof vi.fn>;
+  spawnReinvestRunner: ReturnType<typeof vi.fn>;
   brokerHello: ReturnType<typeof vi.fn>;
   promptYesNo: ReturnType<typeof vi.fn>;
   promptSecret: ReturnType<typeof vi.fn>;
@@ -127,6 +128,7 @@ function makeHarness(opts: {
   });
   const stopDaemon = vi.fn(async () => opts.stopExitCode ?? 0);
   const runLogin = vi.fn(async () => opts.loginExitCode ?? 0);
+  const spawnReinvestRunner = vi.fn(() => 88888);
 
   const promptYesNo = vi.fn(async () => opts.promptYesNoResult ?? false);
   const promptSecret = vi.fn(async () => opts.promptSecretResult ?? '');
@@ -152,6 +154,7 @@ function makeHarness(opts: {
     platformId: opts.platformId ?? 'linux',
     osRelease: '6.1.0',
     sessionPrompt,
+    spawnReinvestRunner,
   };
 
   return {
@@ -161,6 +164,7 @@ function makeHarness(opts: {
     waitForBroker,
     stopDaemon,
     runLogin,
+    spawnReinvestRunner,
     brokerHello,
     promptYesNo,
     promptSecret,
@@ -205,11 +209,41 @@ describe('runBringUp — start', () => {
     expect(out).toMatch(new RegExp(`Broker signer: ${SIGNER_ADDR}`));
   });
 
+  it('auto-spawns the keyless reinvest runner on a fresh start', async () => {
+    const h = makeHarness({
+      helloResults: [new Error('ECONNREFUSED'), { sessionKeyAddress: SIGNER_ADDR }],
+      waitForBrokerResult: { hasJwt: true },
+    });
+    const code = await runStart(h, ['--session', PROVIDED_KEY]);
+    expect(code).toBe(0);
+    expect(h.spawnReinvestRunner).toHaveBeenCalledTimes(1);
+    // The runner spawn receives the resolved backend/dashboard/endpoint —
+    // NOT the session key (the lifecycle spawn helper strips it anyway).
+    const runnerEnv = h.spawnReinvestRunner.mock.calls[0][0];
+    expect(runnerEnv.MUHAVEN_BACKEND_URL).toBeTruthy();
+    expect(runnerEnv.MUHAVEN_BROKER_SESSION_KEY).toBeUndefined();
+    expect(h.output.join('\n')).toMatch(/Reinvest runner: spawned/);
+  });
+
+  it('does not fail the bring-up when the reinvest spawn throws (best-effort)', async () => {
+    const h = makeHarness({
+      helloResults: [new Error('ECONNREFUSED'), { sessionKeyAddress: SIGNER_ADDR }],
+      waitForBrokerResult: { hasJwt: true },
+    });
+    h.spawnReinvestRunner.mockImplementation(() => {
+      throw new Error('bin missing');
+    });
+    const code = await runStart(h, ['--session', PROVIDED_KEY]);
+    expect(code).toBe(0);
+    expect(h.errOutput.join('\n')).toMatch(/Reinvest runner: spawn failed/);
+  });
+
   it('already running → returns 1 + points at update, never spawns', async () => {
     const h = makeHarness({ helloResults: [{ sessionKeyAddress: SIGNER_ADDR }] });
     const code = await runStart(h, ['--session', PROVIDED_KEY]);
     expect(code).toBe(1);
     expect(h.spawnDaemon).not.toHaveBeenCalled();
+    expect(h.spawnReinvestRunner).not.toHaveBeenCalled();
     expect(h.errOutput.join('\n')).toMatch(/already running/);
     expect(h.errOutput.join('\n')).toMatch(/muhaven-broker update --session/);
   });
@@ -407,6 +441,9 @@ describe('runBringUp — update', () => {
     expect(h.spawnDaemon.mock.calls[0][0].env.MUHAVEN_BROKER_SESSION_KEY).toBe(PROVIDED_KEY);
     // JWT reuse — the whole point of update vs a fresh login.
     expect(h.runLogin).not.toHaveBeenCalled();
+    // update is a KEY ROTATION, not a lifecycle start — it leaves the
+    // keyless runner alone (it reconnects over the stable socket).
+    expect(h.spawnReinvestRunner).not.toHaveBeenCalled();
     const out = h.output.join('\n');
     expect(out).toMatch(/stopping it before installing the new key/);
     expect(out).toMatch(/Session key rotated/);

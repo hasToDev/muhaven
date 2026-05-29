@@ -46,6 +46,10 @@ import {
   type BringUpMode,
 } from './bring-up.js';
 import type { SessionPromptDeps } from './session-input.js';
+import {
+  spawnReinvestRunner as spawnReinvestRunnerImpl,
+  stopReinvestRunner,
+} from '../reinvest/lifecycle.js';
 
 function print(line: string): void {
   process.stdout.write(line + '\n');
@@ -536,6 +540,25 @@ function resolveBrokerBinPath(): string {
 }
 
 /**
+ * Resolve the `muhaven-reinvest.cjs` bin path the broker spawns the keyless
+ * reinvest runner from. Same deterministic `dist/ → ../bin/` offset as
+ * `resolveBrokerBinPath` (both bundled bins live in the same package).
+ */
+function resolveReinvestBinPath(): string {
+  return resolvePath(__dirname, '..', 'bin', 'muhaven-reinvest.cjs');
+}
+
+/**
+ * Spawn the keyless reinvest runner. `spawnReinvestRunnerImpl` strips
+ * `MUHAVEN_BROKER_SESSION_KEY` + dangerous NODE_* vars from the child env;
+ * the runner inherits the operator's bundler/subscription env + uses the
+ * resolved backend/dashboard/endpoint passed here.
+ */
+function spawnReinvestRunner(env: Readonly<Record<string, string>>): number {
+  return spawnReinvestRunnerImpl({ binPath: resolveReinvestBinPath(), env });
+}
+
+/**
  * Default `shellOut` implementation — spawns a child with argv (NOT
  * shell-string interpolation), captures stdout/stderr, returns the
  * three-tuple. Argv passes through verbatim, so a JSON blob containing
@@ -710,6 +733,7 @@ export async function runSetup(argv: readonly string[]): Promise<number> {
     osRelease: release(),
     shellOut: defaultShellOut,
     sessionInput: makeSessionPromptDeps(),
+    spawnReinvestRunner,
   };
   return runSetupOrchestrator(argv, deps);
 }
@@ -718,7 +742,12 @@ export async function runSetup(argv: readonly string[]): Promise<number> {
  * Wire `runStop` against the real BrokerClient + Node's process.kill.
  */
 export async function runStop(): Promise<number> {
-  return runStopOrchestrator(makeStopDeps(true));
+  // The `stop` subcommand ALSO stops the keyless reinvest runner (wired
+  // only here — `update`'s internal stopDaemon leaves it running).
+  return runStopOrchestrator({
+    ...makeStopDeps(true),
+    stopReinvest: () => stopReinvestRunner(),
+  });
 }
 
 /** Build `BringUpDeps` for the `start` / `update` orchestrator. */
@@ -740,6 +769,7 @@ function makeBringUpDeps(): BringUpDeps {
     platformId: process.platform,
     osRelease: release(),
     sessionPrompt: makeSessionPromptDeps(),
+    spawnReinvestRunner,
   };
 }
 

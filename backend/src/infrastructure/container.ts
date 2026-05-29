@@ -144,6 +144,7 @@ import { EncryptSharesForPurchaseUseCase } from '../application/use-case/agent/p
 import { MintEphemeralEoaUseCase } from '../application/use-case/agent/path-d/mint-ephemeral.use-case.js';
 import { GetReinvestShouldRunUseCase } from '../application/use-case/agent/reinvest/get-reinvest-should-run.use-case.js';
 import { SetReinvestEnabledUseCase } from '../application/use-case/agent/reinvest/set-reinvest-enabled.use-case.js';
+import { RecordReinvestCycleUseCase } from '../application/use-case/agent/reinvest/record-reinvest-cycle.use-case.js';
 import { OnChainReinvestGateReader } from './agent/reinvest-gate.reader.js';
 import {
   PublishIssuerChannelEventUseCase,
@@ -1148,5 +1149,15 @@ export const container = {
   // active MCP session (Autonomy page).
   get setReinvestEnabled() {
     return new SetReinvestEnabledUseCase(getAgentRepos().scopedSessionRepo);
+  },
+  // Wave 5 Slice 2c (auto-reinvest runner) — append the WORM audit row
+  // for a completed reinvest cycle (atomic claim+buy). Revoke-gated +
+  // idempotent per (user, epoch). Reuses the shared AppendAuditEventUseCase.
+  get recordReinvestCycle() {
+    return new RecordReinvestCycleUseCase(
+      getAgentRepos().scopedSessionRepo,
+      getAgentRepos().agentAuditRepo,
+      getAppendAuditEvent(),
+    );
   },
 };

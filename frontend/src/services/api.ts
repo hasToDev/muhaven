@@ -1417,6 +1417,22 @@ export const agentPolicyApi = {
       { method: 'DELETE', auth: true },
     )
   },
+
+  /**
+   * Wave 5 Slice 2c — toggle the auto-reinvest opt-in on the caller's
+   * active MCP Scoped session (the Autonomy-page switch). POSTs
+   * `{ enabled }` to `/agent/reinvest`; the backend flips `reinvest_enabled`
+   * + returns the updated session row. 404 when there is no active session
+   * to toggle. The keyless `muhaven-reinvest` runner reads this flag via
+   * the `should-run` gate, so the loop never claims+buys without consent.
+   */
+  setReinvestEnabled(args: { enabled: boolean }): Promise<SetReinvestEnabledResponse> {
+    return request('/agent/reinvest', {
+      method: 'POST',
+      body: { enabled: args.enabled },
+      auth: true,
+    })
+  },
 }
 
 // ── Wave 5 Path D Slice 1 — Scoped session mint shapes ─────────────
@@ -1500,6 +1516,14 @@ export interface ScopedSessionResponseDto {
   validatorEnabledAt?: string | null
   validatorEnabledTxHash?: `0x${string}` | null
   validatorNonce?: number | null
+  /**
+   * Wave 5 Slice 2 (auto-reinvest) — user opt-in for the headless
+   * claim→buy reinvest loop, surfaced from the scoped-session DTO. Default
+   * `false`; the Autonomy page toggle flips it via `setReinvestEnabled`.
+   * Optional on the wire for back-compat with pre-Slice-2 backends (the
+   * pre-cutover prod backend omits it until `db:push` adds the column).
+   */
+  reinvestEnabled?: boolean
 }
 
 export interface MintScopedSessionResponse {
@@ -1515,6 +1539,13 @@ export interface GetActiveScopedSessionResponse {
 /** Wave 5 Option D · Commit 4 — DELETE (revoke) result. Carries the
  *  now-`revoked` row so the caller can confirm the status flip. */
 export interface RevokeScopedSessionResponse {
+  session: ScopedSessionResponseDto
+}
+
+/** Wave 5 Slice 2c — POST /agent/reinvest result. Carries the session row
+ *  with the updated `reinvestEnabled` so the toggle can reflect the
+ *  committed state without a re-fetch. */
+export interface SetReinvestEnabledResponse {
   session: ScopedSessionResponseDto
 }
 

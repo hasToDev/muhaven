@@ -50,6 +50,15 @@ export interface StopDeps {
    * instead of forcing a fresh device-code login. Wave 5 Option D OPEN-D.
    */
   clearJwtOnStop?: boolean;
+  /**
+   * Wave 5 Slice 2c — stop the keyless `muhaven-reinvest` runner the broker
+   * auto-spawned. Wired ONLY by the `stop` subcommand (NOT by `update`'s
+   * internal stopDaemon — a key rotation leaves the keyless runner running;
+   * it reconnects over the stable socket). Best-effort: a failure is printed
+   * but never changes the broker-stop exit code. Runs FIRST so no in-flight
+   * runner cycle hits the broker while it's tearing down.
+   */
+  stopReinvest?(): Promise<{ status: string; pid?: number }>;
 }
 
 /**
@@ -61,6 +70,26 @@ export async function runStop(deps: StopDeps): Promise<number> {
   const pollIntervalMs = deps.pollIntervalMs ?? 200;
 
   const broker = deps.newBrokerClient(deps.endpoint, deps.brokerTimeoutMs);
+
+  // 0. Wave 5 Slice 2c — stop the keyless reinvest runner FIRST (best-effort)
+  // so no in-flight reinvest cycle hits the broker mid-teardown. Only the
+  // `stop` subcommand wires this; `update` leaves the runner running.
+  if (deps.stopReinvest) {
+    try {
+      const outcome = await deps.stopReinvest();
+      if (outcome.status === 'not_running') {
+        deps.print('Reinvest runner: not running.');
+      } else if (outcome.status === 'error') {
+        deps.print(`Reinvest runner: stop reported an error (PID ${outcome.pid ?? '?'}); continuing.`);
+      } else {
+        deps.print(`Reinvest runner: ${outcome.status} (PID ${outcome.pid ?? '?'}).`);
+      }
+    } catch (err) {
+      deps.print(
+        `Reinvest runner: stop threw (${err instanceof Error ? err.message : String(err)}); continuing with broker shutdown.`,
+      );
+    }
+  }
 
   // 1. Probe.
   let hello;

@@ -9,6 +9,7 @@ interface StopHarness {
   brokerClearJwt: ReturnType<typeof vi.fn>;
   killProcess: ReturnType<typeof vi.fn>;
   sleep: ReturnType<typeof vi.fn>;
+  stopReinvest: ReturnType<typeof vi.fn>;
   deps: StopDeps;
 }
 
@@ -19,6 +20,7 @@ function makeHarness(opts: {
   gracefulShutdownMs?: number;
   pollIntervalMs?: number;
   clearJwtOnStop?: boolean;
+  withStopReinvest?: boolean;
 } = {}): StopHarness {
   const output: string[] = [];
   const errOutput: string[] = [];
@@ -47,6 +49,7 @@ function makeHarness(opts: {
 
   const killProcess = vi.fn(opts.killBehavior ?? (() => true));
   const sleep = vi.fn(async () => undefined);
+  const stopReinvest = vi.fn(async () => ({ status: 'stopped', pid: 4242 }));
 
   const deps: StopDeps = {
     print: (line) => output.push(line),
@@ -63,9 +66,10 @@ function makeHarness(opts: {
     gracefulShutdownMs: opts.gracefulShutdownMs,
     pollIntervalMs: opts.pollIntervalMs,
     clearJwtOnStop: opts.clearJwtOnStop,
+    ...(opts.withStopReinvest ? { stopReinvest } : {}),
   };
 
-  return { output, errOutput, brokerHello, brokerClearJwt, killProcess, sleep, deps };
+  return { output, errOutput, brokerHello, brokerClearJwt, killProcess, sleep, stopReinvest, deps };
 }
 
 describe('runStop', () => {
@@ -91,6 +95,30 @@ describe('runStop', () => {
     expect(h.output.join('\n')).toMatch(/JWT cleared from keystore/);
     expect(h.output.join('\n')).toMatch(/Sent SIGTERM to broker daemon \(PID 12345\)/);
     expect(h.output.join('\n')).toMatch(/Broker daemon stopped cleanly/);
+  });
+
+  it('stops the keyless reinvest runner FIRST when wired (stop subcommand)', async () => {
+    const h = makeHarness({
+      helloResults: [{ pid: 12345 }, new Error('ECONNREFUSED')],
+      withStopReinvest: true,
+    });
+    const code = await runStop(h.deps);
+    expect(code).toBe(0);
+    expect(h.stopReinvest).toHaveBeenCalledTimes(1);
+    expect(h.output.join('\n')).toMatch(/Reinvest runner: stopped \(PID 4242\)/);
+  });
+
+  it('still stops the reinvest runner even when the broker is already down', async () => {
+    const h = makeHarness({ helloResults: [new Error('ECONNREFUSED')], withStopReinvest: true });
+    const code = await runStop(h.deps);
+    expect(code).toBe(0);
+    expect(h.stopReinvest).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT stop the reinvest runner when stopReinvest is unwired (update path)', async () => {
+    const h = makeHarness({ helloResults: [{ pid: 12345 }, new Error('ECONNREFUSED')] });
+    await runStop(h.deps);
+    expect(h.stopReinvest).not.toHaveBeenCalled();
   });
 
   it('returns 1 with manual-kill hint when daemon does not advertise pid (pre-0.1.5)', async () => {
