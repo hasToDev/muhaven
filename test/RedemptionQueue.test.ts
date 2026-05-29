@@ -297,20 +297,133 @@ describe("RedemptionQueue", () => {
       await hre.cofhe.mocks.expectPlaintext(r.encShares, 0n);
     });
 
-    it("silent-fails when investor's balance is insufficient for the pull", async () => {
+    // ── Slice 1.5: over-balance now CLAMPS to the full balance ────────────
+    // Before Slice 1.5 an over-balance pull silent-failed to ZERO (a
+    // confusing "sell all → sold nothing" no-op). `pullFromInvestor` now
+    // clamps with `FHE.min(balance, encAmount)` so an over-request (within
+    // the hint) sells the FULL position. Mirrors MuHavenStable.withdrawToUsdc.
+
+    it("clamps to full balance (sell-all) when over-requesting within a sufficient hint", async () => {
       const { queue, investor, investorClient, token, eph, seedShares } =
         await loadFixture(deployQueueFixture);
 
-      // Investor has 100 shares — ask for 500.
+      // Investor has 100 shares — ask for 500 with a hint that covers the
+      // balance (HINT_CAP=1e6 >> 100). Gate A (hint) passes (500 <= 1e6);
+      // Gate B (balance) now clamps min(100, 500) = 100 → sells everything.
       const enc = await encUint128(investorClient, 500n);
       await queue.connect(investor).submit(enc, HINT_CAP, eph.address);
 
-      // Investor balance unchanged, request records zero pull.
+      // Investor fully drained, queue holds the whole 100.
       const invBal = await token.encryptedBalanceOf(investor.address);
-      await hre.cofhe.mocks.expectPlaintext(invBal, seedShares);
+      await hre.cofhe.mocks.expectPlaintext(invBal, 0n);
+
+      const qBal = await token.encryptedBalanceOf(await queue.getAddress());
+      await hre.cofhe.mocks.expectPlaintext(qBal, seedShares);
+
+      // Request records the clamped pull (the full balance), NOT zero.
+      const r = await queue.getRequest(1n);
+      await hre.cofhe.mocks.expectPlaintext(r.encShares, seedShares);
+    });
+
+    it("exact-balance request pulls all (unchanged)", async () => {
+      const { queue, investor, investorClient, token, eph, seedShares } =
+        await loadFixture(deployQueueFixture);
+
+      // Ask for exactly the balance (100). Clamp is a no-op here.
+      const enc = await encUint128(investorClient, seedShares);
+      await queue.connect(investor).submit(enc, HINT_CAP, eph.address);
+
+      await hre.cofhe.mocks.expectPlaintext(
+        await token.encryptedBalanceOf(investor.address),
+        0n
+      );
+      const r = await queue.getRequest(1n);
+      await hre.cofhe.mocks.expectPlaintext(r.encShares, seedShares);
+    });
+
+    it("under-balance request pulls exactly the request (clamp inactive)", async () => {
+      const { queue, investor, investorClient, token, eph, seedShares } =
+        await loadFixture(deployQueueFixture);
+
+      // Ask for less than the balance — min(100, 30) = 30. Unchanged.
+      const enc = await encUint128(investorClient, 30n);
+      await queue.connect(investor).submit(enc, HINT_CAP, eph.address);
+
+      await hre.cofhe.mocks.expectPlaintext(
+        await token.encryptedBalanceOf(investor.address),
+        seedShares - 30n
+      );
+      const r = await queue.getRequest(1n);
+      await hre.cofhe.mocks.expectPlaintext(r.encShares, 30n);
+    });
+
+    it("clamp is bounded by the hint, never by the larger balance (invariant: actualPulled <= maxSharesHint)", async () => {
+      // Load-bearing for RedemptionQueue._settleRequest's overflow guard:
+      // actualPulled = min(balance, encSharesBounded) where encSharesBounded
+      // is already <= maxSharesHint (Gate A). Here balance (100) > hint (80)
+      // and request == hint, so the pull must clamp to the HINT (80), proving
+      // the clamp can never exceed maxSharesHint even when the balance does.
+      const { queue, investor, investorClient, token, eph, seedShares } =
+        await loadFixture(deployQueueFixture);
+
+      const hint = 80n;
+      const enc = await encUint128(investorClient, hint);
+      await queue.connect(investor).submit(enc, hint, eph.address);
+
+      // Pulled exactly the hint amount, leaving balance - hint behind.
+      await hre.cofhe.mocks.expectPlaintext(
+        await token.encryptedBalanceOf(investor.address),
+        seedShares - hint
+      );
+      const r = await queue.getRequest(1n);
+      await hre.cofhe.mocks.expectPlaintext(r.encShares, hint);
+      // The recorded pull never exceeds the cleartext hint.
+      expect(r.maxSharesHint).to.equal(hint);
+    });
+
+    it("over-sell settles for the FULL balance at processEpoch (proceeds = balance*nav)", async () => {
+      // End-to-end: an over-sell that clamps to 100 settles 100*nav, and the
+      // overflow guard (maxSharesHint*nav <= u64) holds against HINT_CAP.
+      const { queue, issuer, investor, investorClient, token, pusdc, treasury, eph, seedShares } =
+        await loadFixture(deployQueueFixture);
+
+      const enc = await encUint128(investorClient, 500n); // over-balance
+      await queue.connect(investor).submit(enc, HINT_CAP, eph.address);
+
+      const treasuryBefore = await pusdc.confidentialBalanceOf(await treasury.getAddress());
+      await hre.cofhe.mocks.expectPlaintext(treasuryBefore, 300n * ONE_PUSDC);
+
+      await queue.connect(issuer).processEpoch(await queue.currentEpoch(), 0, 1);
 
       const r = await queue.getRequest(1n);
-      await hre.cofhe.mocks.expectPlaintext(r.encShares, 0n);
+      expect(r.settled).to.equal(true);
+      // Proceeds computed on the clamped 100 shares, not the 500 requested.
+      await hre.cofhe.mocks.expectPlaintext(r.encProceeds, seedShares * ONE_PUSDC);
+
+      // Treasury paid exactly 100*nav; queue's locked shares fully burned.
+      await hre.cofhe.mocks.expectPlaintext(
+        await pusdc.confidentialBalanceOf(await treasury.getAddress()),
+        300n * ONE_PUSDC - seedShares * ONE_PUSDC
+      );
+      await hre.cofhe.mocks.expectPlaintext(
+        await token.encryptedBalanceOf(await queue.getAddress()),
+        0n
+      );
+    });
+
+    it("reverts NoBalance when the investor never held shares", async () => {
+      // `alice` is KYC-whitelisted but never purchased, so `_balances[alice]`
+      // is uninitialised → the pullFromInvestor guard fires (unchanged).
+      // Input must be encrypted by alice — `submit` verifies it via
+      // `FHE.asEuint128` (signer-scoped) before reaching the NoBalance gate.
+      const { queue, token, alice, eph } = await loadFixture(deployQueueFixture);
+      const aliceClient = await hre.cofhe.createClientWithBatteries(alice);
+      const enc = await encUint128(aliceClient, 5n);
+      // `NoBalance` is defined on MuHavenToken — the revert bubbles up from
+      // pullFromInvestor through the queue.
+      await expect(
+        queue.connect(alice).submit(enc, HINT_CAP, eph.address)
+      ).to.be.revertedWithCustomError(token, "NoBalance");
     });
   });
 

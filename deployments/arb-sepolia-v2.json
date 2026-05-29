@@ -1,7 +1,7 @@
 {
   "network": "arb-sepolia",
   "env": "prod",
-  "timestamp": "2026-05-29T04:07:30.872Z",
+  "timestamp": "2026-05-29T05:30:14.747Z",
   "deployer": "0xe11E83398C33A37CaC02C01c43F14A7f95876986",
   "external": {
     "legacyPusdc": "0x6b6e6479b8b3237933c3ab9d8be969862d4ed89f",
@@ -117,7 +117,8 @@
       "contracts": {
         "MuHavenToken": {
           "proxy": "0x1d6C140204F21835F1AF2A0615826A333827d946",
-          "implementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
+          "implementation": "0x42f55400c804342AB60089ac351Cf63d30c99255",
+          "previousImplementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
         },
         "RedemptionQueue": {
           "proxy": "0x15d751e6F429146Dff62acE65E745B106A71052e",
@@ -141,7 +142,8 @@
       "contracts": {
         "MuHavenToken": {
           "proxy": "0xD43c1eB475616c8659346d6dEbE34fcb7A331F24",
-          "implementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
+          "implementation": "0x42f55400c804342AB60089ac351Cf63d30c99255",
+          "previousImplementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
         },
         "RedemptionQueue": {
           "proxy": "0xF73482f44c5B6B428544D5f7085FFc26fc8D88a0",
@@ -165,7 +167,8 @@
       "contracts": {
         "MuHavenToken": {
           "proxy": "0xF3945c52DB79eBc6BFEA1dc460Ead77D70858B43",
-          "implementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
+          "implementation": "0x42f55400c804342AB60089ac351Cf63d30c99255",
+          "previousImplementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
         },
         "RedemptionQueue": {
           "proxy": "0x3f8D8350EEE036f6FbEA64B68886cEd11cF28ddC",
@@ -189,7 +192,8 @@
       "contracts": {
         "MuHavenToken": {
           "proxy": "0xd6da55d273b174f102911c7389102eB05f7963A0",
-          "implementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
+          "implementation": "0x42f55400c804342AB60089ac351Cf63d30c99255",
+          "previousImplementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
         },
         "RedemptionQueue": {
           "proxy": "0x165BBfa7f1569c56835Fab8ef995A12f6f399a4d",
@@ -213,7 +217,8 @@
       "contracts": {
         "MuHavenToken": {
           "proxy": "0x4a4dEeEA9fF30015899C8821e2ebc49C418fbc38",
-          "implementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
+          "implementation": "0x42f55400c804342AB60089ac351Cf63d30c99255",
+          "previousImplementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
         },
         "RedemptionQueue": {
           "proxy": "0xe28e82D663D812bB5b3ba504aC0170E0646B8CD8",
@@ -237,7 +242,8 @@
       "contracts": {
         "MuHavenToken": {
           "proxy": "0x631FB36a4311566395B236ad9BE4701b5256f35F",
-          "implementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
+          "implementation": "0x42f55400c804342AB60089ac351Cf63d30c99255",
+          "previousImplementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
         },
         "RedemptionQueue": {
           "proxy": "0xE3652EA092beDD8F84C8129ddB97cB9c1BB1B9a9",
@@ -261,7 +267,8 @@
       "contracts": {
         "MuHavenToken": {
           "proxy": "0x66Ec340237bBb069e59d7a38bD9973228facF7E8",
-          "implementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
+          "implementation": "0x42f55400c804342AB60089ac351Cf63d30c99255",
+          "previousImplementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
         },
         "RedemptionQueue": {
           "proxy": "0x4E7204D433d6049FadAc7c88Af6c02924C661F14",
@@ -285,7 +292,8 @@
       "contracts": {
         "MuHavenToken": {
           "proxy": "0x06C50E3a710Dc8C2801e38d4942898c7af8b02CB",
-          "implementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
+          "implementation": "0x42f55400c804342AB60089ac351Cf63d30c99255",
+          "previousImplementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
         },
         "RedemptionQueue": {
           "proxy": "0x041937E005c22D04766BA3826D901409149bA136",
@@ -309,7 +317,8 @@
       "contracts": {
         "MuHavenToken": {
           "proxy": "0x9D37fF9747F0fe864eC899B04a641EDe309d1764",
-          "implementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
+          "implementation": "0x42f55400c804342AB60089ac351Cf63d30c99255",
+          "previousImplementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
         },
         "RedemptionQueue": {
           "proxy": "0x92EC5b2C818f42a4510073E97A09ffB728c73Efe",
@@ -333,7 +342,8 @@
       "contracts": {
         "MuHavenToken": {
           "proxy": "0xf5f30Fcdc7808AC4e0a5b713637Fd59C3A1B8487",
-          "implementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
+          "implementation": "0x42f55400c804342AB60089ac351Cf63d30c99255",
+          "previousImplementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
         },
         "RedemptionQueue": {
           "proxy": "0x96Ae826269eaf8a870191ea0F8fAC70795044Dc1",
@@ -357,7 +367,8 @@
       "contracts": {
         "MuHavenToken": {
           "proxy": "0x797b9a2ec6F752B791DcE2f721Ad51Da68074Ed3",
-          "implementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
+          "implementation": "0x42f55400c804342AB60089ac351Cf63d30c99255",
+          "previousImplementation": "0x5E6c81018C3fc5a738D6CAe6A06169B205f1df58"
         },
         "RedemptionQueue": {
           "proxy": "0xd5832da72863b4F544b4b659aaCC5eAF6739643B",

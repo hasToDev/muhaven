@@ -682,11 +682,23 @@ contract MuHavenToken is Initializable, PausableUpgradeable, ERC165Upgradeable, 
 
         FHE.allowThis(encAmount);
 
-        // Silent-fail on insufficient investor balance (Rule 5).
-        ebool hasEnough = FHE.gte(_balances[from], encAmount);
+        // Clamp to available balance (sell-what-you-have) — Slice 1.5. An
+        // over-request pulls the FULL balance, not zero, so "sell all" works
+        // with a deliberately-large amount instead of silent-failing to a
+        // no-op. Mirrors MuHavenStable.withdrawToUsdc's FHE.min clamp (W3).
+        //
+        // Invariant preserved: `encAmount` is already bounded to
+        // `maxSharesHint` by the queue's submit hint gate
+        // (RedemptionQueue._submit Gate A — `select(within hint, requested, 0)`),
+        // so actualPulled = min(balance, encAmount) <= encAmount <= maxSharesHint.
+        // Clamping can only LOWER actualPulled relative to encAmount, never
+        // raise it past the hint, so the proceeds-overflow guard in
+        // RedemptionQueue._settleRequest (maxSharesHint * nav <= u64.max) holds
+        // untouched. `zero` is still needed for the first-receipt credit branch
+        // below.
         euint128 zero = FHE.asEuint128(uint256(0));
         FHE.allowThis(zero);
-        actualPulled = FHE.select(hasEnough, encAmount, zero);
+        actualPulled = FHE.min(_balances[from], encAmount);
         FHE.allowThis(actualPulled);
 
         // Deduct from investor. Grant investor's own kernel + ephemeralEOA
