@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.5.2] — 2026-05-29
 
+### Added
+
+- **Cap-exceeded sells now re-frame the limit in mhUSDC.** When an autonomous
+  sell falls back with `broker_max_spend_exceeded`, the broker's diagnostic is
+  share-denominated (the on-chain sell selector caps a share count), but the
+  user set the per-trade cap in mhUSDC. `positionSell` now appends a note
+  (via the new exported `buildSellCapMhUsdcNote`) that translates the cap back
+  to mhUSDC using the token's NAV at message time — e.g. "per-trade cap is
+  about $100.00 mhUSDC (~100 CETES at this price)" — and points at the "Max
+  mhUSDC per autonomous trade" control. Best-effort + NAV-guarded: if NAV is
+  unavailable or the cap can't be parsed, it falls back to a generic
+  mhUSDC-framed note without fabricating a figure.
+
 ### Changed
 
 - **Over-sell guidance now reflects the LIVE FHE.min clamp (Wave 5 Slice 1.5 +

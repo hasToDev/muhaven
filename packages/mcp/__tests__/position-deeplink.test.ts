@@ -23,6 +23,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildPositionDeeplink,
+  buildSellCapMhUsdcNote,
   cashUnwrap,
   cashWrap,
   positionBuy,
@@ -791,6 +792,43 @@ describe('parseQueueRequestIdFromReceipt + buildSellExtras (Wave 5 Slice 1)', ()
       settlement: 'queued',
       queueRequestId: null,
     });
+  });
+});
+
+// ---------- buildSellCapMhUsdcNote (Wave 5 — cap re-framed in mhUSDC) ----------
+
+describe('buildSellCapMhUsdcNote', () => {
+  const detail = 'arg word[2] = 150 exceeds maxAmount 100 for selector 0xabcd (session s1)';
+
+  it('translates the share cap to mhUSDC via NAV and frames the attempted trade', () => {
+    // NAV $1.00/share, cap 100 shares → ~$100.00 cap; attempted 150 → ~$150.00.
+    const note = buildSellCapMhUsdcNote('1.000000', 'CETES', 150n, detail);
+    expect(note).toMatch(/\$100\.00 mhUSDC/); // cap in mhUSDC
+    expect(note).toMatch(/~100 CETES/); // cap in shares at this price
+    expect(note).toMatch(/\$150\.00 mhUSDC/); // attempted value
+    expect(note).toMatch(/Max mhUSDC per autonomous trade/);
+    expect(note).toMatch(/Autonomy page/);
+  });
+
+  it('scales by a non-unit NAV', () => {
+    // NAV $2.50/share, cap 100 shares → $250.00 cap.
+    const note = buildSellCapMhUsdcNote('2.5', 'USYC', 40n, detail);
+    expect(note).toMatch(/\$250\.00 mhUSDC/);
+    expect(note).toMatch(/\$100\.00 mhUSDC at the current price \(\$2\.50\/share\)/);
+  });
+
+  it('falls back to a generic mhUSDC note when NAV is null (no fabricated figure)', () => {
+    const note = buildSellCapMhUsdcNote(null, 'CETES', 150n, detail);
+    expect(note).not.toMatch(/\$/); // no dollar figures without NAV
+    expect(note).toMatch(/exceeds your session's per-trade cap/);
+    expect(note).toMatch(/denominated in mhUSDC/);
+  });
+
+  it('omits the cap clause when the broker detail does not carry maxAmount', () => {
+    const note = buildSellCapMhUsdcNote('1.0', 'CETES', 150n, 'opaque broker error');
+    expect(note).not.toMatch(/per-trade cap is about/);
+    // still frames the attempted trade value from NAV.
+    expect(note).toMatch(/\$150\.00 mhUSDC at the current price/);
   });
 });
 

@@ -403,6 +403,26 @@ function holdingUsdValue(h: typeof portfolio.holdings[number]): string {
   return `${formatTokenAmount(tokens)} ${h.symbol}`
 }
 
+// Wave 5: hide fully-exited positions from the Holdings list. A holding
+// revealed to exactly 0 (e.g. the whole position was just sold) should drop
+// off rather than linger as a confusing "0 SYMBOL" row. Only KNOWN-zero is
+// hidden — an unrevealed holding (decryptedBalance === null) stays visible
+// behind its reveal gate, and any positive balance stays. The original store
+// index `i` is preserved so per-card reveal (`decryptOne(i)`) still targets
+// the right holding.
+const visibleHoldings = computed(() =>
+  portfolio.holdings
+    .map((h, i) => ({ h, i }))
+    .filter(({ h }) => h.decryptedBalance !== 0n),
+)
+
+// Raw holdings exist but every one is a revealed zero (user exited every
+// position) — drives a distinct "all positions closed" note so the Holdings
+// header doesn't sit above an empty grid.
+const allHoldingsExited = computed(
+  () => portfolio.holdings.length > 0 && visibleHoldings.value.length === 0,
+)
+
 const hasRevealedAllocationSlice = computed(() =>
   portfolio.allocationSlices.some(s => !s.isLocked),
 )
@@ -965,9 +985,19 @@ const showBlurredAllocation = computed(() =>
         <div class="h-px w-full bg-haze dark:bg-white/5" />
 
         <div class="space-y-3">
-          <!-- RWA holdings -->
+          <!-- All positions exited (every holding revealed to zero). -->
+          <p
+            v-if="allHoldingsExited"
+            data-testid="portfolio-all-exited"
+            class="text-sm text-cool py-6 text-center"
+          >
+            No active positions — you've sold out of every holding.
+            <RouterLink to="/trade" class="text-compute dark:text-signal hover:underline">Buy RWA shares</RouterLink>
+            to get started again.
+          </p>
+          <!-- RWA holdings (known-zero balances hidden — see visibleHoldings) -->
           <div
-            v-for="(h, i) in portfolio.holdings"
+            v-for="({ h, i }) in visibleHoldings"
             :key="h.tokenAddress"
             v-motion
             :initial="{ opacity: 0, y: 16 }"

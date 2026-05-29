@@ -3124,6 +3124,55 @@ const OVERSELL_GUIDANCE =
   'muhaven.read.activity to confirm a settled redeem landed, and do NOT claim a specific share/USD ' +
   'figure to the user (amounts stay encrypted).';
 
+/**
+ * Wave 5 — when an autonomous SELL falls back because it exceeds the Scoped
+ * session's per-op cap (`broker_max_spend_exceeded`), the broker's diagnostic
+ * is SHARE-denominated ("arg word[N] = … exceeds maxAmount M") because the
+ * on-chain sell selector caps a share count — but the user set the cap in
+ * mhUSDC ("Max mhUSDC per autonomous trade"). Re-express it in mhUSDC using
+ * the token's NAV (USD/share) at message time so the LLM/user reason in the
+ * same unit they configured. Best-effort: parses the cap from the broker
+ * detail; if NAV is missing or the detail doesn't parse, falls back to a
+ * generic mhUSDC-framed note. Never throws, never fabricates a precise figure
+ * (all values are prefixed "~"). `symbol` must already be LLM-sanitized.
+ */
+export function buildSellCapMhUsdcNote(
+  navString: string | null | undefined,
+  symbol: string,
+  requestedShares: bigint,
+  brokerDetail: string | undefined,
+): string {
+  const nav = navString != null ? Number(navString) : NaN;
+  const navOk = Number.isFinite(nav) && nav > 0;
+  const usd = (n: number) =>
+    `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  // Best-effort cap parse (raw share base units → mhUSDC via NAV). fhERC-20
+  // shares are integer base units (1 share == 1n), so cap*nav is the mhUSDC cap.
+  let capClause = '';
+  const capStr = brokerDetail?.match(/maxAmount (\d+)/)?.[1];
+  if (navOk && capStr) {
+    const capShares = BigInt(capStr);
+    capClause =
+      ` Your session's per-trade cap is about ${usd(Number(capShares) * nav)} mhUSDC` +
+      ` (~${capShares.toString()} ${symbol} at this price).`;
+  }
+
+  const attempted = navOk
+    ? ` This sell of ${requestedShares.toString()} ${symbol} is worth about ` +
+      `${usd(Number(requestedShares) * nav)} mhUSDC at the current price (${usd(nav)}/share),` +
+      ` which exceeds that cap.`
+    : ` This sell exceeds your session's per-trade cap.`;
+
+  return (
+    `NOTE: autonomous trading was capped, so this fell back to the dashboard.${attempted}${capClause}` +
+    ` The cap is denominated in mhUSDC ("Max mhUSDC per autonomous trade"), NOT shares.` +
+    ` To sell autonomously, reduce the share count or mint a new Scoped session with a` +
+    ` higher mhUSDC cap on the Autonomy page — or just authorize this sale via the dashboard` +
+    ` link below (no autonomy cap applies to a passkey-signed sale).`
+  );
+}
+
 export async function positionSell(
   input: PositionSellInput,
   deps: ToolDeps,
@@ -3205,11 +3254,17 @@ export async function positionSell(
     token: input.token,
     shares: input.amountShares,
   });
+  // When autonomy was blocked by the per-op cap, re-frame the (share-
+  // denominated) limit in mhUSDC — the unit the user set it in.
+  const capNote =
+    pathDFallbackReason === 'broker_max_spend_exceeded'
+      ? `\n\n${buildSellCapMhUsdcNote(token?.latest_nav?.nav, safeSymbol, shares, pathDFallbackDetail)}`
+      : '';
   return ok({
     dashboardUrl,
     action: 'sell',
     instructions:
-      `Open this link to review and authorize the ${viaQueue ? 'queued ' : ''}sale of ${input.amountShares} shares of ${safeSymbol}:\n${dashboardUrl}\n\n${OVERSELL_GUIDANCE}`,
+      `Open this link to review and authorize the ${viaQueue ? 'queued ' : ''}sale of ${input.amountShares} shares of ${safeSymbol}:\n${dashboardUrl}\n\n${OVERSELL_GUIDANCE}${capNote}`,
     echo: {
       action: 'sell',
       token: input.token,
