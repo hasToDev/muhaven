@@ -53,6 +53,14 @@ MuHaven uses three distinct FHE access patterns:
 
 **Mitigation path:** Replace `safeTransferFrom` with PUSDC deposit via ReineiraOS — PUSDC wraps USDC with FHE encryption, making the transfer confidential.
 
+### 2.2.1 Direct mhUSDC wrap deposit amount (`wrapUsdc`, Wave 5 W3 Phase 9)
+
+**What leaks:** `MuHavenStable.wrapUsdc(amount, eph)` pulls cleartext USDC via `SafeERC20.safeTransferFrom`, so the deposit `amount` is visible in the USDC ERC-20 `Transfer` log (and is also emitted in cleartext in the `WrapUsdc` event). The minted mhUSDC handle is a *trivial* encryption of that public value.
+
+**Why it's acceptable:** This is the **deposit edge**, and it is the *same* boundary the legacy 2-step wrap already exposed — its step 1 (USDC → PUSDC) also revealed the amount on-chain. `wrapUsdc` collapses the two steps into one but does not change the privacy posture. Crucially, everything *after* the deposit edge stays confidential: mhUSDC balances, P2P transfers, purchases, and the mhUSDC→USDC withdrawal burn amount are all encrypted `euint64`. An observer learns "address X deposited $N at time T" — the same metadata a bank deposit slip carries — but not the holder's running balance, their trades, or their exit sizing.
+
+**Mitigation path:** A confidential-input wrap (client-encrypted `InEuint64` USDC deposit) would hide the deposit amount, but requires a confidential USDC source at the system boundary (same dependency as 2.2). Deferred with 2.2; the demo/testnet scope (ADR_W3_RESERVE_MODEL.md) accepts the public deposit edge.
+
 ### 2.3 KYC eligibility boolean
 
 **What leaks:** Whether `kycGate.isEligible(address)` returns true or false (revert on false is observable).

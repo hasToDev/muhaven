@@ -88,7 +88,8 @@ export class StableClient {
       stage: 'wrap',
       current: 1,
       total: 1,
-      message: 'PUSDC wrapped to mhUSDC',
+      // User-facing string — CLAUDE.md naming rule: never surface "PUSDC".
+      message: 'Wrapped into mhUSDC',
       txHash: hash,
     })
 
@@ -144,7 +145,61 @@ export class StableClient {
       stage: 'unwrap',
       current: 1,
       total: 1,
-      message: 'mhUSDC unwrapped to PUSDC',
+      // User-facing string — CLAUDE.md naming rule: never surface "PUSDC".
+      message: 'mhUSDC unwrapped',
+      txHash: hash,
+    })
+
+    return hash
+  }
+
+  /**
+   * Wave 5 W3 Phase 9 — direct USDC → mhUSDC wrap. Pulls `amount` cleartext
+   * USDC straight into the wrapper's reserve and mints `amount` of
+   * trivially-encrypted mhUSDC 1:1. Unlike {@link wrap} (which pulls legacy
+   * PUSDC), this takes raw USDC, so it needs NO client-side `encryptUint64`
+   * step — the amount is public (the USDC ERC-20 Transfer log reveals it).
+   *
+   * Pre-flight (caller responsibility): `usdc.approve(muHavenStable, amount)`
+   * — the wrapper pulls via `safeTransferFrom`. The amount is bounded by
+   * `type(uint64).max` (mhUSDC's encrypted type is `euint64`).
+   *
+   * mhUSDC balances, transfers, and withdrawals stay confidential — only the
+   * deposit edge is public, matching the legacy 2-step wrap's boundary.
+   */
+  async wrapUsdc(
+    amount: bigint,
+    ephemeralEOA: Address,
+    opts?: { onProgress?: ProgressCallback },
+  ): Promise<Hash> {
+    if (amount <= 0n) throw new ConfigError(`amount must be > 0, got ${amount}`)
+    if (amount > (1n << 64n) - 1n) {
+      throw new ConfigError(`amount exceeds 2^64 - 1, got ${amount}`)
+    }
+    requireEphemeralEOA(ephemeralEOA)
+
+    opts?.onProgress?.({
+      stage: 'wrap',
+      current: 0,
+      total: 1,
+      message: 'Wrapping USDC into mhUSDC',
+    })
+
+    const { hash } = await writeAndWait({
+      publicClient: this.ctx.publicClient,
+      sender: this.ctx.sender,
+      address: this.address,
+      abi: muHavenStableAbi,
+      functionName: 'wrapUsdc',
+      args: [amount, ephemeralEOA],
+      operation: 'MuHavenStable.wrapUsdc',
+    })
+
+    opts?.onProgress?.({
+      stage: 'wrap',
+      current: 1,
+      total: 1,
+      message: 'USDC wrapped into mhUSDC',
       txHash: hash,
     })
 

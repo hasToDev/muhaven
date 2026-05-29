@@ -13,8 +13,8 @@ import IssuerContextCard from '@/components/cash/IssuerContextCard.vue'
 import { buildWriteContext, getPublicClient } from '@/services/v35/context'
 import * as VaultService from '@/services/contracts/VaultService'
 import * as Erc20Service from '@/services/contracts/Erc20Service'
-import * as LegacyPusdcService from '@/services/contracts/LegacyPusdcService'
 import * as MuHavenStableService from '@/services/contracts/MuHavenStableService'
+import * as TaskManagerService from '@/services/contracts/TaskManagerService'
 import { addresses, v35Addresses, isZeroAddress } from '@/contracts/addresses'
 import { erc20Abi } from '@/contracts/abis'
 import { muHavenStableAbi } from '@muhaven/sdk'
@@ -31,9 +31,11 @@ import {
 // CashPage — Phase 9.A first-run cockpit + wrap wizard.
 //
 //   • "Cash" mode (default; the universal first action for investors):
-//       USDC → mhUSDC via legacy-PUSDC + `MuHavenStable.wrap`. This is
-//       the post-register landing page; the right-aside doubles as the
-//       investor's wallet cockpit (address + QR + balances + faucet).
+//       USDC → mhUSDC via a single-step `MuHavenStable.wrapUsdc` (Wave 5 W3
+//       Phase 9 — USDC pulled straight into the reserve, no legacy-PUSDC
+//       intermediate). This is the post-register landing page; the
+//       right-aside doubles as the investor's wallet cockpit (address + QR +
+//       balances + faucet).
 //
 //   • "Asset" mode (issuer-side, hidden):
 //       underlying ERC-20 RWA → fhERC-20 RWA via `MuHavenVault.wrap`.
@@ -46,15 +48,15 @@ import {
 
 type Mode = 'cash' | 'asset'
 // Wave 5 W3 — direction is orthogonal to mode and only meaningful in Cash:
-//   deposit  = USDC → mhUSDC   (existing wrap flow, unchanged)
-//   withdraw = mhUSDC → USDC   (NEW direct exit; two-phase async claim)
+//   deposit  = USDC → mhUSDC   (single-step direct `wrapUsdc`; Phase 9)
+//   withdraw = mhUSDC → USDC   (direct exit; two-phase async claim)
 // `?mode=unwrap` is the MCP deep-link target → cash + withdraw.
 type Direction = 'deposit' | 'withdraw'
 
 const route = useRoute()
 const router = useRouter()
 const { address, connected } = useWallet()
-const { initialize: initFhe, getEphemeralEOA } = useFhe()
+const { initialize: initFhe, getEphemeralEOA, decryptForTxWithPermit } = useFhe()
 
 // Phase 9.A: mhUSDC decrypted balance is shared cross-page state — the
 // portfolio store already holds the same value (`pusdcConfidentialBalance`
@@ -162,9 +164,6 @@ const isProcessing = ref(false)
 const showSuccess = ref(false)
 const txHash = ref<string | null>(null)
 const errMsg = ref<string | null>(null)
-
-// Cash-mode operator state — once granted, future wraps skip the approval.
-const operatorSet = ref<boolean | null>(null)
 
 // ── Wave 5 W3 — Withdraw (mhUSDC → USDC) state ──────────────────────────
 //
@@ -363,22 +362,6 @@ async function refreshAll() {
 async function decryptMhUsdcBalance() {
   if (!address.value) return
   await portfolio.decryptPusdc(address.value as `0x${string}`)
-}
-
-async function refreshOperatorStatus() {
-  if (!address.value || mode.value !== 'cash' || !wrapperAvailable.value) {
-    operatorSet.value = null
-    return
-  }
-  try {
-    operatorSet.value = await LegacyPusdcService.isOperator(
-      address.value as `0x${string}`,
-      v35Addresses.muHavenStable,
-    )
-  } catch (e) {
-    console.warn('[CashPage] operator status read failed', e)
-    operatorSet.value = null
-  }
 }
 
 async function copyAddress() {
@@ -595,7 +578,6 @@ onBeforeUnmount(() => {
 watch(connected, (val) => {
   if (val) {
     loadBalances()
-    refreshOperatorStatus()
     void loadPendingClaims()
   }
 })
@@ -630,7 +612,6 @@ watch(mode, (m) => {
   showSuccess.value = false
   txHash.value = null
   errMsg.value = null
-  refreshOperatorStatus()
   // Round-2 (CR M-1 + H-2) — direction is meaningful only in cash mode.
   // On mode → asset transition, reset direction so a later flip back to
   // cash doesn't show the withdraw branch unexpectedly. On mode → cash
@@ -647,7 +628,6 @@ watch(mode, (m) => {
 onMounted(() => {
   if (connected.value) {
     loadBalances()
-    refreshOperatorStatus()
     // Round-2 (FE Dev HIGH) — explicit mount-path discovery for the case
     // where `watch(address, immediate)` raced ahead of the wallet adapter
     // resolving `address.value`. The in-flight guard coalesces duplicates
@@ -704,23 +684,21 @@ async function handleSubmit() {
   return handleAssetWrap()
 }
 
-const OPERATOR_EXPIRY_SECONDS = 365 * 24 * 60 * 60
-
 /**
- * USDC → encrypted mhUSDC. Investors hold cleartext Circle USDC after
- * funding their kernel from the Circle faucet; mhUSDC is what
- * `MuHavenSubscription.purchase` pulls. Two on-chain wraps happen
- * sequentially under the user-visible "Mint mhUSDC" step:
- *   a. legacy PUSDC contract pulls USDC + mints PUSDC to the kernel
- *      (`pusdc.wrap(kernel, amount)`)
- *   b. MuHavenStable pulls PUSDC + mints mhUSDC 1:1
- *      (`stable.wrap(encAmount, ephemeralEOA)`)
- * We surface them as one UX step because the investor doesn't care about
- * the intermediate PUSDC layer — they just want spendable mhUSDC.
+ * USDC → encrypted mhUSDC, Wave 5 W3 Phase 9 single-step direct wrap.
+ * Investors hold cleartext Circle USDC after funding their kernel from the
+ * Circle faucet; mhUSDC is what `MuHavenSubscription.purchase` pulls.
  *
- * Approvals (USDC ERC-20 to the PUSDC contract, PUSDC operator to the
- * stable contract) are checked + granted only when missing. Subsequent
- * wraps skip the approvals.
+ * `MuHavenStable.wrapUsdc(amount, eph)` pulls the USDC straight into the
+ * wrapper's reserve and mints mhUSDC 1:1 in ONE transaction — no legacy
+ * PUSDC intermediate, no PUSDC operator grant. This also makes the reserve
+ * circular (deposits grow it, withdrawals drain it). The deposit amount is
+ * public via the USDC ERC-20 Transfer log (same boundary as before — the old
+ * 2-step's USDC→PUSDC leg also exposed it); mhUSDC balances stay confidential.
+ *
+ * Flow:
+ *   - Step 0: approve USDC for the wrapper (only when allowance < amount).
+ *   - Step 1: `stable.wrapUsdc(amount, eph)` (one tx; no client-side encrypt).
  */
 async function handleCashWrap() {
   if (!amount.value || isProcessing.value || !address.value) return
@@ -732,7 +710,7 @@ async function handleCashWrap() {
   errMsg.value = null
 
   try {
-    // USDC and PUSDC both use 6 decimals — same scaling.
+    // USDC and mhUSDC both use 6 decimals — same scaling, no rate conversion.
     const amountUnits = BigInt(Math.round(numericAmount.value * 1_000_000))
     if (amountUnits <= 0n) throw new Error('Amount must be positive')
 
@@ -742,41 +720,30 @@ async function handleCashWrap() {
     // Approve only when allowance < amount. Approve `amountUnits` exactly
     // (not max) so the surface area stays tight; investors who repeat
     // wraps will pay a fresh approve each time but it's a 1-tx ERC-20
-    // call — minor cost vs. perpetual unlimited approval risk.
+    // call — minor cost vs. perpetual unlimited approval risk. Note the
+    // spender is now the wrapper itself (wrapUsdc pulls USDC directly),
+    // not the legacy PUSDC contract.
     currentStep.value = 0
     const allowance = await Erc20Service.allowance(
-      addresses.usdc, kernel, addresses.pusdc,
+      addresses.usdc, kernel, v35Addresses.muHavenStable,
     )
     if (allowance < amountUnits) {
-      await Erc20Service.approve(addresses.usdc, addresses.pusdc, amountUnits)
+      await Erc20Service.approve(addresses.usdc, v35Addresses.muHavenStable, amountUnits)
       toast.info('USDC approved', {
         description: 'Wrapper can now pull your USDC',
       })
     }
 
-    // ── Step 1 (display) → USDC → mhUSDC (collapses two on-chain hops) ─
+    // ── Step 1 (display) → Direct USDC → mhUSDC wrap (single tx) ───────
+    // `wrapUsdc` takes the cleartext amount (the on-chain handle is
+    // trivially-encrypted), so there's no client-side encrypt round-trip.
     currentStep.value = 1
-
-    // (a) USDC → PUSDC under the hood. Mints PUSDC to the kernel as the
-    //     intermediate collateral the wrapper will then encrypt.
-    await LegacyPusdcService.wrap(kernel, amountUnits)
-
-    // (b) Wrapper operator approval, if missing. Wraps 2 and onward
-    //     skip this — operator is granted with a long expiry.
-    if (operatorSet.value !== true) {
-      const expiry = BigInt(Math.floor(Date.now() / 1000) + OPERATOR_EXPIRY_SECONDS)
-      await LegacyPusdcService.setOperator(v35Addresses.muHavenStable, expiry)
-      operatorSet.value = true
-    }
-
-    // (c) Mint mhUSDC via the SDK (encrypts client-side, grants ACL
-    //     on the new mhUSDC handle to the active session EOA).
     await initFhe()
     const ctx = await buildWriteContext()
     const stable = new StableClient(ctx, v35Addresses.muHavenStable)
     const eph = getEphemeralEOA() as `0x${string}`
 
-    const hash = await stable.wrap(amountUnits, eph)
+    const hash = await stable.wrapUsdc(amountUnits, eph)
     txHash.value = hash
     showSuccess.value = true
     toast.success('Wrap confirmed', {
@@ -869,11 +836,42 @@ async function handleWithdraw() {
       // The re-discovery on next mount picks it up authoritatively. A poll
       // tick fires `withdrawDecryptResult(claimId)` within 5s to flip
       // `ready` once the coprocessor catches up.
-      pendingClaims.value = [
-        ...pendingClaims.value,
-        { claimId, ready: false, amount: null, claiming: false, errMsg: null },
-      ]
+      // W3 Phase 8: optimistic add — ready immediately. The
+      // decrypt+publish runs inside `claimWithdrawal` when the user
+      // taps Claim (or auto-fires below for same-session burns).
+      const optimisticClaim = {
+        claimId,
+        ready: true,
+        amount: null,
+        claiming: false,
+        errMsg: null,
+      } as const
+      pendingClaims.value = [...pendingClaims.value, { ...optimisticClaim }]
       ensurePollingActive()
+
+      // W3 Phase 8.1 — auto-claim immediately after a successful burn.
+      // The same-session ephemeralEOA is in the burn handle's ACL grant
+      // (`FHE.allow(burnAmount, ephemeralEOA)` from `withdrawToUsdc`), so
+      // the off-chain `decryptForTx` permit verification + on-chain
+      // `publishDecryptResult` + `claimUsdc` can all run back-to-back
+      // without an extra user tap. Total UX collapses to one passkey
+      // sign for the burn (the decrypt + publish + claim all sign via
+      // the kernel's already-mounted session). The pending-claim list
+      // entry stays put as a fallback if any leg fails — the user can
+      // retry from the list.
+      //
+      // Find the live ref in pendingClaims after the append (the array
+      // was rebuilt so `optimisticClaim` is a different object).
+      const live = pendingClaims.value.find((c) => c.claimId === claimId)
+      if (live) {
+        // Don't `await` — let the burn-success toast render first, then
+        // claimWithdrawal updates the list / fires its own toasts on
+        // success or error. Errors stay scoped to the claim row.
+        toast.info('Settling your USDC…', {
+          description: 'Decrypting the burned amount and publishing the result on-chain.',
+        })
+        void claimWithdrawal(live)
+      }
     } else {
       // Defensive: the SDK returns null only if the receipt had no
       // WithdrawRequested log (shouldn't happen on a successful tx). The
@@ -886,8 +884,7 @@ async function handleWithdraw() {
 
     withdrawSuccess.value = true
     toast.success('Withdrawal requested', {
-      description: 'Burning mhUSDC + waiting for the coprocessor to decrypt the amount. ' +
-        'You can claim your USDC from the list below once it\'s ready (~30-60s).',
+      description: 'Burning mhUSDC. Auto-claim runs immediately if the same session signed the burn.',
     })
     // Refresh mhUSDC display — the burn already dropped the encrypted
     // balance handle, but only the user can decrypt the new value.
@@ -945,6 +942,120 @@ async function claimWithdrawal(claim: PendingClaim) {
     const ctx = await buildWriteContext()
     const stable = new StableClient(ctx, v35Addresses.muHavenStable)
 
+    // ── W3 Phase 8 — client-driven decrypt + publish before claim ──────
+    //
+    // The deployed cofhe coprocessor on Arb Sepolia does NOT auto-publish
+    // decrypt results in response to on-chain `AllowedForDecryption`
+    // events (empirically verified 2026-05-29: only 1 such event in 5.5h
+    // prod-wide, zero matching publishes). The actual prod cofhe flow
+    // requires the client to (a) fetch the decrypted value + Threshold
+    // Network signature via `cofheClient.decryptForTx(handle)`, and
+    // (b) submit it on-chain via `TaskManager.publishDecryptResult`
+    // BEFORE the contract reader (here: `MuHavenStable.claimUsdc`'s
+    // internal `FHE.getDecryptResultSafe`) can return `ready=true`.
+    //
+    // Reference: `development/DEV_WAVE_5/W3_PHASE_8_PLAN.md` and
+    // https://cofhe-docs.fhenix.zone/tutorials/migrating-from-fhe-decrypt.md.
+    //
+    // The poll-driven local `ready` flag is OPTIMISTIC — it polls
+    // `getDecryptResultSafe` which won't return ready until step (b)
+    // lands. So `claim.ready === true` here means EITHER (i) someone
+    // else (another tab, a relayer, the mock TM auto-publish in tests)
+    // already published OR (ii) the user has already attempted this
+    // claim's publish. Either way we re-attempt the decrypt + publish
+    // path defensively; an already-published handle reverts on TM and
+    // we treat that as success (the result is in storage either way).
+    //
+    // Read the burn handle from the claim record. Belt-and-suspenders:
+    // we have the handle in the WithdrawRequested event indexed at
+    // load time too, but reading the storage record is simpler than
+    // threading it through the PendingClaim model.
+    const claimRecord = await MuHavenStableService.getWithdrawClaim(claim.claimId)
+    if (isUnmounted) return
+    const handle = claimRecord.handle as `0x${string}`
+
+    // Step (a): off-chain decrypt via Threshold Network.
+    //
+    // 403 on first try usually means the active session's ephemeralEOA
+    // ISN'T in the burn handle's ACL — happens when the burn was signed
+    // by a prior session (different in-memory eph key, regenerated on
+    // each page reload per `useFhe.ensureEphemeralKey`). The contract's
+    // `refreshAuditGrant(handle, eph)` re-stamps the new eph onto the
+    // historical handle (gated by `FHE.isAllowed(handle, msg.sender)`
+    // so only the rightful claim recipient can call it), then a retry
+    // succeeds. Same shape as `useFhe.decryptForView`'s 403 fallback
+    // for `kind: 'mhUsdcAudit'`.
+    let decryptedValue: bigint
+    let signature: `0x${string}`
+    const tryDecrypt = async () => decryptForTxWithPermit(handle)
+    try {
+      const r = await tryDecrypt()
+      if (isUnmounted) return
+      decryptedValue = r.decryptedValue
+      signature = r.signature
+    } catch (e) {
+      const m = e instanceof Error ? e.message : String(e)
+      const is403 = /HTTP 403/i.test(m) || /Forbidden/i.test(m) || /403/.test(m)
+      if (!is403) {
+        throw new Error(
+          `Decrypt request failed: ${m}. Try refreshing the page and retrying.`,
+        )
+      }
+      // Cross-session ACL refresh — re-grant the new eph access to the
+      // burn handle, then retry. Idempotent: a redundant grant is a
+      // no-op at the FHE precompile.
+      const eph = getEphemeralEOA()
+      try {
+        await MuHavenStableService.refreshAuditGrant(handle, eph)
+        if (isUnmounted) return
+      } catch (refreshErr) {
+        throw new Error(
+          `Decrypt request failed (HTTP 403), and the on-chain ACL refresh ` +
+          `also failed: ${refreshErr instanceof Error ? refreshErr.message : String(refreshErr)}. ` +
+          `If you re-logged in since the withdraw, try the session that signed the burn.`,
+        )
+      }
+      try {
+        const r = await tryDecrypt()
+        if (isUnmounted) return
+        decryptedValue = r.decryptedValue
+        signature = r.signature
+      } catch (retryErr) {
+        const rm = retryErr instanceof Error ? retryErr.message : String(retryErr)
+        throw new Error(
+          `Decrypt retry after ACL refresh still failed: ${rm}. ` +
+          `Try refreshing the page; if it persists, the burn-time ` +
+          `session EOA may have been on a different device.`,
+        )
+      }
+    }
+
+    // Step (b): publish the signed result on-chain. Idempotent at the
+    // TaskManager level — a second publish for the same handle reverts
+    // (we treat it as "already published, continue").
+    try {
+      await TaskManagerService.publishDecryptResult(handle, decryptedValue, signature)
+      if (isUnmounted) return
+    } catch (e) {
+      const m = walkErrorMessage(e)
+      // "result is already published" / "DecryptResultAlreadyPublished" /
+      // any storage-already-set revert — keep going. The contract reader
+      // will see the result from the prior publish.
+      if (
+        /already\s*(published|recorded|set)/i.test(m)
+        || /DecryptResultAlreadyPublished/i.test(m)
+      ) {
+        console.warn('[CashPage] publishDecryptResult: handle already published — continuing')
+      } else {
+        throw new Error(
+          `Publishing the decryption result failed: ${e instanceof Error ? e.message : String(e)}`,
+        )
+      }
+    }
+
+    // Step (c): existing claim settlement. `claimUsdc` reads
+    // `FHE.getDecryptResultSafe(handle)` which now resolves to the value
+    // we just published.
     const hash = await stable.claimUsdc(claim.claimId)
     if (isUnmounted) return
 
@@ -1062,10 +1173,18 @@ async function loadPendingClaimsImpl() {
       ids.map(async (id) => {
         try {
           const r = await MuHavenStableService.withdrawDecryptResult(id)
-          return { id, ready: r.ready, amount: r.ready ? r.amount : null }
+          // W3 Phase 8: a claim is always actionable as soon as it's
+          // discovered — the client-driven decrypt+publish happens inside
+          // `claimWithdrawal` itself, not on a poll. If `getDecryptResultSafe`
+          // happens to return ready (someone else published, or the test
+          // mock auto-published), we surface the amount preemptively.
+          return { id, ready: true, amount: r.ready ? r.amount : null }
         } catch (e) {
           console.warn('[CashPage] withdrawDecryptResult read failed for claim', id, e)
-          return { id, ready: false, amount: null }
+          // Even on read failure, the claim is still actionable — the
+          // client-driven flow re-decrypts at claim time and will
+          // surface any real error then.
+          return { id, ready: true, amount: null }
         }
       }),
     )

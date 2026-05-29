@@ -5,6 +5,7 @@ import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Ini
 import {ERC165Upgradeable} from "@openzeppelin/contracts-upgradeable/utils/introspection/ERC165Upgradeable.sol";
 import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 import {IERC20} from "@openzeppelin/contracts/interfaces/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {
     FHE,
@@ -16,6 +17,25 @@ import {
     TASK_MANAGER_ADDRESS
 } from "@fhenixprotocol/cofhe-contracts/FHE.sol";
 import {IMuHavenStable} from "./interfaces/IMuHavenStable.sol";
+
+// Extension interface for the deployed cofhe TaskManager.
+//
+// The npm-bundled cofhe-contracts 0.1.3 is stale relative to the GitHub
+// master + the Arb Sepolia coprocessor: the legacy
+// `ITaskManager.createDecryptTask(uint256,address)` selector 0x08289827 was
+// removed and replaced with `allowForDecryption(uint256)` selector
+// 0xa307d21d, but the npm package's ICofhe.sol was never republished.
+// Verified empirically on 2026-05-29: the live TM impl (proxy
+// 0xeA30c4B8b44078Bbf8a6ef5b9f1eC1626C7848D9 → impl
+// 0x803adbf341545ce1480781007ff018c9faafe1da) contains
+// `allowForDecryption` in its dispatch table but NOT `createDecryptTask`.
+// Calling the legacy selector falls through to the proxy fallback and
+// reverts empty `0x` — the symptom that blocked the first
+// `withdrawToUsdc` on the W3 cutover impl. Declared locally so we can call
+// the canonical prod entrypoint without waiting for an npm bump.
+interface IExtendedTaskManager {
+    function allowForDecryption(uint256 ctHash) external;
+}
 
 /// @title MuHavenStable
 /// @notice 1:1 confidential-USDC wrapper over the legacy pre-v0.1.0
@@ -146,6 +166,23 @@ contract MuHavenStable is
     ///      during `unwrap`.
     bytes4 private constant _LEGACY_TRANSFER_UINT256 =
         bytes4(keccak256("confidentialTransfer(address,uint256)"));
+
+    /// @dev Wave 5 W3 Phase 9 — `unwrap(address to, uint64 amount)` selector
+    ///      on the legacy PUSDC (the confidential→public exit's request leg).
+    ///      Used by `recoverStrandedPusdcStart` to redeem this contract's own
+    ///      stranded PUSDC back into USDC. The exact selector of the deployed
+    ///      legacy contract MUST be probed on-chain before the prod recovery
+    ///      broadcast — see `W3_PHASE_9_RECOVERY_RUNBOOK.md` (the recovery
+    ///      script's VERIFY_ONLY mode does this). A wrong selector loud-fails
+    ///      `RecoverFailed`; it never silently mis-pays.
+    bytes4 private constant _LEGACY_UNWRAP_ADDRESS_UINT64 =
+        bytes4(keccak256("unwrap(address,uint64)"));
+
+    /// @dev Wave 5 W3 Phase 9 — `claimUnwrapped(uint256)` selector on the
+    ///      legacy PUSDC (the confidential→public exit's claim leg). Used by
+    ///      `recoverStrandedPusdcClaim`.
+    bytes4 private constant _LEGACY_CLAIM_UNWRAPPED =
+        bytes4(keccak256("claimUnwrapped(uint256)"));
 
     /// @notice Wave 5 W3 — max simultaneously-pending withdrawal claims per
     ///         account. Bounds `_userWithdrawClaims` growth + the
@@ -290,6 +327,45 @@ contract MuHavenStable is
     }
 
     /// @inheritdoc IMuHavenStable
+    /// @dev Wave 5 W3 Phase 9 — direct USDC → mhUSDC. Pulls cleartext USDC
+    ///      into this contract (auto-counts as `usdcReserveBalance()`) and
+    ///      mints `amount` of trivially-encrypted mhUSDC. Makes the reserve
+    ///      circular: wraps grow it, withdraws drain it, no legacy PUSDC
+    ///      accumulates for new deposits. CEI: `safeTransferFrom` is the only
+    ///      external call (USDC = canonical, non-reentrant token);
+    ///      `nonReentrant` is belt-and-suspenders.
+    function wrapUsdc(uint256 amount, address ephemeralEOA)
+        external
+        whenNotPaused
+        nonReentrant
+    {
+        if (ephemeralEOA == address(0)) revert InvalidEphemeralEOA();
+        if (usdc == address(0)) revert UsdcReserveNotSet();
+        if (amount == 0) revert ZeroAmount();
+        // mhUSDC `_balances` is euint64; a USDC inflow above type(uint64).max
+        // can't be represented — loud-revert rather than silently truncate
+        // (a truncation would mint less mhUSDC than the USDC pulled).
+        if (amount > type(uint64).max) revert AmountOverflowsUint64();
+
+        // Pull USDC from caller → this contract's reserve.
+        SafeERC20.safeTransferFrom(IERC20(usdc), msg.sender, address(this), amount);
+
+        // Trivially-encrypt the public amount as euint64 and mint mhUSDC.
+        // `FHE.asEuint64(uint256)` returns a trivially-encrypted handle: the
+        // value is public (already exposed by the SafeERC20 Transfer event)
+        // but the handle is FHE-compatible so downstream balance arithmetic
+        // (FHE.add / FHE.sub / FHE.allow) works. `amount` is bounded to
+        // uint64 above, so no truncation occurs.
+        euint64 amountEnc = FHE.asEuint64(amount);
+        FHE.allowThis(amountEnc);
+        FHE.allow(amountEnc, msg.sender);
+        FHE.allow(amountEnc, ephemeralEOA);
+
+        _mintInternal(msg.sender, amountEnc, ephemeralEOA);
+        emit WrapUsdc(msg.sender, ephemeralEOA, amount, amountEnc);
+    }
+
+    /// @inheritdoc IMuHavenStable
     /// @dev Silent-fails to zero on insufficient mhUSDC balance per Rule 5.
     ///      The legacy PUSDC push uses the silent-fail-bounded `actual`
     ///      amount so the wrapper's PUSDC outflow exactly matches the
@@ -383,7 +459,38 @@ contract MuHavenStable is
         FHE.allow(burnAmount, msg.sender);
         FHE.allow(burnAmount, ephemeralEOA);
         bytes32 handle = euint64.unwrap(burnAmount);
-        ITaskManager(TASK_MANAGER_ADDRESS).createDecryptTask(uint256(handle), msg.sender);
+
+        // Request asynchronous decryption.
+        //
+        // Production cofhe TaskManager on Arb Sepolia exposes only
+        // `allowForDecryption(uint256)` (selector 0xa307d21d). The legacy
+        // `createDecryptTask(uint256,address)` selector (0x08289827) is no
+        // longer in the deployed TM dispatch table — npm
+        // `@fhenixprotocol/cofhe-contracts@0.1.3`'s `ITaskManager` still
+        // declares it (stale relative to the GitHub master + the on-chain
+        // coprocessor), so a direct call from this contract reverts empty
+        // `0x` on prod.
+        //
+        // Local `@cofhe/mock-contracts@0.5.1` ships BOTH selectors. Only
+        // `createDecryptTask` auto-publishes a deterministic mock decrypt
+        // result (set `_decryptResultReadyTimestamp[ctHash] = now + 1..10s`),
+        // which is what test helpers' `waitForDecrypt() → time.increase(11)`
+        // depends on. `allowForDecryption` on the mock only grants ACL.
+        //
+        // Call both:
+        //   - `createDecryptTask` first, wrapped in try/catch. Mock: succeeds
+        //     + auto-publishes; tests keep working unchanged. Prod: reverts
+        //     `0x` (selector absent), caught + ignored.
+        //   - `allowForDecryption` always. Mock: redundant ACL grant.
+        //     Prod: the canonical entrypoint that signals the cofhe decrypt
+        //     network to pick up `handle` and `publishDecryptResult` it.
+        try ITaskManager(TASK_MANAGER_ADDRESS).createDecryptTask(uint256(handle), msg.sender) {
+            // mock path: auto-publishes a decrypt result.
+        } catch {
+            // prod path: `createDecryptTask` selector not on the deployed TM.
+            // Real decrypt request flows through `allowForDecryption` below.
+        }
+        IExtendedTaskManager(TASK_MANAGER_ADDRESS).allowForDecryption(uint256(handle));
 
         // Record the pending claim under a fresh monotonic id (1-indexed).
         claimId = ++_nextWithdrawClaimId;
@@ -452,8 +559,27 @@ contract MuHavenStable is
     // ── Direct USDC exit — reserve admin + views (Wave 5 W3) ─────────────
 
     /// @inheritdoc IMuHavenStable
+    /// @dev Wave 5 W3 Phase 9 (SecEng M-01) — enforce `decimals() == 6` on the
+    ///      reserve token. The 1:1 conversion (`wrapUsdc` mint + `claimUsdc`
+    ///      payout) treats the raw integer amount as both USDC and mhUSDC base
+    ///      units; a non-6-dp reserve token would mint/pay at the wrong scale.
+    ///      Phase 9's `wrapUsdc` newly couples the MINT rate to this setter
+    ///      (pre-Phase-9 the reserve only paid out), so the guard is on-chain
+    ///      defense-in-depth above the seed script's off-chain canonical-USDC
+    ///      allowlist. A token without `decimals()` (EOA / non-ERC20) also
+    ///      reverts here.
     function setUsdcReserveToken(address usdc_) external onlyOwner {
         if (usdc_ == address(0)) revert ZeroAddress();
+        // Low-level staticcall (not a high-level `try`) so the no-code / EOA /
+        // non-ERC20 case ALSO yields the clean custom error: a high-level call
+        // to a code-less address reverts via Solidity's pre-call extcodesize
+        // check OUTSIDE try/catch, giving an opaque revert. The staticcall
+        // returns ok=true with empty data for a code-less target, which
+        // `data.length < 32` catches.
+        (bool ok, bytes memory data) =
+            usdc_.staticcall(abi.encodeWithSelector(IERC20Metadata.decimals.selector));
+        if (!ok || data.length < 32) revert ReserveTokenDecimalsMismatch();
+        if (abi.decode(data, (uint8)) != 6) revert ReserveTokenDecimalsMismatch();
         usdc = usdc_;
         emit UsdcReserveTokenSet(usdc_);
     }
@@ -503,6 +629,69 @@ contract MuHavenStable is
         bytes32 handle = _withdrawClaims[claimId].handle;
         if (_withdrawClaims[claimId].to == address(0)) return (0, false);
         return FHE.getDecryptResultSafe(euint64.wrap(handle));
+    }
+
+    // ── Stranded-PUSDC recovery (Wave 5 W3 Phase 9 — owner-only) ─────────
+    //
+    // Every W3 withdraw (`withdrawToUsdc` → `claimUsdc`) burns mhUSDC and pays
+    // USDC from the reserve, but the legacy PUSDC that originally backed that
+    // mhUSDC stays inside this contract forever ("stranded PUSDC"). These two
+    // owner-only entrypoints let this contract redeem its own stranded PUSDC
+    // back into USDC via the legacy PUSDC's two-phase async unwrap, replenishing
+    // the reserve. Occasional operator op; no automation, no frontend surface.
+    // Phase 9's `wrapUsdc` + this recovery together supersede the
+    // ADR_W3_RESERVE_MODEL.md "one-way drain" + "stranded PUSDC" subsections.
+
+    /// @inheritdoc IMuHavenStable
+    /// @dev Owner-only. `whenNotPaused` (wrapper kill-switch) blocks it;
+    ///      `claimsPaused` (W3 user-settlement kill-switch) does NOT — recovery
+    ///      tops the reserve UP, the opposite of a user outflow. The legacy
+    ///      PUSDC contract is the only external call; `nonReentrant` guards it.
+    ///      A wrong/absent legacy selector loud-fails `RecoverFailed` — it
+    ///      never silently mis-pays (no funds move on this leg; USDC arrives on
+    ///      the claim leg).
+    function recoverStrandedPusdcStart(uint64 amount)
+        external
+        onlyOwner
+        whenNotPaused
+        nonReentrant
+        returns (uint256 legacyClaimId)
+    {
+        if (usdc == address(0)) revert UsdcReserveNotSet();
+        if (amount == 0) revert ZeroAmount();
+
+        // Call legacyPusdc.unwrap(address(this), amount). The recovered USDC
+        // lands here on the claim leg; the legacy contract returns a uint256
+        // claim id we capture from the return data.
+        (bool ok, bytes memory ret) = legacyPusdc.call(
+            abi.encodeWithSelector(
+                _LEGACY_UNWRAP_ADDRESS_UINT64,
+                address(this),
+                amount
+            )
+        );
+        if (!ok || ret.length < 32) revert RecoverFailed();
+        legacyClaimId = abi.decode(ret, (uint256));
+        emit StrandedPusdcRecoveryStarted(amount, legacyClaimId);
+    }
+
+    /// @inheritdoc IMuHavenStable
+    /// @dev Owner-only. Finalizes a started recovery via
+    ///      `legacyPusdc.claimUnwrapped(legacyClaimId)`. The recovered USDC
+    ///      lands in this contract and auto-counts as the reserve. Surfaces a
+    ///      legacy revert (claim not ready / already claimed / wrong id) as
+    ///      `RecoverClaimFailed`.
+    function recoverStrandedPusdcClaim(uint256 legacyClaimId)
+        external
+        onlyOwner
+        whenNotPaused
+        nonReentrant
+    {
+        (bool ok, ) = legacyPusdc.call(
+            abi.encodeWithSelector(_LEGACY_CLAIM_UNWRAPPED, legacyClaimId)
+        );
+        if (!ok) revert RecoverClaimFailed();
+        emit StrandedPusdcRecoveryClaimed(legacyClaimId);
     }
 
     // ── Confidential transfers (modern surface) ─────────────────────────

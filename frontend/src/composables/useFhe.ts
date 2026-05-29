@@ -809,6 +809,54 @@ export function useFhe() {
     return ensureReady()
   }
 
+  /**
+   * Wave 5 W3 Phase 8 — fetch a Threshold Network-signed decryption of
+   * `ctHash` for SUBMITTING ON-CHAIN via `TaskManager.publishDecryptResult`.
+   *
+   * Distinct from `decryptForView`:
+   *   - `decryptForView` is for UI display — pulls the plaintext via the
+   *     SDK + permit, no on-chain submission.
+   *   - `decryptForTx` is for contract consumption — also returns the
+   *     Threshold Network's ECDSA signature, which the caller submits to
+   *     the TaskManager so any subsequent `FHE.getDecryptResultSafe(handle)`
+   *     returns `ready=true`.
+   *
+   * This is the canonical prod cofhe decrypt-request mechanism, per
+   * https://cofhe-docs.fhenix.zone/tutorials/migrating-from-fhe-decrypt.md.
+   * It's the W3 P8 fix for the unwrap-claim flow — the deployed cofhe
+   * coprocessor does NOT auto-publish results from on-chain
+   * `AllowedForDecryption` events; the client must fetch + submit
+   * itself.
+   *
+   * Uses the active permit (same as `decryptForView`). Auto-refreshes
+   * the self-permit on expiry. Returns the value + ready-to-publish
+   * signature.
+   */
+  async function decryptForTxWithPermit(
+    ctHash: bigint | string,
+  ): Promise<{ decryptedValue: bigint; signature: `0x${string}` }> {
+    const client = await ensureReady()
+    const run = async () => {
+      const result = await client
+        .decryptForTx(ctHash)
+        .withPermit()
+        .execute()
+      return {
+        decryptedValue: result.decryptedValue,
+        signature: result.signature,
+      }
+    }
+    try {
+      return await run()
+    } catch (e) {
+      if (isExpiredPermitError(e)) {
+        await ensureFreshSelfPermit(client)
+        return await run()
+      }
+      throw e
+    }
+  }
+
   /** Tear down the cofhe client + wipe the ephemeral key on logout. */
   function destroy(): void {
     if (cofheClient) {
@@ -842,6 +890,7 @@ export function useFhe() {
     decryptSnapshotSupplyForView,
     decryptYieldEpochAggregateForView,
     decryptRedemptionProceedsForView,
+    decryptForTxWithPermit,
     getRawClient,
     destroy,
   }

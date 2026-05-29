@@ -426,6 +426,21 @@ describe("MuHavenStable — direct mhUSDC → USDC exit (Wave 5 W3)", () => {
       );
     });
 
+    it("setUsdcReserveToken rejects a non-6-decimal reserve token (SecEng M-01)", async () => {
+      const { stable, deployer } = await loadFixture(deployFixture);
+      // TestTreasury is a plain 18-dp ERC-20 — a 1:1 reserve against it would
+      // mint/pay mhUSDC at the wrong scale, so setUsdcReserveToken must reject it.
+      const TestTreasury = await hre.ethers.getContractFactory("TestTreasury");
+      const eighteenDp = await TestTreasury.deploy("Test RWA", "TRWA", 1_000n);
+      await expect(
+        stable.connect(deployer).setUsdcReserveToken(await eighteenDp.getAddress())
+      ).to.be.revertedWithCustomError(stable, "ReserveTokenDecimalsMismatch");
+      // A token with no decimals() (an EOA) also reverts the same way.
+      await expect(
+        stable.connect(deployer).setUsdcReserveToken(deployer.address)
+      ).to.be.revertedWithCustomError(stable, "ReserveTokenDecimalsMismatch");
+    });
+
     it("fundUsdcReserve is owner-only and increases the reserve", async () => {
       const { stable, usdc, deployer, alice } = await loadFixture(deployFixture);
       const before = await stable.usdcReserveBalance();
@@ -468,6 +483,237 @@ describe("MuHavenStable — direct mhUSDC → USDC exit (Wave 5 W3)", () => {
       expect(await stable.usdcReserveBalance()).to.equal(0n);
       expect(await stable.usdc()).to.equal(hre.ethers.ZeroAddress);
       expect(await stable.claimsPaused()).to.equal(false);
+    });
+  });
+
+  // ── Phase 9: direct USDC → mhUSDC wrap (wrapUsdc) ─────────────────────
+
+  describe("wrapUsdc (Phase 9 — direct deposit)", () => {
+    /** Mint `amount` MockUSDC to `holder` and approve the stable to pull it. */
+    async function mintAndApproveUsdc(usdc: any, stable: any, holder: any, amount: bigint) {
+      await usdc.mint(holder.address, amount);
+      await usdc.connect(holder).approve(await stable.getAddress(), amount);
+    }
+
+    it("happy path: pulls USDC into the reserve and mints 1:1 mhUSDC", async () => {
+      const { stable, usdc, alice } = await loadFixture(deployFixture);
+      const eph = createEphemeralEOA();
+      const reserveBefore = await stable.usdcReserveBalance();
+      const aliceUsdcBefore = await usdc.balanceOf(alice.address);
+
+      await mintAndApproveUsdc(usdc, stable, alice, 50n * ONE_USDC);
+      await stable.connect(alice).wrapUsdc(50n * ONE_USDC, eph.address);
+
+      // mhUSDC minted 1:1.
+      await hre.cofhe.mocks.expectPlaintext(
+        await stable.confidentialBalanceOf(alice.address),
+        50n * ONE_USDC
+      );
+      await hre.cofhe.mocks.expectPlaintext(await stable.confidentialTotalSupply(), 50n * ONE_USDC);
+      // USDC moved from alice → reserve.
+      expect(await usdc.balanceOf(alice.address)).to.equal(aliceUsdcBefore);
+      expect(await stable.usdcReserveBalance()).to.equal(reserveBefore + 50n * ONE_USDC);
+    });
+
+    it("second wrap by the same user FHE.adds onto the existing balance", async () => {
+      const { stable, usdc, alice } = await loadFixture(deployFixture);
+      const eph = createEphemeralEOA();
+      await mintAndApproveUsdc(usdc, stable, alice, 30n * ONE_USDC);
+      await stable.connect(alice).wrapUsdc(30n * ONE_USDC, eph.address);
+      await mintAndApproveUsdc(usdc, stable, alice, 20n * ONE_USDC);
+      await stable.connect(alice).wrapUsdc(20n * ONE_USDC, eph.address);
+      await hre.cofhe.mocks.expectPlaintext(
+        await stable.confidentialBalanceOf(alice.address),
+        50n * ONE_USDC
+      );
+    });
+
+    it("emits WrapUsdc with the public amount + a decryptable handle", async () => {
+      const { stable, usdc, alice, acl } = await loadFixture(deployFixture);
+      const eph = createEphemeralEOA();
+      await mintAndApproveUsdc(usdc, stable, alice, 17n * ONE_USDC);
+
+      const tx = await stable.connect(alice).wrapUsdc(17n * ONE_USDC, eph.address);
+      const rc = await tx.wait();
+      let handle: string | null = null;
+      for (const log of rc.logs) {
+        try {
+          const parsed = stable.interface.parseLog({ topics: log.topics, data: log.data });
+          if (parsed && parsed.name === "WrapUsdc") {
+            expect(parsed.args.from).to.equal(alice.address);
+            expect(parsed.args.ephemeralEOA).to.equal(eph.address);
+            expect(parsed.args.amount).to.equal(17n * ONE_USDC);
+            handle = parsed.args.amountHandle as string;
+          }
+        } catch {
+          /* not ours */
+        }
+      }
+      expect(handle, "WrapUsdc event must be emitted").to.not.equal(null);
+      // The amount handle is decryptable by caller + eph (Rule 2 grants).
+      expect(await acl.isAllowed(handleToUint(handle), alice.address)).to.equal(true);
+      expect(await acl.isAllowed(handleToUint(handle), eph.address)).to.equal(true);
+      await hre.cofhe.mocks.expectPlaintext(handle, 17n * ONE_USDC);
+    });
+
+    it("reverts ZeroAmount on a zero deposit", async () => {
+      const { stable, alice } = await loadFixture(deployFixture);
+      const eph = createEphemeralEOA();
+      await expect(
+        stable.connect(alice).wrapUsdc(0n, eph.address)
+      ).to.be.revertedWithCustomError(stable, "ZeroAmount");
+    });
+
+    it("reverts AmountOverflowsUint64 above type(uint64).max", async () => {
+      const { stable, alice } = await loadFixture(deployFixture);
+      const eph = createEphemeralEOA();
+      await expect(
+        stable.connect(alice).wrapUsdc(1n << 64n, eph.address)
+      ).to.be.revertedWithCustomError(stable, "AmountOverflowsUint64");
+    });
+
+    it("reverts InvalidEphemeralEOA on a zero ephemeral address", async () => {
+      const { stable, alice } = await loadFixture(deployFixture);
+      await expect(
+        stable.connect(alice).wrapUsdc(1n * ONE_USDC, hre.ethers.ZeroAddress)
+      ).to.be.revertedWithCustomError(stable, "InvalidEphemeralEOA");
+    });
+
+    it("reverts UsdcReserveNotSet when the reserve token isn't configured", async () => {
+      await hre.run("task:cofhe-mocks:deploy");
+      const [deployer, alice] = await hre.ethers.getSigners();
+      const pusdc = await deployMockPUSDC();
+      const Stable = await hre.ethers.getContractFactory("MuHavenStable");
+      const stable = await upgrades.deployProxy(
+        Stable,
+        ["mhUSDC", "mhUSDC", deployer.address, await pusdc.getAddress()],
+        { kind: "transparent", initializer: "initialize" }
+      );
+      const eph = createEphemeralEOA();
+      await expect(
+        stable.connect(alice).wrapUsdc(1n * ONE_USDC, eph.address)
+      ).to.be.revertedWithCustomError(stable, "UsdcReserveNotSet");
+    });
+
+    it("reverts PausedSurface when the wrapper is paused", async () => {
+      const { stable, usdc, deployer, alice } = await loadFixture(deployFixture);
+      const eph = createEphemeralEOA();
+      await mintAndApproveUsdc(usdc, stable, alice, 5n * ONE_USDC);
+      await stable.connect(deployer).pause();
+      await expect(
+        stable.connect(alice).wrapUsdc(5n * ONE_USDC, eph.address)
+      ).to.be.revertedWithCustomError(stable, "PausedSurface");
+    });
+  });
+
+  // ── Phase 9: stranded-PUSDC recovery (owner-only, two-phase) ──────────
+
+  describe("recoverStrandedPusdc (Phase 9 — reserve replenishment)", () => {
+    const STRANDED = 8n * ONE_USDC; // simulated stranded amount
+
+    /** Wire the MockPUSDC's recovery stub to pay out `usdc` and pre-fund it. */
+    async function wireRecovery(pusdc: any, usdc: any, amount: bigint) {
+      await pusdc.setRecoveryUsdc(await usdc.getAddress());
+      // The USDC that backs the stranded PUSDC lives in the legacy contract.
+      await usdc.mint(await pusdc.getAddress(), amount);
+    }
+
+    it("start → claim lands recovered USDC in the reserve (owner-only, two-phase)", async () => {
+      const { stable, pusdc, usdc, deployer } = await loadFixture(deployFixture);
+      await wireRecovery(pusdc, usdc, STRANDED);
+      const reserveBefore = await stable.usdcReserveBalance();
+
+      const startTx = await stable.connect(deployer).recoverStrandedPusdcStart(STRANDED);
+      const startRc = await startTx.wait();
+      let legacyClaimId: bigint | null = null;
+      for (const log of startRc.logs) {
+        try {
+          const parsed = stable.interface.parseLog({ topics: log.topics, data: log.data });
+          if (parsed && parsed.name === "StrandedPusdcRecoveryStarted") {
+            expect(parsed.args.amount).to.equal(STRANDED);
+            legacyClaimId = parsed.args.legacyClaimId as bigint;
+          }
+        } catch {
+          /* not ours */
+        }
+      }
+      expect(legacyClaimId, "StrandedPusdcRecoveryStarted must be emitted").to.equal(1n);
+
+      // Reserve unchanged until the claim leg.
+      expect(await stable.usdcReserveBalance()).to.equal(reserveBefore);
+
+      await expect(stable.connect(deployer).recoverStrandedPusdcClaim(legacyClaimId!))
+        .to.emit(stable, "StrandedPusdcRecoveryClaimed")
+        .withArgs(legacyClaimId);
+      expect(await stable.usdcReserveBalance()).to.equal(reserveBefore + STRANDED);
+    });
+
+    it("recoverStrandedPusdcStart is owner-only", async () => {
+      const { stable, pusdc, usdc, alice } = await loadFixture(deployFixture);
+      await wireRecovery(pusdc, usdc, STRANDED);
+      await expect(
+        stable.connect(alice).recoverStrandedPusdcStart(STRANDED)
+      ).to.be.revertedWithCustomError(stable, "OnlyOwner");
+    });
+
+    it("recoverStrandedPusdcStart reverts ZeroAmount on zero", async () => {
+      const { stable, deployer } = await loadFixture(deployFixture);
+      await expect(
+        stable.connect(deployer).recoverStrandedPusdcStart(0n)
+      ).to.be.revertedWithCustomError(stable, "ZeroAmount");
+    });
+
+    it("recoverStrandedPusdcStart reverts UsdcReserveNotSet pre-cutover", async () => {
+      await hre.run("task:cofhe-mocks:deploy");
+      const [deployer] = await hre.ethers.getSigners();
+      const pusdc = await deployMockPUSDC();
+      const Stable = await hre.ethers.getContractFactory("MuHavenStable");
+      const stable = await upgrades.deployProxy(
+        Stable,
+        ["mhUSDC", "mhUSDC", deployer.address, await pusdc.getAddress()],
+        { kind: "transparent", initializer: "initialize" }
+      );
+      await expect(
+        stable.connect(deployer).recoverStrandedPusdcStart(STRANDED)
+      ).to.be.revertedWithCustomError(stable, "UsdcReserveNotSet");
+    });
+
+    it("recoverStrandedPusdcStart reverts RecoverFailed when the legacy unwrap reverts", async () => {
+      const { stable, pusdc, usdc, deployer } = await loadFixture(deployFixture);
+      await wireRecovery(pusdc, usdc, STRANDED);
+      await pusdc.setUnwrapShouldRevert(true);
+      await expect(
+        stable.connect(deployer).recoverStrandedPusdcStart(STRANDED)
+      ).to.be.revertedWithCustomError(stable, "RecoverFailed");
+    });
+
+    it("recoverStrandedPusdcStart reverts PausedSurface when the wrapper is paused", async () => {
+      const { stable, pusdc, usdc, deployer } = await loadFixture(deployFixture);
+      await wireRecovery(pusdc, usdc, STRANDED);
+      await stable.connect(deployer).pause();
+      await expect(
+        stable.connect(deployer).recoverStrandedPusdcStart(STRANDED)
+      ).to.be.revertedWithCustomError(stable, "PausedSurface");
+    });
+
+    it("recoverStrandedPusdcClaim is owner-only", async () => {
+      const { stable, pusdc, usdc, deployer, alice } = await loadFixture(deployFixture);
+      await wireRecovery(pusdc, usdc, STRANDED);
+      await stable.connect(deployer).recoverStrandedPusdcStart(STRANDED);
+      await expect(
+        stable.connect(alice).recoverStrandedPusdcClaim(1n)
+      ).to.be.revertedWithCustomError(stable, "OnlyOwner");
+    });
+
+    it("recoverStrandedPusdcClaim reverts RecoverClaimFailed on a double-claim", async () => {
+      const { stable, pusdc, usdc, deployer } = await loadFixture(deployFixture);
+      await wireRecovery(pusdc, usdc, STRANDED);
+      await stable.connect(deployer).recoverStrandedPusdcStart(STRANDED);
+      await stable.connect(deployer).recoverStrandedPusdcClaim(1n);
+      // Legacy double-claim guard surfaces as RecoverClaimFailed.
+      await expect(
+        stable.connect(deployer).recoverStrandedPusdcClaim(1n)
+      ).to.be.revertedWithCustomError(stable, "RecoverClaimFailed");
     });
   });
 });

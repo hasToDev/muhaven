@@ -7,6 +7,7 @@ import {
     InEuint64,
     Common
 } from "@fhenixprotocol/cofhe-contracts/FHE.sol";
+import {IERC20} from "@openzeppelin/contracts/interfaces/IERC20.sol";
 import {IFHERC20} from "../interfaces/IFHERC20.sol";
 
 /// @title MockPUSDC
@@ -259,6 +260,62 @@ contract MockPUSDC is IFHERC20 {
 
     function isFherc20() external pure returns (bool) {
         return true;
+    }
+
+    // ── Wave 5 W3 Phase 9 — two-phase unwrap/claim stubs (recovery test) ──
+    //
+    // Mirror the live legacy PUSDC's confidential→public exit so
+    // `MuHavenStable.recoverStrandedPusdcStart/Claim` can be tested:
+    //   - `unwrap(to, amount)` records a pending claim + returns a monotonic
+    //     claim id (the live contract's selector 0x4c4c029c, verified on-chain).
+    //   - `claimUnwrapped(id)` pays out `recoveryUsdc` to the recorded recipient
+    //     (the live contract's selector 0xa703bd3c).
+    // The test mints `recoveryUsdc` to THIS mock so `claimUnwrapped` has the
+    // funds to release — simulating the USDC that backs the stranded PUSDC.
+
+    uint256 private _nextUnwrapClaimId;
+    mapping(uint256 => address) private _unwrapTo;
+    mapping(uint256 => uint256) private _unwrapAmount;
+    mapping(uint256 => bool) private _unwrapClaimed;
+
+    /// @notice USDC token this mock releases on `claimUnwrapped`.
+    address public recoveryUsdc;
+    /// @notice Test toggle — when true, `unwrap` reverts (RecoverFailed path).
+    bool public unwrapShouldRevert;
+    /// @notice Test toggle — when true, `claimUnwrapped` reverts (RecoverClaimFailed path).
+    bool public claimShouldRevert;
+
+    function setRecoveryUsdc(address usdc_) external {
+        recoveryUsdc = usdc_;
+    }
+
+    function setUnwrapShouldRevert(bool v) external {
+        unwrapShouldRevert = v;
+    }
+
+    function setClaimShouldRevert(bool v) external {
+        claimShouldRevert = v;
+    }
+
+    /// @notice Stub for the legacy `unwrap(address to, uint64 amount)` — records
+    ///         a pending claim and returns its id (mirrors the live two-phase
+    ///         exit's request leg).
+    function unwrap(address to, uint64 amount) external returns (uint256 claimId) {
+        require(!unwrapShouldRevert, "MOCK_UNWRAP_REVERT");
+        claimId = ++_nextUnwrapClaimId;
+        _unwrapTo[claimId] = to;
+        _unwrapAmount[claimId] = uint256(amount);
+    }
+
+    /// @notice Stub for the legacy `claimUnwrapped(uint256)` — releases the
+    ///         recorded USDC to the recorded recipient (the claim leg). Reverts
+    ///         on double-claim / unknown id, matching the live double-claim guard.
+    function claimUnwrapped(uint256 claimId) external {
+        require(!claimShouldRevert, "MOCK_CLAIM_REVERT");
+        require(_unwrapTo[claimId] != address(0), "MOCK_UNKNOWN_CLAIM");
+        require(!_unwrapClaimed[claimId], "MOCK_ALREADY_CLAIMED");
+        _unwrapClaimed[claimId] = true;
+        IERC20(recoveryUsdc).transfer(_unwrapTo[claimId], _unwrapAmount[claimId]);
     }
 
     // ── Internal ──────────────────────────────────────────────────────────

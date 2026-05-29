@@ -1247,6 +1247,10 @@ describe("MuHavenStable — Phase 7.5-A", () => {
         "function withdrawDecryptResult(uint256) view returns (uint64,bool)",
         "function usdc() view returns (address)",
         "function claimsPaused() view returns (bool)",
+        // Wave 5 W3 Phase 9 — direct USDC wrap + stranded-PUSDC recovery.
+        "function wrapUsdc(uint256,address)",
+        "function recoverStrandedPusdcStart(uint64) returns (uint256)",
+        "function recoverStrandedPusdcClaim(uint256)",
       ]);
       expect(await stable.supportsInterface(interfaceId)).to.equal(true);
     });

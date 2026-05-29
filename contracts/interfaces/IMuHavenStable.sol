@@ -85,6 +85,32 @@ interface IMuHavenStable {
     ///         requesting more — bounds the per-user claim list.
     error TooManyPendingWithdrawals();
 
+    // ── Wave 5 W3 Phase 9 errors (direct wrap + stranded-PUSDC recovery) ──
+
+    /// @notice A mutating amount argument was zero (`wrapUsdc` /
+    ///         `recoverStrandedPusdcStart`). Loud-revert so a zero-value
+    ///         no-op can't masquerade as a successful deposit/recovery.
+    error ZeroAmount();
+    /// @notice `wrapUsdc` was called with `amount > type(uint64).max`. mhUSDC
+    ///         `_balances` is `euint64`; a larger inflow can't be represented
+    ///         and silent truncation would create an undetectable accounting
+    ///         bug, so we revert.
+    error AmountOverflowsUint64();
+    /// @notice `recoverStrandedPusdcStart` — the legacy PUSDC `unwrap` call
+    ///         reverted or returned no claim id. The stranded PUSDC stays put;
+    ///         re-check the legacy interface + the amount and retry.
+    error RecoverFailed();
+    /// @notice `recoverStrandedPusdcClaim` — the legacy PUSDC `claimUnwrapped`
+    ///         call reverted (e.g. claim not ready, already claimed, or a wrong
+    ///         claim id). No state change here; retry once the legacy decrypt
+    ///         lands.
+    error RecoverClaimFailed();
+    /// @notice `setUsdcReserveToken` was given a token whose `decimals()` isn't
+    ///         6 (or that doesn't implement `decimals()`). The 1:1 mhUSDC↔USDC
+    ///         conversion (`wrapUsdc` mint + `claimUsdc` payout) requires a
+    ///         6-dp reserve token; a mismatch would mint/pay at the wrong scale.
+    error ReserveTokenDecimalsMismatch();
+
     // ── Events ───────────────────────────────────────────────────────────
 
     event StableInitialized(address indexed owner, address indexed legacyPusdc);
@@ -143,6 +169,28 @@ interface IMuHavenStable {
     /// @notice Wave 5 W3 — owner toggled the settlement kill-switch.
     event ClaimsPausedSet(bool paused);
 
+    // ── Wave 5 W3 Phase 9 events (direct wrap + stranded-PUSDC recovery) ──
+
+    /// @notice A direct USDC → mhUSDC wrap landed. `amount` cleartext USDC
+    ///         (public — the USDC ERC-20 Transfer reveals it anyway) entered
+    ///         the reserve; `amountHandle` is the trivially-encrypted euint64
+    ///         minted to `from` (permit-decryptable by `from` / `ephemeralEOA`).
+    event WrapUsdc(
+        address indexed from,
+        address indexed ephemeralEOA,
+        uint256 amount,
+        euint64 amountHandle
+    );
+    /// @notice Owner initiated redemption of this contract's stranded legacy
+    ///         PUSDC back into USDC (`recoverStrandedPusdcStart`). `legacyClaimId`
+    ///         is the id returned by the legacy PUSDC — pass it to
+    ///         `recoverStrandedPusdcClaim` to finalize.
+    event StrandedPusdcRecoveryStarted(uint64 amount, uint256 indexed legacyClaimId);
+    /// @notice Owner finalized a stranded-PUSDC recovery
+    ///         (`recoverStrandedPusdcClaim`); the recovered USDC has landed in
+    ///         this contract and auto-counts as `usdcReserveBalance()`.
+    event StrandedPusdcRecoveryClaimed(uint256 indexed legacyClaimId);
+
     // ── Direct USDC-exit claim record (Wave 5 W3) ────────────────────────
 
     /// @notice A pending/settled mhUSDC→USDC withdrawal, keyed by a monotonic
@@ -178,6 +226,22 @@ interface IMuHavenStable {
     ///         balance per `FHE_ACL_CONVENTIONS.md` Rule 5 — observers
     ///         cannot distinguish a fully-funded unwrap from a truncated one.
     function unwrap(InEuint64 calldata encAmount, address ephemeralEOA) external;
+
+    /// @notice Wave 5 W3 Phase 9 — direct USDC → mhUSDC wrap. Pulls `amount`
+    ///         cleartext USDC from the caller (must `usdc.approve(this, amount)`
+    ///         first) straight into the reserve and mints `amount` of
+    ///         trivially-encrypted mhUSDC. Collapses the legacy 2-step
+    ///         (USDC → PUSDC → mhUSDC) to one tx and makes the reserve circular
+    ///         — wraps grow it, withdraws drain it, no PUSDC accumulates.
+    ///
+    ///         Reverts `UsdcReserveNotSet` (reserve token unconfigured),
+    ///         `ZeroAmount`, `AmountOverflowsUint64` (`amount > type(uint64).max`
+    ///         — mhUSDC balances are euint64), `InvalidEphemeralEOA`, or
+    ///         `PausedSurface` (wrapper-wide pause). The deposit amount is
+    ///         public (the USDC Transfer log reveals it) — the same boundary as
+    ///         the legacy 2-step wrap; mhUSDC balances/transfers/withdrawals
+    ///         stay confidential.
+    function wrapUsdc(uint256 amount, address ephemeralEOA) external;
 
     // ── Direct USDC exit (Wave 5 W3 — two-phase async, no PUSDC) ────────
 
@@ -232,6 +296,34 @@ interface IMuHavenStable {
     ///         owner can freeze USDC outflow in a reserve emergency without
     ///         re-freezing deposits/transfers.
     function setClaimsPaused(bool paused_) external;
+
+    // ── Stranded-PUSDC recovery (Wave 5 W3 Phase 9 — owner-only) ─────────
+
+    /// @notice Owner-only — initiate redemption of this contract's stranded
+    ///         legacy PUSDC back into USDC. Every W3 withdraw leaves the PUSDC
+    ///         that backed the burned mhUSDC stranded inside this contract;
+    ///         this calls the legacy PUSDC's two-phase async `unwrap(this,
+    ///         amount)` so the recovered USDC lands here on the claim leg and
+    ///         auto-counts as `usdcReserveBalance()`. Finalize with
+    ///         `recoverStrandedPusdcClaim(legacyClaimId)` after the legacy
+    ///         coprocessor's decrypt delay (~30-60s).
+    ///
+    ///         `amount` is cleartext `uint64` — the owner must compute the
+    ///         stranded total off-chain (= cumulative W3 burns − cumulative
+    ///         unwraps); the contract can't decrypt its own confidential PUSDC
+    ///         balance on-chain. Reverts `UsdcReserveNotSet`, `ZeroAmount`,
+    ///         `OnlyOwner`, `PausedSurface`, or `RecoverFailed` (legacy call
+    ///         reverted / returned no claim id).
+    /// @return legacyClaimId The claim id returned by the legacy PUSDC — pass
+    ///         it verbatim to `recoverStrandedPusdcClaim`.
+    function recoverStrandedPusdcStart(uint64 amount) external returns (uint256 legacyClaimId);
+
+    /// @notice Owner-only — finalize a started recovery by calling the legacy
+    ///         PUSDC's `claimUnwrapped(legacyClaimId)`, so the recovered USDC
+    ///         transfers into this contract. Reverts `OnlyOwner`,
+    ///         `PausedSurface`, or `RecoverClaimFailed` (legacy claim not ready
+    ///         / already claimed / wrong id).
+    function recoverStrandedPusdcClaim(uint256 legacyClaimId) external;
 
     /// @notice Current USDC reserve balance held by the contract (0 if the
     ///         reserve token isn't set yet).

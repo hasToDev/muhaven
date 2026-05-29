@@ -24,6 +24,15 @@ const config: HardhatUserConfig = {
         enabled: true,
         runs: 200,
       },
+      // Emit per-contract storage layout so upgrade-safety tooling
+      // (`scripts/validate-stable-upgrade.ts`) can dump slot ordering for
+      // human review — load-bearing for the manual-upgrade workflow where the
+      // OZ manifest is intentionally drifted. Cheap (build-info only).
+      outputSelection: {
+        "*": {
+          "*": ["storageLayout"],
+        },
+      },
     },
   },
   defaultNetwork: "hardhat",

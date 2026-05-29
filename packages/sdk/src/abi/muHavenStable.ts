@@ -52,6 +52,17 @@ export const muHavenStableAbi = [
     ],
     outputs: [],
   },
+  // ── Direct USDC → mhUSDC wrap (Wave 5 W3 Phase 9) ───────────────────
+  {
+    name: 'wrapUsdc',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'amount', type: 'uint256' },
+      { name: 'ephemeralEOA', type: 'address' },
+    ],
+    outputs: [],
+  },
   // ── Direct USDC exit (Wave 5 W3 — two-phase async, no PUSDC) ─────────
   {
     name: 'withdrawToUsdc',
@@ -292,6 +303,20 @@ export const muHavenStableAbi = [
       { name: 'account', type: 'address', indexed: true },
       { name: 'ephemeralEOA', type: 'address', indexed: true },
       { name: 'amount', type: 'bytes32', indexed: false },
+    ],
+    anonymous: false,
+  },
+  // Wave 5 W3 Phase 9 — direct USDC → mhUSDC wrap. `amount` is the public
+  // USDC pulled into the reserve; `amountHandle` is the trivially-encrypted
+  // euint64 minted (permit-decryptable by `from` / `ephemeralEOA`).
+  {
+    name: 'WrapUsdc',
+    type: 'event',
+    inputs: [
+      { name: 'from', type: 'address', indexed: true },
+      { name: 'ephemeralEOA', type: 'address', indexed: true },
+      { name: 'amount', type: 'uint256', indexed: false },
+      { name: 'amountHandle', type: 'bytes32', indexed: false }, // euint64
     ],
     anonymous: false,
   },

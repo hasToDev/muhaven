@@ -291,6 +291,53 @@ describe("MuHaven SDK Wave 3.5 Phase 7.5 — StableClient (integration)", functi
   });
 
   // ───────────────────────────────────────────────────────────────────────
+  // Direct USDC → mhUSDC wrap (Wave 5 W3 Phase 9) via StableClient
+  // ───────────────────────────────────────────────────────────────────────
+
+  describe("wrapUsdc (W3 Phase 9)", function () {
+    /** Deploy a MockUSDC and wire it as the reserve token (owner). */
+    async function setReserveToken(mhUSDC: any, deployer: any) {
+      const usdc = await (await hre.ethers.getContractFactory("MockUSDC")).deploy();
+      await mhUSDC.connect(deployer).setUsdcReserveToken(await usdc.getAddress());
+      return usdc;
+    }
+
+    it("pre-flight: rejects zero, > uint64 max, and zero ephemeralEOA", async function () {
+      const { mhUSDC } = await loadFixture(deployStableFixture);
+      const ctx = await makeContext(HARDHAT_PK_1, 1);
+      const client = new StableClient(ctx, (mhUSDC as any).target as Address);
+      const eph = createEphemeralEOA();
+
+      await expect(client.wrapUsdc(0n, eph.address as Address)).to.be.rejectedWith(ConfigError, /amount/);
+      await expect(client.wrapUsdc(1n << 64n, eph.address as Address)).to.be.rejectedWith(ConfigError, /2\^64/);
+      await expect(client.wrapUsdc(10n * ONE_PUSDC, ZERO_ADDRESS as Address)).to.be.rejectedWith(ConfigError, /ephemeralEOA/);
+    });
+
+    it("pulls cleartext USDC into the reserve and mints 1:1 mhUSDC (no encrypt step)", async function () {
+      const { deployer, alice, mhUSDC } = await loadFixture(deployStableFixture);
+      const usdc = await setReserveToken(mhUSDC, deployer);
+      const ctx = await makeContext(HARDHAT_PK_1, 1); // alice (same address the SDK signs as)
+      const client = new StableClient(ctx, (mhUSDC as any).target as Address);
+      const eph = createEphemeralEOA();
+
+      // Alice funds + approves USDC, then wraps via the SDK (signs as PK_1 = alice).
+      await usdc.mint(alice.address, 50n * ONE_PUSDC);
+      await usdc.connect(alice).approve(await mhUSDC.getAddress(), 50n * ONE_PUSDC);
+
+      const reserveBefore = await client.usdcReserveBalance();
+      await client.wrapUsdc(50n * ONE_PUSDC, eph.address as Address);
+
+      // mhUSDC minted 1:1; USDC moved alice → reserve.
+      await hre.cofhe.mocks.expectPlaintext(
+        await mhUSDC.confidentialBalanceOf(alice.address),
+        50n * ONE_PUSDC,
+      );
+      expect(await usdc.balanceOf(alice.address)).to.equal(0n);
+      expect(await client.usdcReserveBalance()).to.equal(reserveBefore + 50n * ONE_PUSDC);
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────
   // Transfer + operator gating
   // ───────────────────────────────────────────────────────────────────────
 
