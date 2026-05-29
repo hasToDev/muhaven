@@ -417,9 +417,7 @@ async function decryptAmount(item: ActivityItemDto) {
         //     euint128 aggregate (only `refreshSnapshotSupplyGrant`, which
         //     is onlyIssuer). An AUTONOMOUS-claim row (the runner granted a
         //     throwaway eph, never this browser's eph) — and any manual
-        //     CROSS-session claim — therefore 403s on them. The snapshot
-        //     balance, by contrast, is the investor's own frozen balance
-        //     handle and re-stamps via `MuHavenToken.refreshDecryptGrant`.
+        //     CROSS-session claim — therefore 403s on them.
         //  2. The legacy `balance × floor(totalYield/totalSupply)` order
         //     (the else branch) floors the per-share rate to ZERO for any
         //     fractional yield (e.g. CETES ~$0.09/epoch on a small supply),
@@ -430,7 +428,20 @@ async function decryptAmount(item: ActivityItemDto) {
         //   floor((balance × ratePerShare) / RATE_SCALE) == encShare128.
         // (u64 truncation in `asEuint64(encShare128)` is omitted — same as
         // before — since legitimate yields stay inside u64 by construction.)
-        const snapshotBalance = await fhe.decryptUint128ForView(
+        //
+        // The snapshot balance is a FROZEN historical handle
+        // (`_snapshots[epochId][investor]` = the investor's balance handle
+        // AT snapshot time, since superseded by later buys/claims). It must
+        // be re-granted via the AUDIT path — `MuHavenToken.refreshAuditGrant
+        // (handle, eph)`, which re-stamps THAT specific handle, gated on the
+        // kernel's durable per-handle ACL — NOT `decryptUint128ForView`'s
+        // `refreshDecryptGrant`, which only re-grants the LIVE balance (a
+        // different ctHash once the balance has moved) and is a no-op for a
+        // frozen handle → a 403 the fresh browser eph can't recover from.
+        // Same frozen-handle pattern the Transfer audit rows already use
+        // (`useFhe.ts:697`). 2026-05-30 smoke: this was the actual
+        // autonomous-claim 403, distinct from the aggregate-handle gap above.
+        const snapshotBalance = await fhe.decryptTokenAuditHandleForView(
           snapshotBalanceHandle,
           item.token_address as `0x${string}`,
         )
