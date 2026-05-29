@@ -30,7 +30,7 @@ import type {
  */
 const SNAPSHOT_ABI = parseAbi([
   'function currentEpoch(address token) view returns (uint256)',
-  'function getEpoch(uint256 epochId) view returns (tuple(address token, uint256 snapshotStartTs, uint256 snapshotEndTs, bool finalized, bool funded, bytes32 encTotalYield, bytes32 encTotalSupply, bytes32 encRatio, uint256 claimExpiry, uint256 holderCount, uint128 ratePerShare))',
+  'function getEpoch(uint256 epochId) view returns ((address token, uint256 snapshotStartTs, uint256 snapshotEndTs, bool finalized, bool funded, bytes32 encTotalYield, bytes32 encTotalSupply, bytes32 encRatio, uint256 claimExpiry, uint256 holderCount, uint128 ratePerShare))',
   'function hasClaimed(uint256 epochId, address investor) view returns (bool)',
   'function getSnapshotBalance(uint256 epochId, address investor) view returns (bytes32)',
   'function isSwept(uint256 epochId) view returns (bool)',
