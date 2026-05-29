@@ -47,6 +47,17 @@ when you opt in, headlessly reinvest it into the same RWA.
 
 ### Changed
 
+- **Path D works out-of-the-box: `MUHAVEN_BUNDLER_URL` + `MUHAVEN_SUBSCRIPTION_ADDRESS`
+  now DEFAULT to the prod values** (like the backend / dashboard / broker-RPC URLs
+  already did). Previously both defaulted to blank → Path D (autonomous buy/sell/
+  claim + auto-reinvest) was off unless the operator manually set them, and the
+  broker-auto-spawned reinvest runner — which inherits this config — would idle
+  silently because the broker shell rarely had those vars exported. Both values
+  are public (the bundler URL ships in the frontend browser bundle; the
+  subscription is an on-chain address). Stage/local override via env (stage has
+  its own subscription deploy). Path D stays inert without a Scoped session, so
+  the default only readies the plumbing — it never trades on its own. The
+  `manifest.json` `user_config` defaults match.
 - Path-D inner-call encoding primitives (`SUBSCRIPTION_PURCHASE_*`,
   `YIELD_SNAPSHOT_CLAIM_*`, `PLACEHOLDER_SIGNATURE`) hoisted to a shared
   `clients/path-d-encoding.ts` (re-exported from `tools/handlers.ts` — import

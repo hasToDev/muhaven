@@ -58,18 +58,26 @@ describe('isReinvestExecutable', () => {
     expect(r.reason).toMatch(/budget disabled/);
   });
 
-  it('idles when the bundler URL is unset (Path D off)', () => {
-    const { MUHAVEN_BUNDLER_URL, ...noBundler } = BASE;
-    void MUHAVEN_BUNDLER_URL;
-    const r = isReinvestExecutable(loadReinvestConfig(noBundler));
+  it('is executable on a bare env now that bundler + subscription default to prod', () => {
+    // The UX fix: an operator who set NOTHING (no bundler/subscription in the
+    // broker shell) still gets a runnable runner because loadMcpConfig defaults
+    // them to prod. Previously this idled.
+    const r = isReinvestExecutable(loadReinvestConfig({}));
+    expect(r.ok).toBe(true);
+  });
+
+  it('idles when the bundler URL is genuinely absent (defensive guard)', () => {
+    // bundlerUrl can no longer be env-unset (it defaults), but the guard still
+    // protects a config built with it nulled (e.g. a future read-only path).
+    const cfg = loadReinvestConfig(BASE);
+    const r = isReinvestExecutable({ ...cfg, mcp: { ...cfg.mcp, bundlerUrl: undefined } });
     expect(r.ok).toBe(false);
     expect(r.reason).toMatch(/MUHAVEN_BUNDLER_URL/);
   });
 
-  it('idles when the subscription address is unset', () => {
-    const { MUHAVEN_SUBSCRIPTION_ADDRESS, ...noSub } = BASE;
-    void MUHAVEN_SUBSCRIPTION_ADDRESS;
-    const r = isReinvestExecutable(loadReinvestConfig(noSub));
+  it('idles when the subscription address is genuinely absent (defensive guard)', () => {
+    const cfg = loadReinvestConfig(BASE);
+    const r = isReinvestExecutable({ ...cfg, mcp: { ...cfg.mcp, subscriptionAddress: undefined } });
     expect(r.ok).toBe(false);
     expect(r.reason).toMatch(/MUHAVEN_SUBSCRIPTION_ADDRESS/);
   });

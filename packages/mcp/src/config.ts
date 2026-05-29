@@ -171,6 +171,30 @@ const DEFAULT_BROKER_RPC_URL = 'https://sepolia-rollup.arbitrum.io/rpc';
 /** ERC-4337 EntryPoint v0.7 canonical address. Same on every EVM chain. */
 const DEFAULT_ENTRY_POINT_ADDRESS =
   '0x0000000071727De22E5E9d8BAf0edAc6f37da032' as `0x${string}`;
+/**
+ * Prod ZeroDev bundler RPC for Arbitrum Sepolia. Defaulted (like the backend
+ * + dashboard + broker-RPC URLs) so Path D works out-of-the-box for the
+ * published `@muhaven/mcp` package — including the broker-auto-spawned
+ * reinvest runner, which inherits this config and would otherwise idle
+ * unless the operator manually exported the var in the broker shell.
+ * NOT secret: this exact URL ships in the public frontend browser bundle
+ * (`VITE_ZERODEV_BUNDLER_URL`); the ZeroDev project id is origin/rate-gated,
+ * not a credential. Stage/local override via `MUHAVEN_BUNDLER_URL` (stage
+ * shares this same bundler project). Path D stays inert without a Scoped
+ * session, so defaulting only readies the plumbing — it never makes a trade.
+ */
+const DEFAULT_BUNDLER_URL =
+  'https://rpc.zerodev.app/api/v3/7d4cd216-dd0d-4bfb-b56e-42edb23fc8b3/chain/421614';
+/**
+ * Prod `MuHavenSubscription` proxy (Arb Sepolia, `deployments/arb-sepolia-v2.json`)
+ * — the Path D buy/sell kernel.execute target. Defaulted for the same
+ * out-of-the-box reason as the bundler URL; a public on-chain address, not a
+ * secret. STAGE uses a DIFFERENT subscription (arb-sepolia-v2.staging.json),
+ * so stage installs MUST override `MUHAVEN_SUBSCRIPTION_ADDRESS` (same
+ * override posture as `MUHAVEN_BACKEND_URL` → api-stage).
+ */
+const DEFAULT_SUBSCRIPTION_ADDRESS =
+  '0x39D49B2614d24ba189B613bEAa903d829A73eA9e' as `0x${string}`;
 const ADDRESS_HEX_RE = /^0x[0-9a-fA-F]{40}$/;
 
 /**
@@ -295,17 +319,16 @@ export function loadMcpConfig(env: NodeJS.ProcessEnv = process.env): McpRuntimeC
   const requestTimeoutMs = readEnvInt('MUHAVEN_REQUEST_TIMEOUT_MS', DEFAULT_REQUEST_TIMEOUT_MS, env);
   const brokerTimeoutMs = readEnvInt('MUHAVEN_BROKER_TIMEOUT_MS', DEFAULT_BROKER_TIMEOUT_MS, env);
   const jwtCacheTtlSec = readEnvInt('MUHAVEN_JWT_CACHE_TTL_SEC', DEFAULT_JWT_CACHE_TTL_SEC, env);
-  // Wave 5 Path D — bundler URL is OPTIONAL. Unset → Path D disabled,
-  // position tools fall back to Path C deep-link (existing behaviour).
-  // Set → validated by the same https-or-loopback rule as the other
-  // public URLs (Security M-2 generalization).
-  const bundlerUrlRaw = readEnv('MUHAVEN_BUNDLER_URL', env);
-  let bundlerUrl: string | undefined;
-  if (bundlerUrlRaw !== undefined) {
-    const validationErr = validatePublicUrlEnv('MUHAVEN_BUNDLER_URL', bundlerUrlRaw);
-    if (validationErr) throw new Error(validationErr);
-    bundlerUrl = trimTrailingSlash(bundlerUrlRaw);
-  }
+  // Wave 5 Path D — bundler URL DEFAULTS to the prod ZeroDev bundler so Path D
+  // works out-of-the-box (incl. the broker-auto-spawned reinvest runner).
+  // Override via `MUHAVEN_BUNDLER_URL` (stage/local). Validated by the same
+  // https-or-loopback rule as the other public URLs (Security M-2). Path D
+  // still requires a Scoped session to do anything, so the default just
+  // readies the plumbing — it never trades on its own.
+  const bundlerUrlRaw = readEnv('MUHAVEN_BUNDLER_URL', env) ?? DEFAULT_BUNDLER_URL;
+  const bundlerValidationErr = validatePublicUrlEnv('MUHAVEN_BUNDLER_URL', bundlerUrlRaw);
+  if (bundlerValidationErr) throw new Error(bundlerValidationErr);
+  const bundlerUrl: string | undefined = trimTrailingSlash(bundlerUrlRaw);
   const bundlerTimeoutMs = readEnvInt('MUHAVEN_BUNDLER_TIMEOUT_MS', DEFAULT_BUNDLER_TIMEOUT_MS, env);
   const chainId = readEnvInt('MUHAVEN_CHAIN_ID', DEFAULT_CHAIN_ID, env);
 
@@ -314,16 +337,18 @@ export function loadMcpConfig(env: NodeJS.ProcessEnv = process.env): McpRuntimeC
   // dormant + position tools fall back to Path C deep-link with a
   // structured reason. Defensive shape check so a typo doesn't
   // silently mis-route the autonomous buy.
-  const subscriptionAddressRaw = readEnv('MUHAVEN_SUBSCRIPTION_ADDRESS', env);
-  let subscriptionAddress: `0x${string}` | undefined;
-  if (subscriptionAddressRaw !== undefined) {
-    if (!ADDRESS_HEX_RE.test(subscriptionAddressRaw)) {
-      throw new Error(
-        `MUHAVEN_SUBSCRIPTION_ADDRESS must be a 0x-prefixed 20-byte hex string (got ${JSON.stringify(subscriptionAddressRaw)})`,
-      );
-    }
-    subscriptionAddress = subscriptionAddressRaw.toLowerCase() as `0x${string}`;
+  // DEFAULTS to the prod MuHavenSubscription proxy (out-of-the-box Path D).
+  // STAGE/local MUST override `MUHAVEN_SUBSCRIPTION_ADDRESS` (stage has its
+  // own subscription deploy). Shape-validated either way.
+  const subscriptionAddressRaw =
+    readEnv('MUHAVEN_SUBSCRIPTION_ADDRESS', env) ?? DEFAULT_SUBSCRIPTION_ADDRESS;
+  if (!ADDRESS_HEX_RE.test(subscriptionAddressRaw)) {
+    throw new Error(
+      `MUHAVEN_SUBSCRIPTION_ADDRESS must be a 0x-prefixed 20-byte hex string (got ${JSON.stringify(subscriptionAddressRaw)})`,
+    );
   }
+  const subscriptionAddress: `0x${string}` | undefined =
+    subscriptionAddressRaw.toLowerCase() as `0x${string}`;
 
   // ERC-4337 EntryPoint v0.7 address. Defaults to the canonical
   // deployment; operators on a future EntryPoint rotation override via

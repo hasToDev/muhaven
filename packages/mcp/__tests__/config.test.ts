@@ -82,4 +82,22 @@ describe('loadMcpConfig (sanity smoke after config refactor)', () => {
     expect(typeof cfg.brokerEndpoint).toBe('string');
     expect(cfg.readOnly).toBe(false);
   });
+
+  it('defaults bundler + subscription to prod so Path D works out-of-the-box', () => {
+    const cfg = loadMcpConfig({});
+    expect(cfg.bundlerUrl).toBe(
+      'https://rpc.zerodev.app/api/v3/7d4cd216-dd0d-4bfb-b56e-42edb23fc8b3/chain/421614',
+    );
+    expect(cfg.subscriptionAddress).toBe('0x39d49b2614d24ba189b613beaa903d829a73ea9e');
+    expect(cfg.chainId).toBe(421614);
+  });
+
+  it('lets stage/local override the subscription + bundler', () => {
+    const cfg = loadMcpConfig({
+      MUHAVEN_BUNDLER_URL: 'https://bundler.stage.example',
+      MUHAVEN_SUBSCRIPTION_ADDRESS: '0x' + 'ab'.repeat(20),
+    });
+    expect(cfg.bundlerUrl).toBe('https://bundler.stage.example');
+    expect(cfg.subscriptionAddress).toBe('0x' + 'ab'.repeat(20));
+  });
 });

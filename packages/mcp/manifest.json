@@ -104,8 +104,8 @@
       "key": "bundler_url",
       "type": "string",
       "title": "ERC-4337 bundler RPC URL (Path D autonomous mode)",
-      "description": "Wave 5 Path D — when set, enables broker-signed autonomous position.buy submission via this bundler. Leave blank to keep position tools on Path C (dashboard deep-link, user passkey-signs). Must be https:// (or http:// to loopback for dev). The full Path D UserOp-build path ships in @muhaven/mcp 0.3.x; today's 0.2.1 only exercises the preflight + Path C fall-through.",
-      "default": "",
+      "description": "Wave 5 Path D — the ZeroDev bundler that broker-signed autonomous position.buy/sell/claim + auto-reinvest submit through. Defaults to the MuHaven prod bundler (Arb Sepolia) so Path D works out-of-the-box; override only for staging/local. Path D stays inert until you mint a Scoped session in the dashboard, so the default never trades on its own. Must be https:// (or http:// to loopback for dev).",
+      "default": "https://rpc.zerodev.app/api/v3/7d4cd216-dd0d-4bfb-b56e-42edb23fc8b3/chain/421614",
       "sensitive": false
     },
     {
@@ -120,8 +120,8 @@
       "key": "subscription_address",
       "type": "string",
       "title": "MuHavenSubscription contract address (Path D autonomous-buy target)",
-      "description": "Wave 5 Path D Slice 1 Commit 3.5 — the MuHavenSubscription contract address Path D's autonomous-buy UserOp targets. Source: deployments/arb-sepolia-v2.json (prod) or deployments/arb-sepolia-v2.staging.json (stage), `subscription` field. Leave blank to keep position.buy on Path C even when bundler_url + broker are set.",
-      "default": "",
+      "description": "Wave 5 Path D — the MuHavenSubscription contract Path D's buy/sell UserOps target. Defaults to the prod proxy (deployments/arb-sepolia-v2.json). STAGING/local MUST override with the matching deploy (arb-sepolia-v2.staging.json), the same way the backend URL is overridden for staging.",
+      "default": "0x39D49B2614d24ba189B613bEAa903d829A73eA9e",
       "sensitive": false
     },
     {
