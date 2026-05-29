@@ -226,14 +226,25 @@ export async function handleBrokerRequest(
           `no active snapshot for session ${req.sessionId}`,
         );
       }
-      const check = checkPolicy({
-        snapshot,
-        innerCall: req.innerCall,
-        activeSigner: signer.address,
-        nowSec: now,
-      });
-      if (!check.ok) {
-        return errorResponse(check.code, check.message);
+      // Wave 5 Slice 2c — for an atomic batch UserOp the MCP sends
+      // `innerCalls` (e.g. [claim, buy]); checkPolicy EVERY leg (ALL must
+      // pass). Back-compat: when absent, validate the single `innerCall`.
+      // The on-chain CallPolicy bounds every leg regardless; this is the
+      // off-chain cap + scope enforcement, per-leg.
+      const callsToCheck =
+        req.innerCalls && req.innerCalls.length > 0
+          ? req.innerCalls
+          : [req.innerCall];
+      for (const call of callsToCheck) {
+        const check = checkPolicy({
+          snapshot,
+          innerCall: call,
+          activeSigner: signer.address,
+          nowSec: now,
+        });
+        if (!check.ok) {
+          return errorResponse(check.code, check.message);
+        }
       }
       try {
         // Wave 5 Path D Slice 1 Commit 3.5 — sign via EIP-191 personal-

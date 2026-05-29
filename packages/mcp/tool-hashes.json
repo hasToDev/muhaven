@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-05-28T12:27:26.578Z",
+  "generatedAt": "2026-05-29T08:07:32.961Z",
   "tools": [
     {
       "name": "muhaven.read.portfolio",
@@ -35,7 +35,7 @@
     },
     {
       "name": "muhaven.position.claim",
-      "sha256": "31a6b9472f8b34e69ca28b888e60178dafd01b8644e2a61e6f36515660b68838"
+      "sha256": "d9bcfa0253c49b2a4f38a9c3c596acea0c6b4be8b612b664f2ab22c7044cde25"
     },
     {
       "name": "muhaven.position.rebalance",

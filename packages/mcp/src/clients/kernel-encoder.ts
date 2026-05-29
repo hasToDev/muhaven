@@ -98,6 +98,61 @@ export function encodeKernelExecuteSingleCall(
 }
 
 /**
+ * Wave 5 Slice 2c (auto-reinvest, atomic claim+buy) — Kernel v3.1 mode
+ * for `callType=batch (0x01), execType=default`. Leading byte `0x01`
+ * (CALL_TYPE.BATCH per `@zerodev/sdk/constants::CALL_TYPE`), the rest
+ * zero (default execType + no mode selector/payload). Sibling of
+ * `KERNEL_V3_SINGLE_CALL_MODE_DEFAULT`.
+ */
+export const KERNEL_V3_BATCH_MODE_DEFAULT: Hex =
+  `0x01${'00'.repeat(31)}` as Hex;
+
+export interface EncodeKernelExecuteBatchInput {
+  /** The ordered inner calls. For reinvest: [claim, buy]. */
+  readonly calls: ReadonlyArray<{
+    readonly target: `0x${string}`;
+    readonly value: bigint;
+    readonly callData: `0x${string}`;
+  }>;
+}
+
+/**
+ * Build the `execute(...)` calldata for a BATCH of inner calls in
+ * default execType (any inner revert bubbles → the whole batch reverts,
+ * which is the atomicity we want for claim+buy: never claim without the
+ * buy also succeeding in the same UserOp).
+ *
+ * UNLIKE the single-call encoding (`abi.encodePacked(target,value,callData)`),
+ * the batch `executionCalldata` is the standard ABI encoding of an
+ * `Execution[]` array — `abi.encode((address target, uint256 value,
+ * bytes callData)[])` — which is exactly what the ZeroDev kernel SDK's
+ * `account.encodeCalls([a, b])` produces for callType=batch + what the
+ * kernel's batch decoder expects.
+ *
+ * Same Kernel v3.0/v3.1 version pin as the single-call encoder (see the
+ * file-level "Kernel-version pin" JSDoc).
+ */
+export function encodeKernelExecuteBatch(
+  input: EncodeKernelExecuteBatchInput,
+): `0x${string}` {
+  const executionCalldata = encodeAbiParameters(
+    parseAbiParameters('(address target, uint256 value, bytes callData)[]'),
+    [
+      input.calls.map((c) => ({
+        target: c.target,
+        value: c.value,
+        callData: c.callData,
+      })),
+    ],
+  );
+  return encodeFunctionData({
+    abi: KERNEL_EXECUTE_ABI,
+    functionName: 'execute',
+    args: [KERNEL_V3_BATCH_MODE_DEFAULT, executionCalldata],
+  });
+}
+
+/**
  * 0.2.9 — sibling DECODER for diagnostic purposes. Given the bytes
  * `userOp.callData` carries (i.e. what `encodeKernelExecuteSingleCall`
  * produced), unpack:

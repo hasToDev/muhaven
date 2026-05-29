@@ -6,18 +6,22 @@
 import { describe, it, expect } from 'vitest';
 import {
   concatHex,
+  decodeAbiParameters,
   decodeFunctionData,
   pad,
+  parseAbiParameters,
   toFunctionSelector,
   type Hex,
 } from 'viem';
 import {
   KERNEL_EXECUTE_ABI,
+  KERNEL_V3_BATCH_MODE_DEFAULT,
   KERNEL_V3_CURRENT_NONCE_ABI,
   KERNEL_V3_SELECTOR_SET_ABI,
   KERNEL_V3_SINGLE_CALL_MODE_DEFAULT,
   buildKernelSessionKeySignature,
   composeKernelV3NonceKey,
+  encodeKernelExecuteBatch,
   encodeKernelExecuteSingleCall,
   wrapEnableModeSignature,
 } from '../src/clients/kernel-encoder.js';
@@ -90,6 +94,55 @@ describe('encodeKernelExecuteSingleCall', () => {
     // 0xdeadbeef as uint256 in big-endian = 28 leading zero bytes then `deadbeef`.
     expect(valueHex.endsWith('deadbeef')).toBe(true);
     expect(valueHex.slice(0, valueHex.length - 8)).toBe('0'.repeat(valueHex.length - 8));
+  });
+});
+
+describe('encodeKernelExecuteBatch (Slice 2c atomic claim+buy)', () => {
+  const CLAIM_TARGET = '0x3333333333333333333333333333333333333333' as const;
+  const BUY_TARGET = '0x2222222222222222222222222222222222222222' as const;
+  const CLAIM_DATA = ('0x' + 'aa'.repeat(36)) as `0x${string}`;
+  const BUY_DATA = ('0x' + 'bb'.repeat(100)) as `0x${string}`;
+
+  it('uses the batch mode word (callType byte 0x01, rest zero)', () => {
+    const encoded = encodeKernelExecuteBatch({
+      calls: [
+        { target: CLAIM_TARGET, value: 0n, callData: CLAIM_DATA },
+        { target: BUY_TARGET, value: 0n, callData: BUY_DATA },
+      ],
+    });
+    expect(encoded.slice(0, 10)).toBe(
+      toFunctionSelector('function execute(bytes32 mode, bytes calldata executionCalldata)'),
+    );
+    const decoded = decodeFunctionData({ abi: KERNEL_EXECUTE_ABI, data: encoded });
+    expect(decoded.args[0]).toBe(KERNEL_V3_BATCH_MODE_DEFAULT);
+    // Mode = 0x01 + 31 zero bytes.
+    expect((decoded.args[0] as string).slice(2)).toBe('01' + '00'.repeat(31));
+  });
+
+  it('ABI-encodes the Execution[] tuple array (decodable round-trip, order preserved)', () => {
+    const encoded = encodeKernelExecuteBatch({
+      calls: [
+        { target: CLAIM_TARGET, value: 0n, callData: CLAIM_DATA },
+        { target: BUY_TARGET, value: 7n, callData: BUY_DATA },
+      ],
+    });
+    const decoded = decodeFunctionData({ abi: KERNEL_EXECUTE_ABI, data: encoded });
+    const [executions] = decodeAbiParameters(
+      parseAbiParameters('(address target, uint256 value, bytes callData)[]'),
+      decoded.args[1] as `0x${string}`,
+    );
+    const arr = executions as readonly { target: string; value: bigint; callData: string }[];
+    expect(arr).toHaveLength(2);
+    expect(arr[0]!.target.toLowerCase()).toBe(CLAIM_TARGET);
+    expect(arr[0]!.value).toBe(0n);
+    expect(arr[0]!.callData.toLowerCase()).toBe(CLAIM_DATA.toLowerCase());
+    expect(arr[1]!.target.toLowerCase()).toBe(BUY_TARGET);
+    expect(arr[1]!.value).toBe(7n);
+    expect(arr[1]!.callData.toLowerCase()).toBe(BUY_DATA.toLowerCase());
+  });
+
+  it('differs from the single-call mode word (batch ≠ single)', () => {
+    expect(KERNEL_V3_BATCH_MODE_DEFAULT).not.toBe(KERNEL_V3_SINGLE_CALL_MODE_DEFAULT);
   });
 });
 

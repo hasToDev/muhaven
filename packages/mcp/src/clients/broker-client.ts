@@ -205,6 +205,15 @@ export class BrokerClient {
     sessionId: string;
     userOpHash: `0x${string}`;
     innerCall: { target: `0x${string}`; callData: `0x${string}` };
+    /**
+     * Wave 5 Slice 2c — for an atomic `executeBatch` UserOp, the full
+     * ordered inner calls (e.g. [claim, buy]). When provided, the daemon
+     * checkPolicy's EVERY leg (per-op cap enforced on the buy leg). The
+     * caller MUST set `innerCall = innerCalls[0]` (back-compat for a
+     * pre-0.6.0 daemon that ignores `innerCalls` + validates only the
+     * first leg; the on-chain CallPolicy bounds every leg regardless).
+     */
+    innerCalls?: readonly { target: `0x${string}`; callData: `0x${string}` }[];
     intent?: { tool: string; summary?: string };
   }): Promise<BrokerSignUserOpResponse> {
     const res = await this.exchange({
@@ -212,6 +221,7 @@ export class BrokerClient {
       sessionId: args.sessionId,
       userOpHash: args.userOpHash,
       innerCall: args.innerCall,
+      ...(args.innerCalls ? { innerCalls: args.innerCalls } : {}),
       ...(args.intent ? { intent: args.intent } : {}),
     });
     if (res.type !== 'sign_userop') {

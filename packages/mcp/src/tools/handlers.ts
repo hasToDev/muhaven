@@ -218,12 +218,45 @@ export const QUEUE_SUBMITTED_TOPIC0 = toEventSelector(
 ).toLowerCase() as `0x${string}`;
 
 /**
- * Wave 5 Slice 1 (MCP sell) — the three autonomous Path D operations.
+ * Wave 5 Slice 2a (auto-reinvest groundwork) — `YieldSnapshot.claimYield`
+ * selector + ABI.
+ *
+ * `claimYield(uint256 epochId, address ephemeralEOA)` is STRUCTURALLY
+ * DIFFERENT from purchase/redeem/submit:
+ *  - NO `InEuint128 encShares` arg — the claimed amount is computed
+ *    on-chain from the snapshot, not supplied by the caller. So the
+ *    Path-D claim path SKIPS the backend encrypt-shares step (it only
+ *    needs the throwaway `ephemeralEOA` as the FHE.allow decrypt-grant
+ *    target for the claimed amount handle — minted via the lighter
+ *    `/agent/path-d/mint-ephemeral` route).
+ *  - NO `maxSharesHint` cap arg — a claim moves no user-chosen amount, so
+ *    its selectorCap carries `capArgIndex: null, maxAmount: null` and the
+ *    broker skips the per-op cap decode.
+ *  - arg0 is an `epochId` (uint256), NOT a token address — the target is
+ *    the per-token YieldSnapshot proxy (`token.yield_snapshot_address`).
+ *
+ * The on-chain Scoped CallPolicy already authorizes `claimYield`
+ * (`frontend/src/providers/zerodev/scoped-permissions.ts:211`), so adding
+ * autonomous claim needs NO per-user re-mint — only the off-chain
+ * selectorCap + snapshot target, delivered server-side (no re-mint).
+ */
+export const YIELD_SNAPSHOT_CLAIM_SELECTOR = toFunctionSelector(
+  'function claimYield(uint256,address)',
+).toLowerCase() as `0x${string}`;
+
+const YIELD_SNAPSHOT_CLAIM_ABI = parseAbi([
+  'function claimYield(uint256 epochId, address ephemeralEOA)',
+]);
+
+/**
+ * Wave 5 Slice 1 (MCP sell) + Slice 2a (claim) — the autonomous Path D
+ * operations.
  *  - `buy`         → `MuHavenSubscription.purchase`  (target: subscription)
  *  - `sell`        → `MuHavenSubscription.redeem`    (target: subscription)
  *  - `sell-queued` → `RedemptionQueue.submit`        (target: per-token queue)
+ *  - `claim`       → `YieldSnapshot.claimYield`      (target: per-token snapshot)
  */
-export type PathDOp = 'buy' | 'sell' | 'sell-queued';
+export type PathDOp = 'buy' | 'sell' | 'sell-queued' | 'claim';
 
 /**
  * Per-op binding for `attemptPathD`. Captures everything that differs
@@ -240,19 +273,27 @@ interface PathDOpSpec {
    *  broad `Abi` so the three per-op fragments (purchase/redeem/submit,
    *  which have distinct `name` literals) all assign. */
   readonly abi: Abi;
-  readonly functionName: 'purchase' | 'redeem' | 'submit';
+  readonly functionName: 'purchase' | 'redeem' | 'submit' | 'claimYield';
   /** Word index of `maxSharesHint` in the inner calldata (2 for
-   *  purchase/redeem, 1 for submit — submit has no leading token arg). */
-  readonly capArgIndex: number;
+   *  purchase/redeem, 1 for submit — submit has no leading token arg).
+   *  `null` for `claim` (no user-chosen amount → no cap arg). */
+  readonly capArgIndex: number | null;
   /** Whether the inner call's arg0 is the token address. Purchase/redeem
-   *  carry it; submit does not (the queue is per-token). */
+   *  carry it; submit/claim do not (queue + snapshot are per-token). */
   readonly hasTokenArg: boolean;
+  /** Whether the op supplies a client-encrypted `InEuint128 encShares`
+   *  arg (buy/sell/sell-queued). `claim` does NOT — the amount is computed
+   *  on-chain — so it skips the encrypt-shares step (mints an eph only). */
+  readonly requiresEncShares: boolean;
   /** `intent.tool` the broker records in its sign-time audit. */
-  readonly intentTool: 'muhaven.position.buy' | 'muhaven.position.sell';
+  readonly intentTool:
+    | 'muhaven.position.buy'
+    | 'muhaven.position.sell'
+    | 'muhaven.position.claim';
   /** Human verb for the broker audit `intent.summary`. */
   readonly intentVerb: string;
   /** Result-shape discriminator surfaced to the LLM. */
-  readonly resultAction: 'buy' | 'sell';
+  readonly resultAction: 'buy' | 'sell' | 'claim';
 }
 
 export const PATH_D_OP_SPECS: Readonly<Record<PathDOp, PathDOpSpec>> = {
@@ -263,6 +304,7 @@ export const PATH_D_OP_SPECS: Readonly<Record<PathDOp, PathDOpSpec>> = {
     functionName: 'purchase',
     capArgIndex: 2,
     hasTokenArg: true,
+    requiresEncShares: true,
     intentTool: 'muhaven.position.buy',
     intentVerb: 'buy',
     resultAction: 'buy',
@@ -274,6 +316,7 @@ export const PATH_D_OP_SPECS: Readonly<Record<PathDOp, PathDOpSpec>> = {
     functionName: 'redeem',
     capArgIndex: 2,
     hasTokenArg: true,
+    requiresEncShares: true,
     intentTool: 'muhaven.position.sell',
     intentVerb: 'sell',
     resultAction: 'sell',
@@ -285,9 +328,29 @@ export const PATH_D_OP_SPECS: Readonly<Record<PathDOp, PathDOpSpec>> = {
     functionName: 'submit',
     capArgIndex: 1,
     hasTokenArg: false,
+    requiresEncShares: true,
     intentTool: 'muhaven.position.sell',
     intentVerb: 'queue-sell',
     resultAction: 'sell',
+  },
+  claim: {
+    op: 'claim',
+    selector: YIELD_SNAPSHOT_CLAIM_SELECTOR,
+    abi: YIELD_SNAPSHOT_CLAIM_ABI,
+    functionName: 'claimYield',
+    // No user-chosen amount → no cap arg. The broker's checkPolicy skips
+    // the cap decode when capArgIndex is null (the claimYield selectorCap
+    // carries capArgIndex: null, maxAmount: null).
+    capArgIndex: null,
+    // arg0 is the epochId (uint256), NOT a token address; the snapshot is
+    // per-token so the token is implicit in the target.
+    hasTokenArg: false,
+    // claimYield computes the amount on-chain — no client encShares; the
+    // Path-D claim path mints an eph only (FHE.allow decrypt-grant target).
+    requiresEncShares: false,
+    intentTool: 'muhaven.position.claim',
+    intentVerb: 'claim',
+    resultAction: 'claim',
   },
 };
 
@@ -676,8 +739,9 @@ export type PathDFallbackReason =
  * need to widen mid-slice.
  */
 interface PositionSubmittedData {
-  /** Wave 5 Slice 1 — widened from `'buy'` to cover autonomous sell. */
-  readonly action: 'buy' | 'sell';
+  /** Wave 5 Slice 1 — widened from `'buy'` to cover autonomous sell.
+   *  Slice 2a — widened again for autonomous claim. */
+  readonly action: 'buy' | 'sell' | 'claim';
   readonly status: 'submitted';
   readonly txHash: `0x${string}`;
   readonly userOpHash: `0x${string}`;
@@ -891,6 +955,15 @@ interface TokenCatalogEntry {
    * subscription, and it auto-escalates to the queue on-chain on overflow.)
    */
   readonly redemption_queue_address?: string | null;
+  /**
+   * Wave 5 Slice 2a — per-token `YieldSnapshot` proxy address (DB column,
+   * served by the backend on `/api/v1/tokens`). The kernel.execute target
+   * for an autonomous `claimYield`. `null`/absent for legacy tokens
+   * deployed before per-token snapshots shipped → the MCP cannot
+   * autonomously claim for them, so `position.claim` degrades to a Path-C
+   * deep-link.
+   */
+  readonly yield_snapshot_address?: string | null;
 }
 
 interface TokenCatalogResponse {
@@ -1786,7 +1859,8 @@ export function buildSellExtras(
   op: PathDOp,
   receipt: unknown,
 ): Pick<PositionSubmittedData, 'queueRequestId' | 'settlement' | 'sellWarning'> {
-  if (op === 'buy') return {};
+  // buy + claim move no shares into the queue — no settlement extras.
+  if (op === 'buy' || op === 'claim') return {};
   const requestId = parseQueueRequestIdFromReceipt(receipt);
   if (op === 'sell-queued') {
     return {
@@ -1803,29 +1877,37 @@ export function buildSellExtras(
 
 async function attemptPathD(
   args: {
-    /** Which autonomous op to attempt (Wave 5 Slice 1). Selects the
+    /** Which autonomous op to attempt (Wave 5 Slice 1 + 2a). Selects the
      *  selector / ABI / capArgIndex / intent / result shape. */
     readonly op: PathDOp;
-    /** Cleartext share count the LLM proposed. Already passed the
-     *  per-op cap check; broker validates again at sign time. */
+    /** The op's primary numeric arg. For `buy`/`sell`/`sell-queued` it's
+     *  the cleartext SHARE count (gated against the per-op cap + used as
+     *  `maxSharesHint`). For `claim` it's the EPOCH id (no cap — claim
+     *  moves no user-chosen amount). Broker re-validates at sign time. */
     readonly shares: bigint;
     /** 0x-prefixed RWA token address from the catalog. For `sell-queued`
      *  this is the token whose queue we submit to — NOT the inner-call
-     *  target (the queue is). Carried for the encrypt-shares binding +
-     *  the audit intent. */
+     *  target (the queue is). For `claim` it's the token whose snapshot we
+     *  claim from — the eph-mint binds to it. Carried for the
+     *  encrypt-shares binding + the audit intent. */
     readonly tokenAddress: `0x${string}`;
     /** Token symbol — only used in the audit intent payload. */
     readonly tokenSymbol: string;
     /** The per-token RedemptionQueue address. REQUIRED for `sell-queued`
-     *  (it's the kernel.execute target); IGNORED for `buy`/`sell` (whose
-     *  target is the subscription). The caller resolves it from the token
-     *  catalog's `redemption_queue_address` and only dispatches
-     *  `sell-queued` when it's present. */
+     *  (it's the kernel.execute target); IGNORED for `buy`/`sell`/`claim`.
+     *  The caller resolves it from the token catalog's
+     *  `redemption_queue_address` and only dispatches `sell-queued` when
+     *  it's present. */
     readonly queueAddress?: `0x${string}`;
+    /** The per-token YieldSnapshot proxy address. REQUIRED for `claim`
+     *  (it's the kernel.execute target); IGNORED otherwise. The caller
+     *  resolves it from the token catalog's `yield_snapshot_address` and
+     *  only dispatches `claim` when it's present. */
+    readonly snapshotAddress?: `0x${string}`;
   },
   deps: ToolDeps,
 ): Promise<PathDAttempt> {
-  const { op, shares, tokenAddress, tokenSymbol, queueAddress } = args;
+  const { op, shares, tokenAddress, tokenSymbol, queueAddress, snapshotAddress } = args;
   const spec = PATH_D_OP_SPECS[op];
   if (!deps.broker || !deps.bundler) {
     return { kind: 'unconfigured' };
@@ -1874,6 +1956,16 @@ async function attemptPathD(
       };
     }
     targetAddress = queueAddress;
+  } else if (spec.op === 'claim') {
+    if (!snapshotAddress) {
+      return {
+        kind: 'fallback',
+        reason: 'target_not_in_snapshot',
+        message:
+          'claim requires the per-token YieldSnapshot address but none was resolved — falling back to Path C deep-link',
+      };
+    }
+    targetAddress = snapshotAddress;
   } else {
     if (!deps.subscriptionAddress) {
       return {
@@ -2060,23 +2152,29 @@ async function attemptPathD(
           : 're-mint the session, or fall back to Path C deep-link'),
     };
   }
-  if (opCap.maxAmount === null) {
-    return {
-      kind: 'fallback',
-      reason: 'selector_uncapped',
-      message:
-        `active scoped session lists ${spec.functionName} but with no per-op cap (capArgIndex/maxAmount both null) — ` +
-        'Slice 1 refuses to autonomy-trade without an explicit ceiling; re-mint with a maxAmount',
-    };
-  }
-  // 5. Computed shares within cap?
-  const maxShares = BigInt(opCap.maxAmount);
-  if (shares > maxShares) {
-    return {
-      kind: 'fallback',
-      reason: 'out_of_scope',
-      message: `requested ${shares} shares exceeds the active session's per-op cap of ${maxShares} shares — fall back to Path C dashboard deep-link for this larger ${spec.intentVerb}`,
-    };
+  // 5. Per-op cap. `claim` (capArgIndex null) moves no user-chosen amount,
+  //    so it has NO cap — its selectorCap legitimately carries
+  //    capArgIndex/maxAmount both null. For the amount-bearing ops
+  //    (buy/sell/sell-queued), a null cap is a misconfiguration we refuse,
+  //    and the computed shares must sit within the ceiling.
+  if (spec.capArgIndex !== null) {
+    if (opCap.maxAmount === null) {
+      return {
+        kind: 'fallback',
+        reason: 'selector_uncapped',
+        message:
+          `active scoped session lists ${spec.functionName} but with no per-op cap (capArgIndex/maxAmount both null) — ` +
+          'Slice 1 refuses to autonomy-trade without an explicit ceiling; re-mint with a maxAmount',
+      };
+    }
+    const maxShares = BigInt(opCap.maxAmount);
+    if (shares > maxShares) {
+      return {
+        kind: 'fallback',
+        reason: 'out_of_scope',
+        message: `requested ${shares} shares exceeds the active session's per-op cap of ${maxShares} shares — fall back to Path C dashboard deep-link for this larger ${spec.intentVerb}`,
+      };
+    }
   }
   // 5b. The op's target contract MUST also appear in the snapshot's target
   //     allowlist. The broker re-validates this at sign time — a mismatch
@@ -2395,78 +2493,99 @@ async function attemptPathD(
     }
   }
 
-  // 7. Backend-mediated FHE encryption of the share amount. The MCP
-  //    server never imports @cofhe/sdk (operator pre-decision); the
-  //    backend's `/agent/path-d/encrypt-shares` route mediates via the
-  //    fhe-worker's new for-account endpoint (binds setAccount to the
-  //    kernel address so the on-chain verifier signature matches the
-  //    actual msg.sender).
+  // 7. Backend-mediated FHE step. The MCP server never imports @cofhe/sdk
+  //    (operator pre-decision) so the backend mediates.
+  //    - buy/sell/sell-queued (`requiresEncShares`): encrypt the share
+  //      amount via `/agent/path-d/encrypt-shares` (the fhe-worker
+  //      for-account endpoint binds setAccount to the kernel so the
+  //      on-chain verifier signature matches the actual msg.sender) AND
+  //      mint the throwaway eph.
+  //    - claim (`!requiresEncShares`): the amount is computed on-chain, so
+  //      there's NOTHING to encrypt — just mint the throwaway eph (FHE.allow
+  //      decrypt-grant target) via the lighter `/agent/path-d/mint-ephemeral`.
+  //      Both routes share the same revoke kill-switch session gate.
   let encShares: {
     ctHash: `0x${string}`;
     securityZone: number;
     utype: number;
     signature: `0x${string}`;
-  };
+  } | null = null;
   let ephemeralEOA: `0x${string}`;
   try {
-    const enc = (await deps.backend.post('/api/v1/agent/path-d/encrypt-shares', {
-      tokenAddress,
-      sharesAmount: shares.toString(),
-    })) as {
-      encShares?: {
-        ctHash?: string;
-        securityZone?: number;
-        utype?: number;
-        signature?: string;
+    if (spec.requiresEncShares) {
+      const enc = (await deps.backend.post('/api/v1/agent/path-d/encrypt-shares', {
+        tokenAddress,
+        sharesAmount: shares.toString(),
+      })) as {
+        encShares?: {
+          ctHash?: string;
+          securityZone?: number;
+          utype?: number;
+          signature?: string;
+        };
+        ephemeralEOA?: string;
       };
-      ephemeralEOA?: string;
-    };
-    if (
-      !enc.encShares ||
-      typeof enc.encShares.ctHash !== 'string' ||
-      typeof enc.encShares.securityZone !== 'number' ||
-      typeof enc.encShares.utype !== 'number' ||
-      typeof enc.encShares.signature !== 'string' ||
-      typeof enc.ephemeralEOA !== 'string'
-    ) {
-      return {
-        kind: 'fallback',
-        reason: 'encrypt_shares_server_error',
-        message: 'backend /agent/path-d/encrypt-shares returned malformed payload',
+      if (
+        !enc.encShares ||
+        typeof enc.encShares.ctHash !== 'string' ||
+        typeof enc.encShares.securityZone !== 'number' ||
+        typeof enc.encShares.utype !== 'number' ||
+        typeof enc.encShares.signature !== 'string' ||
+        typeof enc.ephemeralEOA !== 'string'
+      ) {
+        return {
+          kind: 'fallback',
+          reason: 'encrypt_shares_server_error',
+          message: 'backend /agent/path-d/encrypt-shares returned malformed payload',
+        };
+      }
+      encShares = {
+        ctHash: enc.encShares.ctHash as `0x${string}`,
+        securityZone: enc.encShares.securityZone,
+        utype: enc.encShares.utype,
+        signature: enc.encShares.signature as `0x${string}`,
       };
+      ephemeralEOA = enc.ephemeralEOA as `0x${string}`;
+    } else {
+      // claim — no encryption; just mint the eph (revoke-gated).
+      const mint = (await deps.backend.post('/api/v1/agent/path-d/mint-ephemeral', {
+        tokenAddress,
+      })) as { ephemeralEOA?: string };
+      if (typeof mint.ephemeralEOA !== 'string') {
+        return {
+          kind: 'fallback',
+          reason: 'encrypt_shares_server_error',
+          message: 'backend /agent/path-d/mint-ephemeral returned malformed payload',
+        };
+      }
+      ephemeralEOA = mint.ephemeralEOA as `0x${string}`;
     }
-    encShares = {
-      ctHash: enc.encShares.ctHash as `0x${string}`,
-      securityZone: enc.encShares.securityZone,
-      utype: enc.encShares.utype,
-      signature: enc.encShares.signature as `0x${string}`,
-    };
-    ephemeralEOA = enc.ephemeralEOA as `0x${string}`;
   } catch (err) {
+    const route = spec.requiresEncShares
+      ? 'encrypt-shares'
+      : 'mint-ephemeral';
     if (err instanceof BackendError) {
-      // Validation / 4xx errors are user-fixable (token delisted, etc.)
-      // — non-retryable from the LLM's POV but distinct from 5xx
-      // outages. Backend codes (token_not_found, ...) are deliberately
-      // NOT surfaced verbatim — they may carry user-controlled echoes
-      // and we don't want prompt-injection paths into the LLM context.
+      // Validation / 4xx errors are user-fixable (token delisted, session
+      // revoked, etc.) — non-retryable from the LLM's POV but distinct from
+      // 5xx outages. Backend codes are deliberately NOT surfaced verbatim —
+      // they may carry user-controlled echoes (prompt-injection paths).
       //
       // Drive classification off `err.status < 500` (CR R2 H-3) — a
       // hardcoded code-allowlist would silently mis-classify any future
-      // 4xx code the backend adds (e.g. `conflict` 409 for
-      // winding_down tokens — which IS thrown today by
-      // EncryptSharesForPurchaseUseCase). Status is set at
+      // 4xx code the backend adds (e.g. `conflict` 409 for winding_down
+      // tokens, or 403 from the revoke kill-switch). Status is set at
       // BackendError construction from `mapStatus(...)`.
       const is4xx = typeof err.status === 'number' && err.status < 500;
       return {
         kind: 'fallback',
         reason: is4xx ? 'encrypt_shares_rejected' : 'encrypt_shares_server_error',
-        message: `backend rejected encrypt-shares (backend.${err.code})`,
+        message: `backend rejected ${route} (backend.${err.code})`,
       };
     }
     return {
       kind: 'fallback',
       reason: 'encrypt_shares_server_error',
-      message: `backend /agent/path-d/encrypt-shares failed: ${err instanceof Error ? err.message : String(err)}`,
+      message: `backend /agent/path-d/${route} failed: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
 
@@ -2474,23 +2593,36 @@ async function attemptPathD(
   //    decodes word `spec.capArgIndex` (maxSharesHint) and compares to the
   //    snapshot's cap — we set `maxSharesHint = shares` (tight) which is
   //    <= cap because we already gated above. purchase/redeem carry the
-  //    token as arg0; submit does not (the queue is per-token).
-  const encSharesArg = {
-    ctHash: BigInt(encShares.ctHash),
-    securityZone: encShares.securityZone,
-    utype: encShares.utype,
-    signature: encShares.signature,
-  };
-  const innerCallData = encodeFunctionData({
-    abi: spec.abi,
-    functionName: spec.functionName,
-    args: spec.hasTokenArg
-      ? [tokenAddress, encSharesArg, shares, ephemeralEOA]
-      : [encSharesArg, shares, ephemeralEOA],
-  } as Parameters<typeof encodeFunctionData>[0]) as `0x${string}`;
+  //    token as arg0; submit does not (the queue is per-token). claim has
+  //    NO encShares + NO cap arg: `claimYield(epochId, eph)` (shares
+  //    carries the epochId for the claim op).
+  let innerCallData: `0x${string}`;
+  if (spec.op === 'claim') {
+    innerCallData = encodeFunctionData({
+      abi: spec.abi,
+      functionName: spec.functionName,
+      args: [shares, ephemeralEOA],
+    } as Parameters<typeof encodeFunctionData>[0]) as `0x${string}`;
+  } else {
+    // encShares is non-null here — every requiresEncShares op set it above.
+    const encSharesArg = {
+      ctHash: BigInt(encShares!.ctHash),
+      securityZone: encShares!.securityZone,
+      utype: encShares!.utype,
+      signature: encShares!.signature,
+    };
+    innerCallData = encodeFunctionData({
+      abi: spec.abi,
+      functionName: spec.functionName,
+      args: spec.hasTokenArg
+        ? [tokenAddress, encSharesArg, shares, ephemeralEOA]
+        : [encSharesArg, shares, ephemeralEOA],
+    } as Parameters<typeof encodeFunctionData>[0]) as `0x${string}`;
+  }
 
   // 9. Wrap in kernel.execute (single-call, default execType). Target is
-  //    the subscription for buy/sell, the per-token queue for sell-queued.
+  //    the subscription for buy/sell, the per-token queue for sell-queued,
+  //    the per-token snapshot for claim.
   const kernelCallData = encodeKernelExecuteSingleCall({
     target: targetAddress,
     value: 0n,
@@ -2671,7 +2803,12 @@ async function attemptPathD(
       innerCall: { target: targetAddress, callData: innerCallData },
       intent: {
         tool: spec.intentTool,
-        summary: `${spec.intentVerb} ${shares.toString()} shares of ${sanitizeSymbolForLlmContext(tokenSymbol)}`,
+        // For trades `shares` is the share count; for `claim` it's the
+        // epoch id (no shares move).
+        summary:
+          spec.op === 'claim'
+            ? `claim epoch ${shares.toString()} of ${sanitizeSymbolForLlmContext(tokenSymbol)}`
+            : `${spec.intentVerb} ${shares.toString()} shares of ${sanitizeSymbolForLlmContext(tokenSymbol)}`,
       },
     });
     brokerSig = signed.signature;
@@ -3282,17 +3419,89 @@ export async function positionSell(
 export async function positionClaim(
   input: PositionClaimInput,
   deps: ToolDeps,
-): Promise<ToolResult<PositionPrefillData>> {
-  // `escrowId` is the optional epoch id for the Wave-3.5 YieldSnapshot
-  // claim path. When set we deep-link to the specific row + highlight
-  // it on the page; when omitted, /yields renders the full claimable
-  // list and the user picks. Both paths use the same passkey ceremony.
+): Promise<ToolResult<PositionPrefillData | PositionSubmittedData>> {
+  // `escrowId` is the epoch id for the Wave-3.5 YieldSnapshot claim path.
+  //
+  // Wave 5 Slice 2a — autonomous claim (Path D). When the LLM names a
+  // CONCRETE epoch (`escrowId`) AND the token's YieldSnapshot proxy is
+  // resolvable, we attempt the broker-signed `claimYield` first (mirroring
+  // positionBuy/positionSell). Without a concrete epoch we CANNOT
+  // autonomously claim (the on-chain call needs an epochId), so we
+  // deep-link to /yields where the user picks. Any Path-D miss also falls
+  // back to the deep-link. The on-chain Scoped envelope already authorizes
+  // claimYield (no re-mint).
+  let token: TokenCatalogEntry | null = null;
+  try {
+    const catalog = await deps.backend.getUnauth<TokenCatalogResponse>('/api/v1/tokens');
+    token = resolveTokenInCatalog(input.token, catalog.tokens ?? []);
+  } catch {
+    token = null; // catalog unreachable → Path C only
+  }
+  const safeSymbol = sanitizeSymbolForLlmContext(token?.symbol ?? input.token);
+
+  const snapshotAddress =
+    token?.yield_snapshot_address &&
+    /^0x[0-9a-fA-F]{40}$/.test(token.yield_snapshot_address)
+      ? (token.yield_snapshot_address.toLowerCase() as `0x${string}`)
+      : undefined;
+
+  // Epochs are 1-indexed on-chain (epoch 0 is the "no epoch" sentinel), so
+  // a Path-D claim needs escrowId ≥ 1. A "0" slips through the schema
+  // regex (`^\d+$`) → guard here so we don't sign a doomed UserOp.
+  let epochId: bigint | null = null;
+  if (input.escrowId) {
+    try {
+      const parsed = BigInt(input.escrowId);
+      if (parsed > 0n) epochId = parsed;
+    } catch {
+      epochId = null;
+    }
+  }
+
+  let pathDFallbackReason: PathDFallbackReason | undefined;
+  let pathDSubmittedUserOpHash: `0x${string}` | undefined;
+  let pathDBundlerTrace: readonly BundlerTraceEvent[] | undefined;
+  let pathDDecodedCall: PathDDecodedCall | undefined;
+
+  if (token && epochId !== null && snapshotAddress) {
+    const pathD = await attemptPathD(
+      {
+        op: 'claim',
+        shares: epochId, // claim's primary numeric arg is the epoch id
+        tokenAddress: token.address as `0x${string}`,
+        tokenSymbol: token.symbol,
+        snapshotAddress,
+      },
+      deps,
+    );
+    if (pathD.kind === 'ok') {
+      return ok(pathD.data);
+    }
+    if (pathD.kind === 'fallback') {
+      pathDFallbackReason = pathD.reason;
+      if (pathD.submittedUserOpHash) {
+        pathDSubmittedUserOpHash = pathD.submittedUserOpHash;
+      }
+      if (deps.bundler) {
+        const trace = deps.bundler.drainTrace();
+        if (trace.length > 0) {
+          pathDBundlerTrace = trace;
+          pathDDecodedCall = buildPathDDecodedCall(trace, deps);
+        }
+      }
+    }
+    // 'unconfigured' → silent skip to Path C (no Path D in this install).
+  }
+
+  // Path C deep-link fallback. Surface the Path-D diagnostics (reason +
+  // submitted hash + bundler trace) in the echo — same shape as
+  // positionBuy/positionSell — so a failed autonomous claim is debuggable.
   const params: Record<string, string> = { token: input.token };
   if (input.escrowId) params.epoch = input.escrowId;
   const dashboardUrl = buildPositionDeeplink(resolveDashboardBaseUrl(deps), 'claim', params);
   const claimDescriptor = input.escrowId
-    ? `the claim for epoch #${input.escrowId} of ${input.token}`
-    : `your claimable epochs for ${input.token}`;
+    ? `the claim for epoch #${input.escrowId} of ${safeSymbol}`
+    : `your claimable epochs for ${safeSymbol}`;
   return ok({
     dashboardUrl,
     action: 'claim',
@@ -3301,6 +3510,10 @@ export async function positionClaim(
       action: 'claim',
       token: input.token,
       ...(input.escrowId ? { epoch: input.escrowId } : {}),
+      ...(pathDFallbackReason ? { pathDFallbackReason } : {}),
+      ...(pathDSubmittedUserOpHash ? { pathDSubmittedUserOpHash } : {}),
+      ...(pathDBundlerTrace ? { pathDBundlerTrace } : {}),
+      ...(pathDDecodedCall ? { pathDDecodedCall } : {}),
     },
   });
 }

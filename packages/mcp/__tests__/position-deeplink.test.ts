@@ -1025,6 +1025,7 @@ import {
   SUBSCRIPTION_PURCHASE_SELECTOR,
   SUBSCRIPTION_REDEEM_SELECTOR,
   REDEMPTION_QUEUE_SUBMIT_SELECTOR,
+  YIELD_SNAPSHOT_CLAIM_SELECTOR,
   QUEUE_SUBMITTED_TOPIC0,
   PATH_D_OP_SPECS,
   parseQueueRequestIdFromReceipt,
@@ -3085,5 +3086,245 @@ describe('positionBuy — Path D Slice 1 Commit 3.5 UserOp pipeline', () => {
       throw new Error('expected Path C fallback (echo) on broker_chain_rpc_failed');
     }
     expect(result.data.echo.pathDFallbackReason).toBe('broker_chain_rpc_failed');
+  });
+});
+
+// ── Wave 5 Slice 2a — positionClaim autonomous Path D (claimYield) ──
+//
+// claimYield(epochId, eph) is the structurally-different op: no encShares,
+// no cap arg, arg0 = epochId, target = the per-token YieldSnapshot proxy.
+// These pin the Path-D claim end-to-end (MODE.DEFAULT) + the deep-link
+// fallbacks (no snapshot addr / no epochId).
+const PATH_D_SNAPSHOT_ADDR = ('0x' + '5'.repeat(40)) as `0x${string}`;
+
+function claimBackend(eph: `0x${string}`): BackendClient {
+  const catalog = {
+    tokens: [
+      {
+        address: PATH_D_TBILL_ADDR,
+        symbol: 'TBILL1',
+        status: 'active',
+        latest_nav: { nav: '1.0' },
+        yield_snapshot_address: PATH_D_SNAPSHOT_ADDR,
+      },
+    ],
+  };
+  const mirror = {
+    session: {
+      sessionId: 'sess_test',
+      mode: 'scoped',
+      status: 'active',
+      signerAddress: SIGNER_ADDR,
+      permissionId: '0xdeadbeef',
+      enableStatus: 'enabled',
+      validatorNonce: null,
+      targetContracts: [STUB_SUBSCRIPTION_ADDRESS, PATH_D_SNAPSHOT_ADDR],
+      selectorCaps: [],
+      validUntilSec: 9_999_999_999,
+      mintedAtSec: 1_700_000_000,
+      consentActionHash: null,
+      consentTextSha256: null,
+    },
+  };
+  return {
+    get: vi.fn().mockImplementation(async (path: string) => {
+      if (path.startsWith('/api/v1/agent/policy/scoped-session')) return mirror;
+      if (path === '/api/v1/agent/policy/state') return { accountAddress: KERNEL_ADDR };
+      return catalog;
+    }),
+    getUnauth: vi.fn().mockResolvedValue(catalog),
+    post: vi.fn().mockImplementation(async (path: string) => {
+      if (path === '/api/v1/agent/path-d/mint-ephemeral') return { ephemeralEOA: eph };
+      throw new Error(`claimBackend: unexpected post to ${path}`);
+    }),
+  } as unknown as BackendClient;
+}
+
+function claimSnapshot(): PolicySnapshotWire {
+  return snapshotWith({
+    selectorCaps: [
+      // Uncapped claim cap (capArgIndex/maxAmount both null) — what the
+      // backend derivation serves for claimYield.
+      { selector: YIELD_SNAPSHOT_CLAIM_SELECTOR, capArgIndex: null, maxAmount: null },
+    ],
+    targetContracts: [PATH_D_SNAPSHOT_ADDR],
+  });
+}
+
+describe('positionClaim — Path D autonomous claim (Slice 2a)', () => {
+  it('MODE.DEFAULT: claims epoch via Path D (mint-ephemeral, no encrypt-shares), targets the snapshot', async () => {
+    const eph = ('0x' + 'b'.repeat(40)) as `0x${string}`;
+    const epochId = 3n;
+    const sponsored = happySponsored();
+    const nonce = 9n;
+    const fee = {
+      maxFeePerGas: '0x10' as `0x${string}`,
+      maxPriorityFeePerGas: '0x10' as `0x${string}`,
+    };
+    const brokerSig = ('0x' + 'cd'.repeat(65)) as `0x${string}`;
+    const { encodeFunctionData, parseAbi } = await import('viem');
+    const innerCalldata = encodeFunctionData({
+      abi: parseAbi(['function claimYield(uint256 epochId, address ephemeralEOA)']),
+      functionName: 'claimYield',
+      args: [epochId, eph],
+    }) as `0x${string}`;
+    const kernelCallData = encodeKernelExecuteSingleCall({
+      target: PATH_D_SNAPSHOT_ADDR,
+      value: 0n,
+      callData: innerCalldata,
+    });
+    const expectedHash = getUserOperationHash({
+      userOperation: {
+        sender: KERNEL_ADDR,
+        nonce,
+        factory: undefined,
+        factoryData: undefined,
+        callData: kernelCallData,
+        callGasLimit: BigInt(sponsored.callGasLimit),
+        verificationGasLimit: BigInt(sponsored.verificationGasLimit),
+        preVerificationGas: BigInt(sponsored.preVerificationGas),
+        maxFeePerGas: BigInt(fee.maxFeePerGas),
+        maxPriorityFeePerGas: BigInt(fee.maxPriorityFeePerGas),
+        paymaster: sponsored.paymaster,
+        paymasterVerificationGasLimit: BigInt(sponsored.paymasterVerificationGasLimit),
+        paymasterPostOpGasLimit: BigInt(sponsored.paymasterPostOpGasLimit),
+        paymasterData: sponsored.paymasterData,
+        signature: PLACEHOLDER_SIGNATURE,
+      } as unknown as Parameters<typeof getUserOperationHash>[0]['userOperation'],
+      entryPointAddress: STUB_ENTRY_POINT,
+      entryPointVersion: '0.7',
+      chainId: STUB_CHAIN_ID,
+    });
+    const getNonceSpy = vi.fn().mockResolvedValue(nonce);
+    const sendSpy = vi.fn().mockResolvedValue(expectedHash);
+    const signUserOpSpy = vi.fn().mockResolvedValue({
+      type: 'sign_userop',
+      sessionId: 'sess_test',
+      signerAddress: SIGNER_ADDR,
+      signature: brokerSig,
+    });
+    const bundler = {
+      getNonce: getNonceSpy,
+      getFeeData: vi.fn().mockResolvedValue(fee),
+      sponsorUserOp: vi.fn().mockResolvedValue(sponsored),
+      sendUserOp: sendSpy,
+      waitForReceipt: vi.fn().mockResolvedValue(happyReceipt(expectedHash)),
+      drainTrace: vi.fn().mockReturnValue([]),
+    } as unknown as BundlerClient;
+    const backend = claimBackend(eph);
+
+    const broker = stubBroker({
+      preflight: { supported: true, daemonVersion: '0.5.0', signerAddress: SIGNER_ADDR },
+      policySnapshot: { type: 'get_policy_snapshot', snapshot: claimSnapshot() },
+    });
+    // Override signUserOp with our spy so we can assert the innerCall target.
+    (broker as unknown as { signUserOp: typeof signUserOpSpy }).signUserOp = signUserOpSpy;
+
+    const result = await positionClaim(
+      { token: 'TBILL1', escrowId: '3' } as never,
+      {
+        backend,
+        broker,
+        bundler,
+        surface: 'mcp',
+        dashboardBaseUrl: 'https://muhaven.app',
+        subscriptionAddress: STUB_SUBSCRIPTION_ADDRESS,
+        entryPointAddress: STUB_ENTRY_POINT,
+        chainId: STUB_CHAIN_ID,
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok || 'echo' in result.data) {
+      throw new Error(`expected PositionSubmittedData (path D claim), got ${JSON.stringify(result)}`);
+    }
+    expect(result.data.action).toBe('claim');
+    expect(result.data.status).toBe('submitted');
+    expect(result.data.path).toBe('D');
+    expect(result.data.userOpHash).toBe(expectedHash);
+    // No queue/settlement extras on a claim.
+    expect(result.data.settlement).toBeUndefined();
+    expect(result.data.queueRequestId).toBeUndefined();
+
+    // DEFAULT-mode nonce key (byte 0 = 0x00).
+    expect(getNonceSpy.mock.calls[0]![2]).toBe(
+      composeKernelV3NonceKey({ permissionId: '0xdeadbeef', mode: 'default' }),
+    );
+    // The broker signed an innerCall TARGETING THE SNAPSHOT (not the sub).
+    const signArg = signUserOpSpy.mock.calls[0]![0] as {
+      innerCall: { target: string; callData: string };
+      intent: { tool: string; summary: string };
+    };
+    expect(signArg.innerCall.target).toBe(PATH_D_SNAPSHOT_ADDR);
+    expect(signArg.innerCall.callData).toBe(innerCalldata);
+    expect(signArg.intent.tool).toBe('muhaven.position.claim');
+    expect(signArg.intent.summary).toContain('claim epoch 3');
+    // Mediated via mint-ephemeral, NEVER encrypt-shares (claim has no encShares).
+    const postPaths = (backend.post as unknown as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => c[0] as string,
+    );
+    expect(postPaths).toContain('/api/v1/agent/path-d/mint-ephemeral');
+    expect(postPaths).not.toContain('/api/v1/agent/path-d/encrypt-shares');
+    // Submitted sig is the bare 66-byte wrapped session-key sig (MODE.DEFAULT).
+    const submitted = sendSpy.mock.calls[0]![0] as { signature: `0x${string}` };
+    expect(submitted.signature).toBe(buildKernelSessionKeySignature({ ecdsaSignature: brokerSig }));
+  });
+
+  it('falls back to the /yields deep-link when the token has NO yield_snapshot_address', async () => {
+    // makeDeps() catalog tokens carry no yield_snapshot_address → no Path D.
+    const result = await positionClaim({ token: 'TBILL1', escrowId: '3' } as never, makeDeps());
+    expect(result.ok).toBe(true);
+    if (!result.ok || !('echo' in result.data)) {
+      throw new Error('expected Path C deep-link (echo) when no snapshot address');
+    }
+    expect(new URL(result.data.dashboardUrl).pathname).toBe('/yields');
+    expect(result.data.echo.epoch).toBe('3');
+    expect(result.data.echo.pathDFallbackReason).toBeUndefined();
+  });
+
+  it('deep-links (no Path D) when escrowId is omitted — autonomous claim needs a concrete epoch', async () => {
+    // Even with a snapshot address available, no epochId → cannot sign a claim.
+    const eph = ('0x' + 'b'.repeat(40)) as `0x${string}`;
+    const result = await positionClaim(
+      { token: 'TBILL1' } as never,
+      {
+        backend: claimBackend(eph),
+        broker: stubBroker(),
+        bundler: stubBundler(),
+        surface: 'mcp',
+        dashboardBaseUrl: 'https://muhaven.app',
+        subscriptionAddress: STUB_SUBSCRIPTION_ADDRESS,
+        entryPointAddress: STUB_ENTRY_POINT,
+        chainId: STUB_CHAIN_ID,
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok || !('echo' in result.data)) {
+      throw new Error('expected Path C deep-link when escrowId omitted');
+    }
+    expect(new URL(result.data.dashboardUrl).pathname).toBe('/yields');
+    expect(result.data.echo.epoch).toBeUndefined();
+  });
+
+  it('deep-links (no Path D) when escrowId is "0" — epoch 0 is the no-epoch sentinel', async () => {
+    const eph = ('0x' + 'b'.repeat(40)) as `0x${string}`;
+    const result = await positionClaim(
+      { token: 'TBILL1', escrowId: '0' } as never,
+      {
+        backend: claimBackend(eph),
+        broker: stubBroker(),
+        bundler: stubBundler(),
+        surface: 'mcp',
+        dashboardBaseUrl: 'https://muhaven.app',
+        subscriptionAddress: STUB_SUBSCRIPTION_ADDRESS,
+        entryPointAddress: STUB_ENTRY_POINT,
+        chainId: STUB_CHAIN_ID,
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok || !('echo' in result.data)) {
+      throw new Error('expected Path C deep-link when escrowId is 0');
+    }
+    expect(result.data.echo.epoch).toBe('0');
   });
 });

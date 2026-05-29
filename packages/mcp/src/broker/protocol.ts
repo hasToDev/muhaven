@@ -110,7 +110,7 @@
  *    cannot exhaust broker memory by sending an unbounded JSON blob.
  */
 
-export const BROKER_PROTOCOL_VERSION = '0.5.0';
+export const BROKER_PROTOCOL_VERSION = '0.6.0';
 
 // ---------- requests ----------
 
@@ -172,6 +172,21 @@ export interface BrokerSignUserOpRequest {
      *  wordIndex)` per the matched `selectorCaps[i].capArgIndex`. */
     readonly callData: `0x${string}`;
   };
+  /**
+   * Wave 5 Slice 2c (auto-reinvest, ATOMIC claim+buy) — when the UserOp
+   * wraps a kernel `executeBatch` (callType 0x01), the inner calls are
+   * MULTIPLE. The daemon runs `checkPolicy` over EVERY entry (ALL must
+   * pass) instead of just `innerCall`. Back-compat: when omitted, the
+   * daemon validates the single `innerCall` as before. The MCP sets
+   * `innerCall = innerCalls[0]` for the batch case so a pre-2c daemon
+   * (which ignores this field) at least policy-checks the first leg; the
+   * on-chain CallPolicy bounds every leg regardless. Bounded to a small
+   * array so a malformed peer can't fan out unbounded checks.
+   */
+  readonly innerCalls?: readonly {
+    readonly target: `0x${string}`;
+    readonly callData: `0x${string}`;
+  }[];
   /** Free-form context for the audit log. NOT trusted as policy input. */
   readonly intent?: {
     readonly tool: string;
@@ -623,6 +638,10 @@ const UINT256_DEC_RE = /^(0|[1-9][0-9]{0,77})$/;
  *  generous for typical UserOps (kernel inner-call sizes ≤ a few KB)
  *  while still well under the 1MB IPC payload cap. */
 const MAX_CALLDATA_HEX_LEN = 200_000;
+/** Wave 5 Slice 2c — max entries in a `sign_userop.innerCalls` batch. A
+ *  reinvest batch is [claim, buy] = 2; the small ceiling bounds the
+ *  daemon's per-entry checkPolicy fan-out against a malformed peer. */
+const MAX_INNER_CALLS = 8;
 
 export function isHashHex(value: unknown): value is `0x${string}` {
   return typeof value === 'string' && HASH_HEX_RE.test(value);
@@ -1030,6 +1049,65 @@ export function parseBrokerRequest(line: string): BrokerRequest | BrokerErrorRes
           ...(typeof intentObj.summary === 'string' ? { summary: intentObj.summary } : {}),
         };
       }
+      // Wave 5 Slice 2c — optional batch `innerCalls`. When present it
+      // MUST be a non-empty array (≤ MAX_INNER_CALLS) of the same
+      // {target, callData} shape; the daemon checkPolicy's each.
+      let safeInnerCalls:
+        | { target: `0x${string}`; callData: `0x${string}` }[]
+        | undefined;
+      const rawInnerCalls = obj.innerCalls;
+      if (rawInnerCalls !== undefined) {
+        if (!Array.isArray(rawInnerCalls) || rawInnerCalls.length === 0) {
+          return {
+            type: 'error',
+            code: 'invalid_request',
+            message: 'sign_userop.innerCalls must be a non-empty array when provided',
+          };
+        }
+        if (rawInnerCalls.length > MAX_INNER_CALLS) {
+          return {
+            type: 'error',
+            code: 'invalid_request',
+            message: `sign_userop.innerCalls must have at most ${MAX_INNER_CALLS} entries`,
+          };
+        }
+        const parsed: { target: `0x${string}`; callData: `0x${string}` }[] = [];
+        for (const entry of rawInnerCalls) {
+          if (typeof entry !== 'object' || entry === null) {
+            return {
+              type: 'error',
+              code: 'invalid_request',
+              message: 'sign_userop.innerCalls[] entries must be { target, callData } objects',
+            };
+          }
+          const e = entry as Record<string, unknown>;
+          if (!isAddressHex(e.target)) {
+            return {
+              type: 'error',
+              code: 'invalid_request',
+              message: 'sign_userop.innerCalls[].target must be a 0x-prefixed 20-byte hex',
+            };
+          }
+          if (
+            !isHexPrefixed(e.callData) ||
+            (e.callData as string).length < 74 ||
+            (e.callData as string).length % 2 !== 0 ||
+            (e.callData as string).length > MAX_CALLDATA_HEX_LEN
+          ) {
+            return {
+              type: 'error',
+              code: 'invalid_request',
+              message:
+                'sign_userop.innerCalls[].callData must be 0x-prefixed even-length hex ≥74 chars and ≤200000 chars',
+            };
+          }
+          parsed.push({
+            target: (e.target as string).toLowerCase() as `0x${string}`,
+            callData: (e.callData as string).toLowerCase() as `0x${string}`,
+          });
+        }
+        safeInnerCalls = parsed;
+      }
       return {
         type: 'sign_userop',
         sessionId,
@@ -1038,6 +1116,7 @@ export function parseBrokerRequest(line: string): BrokerRequest | BrokerErrorRes
           target: (ic.target as string).toLowerCase() as `0x${string}`,
           callData: (ic.callData as string).toLowerCase() as `0x${string}`,
         },
+        ...(safeInnerCalls === undefined ? {} : { innerCalls: safeInnerCalls }),
         ...(safeIntent === undefined ? {} : { intent: safeIntent }),
       };
     }

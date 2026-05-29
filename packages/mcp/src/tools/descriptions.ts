@@ -114,7 +114,7 @@ export const TOOL_DESCRIPTORS: readonly ToolDescriptor[] = [
     name: 'muhaven.position.claim',
     group: 'position',
     description:
-      'Prepare a yield claim. Returns a dashboard deep-link URL (muhaven.app/yields?...) pointing at the YieldsPage. When escrowId is set, the matching epoch row is highlighted + scrolled into view; when omitted, the page renders the user\'s full claimable list and they pick. User passkey-signs on the dashboard.',
+      'Claim matured yield for an epoch. When an active Scoped autonomy session is present AND a concrete escrowId (the epoch id) is given, it submits claimYield autonomously (broker-signed, same path as position.buy/sell) and returns the tx hash directly; otherwise — no active session, OR no escrowId — it returns a dashboard deep-link URL (muhaven.app/yields?...) the user opens and passkey-signs. escrowId is the epoch id: when set, the matching row is highlighted + scrolled into view; when omitted, the page renders the full claimable list and the user picks (autonomous claim REQUIRES a concrete epoch — without one it always deep-links). The claimed amount is computed on-chain and stays encrypted (amount-blind). Verify settlement via muhaven.read.activity (a "claim" row with the tx hash) — amounts are never shown.',
     sensitive: true,
   },
   {

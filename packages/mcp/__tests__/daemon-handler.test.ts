@@ -318,6 +318,84 @@ describe('handleBrokerRequest', () => {
     }
   });
 
+  // ---------- Wave 5 Slice 2c — batch innerCalls (atomic claim+buy) ----------
+
+  const CLAIM_SELECTOR = '0xfeedface';
+  function batchSnap(): PolicySnapshot {
+    return snap({
+      selectorCaps: [
+        {
+          selector: SUBSCRIPTION_PURCHASE_SELECTOR as `0x${string}`,
+          capArgIndex: 0,
+          maxAmount: '10000000',
+        },
+        // claim is uncapped (capArgIndex/maxAmount both null).
+        { selector: CLAIM_SELECTOR as `0x${string}`, capArgIndex: null, maxAmount: null },
+      ],
+    });
+  }
+
+  it('sign_userop signs a batch when EVERY innerCalls leg passes policy', async () => {
+    const policyStore = new MemoryPolicyStore();
+    await policyStore.put(batchSnap());
+    const res = await handleBrokerRequest(
+      {
+        type: 'sign_userop',
+        sessionId: 'sess_test',
+        userOpHash: ('0x' + 'a'.repeat(64)) as `0x${string}`,
+        // innerCall = first leg (back-compat for a pre-2c daemon).
+        innerCall: {
+          target: VALID_TARGET as `0x${string}`,
+          callData: callDataFor(CLAIM_SELECTOR, 3n),
+        },
+        innerCalls: [
+          { target: VALID_TARGET as `0x${string}`, callData: callDataFor(CLAIM_SELECTOR, 3n) },
+          {
+            target: VALID_TARGET as `0x${string}`,
+            callData: callDataFor(SUBSCRIPTION_PURCHASE_SELECTOR, 5_000_000n),
+          },
+        ],
+      },
+      signer,
+      keystore,
+      undefined,
+      {},
+      policyStore,
+    );
+    expect(res.type).toBe('sign_userop');
+  });
+
+  it('sign_userop REJECTS the whole batch when ANY leg exceeds its cap (buy over-cap)', async () => {
+    const policyStore = new MemoryPolicyStore();
+    await policyStore.put(batchSnap());
+    const res = await handleBrokerRequest(
+      {
+        type: 'sign_userop',
+        sessionId: 'sess_test',
+        userOpHash: ('0x' + 'a'.repeat(64)) as `0x${string}`,
+        innerCall: {
+          target: VALID_TARGET as `0x${string}`,
+          callData: callDataFor(CLAIM_SELECTOR, 3n),
+        },
+        innerCalls: [
+          { target: VALID_TARGET as `0x${string}`, callData: callDataFor(CLAIM_SELECTOR, 3n) },
+          {
+            // buy leg over the 10,000,000 per-op cap → max_spend_exceeded.
+            target: VALID_TARGET as `0x${string}`,
+            callData: callDataFor(SUBSCRIPTION_PURCHASE_SELECTOR, 99_000_000n),
+          },
+        ],
+      },
+      signer,
+      keystore,
+      undefined,
+      {},
+      policyStore,
+    );
+    expect(res.type).toBe('error');
+    if (res.type === 'error') expect(res.code).toBe('max_spend_exceeded');
+  });
+
   it('sign_userop returns policy_violation when target not in allowlist', async () => {
     const policyStore = new MemoryPolicyStore();
     await policyStore.put(snap());

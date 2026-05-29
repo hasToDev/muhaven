@@ -88,10 +88,10 @@ describe('broker protocol parser', () => {
     expect(JSON.parse(out)).toEqual({ type: 'clear_jwt', cleared: true });
   });
 
-  // ---------- Wave 5 Option D Commit 3 — protocol 0.5.0 ----------
+  // ---------- Wave 5 Slice 2c — protocol 0.6.0 (sign_userop innerCalls) ----------
 
-  it('protocol version is bumped to 0.5.0', () => {
-    expect(BROKER_PROTOCOL_VERSION).toBe('0.5.0');
+  it('protocol version is bumped to 0.6.0 (batch innerCalls support)', () => {
+    expect(BROKER_PROTOCOL_VERSION).toBe('0.6.0');
   });
 
   const validSnapshot = () => ({
@@ -129,6 +129,60 @@ describe('broker protocol parser', () => {
       expect(res.innerCall.target).toBe('0x' + 'c'.repeat(40));
       expect(res.innerCall.callData).toBe(callData.toLowerCase());
     }
+  });
+
+  it('parses sign_userop with a batch innerCalls array (Slice 2c)', () => {
+    const hash = '0x' + '1'.repeat(64);
+    const claim = '0xfeedface' + '0'.repeat(63) + '3'; // claimYield(epoch=3)-ish
+    const buy = '0xdeadbeef' + '0'.repeat(63) + '5';
+    const res = parseBrokerRequest(
+      JSON.stringify({
+        type: 'sign_userop',
+        sessionId: 'sess_abc-123',
+        userOpHash: hash,
+        innerCall: { target: '0x' + 'A'.repeat(40), callData: claim },
+        innerCalls: [
+          { target: '0x' + 'A'.repeat(40), callData: claim },
+          { target: '0x' + 'B'.repeat(40), callData: buy },
+        ],
+      }),
+    );
+    expect(res.type).toBe('sign_userop');
+    if (res.type === 'sign_userop') {
+      expect(res.innerCalls).toHaveLength(2);
+      expect(res.innerCalls![0]!.target).toBe('0x' + 'a'.repeat(40));
+      expect(res.innerCalls![1]!.target).toBe('0x' + 'b'.repeat(40));
+      expect(res.innerCalls![1]!.callData).toBe(buy.toLowerCase());
+    }
+  });
+
+  it('rejects sign_userop innerCalls that is empty', () => {
+    const res = parseBrokerRequest(
+      JSON.stringify({
+        type: 'sign_userop',
+        sessionId: 'sess_abc-123',
+        userOpHash: '0x' + '1'.repeat(64),
+        innerCall: { target: '0x' + 'a'.repeat(40), callData: '0xdeadbeef' + '0'.repeat(64) },
+        innerCalls: [],
+      }),
+    );
+    expect(res.type).toBe('error');
+  });
+
+  it('rejects sign_userop innerCalls with a malformed entry callData', () => {
+    const res = parseBrokerRequest(
+      JSON.stringify({
+        type: 'sign_userop',
+        sessionId: 'sess_abc-123',
+        userOpHash: '0x' + '1'.repeat(64),
+        innerCall: { target: '0x' + 'a'.repeat(40), callData: '0xdeadbeef' + '0'.repeat(64) },
+        innerCalls: [
+          { target: '0x' + 'a'.repeat(40), callData: '0xdeadbeef' + '0'.repeat(64) },
+          { target: '0x' + 'b'.repeat(40), callData: '0x12' }, // too short
+        ],
+      }),
+    );
+    expect(res.type).toBe('error');
   });
 
   it('rejects sign_userop with bad sessionId (path-traversal char)', () => {
