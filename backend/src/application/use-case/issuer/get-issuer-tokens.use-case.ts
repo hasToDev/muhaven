@@ -47,6 +47,13 @@ function toDto(
     asset_class: token.assetClass,
     min_investment: token.minInvestment ?? null,
     status: token.status,
+    // Wave 5 Slice 2c follow-up WS-B — INTENTIONALLY no env-singleton fallback
+    // here (unlike the public `GetTokensUseCase`). Issuer tokens are
+    // wizard-deployed, so their DB column is populated; and an issuer's
+    // distribute flow needs THIS token's real per-token snapshot, not a generic
+    // platform singleton — falling back would mask a genuinely-missing column.
+    // The public /api/v1/tokens catalog is the one the MCP claim Path-D + the
+    // reinvest runner consume, and it carries the fallback.
     yield_snapshot_address: token.yieldSnapshotAddress ?? null,
     // Wave 5 Slice 1 — the issuer view doesn't surface the per-token queue
     // address (it's an investor-side sell concern). Always null here; the

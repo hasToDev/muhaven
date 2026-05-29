@@ -12,6 +12,8 @@ const useCase = new GetTokenByAddressUseCase(
   container.oracleRepo,
   // Wave 5 Slice 1 (MCP sell) — per-token RedemptionQueue map.
   parseTokenAddressMap(getEnv().REDEMPTION_QUEUE_BY_TOKEN_JSON),
+  // Wave 5 Slice 2c follow-up WS-B — YIELD_SNAPSHOT_ADDRESS env fallback.
+  getEnv().YIELD_SNAPSHOT_ADDRESS?.trim() || null,
 );
 
 const handler = createGetHandler({

@@ -46,6 +46,14 @@ import {
   YIELD_SNAPSHOT_CLAIM_ABI,
   YIELD_SNAPSHOT_CLAIM_SELECTOR,
 } from '../clients/path-d-encoding.js';
+// WS-A (0.6.1) — the shared mirror transform lets the keyless runner
+// self-heal a missing policy snapshot from the backend mirror (the same
+// recovery `attemptPathD` does), without importing the tool surface.
+import {
+  type ScopedSessionMirrorResponse,
+  MirrorDtoMalformedError,
+  mirrorDtoToPolicySnapshot,
+} from '../clients/scoped-session-mirror.js';
 
 const ADDRESS_HEX = /^0x[0-9a-fA-F]{40}$/;
 
@@ -120,15 +128,98 @@ export type ReinvestBatchResult =
    *  daemon logs the reason + retries next cycle. */
   | { readonly kind: 'skip'; readonly reason: ReinvestSkipReason; readonly message: string };
 
-function skip(reason: ReinvestSkipReason, message: string): ReinvestBatchResult {
+/** The `skip` variant of `ReinvestBatchResult`, extracted so helpers that can
+ *  ONLY skip (never submit) declare a precise return type. Narrow → wide, so a
+ *  `ReinvestSkip` is still assignable wherever a `ReinvestBatchResult` is. */
+type ReinvestSkip = Extract<ReinvestBatchResult, { kind: 'skip' }>;
+
+function skip(reason: ReinvestSkipReason, message: string): ReinvestSkip {
   return { kind: 'skip', reason, message };
 }
 
 interface PolicyStateDto {
   readonly accountAddress?: string;
 }
-interface ScopedSessionMirrorResp {
-  readonly session: { readonly enableStatus?: 'pending' | 'enabled' | 'failed' | null } | null;
+
+/**
+ * WS-A (0.6.1) — self-heal a missing broker policy snapshot from the
+ * backend mirror. A freshly-restarted broker holds the session KEY but
+ * has no policy SNAPSHOT on disk for the current signer, so
+ * `getActiveSessionId()` returns null until a manual Path-D op syncs it.
+ * This reproduces the exact recovery `attemptPathD` runs
+ * (`handlers.ts::syncSnapshotFromMirror`): fetch the mirror's latest
+ * active scoped-session row, validate it's bound to the broker's live
+ * signer, install it via IPC, and re-probe.
+ *
+ * Returns the now-active sessionId, or a `skip` to bubble straight out of
+ * `buildAndSubmitReinvestBatch` (the daemon logs the reason + retries
+ * next cycle). The runner uses the SAME JWT the gate used, so the mirror
+ * read sees the same session.
+ */
+async function syncSnapshotFromMirror(
+  backend: BackendClient,
+  broker: BrokerClient,
+  brokerSignerAddress: string,
+): Promise<{ readonly kind: 'ok'; readonly sessionId: string } | ReinvestSkip> {
+  let mirror: ScopedSessionMirrorResponse;
+  try {
+    mirror = await backend.get<ScopedSessionMirrorResponse>(
+      '/api/v1/agent/policy/scoped-session',
+      { surface: 'mcp' },
+    );
+  } catch (err) {
+    if (err instanceof BackendError && typeof err.status === 'number' && err.status < 500) {
+      return skip('backend_rejected', `mirror lookup for auto-sync rejected (backend.${err.code})`);
+    }
+    return skip('backend_error', `mirror lookup for auto-sync failed: ${backendErr(err)}`);
+  }
+  // Loose `== null` catches both an absent `session` and an explicit null
+  // (the backend's `findLatestActive` returns null for revoked/expired) —
+  // nothing to sync; the user must mint/enable a scoped session.
+  if (!mirror || mirror.session == null) {
+    return skip(
+      'no_active_snapshot',
+      'broker has no active session snapshot and the backend mirror has none to sync — mint + enable a scoped session (with reinvest opt-in) from the dashboard',
+    );
+  }
+  let wire: import('../broker/protocol.js').PolicySnapshotWire;
+  try {
+    wire = mirrorDtoToPolicySnapshot(mirror.session);
+  } catch (err) {
+    // MirrorDtoMalformedError carries only a structural message (no
+    // attacker-controlled text); other throws are unexpected shape bugs.
+    if (err instanceof MirrorDtoMalformedError) {
+      return skip('backend_error', `mirror returned a malformed scoped-session row (${err.message})`);
+    }
+    return skip('backend_error', `mirror transform failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  // Signer-mismatch pre-check (same as handlers.ts CR M-1): storing a
+  // snapshot bound to a different signer than the broker has loaded would
+  // land an unreachable row in the keystore. Bounce with a concrete reason.
+  if (wire.signerAddress.toLowerCase() !== brokerSignerAddress.toLowerCase()) {
+    return skip(
+      'signer_mismatch',
+      `mirror snapshot bound to ${wire.signerAddress}, broker signs as ${brokerSignerAddress} — re-mint the scoped tier against the broker's current session key`,
+    );
+  }
+  try {
+    await broker.storePolicySnapshot(wire);
+  } catch (err) {
+    return skip('broker_error', `store_policy_snapshot (auto-sync) failed: ${brokerErr(err)}`);
+  }
+  let activeId: string | null;
+  try {
+    activeId = (await broker.getActiveSessionId()).sessionId;
+  } catch (err) {
+    return skip('broker_error', `get_active_session_id re-probe after auto-sync failed: ${brokerErr(err)}`);
+  }
+  if (!activeId) {
+    return skip(
+      'no_active_snapshot',
+      'broker accepted the auto-synced snapshot but still reports no active session — most likely multiple non-expired snapshots for the same signer (ambiguous); clear stale snapshots via the muhaven-broker CLI',
+    );
+  }
+  return { kind: 'ok', sessionId: activeId };
 }
 
 export async function buildAndSubmitReinvestBatch(
@@ -163,10 +254,14 @@ export async function buildAndSubmitReinvestBatch(
     return skip('broker_error', `get_active_session_id failed: ${brokerErr(err)}`);
   }
   if (!activeId) {
-    return skip(
-      'no_active_snapshot',
-      'broker has no active session snapshot — a manual op or MCP tool call will sync it from the mirror',
-    );
+    // WS-A (0.6.1) self-heal: a freshly-restarted broker has the session
+    // KEY but no policy SNAPSHOT for the current signer. Instead of idling
+    // until a manual op syncs it, run the SAME mirror-sync `attemptPathD`
+    // does — fetch the mirror's active row, validate the signer, install
+    // it, re-probe. On any miss, the sync returns the precise skip reason.
+    const synced = await syncSnapshotFromMirror(backend, broker, preflight.signerAddress);
+    if (synced.kind !== 'ok') return synced;
+    activeId = synced.sessionId;
   }
 
   // 3. Snapshot still readable + bound to the live signer.
@@ -238,8 +333,13 @@ export async function buildAndSubmitReinvestBatch(
   }
 
   // 6a. REVOKE KILL-SWITCH + enable-status gate (mirror is authoritative).
+  //     This mirror read is DELIBERATELY a fresh fetch — NOT reused from the
+  //     WS-A step-2 self-heal read. It must run as late as possible before we
+  //     sign, so a revoke that lands between step 2 and here still fails closed.
+  //     Do NOT "optimize" by threading the step-2 result forward — that would
+  //     widen the revoke TOCTOU window (BE-Arch review).
   try {
-    const mirror = await backend.get<ScopedSessionMirrorResp>(
+    const mirror = await backend.get<ScopedSessionMirrorResponse>(
       '/api/v1/agent/policy/scoped-session',
       { surface: 'mcp' },
     );

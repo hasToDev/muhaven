@@ -25,6 +25,7 @@ function toDto(
   latestNav: NavSnapshot | null,
   issuerDisplayName: string | null,
   redemptionQueueByToken: Record<string, string>,
+  defaultYieldSnapshotAddress: string | null,
 ): TokenResponseDto {
   return {
     id: token.id,
@@ -39,7 +40,27 @@ function toDto(
     asset_class: token.assetClass,
     min_investment: token.minInvestment ?? null,
     status: token.status,
-    yield_snapshot_address: token.yieldSnapshotAddress ?? null,
+    // Wave 5 Slice 2c follow-up WS-B — fall back to the `YIELD_SNAPSHOT_ADDRESS`
+    // env SINGLETON when the DB column is null (legacy / non-wizard tokens like
+    // CETES). This makes the catalog AGREE with the reinvest gate
+    // (`get-reinvest-should-run.use-case.ts` resolves the same
+    // `t.yieldSnapshotAddress ?? defaultSnapshotAddress`), so the MCP
+    // `position.claim` Path-D branch + the runner's catalog cross-check can
+    // target the snapshot for those tokens instead of seeing null.
+    //
+    // SCOPE (BE-Arch review): this is a SINGLE-snapshot fallback — correct for
+    // today's deployment (staging/prod share one snapshot proxy across tokens,
+    // and the gate uses the same singleton). The frontend's `getYieldSnapshot`
+    // has an extra per-token-map tier (`VITE_YIELD_SNAPSHOTS_JSON`) that has NO
+    // backend twin; it's latent today (all three collapse to the same address).
+    // A future MULTI-snapshot-per-token deployment must add a
+    // `YIELD_SNAPSHOT_BY_TOKEN_JSON` map fed to BOTH this serializer AND the
+    // gate together (never one without the other) — cf. the existing
+    // `getYieldSnapshotAddresses()` union helper + `REDEMPTION_QUEUE_BY_TOKEN_JSON`.
+    // Better still: backfill `rwa_tokens.yield_snapshot_address` for legacy
+    // tokens so the DB column wins in all three resolvers and this env fallback
+    // becomes a true belt-and-suspenders (see SLICE_2C_FOLLOWUPS_PLAN.md).
+    yield_snapshot_address: token.yieldSnapshotAddress ?? defaultYieldSnapshotAddress ?? null,
     // Wave 5 Slice 1 (MCP sell) — resolve the per-token queue from the env
     // map (lower-cased keys; see `parseTokenAddressMap`). `null` when unset.
     redemption_queue_address: redemptionQueueByToken[token.address.toLowerCase()] ?? null,
@@ -84,6 +105,11 @@ export class GetTokensUseCase {
      *  of `REDEMPTION_QUEUE_BY_TOKEN_JSON`). Defaults to `{}` so existing
      *  callers + tests compile unchanged (queue address resolves to null). */
     private readonly redemptionQueueByToken: Record<string, string> = {},
+    /** Wave 5 Slice 2c follow-up WS-B — `YIELD_SNAPSHOT_ADDRESS` env
+     *  singleton, used as the fallback for tokens whose `yield_snapshot_address`
+     *  DB column is null. Defaults to `null` so existing callers + tests
+     *  compile unchanged (the field stays null when unset, as before). */
+    private readonly defaultYieldSnapshotAddress: string | null = null,
   ) {}
 
   async execute(): Promise<{ tokens: TokenResponseDto[] }> {
@@ -130,6 +156,7 @@ export class GetTokensUseCase {
           navMap.get(t.address) ?? null,
           issuerNameMap.get(t.issuerAddress.toLowerCase()) ?? null,
           this.redemptionQueueByToken,
+          this.defaultYieldSnapshotAddress,
         ),
       ),
     };
@@ -143,6 +170,9 @@ export class GetTokenByAddressUseCase {
     private readonly userRepo?: IUserRepository,
     private readonly oracleRepo?: IOracleRepository,
     private readonly redemptionQueueByToken: Record<string, string> = {},
+    /** Wave 5 Slice 2c follow-up WS-B — `YIELD_SNAPSHOT_ADDRESS` env
+     *  fallback (parity with `GetTokensUseCase`). */
+    private readonly defaultYieldSnapshotAddress: string | null = null,
   ) {}
 
   async execute(address: string): Promise<TokenResponseDto | null> {
@@ -168,6 +198,6 @@ export class GetTokenByAddressUseCase {
       issuerDisplayName = issuer?.issuerDisplayName ?? null;
     }
 
-    return toDto(token, latestNav, issuerDisplayName, this.redemptionQueueByToken);
+    return toDto(token, latestNav, issuerDisplayName, this.redemptionQueueByToken, this.defaultYieldSnapshotAddress);
   }
 }

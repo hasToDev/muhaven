@@ -78,6 +78,10 @@ function snapshotWith(over: Partial<PolicySnapshotWire> = {}): PolicySnapshotWir
 interface BrokerOver {
   preflight?: unknown;
   activeSessionId?: string | null;
+  /** WS-A — sequence of get_active_session_id results (mockResolvedValueOnce
+   *  per entry). Lets a test return null first (step 2) then an id after the
+   *  auto-sync's storePolicySnapshot + re-probe. Overrides activeSessionId. */
+  activeSessionIdSeq?: (string | null)[];
   snapshot?: PolicySnapshotWire | null;
   signUserOpSig?: `0x${string}`;
 }
@@ -85,6 +89,8 @@ function stubBroker(over: BrokerOver = {}): {
   broker: BrokerClient;
   signUserOp: ReturnType<typeof vi.fn>;
   clearPolicySnapshot: ReturnType<typeof vi.fn>;
+  storePolicySnapshot: ReturnType<typeof vi.fn>;
+  getActiveSessionId: ReturnType<typeof vi.fn>;
 } {
   const signUserOp = vi.fn().mockResolvedValue({
     type: 'sign_userop',
@@ -93,27 +99,64 @@ function stubBroker(over: BrokerOver = {}): {
     signature: over.signUserOpSig ?? (('0x' + 'ab'.repeat(65)) as `0x${string}`),
   });
   const clearPolicySnapshot = vi.fn().mockResolvedValue({ type: 'clear_policy_snapshot', cleared: true });
+  const storePolicySnapshot = vi.fn().mockResolvedValue({ type: 'store_policy_snapshot', stored: true });
+  const getActiveSessionId = vi.fn();
+  if (over.activeSessionIdSeq) {
+    for (const v of over.activeSessionIdSeq) {
+      getActiveSessionId.mockResolvedValueOnce({ type: 'get_active_session_id', sessionId: v });
+    }
+  } else {
+    getActiveSessionId.mockResolvedValue({
+      type: 'get_active_session_id',
+      sessionId: 'activeSessionId' in over ? over.activeSessionId : 'sess_reinvest',
+    });
+  }
   const broker = {
     preflight: vi.fn().mockResolvedValue(
       over.preflight ?? { supported: true, daemonVersion: '0.6.0', signerAddress: SIGNER },
     ),
-    getActiveSessionId: vi.fn().mockResolvedValue({
-      type: 'get_active_session_id',
-      sessionId: 'activeSessionId' in over ? over.activeSessionId : 'sess_reinvest',
-    }),
+    getActiveSessionId,
     getPolicySnapshot: vi.fn().mockResolvedValue({
       type: 'get_policy_snapshot',
       snapshot: over.snapshot === undefined ? snapshotWith() : over.snapshot,
     }),
     signUserOp,
     clearPolicySnapshot,
+    storePolicySnapshot,
   } as unknown as BrokerClient;
-  return { broker, signUserOp, clearPolicySnapshot };
+  return { broker, signUserOp, clearPolicySnapshot, storePolicySnapshot, getActiveSessionId };
+}
+
+/** A complete `ScopedSessionMirrorDto` that passes `mirrorDtoToPolicySnapshot`
+ *  — used by the WS-A auto-sync tests. Bound to SIGNER by default. */
+function fullMirrorDto(over: { signerAddress?: `0x${string}` } = {}) {
+  return {
+    sessionId: 'sess_reinvest',
+    mode: 'scoped' as const,
+    status: 'active' as const,
+    signerAddress: over.signerAddress ?? SIGNER,
+    permissionId: PERMISSION_ID,
+    targetContracts: [SUBSCRIPTION, SNAPSHOT_ADDR],
+    selectorCaps: [
+      { selector: SUBSCRIPTION_PURCHASE_SELECTOR, capArgIndex: 2, maxAmount: '1000' },
+      { selector: YIELD_SNAPSHOT_CLAIM_SELECTOR, capArgIndex: null, maxAmount: null },
+    ],
+    validUntilSec: 9_999_999_999,
+    mintedAtSec: 1_700_000_000,
+    consentActionHash: null,
+    consentTextSha256: null,
+    enableStatus: 'enabled' as const,
+  };
 }
 
 interface BackendOver {
   enableStatus?: 'pending' | 'enabled' | 'failed' | null;
   mirrorNull?: boolean;
+  /** WS-A — return a COMPLETE ScopedSessionMirrorDto on the scoped-session
+   *  endpoint (so the runner's auto-sync transform accepts it). The DTO also
+   *  carries enableStatus, so it satisfies the step-6a enable gate too. */
+  fullMirror?: boolean;
+  mirrorSignerAddress?: `0x${string}`;
   accountAddress?: string;
 }
 function stubBackend(over: BackendOver = {}): BackendClient {
@@ -124,6 +167,9 @@ function stubBackend(over: BackendOver = {}): BackendClient {
       }
       if (path === '/api/v1/agent/policy/scoped-session') {
         if (over.mirrorNull) return { session: null };
+        if (over.fullMirror) {
+          return { session: { ...fullMirrorDto({ signerAddress: over.mirrorSignerAddress }), enableStatus: over.enableStatus ?? 'enabled' } };
+        }
         return { session: { enableStatus: over.enableStatus ?? 'enabled' } };
       }
       throw new Error(`unstubbed backend.get ${path}`);
@@ -271,11 +317,63 @@ describe('buildAndSubmitReinvestBatch', () => {
     expect(res).toMatchObject({ kind: 'skip', reason: 'broker_not_ready' });
   });
 
-  it('skips when the broker has no active session snapshot', async () => {
-    const { broker } = stubBroker({ activeSessionId: null });
+  it('skips no_active_snapshot when the broker AND the mirror both have nothing to sync', async () => {
+    // WS-A: a null active session triggers the mirror auto-sync; if the
+    // mirror is ALSO empty (never minted / revoked), it skips with the
+    // mint-a-session remediation rather than the old "manual op" message.
+    const { broker, storePolicySnapshot } = stubBroker({ activeSessionId: null });
     const { bundler } = stubBundler({});
-    const res = await buildAndSubmitReinvestBatch(baseInput(), deps(broker, bundler, stubBackend()));
+    const res = await buildAndSubmitReinvestBatch(
+      baseInput(),
+      deps(broker, bundler, stubBackend({ mirrorNull: true })),
+    );
     expect(res).toMatchObject({ kind: 'skip', reason: 'no_active_snapshot' });
+    expect(storePolicySnapshot).not.toHaveBeenCalled();
+  });
+
+  it('WS-A self-heals: auto-syncs the snapshot from the mirror when the broker has none, then proceeds', async () => {
+    // Fresh broker restart: get_active_session_id null first, then the id
+    // after the sync stores the mirror snapshot + re-probes.
+    const hash = expectedHash(1n);
+    const { broker, storePolicySnapshot, getActiveSessionId } = stubBroker({
+      activeSessionIdSeq: [null, 'sess_reinvest'],
+    });
+    const { bundler } = stubBundler({ sendUserOp: hash, waitForReceipt: happyReceipt(hash) });
+    const res = await buildAndSubmitReinvestBatch(
+      baseInput(),
+      deps(broker, bundler, stubBackend({ fullMirror: true })),
+    );
+    expect(res.kind).toBe('ok');
+    // The mirror DTO was transformed + installed into the broker keystore.
+    expect(storePolicySnapshot).toHaveBeenCalledTimes(1);
+    const stored = storePolicySnapshot.mock.calls[0][0];
+    expect(stored.signerAddress.toLowerCase()).toBe(SIGNER.toLowerCase());
+    expect(stored.mode).toBe('scoped');
+    // get_active_session_id: step-2 (null) + sync re-probe (id) = 2 calls.
+    expect(getActiveSessionId).toHaveBeenCalledTimes(2);
+  });
+
+  it('WS-A auto-sync bounces on signer mismatch (mirror bound to a different signer)', async () => {
+    const { broker, storePolicySnapshot } = stubBroker({ activeSessionIdSeq: [null] });
+    const { bundler } = stubBundler({});
+    const res = await buildAndSubmitReinvestBatch(
+      baseInput(),
+      deps(broker, bundler, stubBackend({ fullMirror: true, mirrorSignerAddress: ('0x' + '9'.repeat(40)) as `0x${string}` })),
+    );
+    expect(res).toMatchObject({ kind: 'skip', reason: 'signer_mismatch' });
+    // Mismatch is caught BEFORE the store — no unreachable row lands.
+    expect(storePolicySnapshot).not.toHaveBeenCalled();
+  });
+
+  it('WS-A auto-sync skips no_active_snapshot when the re-probe is still ambiguous (null after store)', async () => {
+    const { broker, storePolicySnapshot } = stubBroker({ activeSessionIdSeq: [null, null] });
+    const { bundler } = stubBundler({});
+    const res = await buildAndSubmitReinvestBatch(
+      baseInput(),
+      deps(broker, bundler, stubBackend({ fullMirror: true })),
+    );
+    expect(res).toMatchObject({ kind: 'skip', reason: 'no_active_snapshot' });
+    expect(storePolicySnapshot).toHaveBeenCalledTimes(1);
   });
 
   it('skips on signer mismatch (key rotated)', async () => {

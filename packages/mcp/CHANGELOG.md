@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-05-29
+
+Wave 5 Slice 2c follow-ups — the auto-reinvest runner now self-heals after a
+broker restart with zero manual ops.
+
+### Changed
+
+- **Runner auto-sync (WS-A).** When the `muhaven-reinvest` runner finds no
+  active broker policy snapshot (a freshly-restarted broker holds the session
+  key but no on-disk snapshot for the current signer), it now syncs the snapshot
+  from the backend mirror — fetch the latest active scoped-session row, validate
+  it's bound to the broker's live signer, install it via IPC, and re-probe —
+  exactly as `position.buy`/`position.sell` already do. Previously the runner
+  logged `no_active_snapshot` every cycle until a manual Path-D op synced it,
+  which defeated "headless" for an already-enabled session.
+
+### Internal
+
+- Hoisted the scoped-session mirror wire types (`ScopedSessionMirrorDto`,
+  `ScopedSessionMirrorResponse`), the structural-guard regexes,
+  `MirrorDtoMalformedError`, and `mirrorDtoToPolicySnapshot` from
+  `tools/handlers.ts` into a shared `clients/scoped-session-mirror.ts` (the same
+  pattern as the `path-d-encoding.ts` hoist) so the keyless runner reuses the
+  exact same transform without importing the tool surface. No behavioural change
+  to `attemptPathD`; tool descriptions unchanged (tool-hashes unchanged).
+
 ## [0.6.0] — 2026-05-29
 
 Wave 5 Slice 2 (auto-reinvest) — the agent can now claim matured yield AND,

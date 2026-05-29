@@ -380,3 +380,81 @@ describe('GetTokenByAddressUseCase · NAV-source split fallback', () => {
     expect(findLatestSnapshot).not.toHaveBeenCalled();
   });
 });
+
+// Wave 5 Slice 2c follow-up WS-B — `yield_snapshot_address` env fallback.
+describe('yield_snapshot_address env-singleton fallback (WS-B)', () => {
+  const ENV_SNAPSHOT = '0x' + 'b'.repeat(40);
+  const DB_SNAPSHOT = '0x' + 'c'.repeat(40);
+
+  function tokenWithSnapshot(symbol: string, addr: string, snapshot?: string): RwaToken {
+    return new RwaToken({
+      id: randomUUID(),
+      address: addr,
+      name: `${symbol} mock`,
+      symbol,
+      issuerAddress: '0x' + 'a'.repeat(40),
+      apy: '5.0',
+      kycTier: 1,
+      assetClass: 'treasury',
+      status: 'active',
+      yieldSnapshotAddress: snapshot,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+  }
+
+  it('GetTokensUseCase falls back to the env singleton when the DB column is null', async () => {
+    const cetes = tokenWithSnapshot('CETES', CETES_ADDR); // no DB snapshot
+    const useCase = new GetTokensUseCase(
+      makeTokenRepo([cetes]),
+      makeNavRepo([]),
+      makeUserRepo(),
+      makeOracleRepo(new Map()).repo,
+      {}, // redemptionQueueByToken
+      ENV_SNAPSHOT,
+    );
+    const { tokens } = await useCase.execute();
+    expect(tokens[0].yield_snapshot_address).toBe(ENV_SNAPSHOT);
+  });
+
+  it('GetTokensUseCase prefers the DB column over the env singleton', async () => {
+    const cetes = tokenWithSnapshot('CETES', CETES_ADDR, DB_SNAPSHOT);
+    const useCase = new GetTokensUseCase(
+      makeTokenRepo([cetes]),
+      makeNavRepo([]),
+      makeUserRepo(),
+      makeOracleRepo(new Map()).repo,
+      {},
+      ENV_SNAPSHOT,
+    );
+    const { tokens } = await useCase.execute();
+    expect(tokens[0].yield_snapshot_address).toBe(DB_SNAPSHOT);
+  });
+
+  it('GetTokensUseCase keeps null when neither DB column nor env is set (back-compat default)', async () => {
+    const cetes = tokenWithSnapshot('CETES', CETES_ADDR);
+    const useCase = new GetTokensUseCase(
+      makeTokenRepo([cetes]),
+      makeNavRepo([]),
+      makeUserRepo(),
+      makeOracleRepo(new Map()).repo,
+      // defaultYieldSnapshotAddress omitted → null
+    );
+    const { tokens } = await useCase.execute();
+    expect(tokens[0].yield_snapshot_address).toBeNull();
+  });
+
+  it('GetTokenByAddressUseCase falls back to the env singleton when the DB column is null', async () => {
+    const cetes = tokenWithSnapshot('CETES', CETES_ADDR);
+    const useCase = new GetTokenByAddressUseCase(
+      makeTokenRepo([cetes]),
+      makeNavRepo([]),
+      makeUserRepo(),
+      makeOracleRepo(new Map()).repo,
+      {},
+      ENV_SNAPSHOT,
+    );
+    const dto = await useCase.execute(CETES_ADDR);
+    expect(dto?.yield_snapshot_address).toBe(ENV_SNAPSHOT);
+  });
+});

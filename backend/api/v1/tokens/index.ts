@@ -16,12 +16,19 @@ const redemptionQueueByToken = parseTokenAddressMap(
   getEnv().REDEMPTION_QUEUE_BY_TOKEN_JSON,
 );
 
+// Wave 5 Slice 2c follow-up WS-B — the snapshot-address fallback singleton.
+// Mirrors the reinvest gate + frontend `getYieldSnapshot` resolution so the
+// catalog reports the snapshot for legacy tokens (CETES) whose DB column is
+// null. `?.trim() || null` collapses unset / blank env to null.
+const defaultYieldSnapshotAddress = getEnv().YIELD_SNAPSHOT_ADDRESS?.trim() || null;
+
 const getTokensUseCase = new GetTokensUseCase(
   container.rwaTokenRepo,
   container.navHistoryRepo,
   container.userRepo,
   container.oracleRepo,
   redemptionQueueByToken,
+  defaultYieldSnapshotAddress,
 );
 const createTokenUseCase = new CreateTokenUseCase(container.rwaTokenRepo);
 
