@@ -39,6 +39,30 @@ export type EncryptSharesForPurchaseRequestDto = z.infer<
   typeof EncryptSharesForPurchaseRequestDtoSchema
 >;
 
+/**
+ * Wave 5 Path D Slice 2a (autonomous claim) — request DTO for the
+ * lighter "mint an ephemeral EOA" boundary. `YieldSnapshot.claimYield`
+ * computes the amount on-chain, so there's nothing to encrypt — the
+ * Path-D claim UserOp needs only a throwaway eph (the FHE.allow
+ * decrypt-grant target). See `MintEphemeralEoaUseCase`.
+ */
+export const MintEphemeralRequestDtoSchema = z
+  .object({
+    tokenAddress: z
+      .string()
+      .regex(ADDRESS_HEX, 'tokenAddress must be a 0x-prefixed 20-byte hex string'),
+  })
+  .strict();
+
+export type MintEphemeralRequestDto = z.infer<typeof MintEphemeralRequestDtoSchema>;
+
+export interface MintEphemeralResponseDto {
+  /** Fresh-random 0x-address minted by the backend per call (throwaway —
+   *  private half dropped). Passed to `claimYield(epochId, ephemeralEOA)`
+   *  as the FHE ACL grant target for the claimed-amount handle. */
+  readonly ephemeralEOA: `0x${string}`;
+}
+
 export interface EncryptSharesForPurchaseResponseDto {
   /** ABI-tuple-shaped components for `InEuint128`. */
   readonly encShares: {

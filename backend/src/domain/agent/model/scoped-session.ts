@@ -126,6 +126,16 @@ export interface ScopedSessionProps {
    * fallback `enable_sig_stale` on mismatch). NOT encrypted at rest.
    */
   validatorNonce?: number | null;
+  /**
+   * Wave 5 Slice 2 (auto-reinvest) — user opt-in for the headless
+   * claim→buy reinvest loop. Default `false`: a Scoped session does NOT
+   * auto-reinvest unless the user toggles it on (Autonomy page). The
+   * `GET /agent/reinvest/should-run` gate refuses (shouldRun:false) when
+   * this is false, so the broker loop never claims+buys without consent.
+   * Optional on the props (defaults to `false`) so pre-Slice-2 call sites
+   * compile unchanged; the Pg repo's `toDomain` always populates it.
+   */
+  reinvestEnabled?: boolean;
 }
 
 export class ScopedSession {
@@ -150,6 +160,7 @@ export class ScopedSession {
   readonly validatorEnabledAt: Date | null;
   readonly validatorEnabledTxHash: `0x${string}` | null;
   readonly validatorNonce: number | null;
+  readonly reinvestEnabled: boolean;
 
   constructor(props: ScopedSessionProps) {
     this.sessionId = props.sessionId;
@@ -173,6 +184,7 @@ export class ScopedSession {
     this.validatorEnabledAt = props.validatorEnabledAt ?? null;
     this.validatorEnabledTxHash = props.validatorEnabledTxHash ?? null;
     this.validatorNonce = props.validatorNonce ?? null;
+    this.reinvestEnabled = props.reinvestEnabled ?? false;
   }
 
   with(patch: Partial<ScopedSessionProps>): ScopedSession {

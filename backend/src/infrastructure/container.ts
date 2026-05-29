@@ -141,6 +141,10 @@ import { PauseAgentUseCase } from '../application/use-case/agent/policy/pause-ag
 // Wave 5 Path D Slice 1 Commit 3.5 — backend encrypt-shares mediation
 // for MCP autonomous-buy. See dto/agent/path-d.dto.ts.
 import { EncryptSharesForPurchaseUseCase } from '../application/use-case/agent/path-d/encrypt-shares-for-purchase.use-case.js';
+import { MintEphemeralEoaUseCase } from '../application/use-case/agent/path-d/mint-ephemeral.use-case.js';
+import { GetReinvestShouldRunUseCase } from '../application/use-case/agent/reinvest/get-reinvest-should-run.use-case.js';
+import { SetReinvestEnabledUseCase } from '../application/use-case/agent/reinvest/set-reinvest-enabled.use-case.js';
+import { OnChainReinvestGateReader } from './agent/reinvest-gate.reader.js';
 import {
   PublishIssuerChannelEventUseCase,
   LoggingIssuerChannelTransport,
@@ -1096,5 +1100,53 @@ export const container = {
       getMuHavenRepos().rwaTokenRepo,
       getAgentRepos().scopedSessionRepo,
     );
+  },
+  // Wave 5 Path D Slice 2a (autonomous claim) — mints a throwaway eph for
+  // the Path-D `claimYield` UserOp (no encryption; the amount is computed
+  // on-chain). Shares the revoke kill-switch session gate + token-active
+  // check with `encryptSharesForPurchase`.
+  get mintEphemeralForClaim() {
+    return new MintEphemeralEoaUseCase(
+      getMuHavenRepos().rwaTokenRepo,
+      getAgentRepos().scopedSessionRepo,
+    );
+  },
+  // Wave 5 Slice 2b (auto-reinvest gate) — public-data "should I reinvest?"
+  // gate. Reads claimable epochs on-chain (no decrypt) after the
+  // active-session + opt-in gates. The reader is RPC-bound; the use-case
+  // is cheap (new per request).
+  get getReinvestShouldRun() {
+    const env = getEnv();
+    // RPC_URL is optional in the schema; if unset, on-chain reads throw
+    // and the reader's per-token isolation yields zero epochs (gate →
+    // shouldRun:false), which is the safe degradation.
+    const reader = new OnChainReinvestGateReader({ rpcUrl: env.RPC_URL ?? '' });
+    let minRatePerShare: bigint | undefined;
+    if (env.REINVEST_MIN_RATE_PER_SHARE) {
+      try {
+        minRatePerShare = BigInt(env.REINVEST_MIN_RATE_PER_SHARE);
+      } catch {
+        minRatePerShare = undefined;
+      }
+    }
+    return new GetReinvestShouldRunUseCase(
+      getAgentRepos().scopedSessionRepo,
+      getMuHavenRepos().rwaTokenRepo,
+      reader,
+      {
+        ...(minRatePerShare !== undefined ? { minRatePerShare } : {}),
+        ...(env.REINVEST_MAX_EPOCH_LOOKBACK
+          ? { maxEpochLookback: env.REINVEST_MAX_EPOCH_LOOKBACK }
+          : {}),
+        ...(env.YIELD_SNAPSHOT_ADDRESS
+          ? { defaultSnapshotAddress: env.YIELD_SNAPSHOT_ADDRESS }
+          : {}),
+      },
+    );
+  },
+  // Wave 5 Slice 2 (auto-reinvest) — toggle the opt-in on the user's
+  // active MCP session (Autonomy page).
+  get setReinvestEnabled() {
+    return new SetReinvestEnabledUseCase(getAgentRepos().scopedSessionRepo);
   },
 };

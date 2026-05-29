@@ -44,6 +44,14 @@ export const REDEMPTION_QUEUE_SUBMIT_SELECTOR = toFunctionSelector(
 ).toLowerCase() as `0x${string}`;
 export const QUEUE_SUBMIT_CAP_ARG_INDEX = 1;
 
+/** `YieldSnapshot.claimYield(uint256 epochId, address ephemeralEOA)` — a
+ *  claim moves no user-chosen amount, so its selectorCap carries
+ *  `capArgIndex: null, maxAmount: null` ("selector allowed, no arg-cap").
+ *  Wave 5 Slice 2a (autonomous claim → reinvest groundwork). */
+export const YIELD_SNAPSHOT_CLAIM_SELECTOR = toFunctionSelector(
+  'function claimYield(uint256,address)',
+).toLowerCase() as `0x${string}`;
+
 const ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
 
 export interface DerivedSellCaps {
@@ -72,10 +80,17 @@ export interface DerivedSellCaps {
  *   (`Object.values` of the `REDEMPTION_QUEUE_BY_TOKEN_JSON` map). Empty →
  *   only the redeem cap is derived (no submit cap, no queue targets), so
  *   `viaQueue` sells degrade to a Path-C deep-link.
+ * @param yieldSnapshotAddresses every YieldSnapshot proxy address
+ *   (`YIELD_SNAPSHOT_ADDRESSES_JSON` values ∪ the `YIELD_SNAPSHOT_ADDRESS`
+ *   singleton). Empty → no claim cap / snapshot targets derived, so
+ *   autonomous claim (Slice 2a) degrades to a Path-C deep-link. The
+ *   on-chain Scoped envelope already authorizes `claimYield` (no re-mint);
+ *   this serves the OFF-CHAIN selectorCap + target the broker needs.
  */
 export function deriveAutonomousSellCaps(
   session: ScopedSession,
   redemptionQueueAddresses: readonly string[],
+  yieldSnapshotAddresses: readonly string[] = [],
 ): DerivedSellCaps {
   const selectorCaps: ScopedSelectorCap[] = [...session.selectorCaps];
   const targetContracts: `0x${string}`[] = [...session.targetContracts];
@@ -123,6 +138,27 @@ export function deriveAutonomousSellCaps(
       maxAmount: perOpCap,
     });
     addedSelectors.push(REDEMPTION_QUEUE_SUBMIT_SELECTOR);
+  }
+
+  // claimYield (Slice 2a) — needs the per-token YieldSnapshot proxy targets
+  // AND an UNCAPPED claim selectorCap (capArgIndex/maxAmount both null: a
+  // claim moves no user-chosen amount). Dedupe + lower-case + shape-check
+  // the snapshot addresses.
+  const seenSnapshots = new Set<string>();
+  for (const raw of yieldSnapshotAddresses) {
+    if (!ADDR_RE.test(raw)) continue;
+    const lower = raw.toLowerCase() as `0x${string}`;
+    if (seenSnapshots.has(lower)) continue;
+    seenSnapshots.add(lower);
+    if (!hasTarget(lower)) targetContracts.push(lower);
+  }
+  if (seenSnapshots.size > 0 && !hasSelector(YIELD_SNAPSHOT_CLAIM_SELECTOR)) {
+    selectorCaps.push({
+      selector: YIELD_SNAPSHOT_CLAIM_SELECTOR,
+      capArgIndex: null,
+      maxAmount: null,
+    });
+    addedSelectors.push(YIELD_SNAPSHOT_CLAIM_SELECTOR);
   }
 
   const changed =

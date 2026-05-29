@@ -214,6 +214,15 @@ const EnvSchema = z.object({
   // `*_JSON` lists are per-token *subscriptions*, while the platform
   // contracts here are single-deployment singletons.
   ISSUER_ONBOARDING_ENABLED: zEnvBool(false),
+  // Wave 5 Slice 2b (auto-reinvest gate) — optional tuning. Both default
+  // to "off / sensible" so the gate works with neither set.
+  //   - REINVEST_MIN_RATE_PER_SHARE: thin cleartext floor on an epoch's
+  //     PUBLIC ratePerShare (scaled by RATE_SCALE=1e6). Decimal string;
+  //     unset/empty → no floor.
+  //   - REINVEST_MAX_EPOCH_LOOKBACK: how many epochs back per token the
+  //     gate scans (bounds RPC fan-out). Unset → reader default (12).
+  REINVEST_MIN_RATE_PER_SHARE: z.string().optional(),
+  REINVEST_MAX_EPOCH_LOOKBACK: z.coerce.number().int().positive().optional(),
   PLATFORM_DEPLOYER_PRIVATE_KEY: z.string().optional(),
   INVESTOR_REGISTRY_V35_ADDRESS: z.string().optional(),
   YIELD_SNAPSHOT_ADDRESS: z.string().optional(),
@@ -628,6 +637,50 @@ export function resetEnvCacheForTesting(): void {
  * non-empty but yields zero usable entries — so the operator sees WHY queued
  * sells degraded to a deep-link.
  */
+/**
+ * Wave 5 Slice 2a (autonomous claim) — parse a JSON ARRAY of 0x-addresses
+ * (e.g. `YIELD_SNAPSHOT_ADDRESSES_JSON`) into a lower-cased address list.
+ * Returns `[]` on absent / malformed input, dropping any non-0x-20-byte
+ * entry. Pure + idempotent.
+ */
+export function parseAddressListEnv(raw: string | undefined): `0x${string}`[] {
+  if (!raw) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const addrRe = /^0x[0-9a-fA-F]{40}$/;
+  return parsed
+    .filter((v): v is string => typeof v === 'string' && addrRe.test(v))
+    .map((v) => v.toLowerCase() as `0x${string}`);
+}
+
+/**
+ * Wave 5 Slice 2a — the full set of YieldSnapshot proxy addresses the
+ * Scoped-session caps derivation needs as `claimYield` targets: the
+ * `YIELD_SNAPSHOT_ADDRESSES_JSON` array UNION the `YIELD_SNAPSHOT_ADDRESS`
+ * singleton (legacy/fallback). Deduped + lower-cased. `[]` when neither is
+ * set → autonomous claim degrades to a Path-C deep-link.
+ */
+export function getYieldSnapshotAddresses(): `0x${string}`[] {
+  const env = getEnv();
+  const fromList = parseAddressListEnv(env.YIELD_SNAPSHOT_ADDRESSES_JSON);
+  const singleton = env.YIELD_SNAPSHOT_ADDRESS;
+  const seen = new Set<string>(fromList);
+  const addrRe = /^0x[0-9a-fA-F]{40}$/;
+  if (singleton && addrRe.test(singleton)) {
+    const lower = singleton.toLowerCase() as `0x${string}`;
+    if (!seen.has(lower)) {
+      seen.add(lower);
+      fromList.push(lower);
+    }
+  }
+  return fromList;
+}
+
 export function parseTokenAddressMap(
   raw: string | undefined,
 ): Record<string, `0x${string}`> {

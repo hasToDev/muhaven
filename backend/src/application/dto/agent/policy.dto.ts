@@ -482,6 +482,12 @@ export interface ScopedSessionDto {
   validatorEnabledAt: string | null;
   validatorEnabledTxHash: string | null;
   validatorNonce: number | null;
+  /**
+   * Wave 5 Slice 2 (auto-reinvest) — user opt-in for the headless
+   * claim→buy loop. The Autonomy toggle flips it; the `should-run` gate
+   * reads it. Defaults `false`.
+   */
+  reinvestEnabled: boolean;
 }
 
 /**
@@ -573,5 +579,6 @@ export function toScopedSessionDto(session: ScopedSession): ScopedSessionDto {
     validatorEnabledAt: session.validatorEnabledAt?.toISOString() ?? null,
     validatorEnabledTxHash: session.validatorEnabledTxHash,
     validatorNonce: session.validatorNonce,
+    reinvestEnabled: session.reinvestEnabled,
   };
 }

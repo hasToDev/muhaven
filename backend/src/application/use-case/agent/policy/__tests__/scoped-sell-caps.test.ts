@@ -7,6 +7,7 @@ import {
   SUBSCRIPTION_PURCHASE_SELECTOR,
   SUBSCRIPTION_REDEEM_SELECTOR,
   REDEMPTION_QUEUE_SUBMIT_SELECTOR,
+  YIELD_SNAPSHOT_CLAIM_SELECTOR,
   REDEEM_CAP_ARG_INDEX,
   QUEUE_SUBMIT_CAP_ARG_INDEX,
 } from '../scoped-sell-caps.js';
@@ -14,6 +15,8 @@ import {
 const SUBSCRIPTION = '0xbbbb000000000000000000000000000000000002' as `0x${string}`;
 const QUEUE_A = '0xaaaa0000000000000000000000000000000000a1' as `0x${string}`;
 const QUEUE_B = '0xaaaa0000000000000000000000000000000000b2' as `0x${string}`;
+const SNAPSHOT_A = '0xcccc0000000000000000000000000000000000c1' as `0x${string}`;
+const SNAPSHOT_B = '0xcccc0000000000000000000000000000000000c2' as `0x${string}`;
 const NOW = new Date('2026-05-25T12:00:00.000Z');
 const NOW_SEC = Math.floor(NOW.getTime() / 1000);
 
@@ -134,19 +137,87 @@ describe('deriveAutonomousSellCaps', () => {
     expect(session.targetContracts).toEqual(originalTargets);
   });
 
-  it('pins the three selectors to their canonical signatures', () => {
+  it('pins the four selectors to their canonical signatures', () => {
     // Guards against an ABI-shape typo silently producing the wrong selector
-    // (which would make the broker reject the autonomous sell).
+    // (which would make the broker reject the autonomous sell/claim).
     expect(SUBSCRIPTION_PURCHASE_SELECTOR).toMatch(/^0x[0-9a-f]{8}$/);
     expect(SUBSCRIPTION_REDEEM_SELECTOR).toMatch(/^0x[0-9a-f]{8}$/);
     expect(REDEMPTION_QUEUE_SUBMIT_SELECTOR).toMatch(/^0x[0-9a-f]{8}$/);
-    // All three distinct.
+    expect(YIELD_SNAPSHOT_CLAIM_SELECTOR).toMatch(/^0x[0-9a-f]{8}$/);
+    // All four distinct.
     expect(
       new Set([
         SUBSCRIPTION_PURCHASE_SELECTOR,
         SUBSCRIPTION_REDEEM_SELECTOR,
         REDEMPTION_QUEUE_SUBMIT_SELECTOR,
+        YIELD_SNAPSHOT_CLAIM_SELECTOR,
       ]).size,
-    ).toBe(3);
+    ).toBe(4);
+  });
+});
+
+describe('deriveAutonomousSellCaps — claim derivation (Slice 2a)', () => {
+  it('adds an UNCAPPED claimYield cap (capArgIndex/maxAmount both null) + snapshot targets', () => {
+    const session = makeSession();
+    const out = deriveAutonomousSellCaps(session, [], [SNAPSHOT_A, SNAPSHOT_B]);
+    expect(out.changed).toBe(true);
+    // redeem (no queues) + claim
+    expect(out.addedSelectors).toEqual([
+      SUBSCRIPTION_REDEEM_SELECTOR,
+      YIELD_SNAPSHOT_CLAIM_SELECTOR,
+    ]);
+    const claim = out.selectorCaps.find((c) => c.selector === YIELD_SNAPSHOT_CLAIM_SELECTOR);
+    expect(claim).toEqual({
+      selector: YIELD_SNAPSHOT_CLAIM_SELECTOR,
+      capArgIndex: null,
+      maxAmount: null,
+    });
+    expect(out.targetContracts).toEqual([SUBSCRIPTION, SNAPSHOT_A, SNAPSHOT_B]);
+  });
+
+  it('derives redeem + submit + claim together (queues AND snapshots supplied)', () => {
+    const session = makeSession();
+    const out = deriveAutonomousSellCaps(session, [QUEUE_A], [SNAPSHOT_A]);
+    expect(out.changed).toBe(true);
+    expect(out.addedSelectors).toEqual([
+      SUBSCRIPTION_REDEEM_SELECTOR,
+      REDEMPTION_QUEUE_SUBMIT_SELECTOR,
+      YIELD_SNAPSHOT_CLAIM_SELECTOR,
+    ]);
+    expect(out.targetContracts).toEqual([SUBSCRIPTION, QUEUE_A, SNAPSHOT_A]);
+  });
+
+  it('is a no-op for claim when no snapshots are supplied (degrades to deep-link)', () => {
+    const session = makeSession();
+    const out = deriveAutonomousSellCaps(session, [], []);
+    expect(out.selectorCaps.some((c) => c.selector === YIELD_SNAPSHOT_CLAIM_SELECTOR)).toBe(false);
+    // redeem still derived (it needs no queue/snapshot target).
+    expect(out.addedSelectors).toEqual([SUBSCRIPTION_REDEEM_SELECTOR]);
+  });
+
+  it('is IDEMPOTENT — a session already carrying the claim cap + snapshot target changes nothing', () => {
+    const session = makeSession({
+      targetContracts: [SUBSCRIPTION, SNAPSHOT_A],
+      selectorCaps: [
+        { selector: SUBSCRIPTION_PURCHASE_SELECTOR, capArgIndex: 2, maxAmount: '100' },
+        { selector: SUBSCRIPTION_REDEEM_SELECTOR, capArgIndex: 2, maxAmount: '100' },
+        { selector: YIELD_SNAPSHOT_CLAIM_SELECTOR, capArgIndex: null, maxAmount: null },
+      ],
+    });
+    const out = deriveAutonomousSellCaps(session, [], [SNAPSHOT_A]);
+    expect(out.changed).toBe(false);
+    expect(out.addedSelectors).toEqual([]);
+  });
+
+  it('dedupes + lower-cases snapshot targets and drops malformed / subscription-colliding entries', () => {
+    const session = makeSession();
+    const out = deriveAutonomousSellCaps(session, [], [
+      SNAPSHOT_A.toUpperCase().replace('0X', '0x'),
+      SNAPSHOT_A,
+      'not-an-address',
+      SUBSCRIPTION,
+      SNAPSHOT_B,
+    ]);
+    expect(out.targetContracts).toEqual([SUBSCRIPTION, SNAPSHOT_A, SNAPSHOT_B]);
   });
 });

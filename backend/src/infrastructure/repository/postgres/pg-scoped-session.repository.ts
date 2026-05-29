@@ -434,6 +434,34 @@ export class PgScopedSessionRepository implements IScopedSessionRepository {
     return row ? this.toDomain(row) : null;
   }
 
+  async setReinvestEnabled(
+    userId: string,
+    surface: Surface,
+    enabled: boolean,
+    now: Date,
+  ): Promise<ScopedSession | null> {
+    // Toggle the opt-in on the user's CURRENTLY-ACTIVE session for the
+    // surface (same predicate as `findLatestActive`). Bounded by
+    // status='active' + valid_until_sec > now so a revoked/expired row is
+    // never flipped on (the gate would refuse it anyway, but this keeps
+    // the toggle honest). `enableData`/`enableSig` are untouched.
+    const nowSec = Math.floor(now.getTime() / 1000);
+    const rows = await this.db
+      .update(agentScopedSessions)
+      .set({ reinvestEnabled: enabled })
+      .where(
+        and(
+          eq(agentScopedSessions.userId, userId),
+          eq(agentScopedSessions.surface, surface),
+          eq(agentScopedSessions.status, ScopedSessionStatus.Active),
+          gt(agentScopedSessions.validUntilSec, nowSec),
+        ),
+      )
+      .returning();
+    const row = rows[0];
+    return row ? this.toDomain(row) : null;
+  }
+
   async findExpiredPendingEnable(
     cutoffSec: number,
     limit: number,
@@ -585,6 +613,10 @@ export class PgScopedSessionRepository implements IScopedSessionRepository {
         row.validatorNonce === null || row.validatorNonce === undefined
           ? null
           : Number(row.validatorNonce),
+      // Wave 5 Slice 2 (auto-reinvest) — opt-in flag (NOT NULL DEFAULT
+      // false in the schema). Coerce defensively in case a `columns:`
+      // projection omits it (then it's undefined → false).
+      reinvestEnabled: row.reinvestEnabled ?? false,
     });
   }
 }

@@ -143,6 +143,20 @@ export class MemoryScopedSessionRepository implements IScopedSessionRepository {
     return revoked;
   }
 
+  async setReinvestEnabled(
+    userId: string,
+    surface: Surface,
+    enabled: boolean,
+    now: Date,
+  ): Promise<ScopedSession | null> {
+    const nowSec = Math.floor(now.getTime() / 1000);
+    const active = await this.findLatestActive(userId, surface, nowSec);
+    if (!active) return null;
+    const updated = active.with({ reinvestEnabled: enabled });
+    this.store.set(active.sessionId, updated);
+    return updated;
+  }
+
   async markExpired(beforeSec: number, now: Date): Promise<number> {
     let count = 0;
     for (const [sessionId, session] of this.store) {

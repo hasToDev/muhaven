@@ -233,6 +233,20 @@ export interface IScopedSessionRepository {
   markValidatorFailed(sessionId: string): Promise<ScopedSession | null>;
 
   /**
+   * Wave 5 Slice 2 (auto-reinvest) — flip the `reinvest_enabled` opt-in
+   * on the user's ACTIVE session for `(userId, surface)`. Returns the
+   * updated row, or `null` when there is no active session to toggle.
+   * Idempotent (setting to the same value re-returns the row). The
+   * frontend Autonomy toggle drives this; the `should-run` gate reads it.
+   */
+  setReinvestEnabled(
+    userId: string,
+    surface: Surface,
+    enabled: boolean,
+    now: Date,
+  ): Promise<ScopedSession | null>;
+
+  /**
    * Wave 5 Option D · Commit 3 (trigger corrected in the third commit)
    * — fetch active rows whose `enable_status='pending'` AND
    * `valid_until_sec <= cutoffSec` (the session's TTL window has

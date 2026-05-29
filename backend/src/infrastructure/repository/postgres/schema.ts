@@ -895,6 +895,17 @@ export const agentScopedSessions = pgTable(
      * Lowercased 0x-hex (CHECK enforces shape).
      */
     validatorEnabledTxHash: text('validator_enabled_tx_hash'),
+    /**
+     * Wave 5 Slice 2 (auto-reinvest) — user opt-in for the headless
+     * claim→buy reinvest loop. Default `false` (opt-in, like Scoped
+     * itself): the `GET /agent/reinvest/should-run` gate returns
+     * shouldRun:false unless this is true, so the broker reinvest loop
+     * never claims+buys without the user toggling it on (Autonomy page).
+     * A column-level default IS appropriate here (unlike enable_status) —
+     * every existing + future row defaults to opted-OUT, which is the
+     * safe, consent-preserving state.
+     */
+    reinvestEnabled: boolean('reinvest_enabled').notNull().default(false),
   },
   (t) => [
     /**

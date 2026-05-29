@@ -79,6 +79,14 @@ export class GetActiveScopedSessionUseCase {
      * shape; when undefined the derivation still applies, just unaudited.
      */
     private readonly appendAuditEvent?: AppendAuditEventUseCase,
+    /**
+     * Wave 5 Slice 2a — every YieldSnapshot proxy address
+     * (`YIELD_SNAPSHOT_ADDRESSES_JSON` values ∪ `YIELD_SNAPSHOT_ADDRESS`).
+     * Empty → no claim cap / snapshot target derived (autonomous claim
+     * degrades to a Path-C deep-link). Defaults to `[]` so existing
+     * callers / tests compile unchanged.
+     */
+    private readonly yieldSnapshotAddresses: readonly string[] = [],
   ) {}
 
   async execute(input: GetActiveScopedSessionInput): Promise<ScopedSession | null> {
@@ -90,7 +98,11 @@ export class GetActiveScopedSessionUseCase {
     );
     if (!session) return null;
 
-    const derived = deriveAutonomousSellCaps(session, this.redemptionQueueAddresses);
+    const derived = deriveAutonomousSellCaps(
+      session,
+      this.redemptionQueueAddresses,
+      this.yieldSnapshotAddresses,
+    );
     if (!derived.changed) return session;
 
     // One-time provenance audit (LOCKED #1 caveat). Best-effort: a failure
