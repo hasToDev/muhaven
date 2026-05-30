@@ -305,6 +305,11 @@ export type ActivityItemType =
   // perspective.
   | 'transfer-out'
   | 'transfer-in'
+  // Wave 5 — cleartext USDC sent OUT of the kernel to an external address
+  // (CashPage "Send"). The amount is PUBLIC, carried in
+  // `metadata.cleartext_amount` (base-6 string) — rendered directly with no
+  // decrypt CTA (unlike every other amount-bearing row).
+  | 'usdc-send'
 
 export interface ActivityItemMetadata {
   /** 'wrap' | 'unwrap' | 'transfer' | 'instant' | 'queued' | 'escalated_to_queue' */
@@ -324,6 +329,12 @@ export interface ActivityItemMetadata {
    * euint64. Transfer rows: cofhe euint128 (per-RWA share amount).
    */
   encrypted_amount_handle?: string | null
+  /**
+   * Wave 5 — cleartext USDC amount in base-6 units (string). Present ONLY on
+   * `usdc-send` rows (the amount is public on-chain). The frontend renders it
+   * directly (`Number(x) / 1e6`) with NO decrypt CTA.
+   */
+  cleartext_amount?: string | null
   /** Ephemeral EOA recorded at the wrap/unwrap call site (informational). */
   ephemeral_eoa?: string | null
   /** Free-form additional fields the backend may attach; never amounts. */

@@ -412,15 +412,20 @@ async function main() {
       const tokenAddrs = parseAddressList(env.MUHAVEN_TOKEN_ADDRESSES_JSON);
       const treasuryAddrs = parseAddressList(env.TREASURY_ADDRESSES_JSON);
       const hasStable = !!env.STABLE_ADDRESS;
+      // Wave 5 — CIRCLE_USDC_ADDRESS (the UsdcSend leg) counts toward "the
+      // indexer has something to do" too, so an instance configured ONLY for
+      // USDC-send indexing still boots the indexer (BE-Arch review MEDIUM).
+      const hasUsdc = !!env.CIRCLE_USDC_ADDRESS;
       if (
         !env.SUBSCRIPTION_ADDRESS &&
         queueAddrs.length === 0 &&
         snapshotAddrs.length === 0 &&
         !hasStable &&
-        tokenAddrs.length === 0
+        tokenAddrs.length === 0 &&
+        !hasUsdc
       ) {
         console.warn(
-          '[tax-events] enabled but no SUBSCRIPTION_ADDRESS / REDEMPTION_QUEUE_ADDRESSES_JSON / YIELD_SNAPSHOT_ADDRESSES_JSON / STABLE_ADDRESS / MUHAVEN_TOKEN_ADDRESSES_JSON configured — skipping',
+          '[tax-events] enabled but no SUBSCRIPTION_ADDRESS / REDEMPTION_QUEUE_ADDRESSES_JSON / YIELD_SNAPSHOT_ADDRESSES_JSON / STABLE_ADDRESS / MUHAVEN_TOKEN_ADDRESSES_JSON / CIRCLE_USDC_ADDRESS configured — skipping',
         );
       } else {
         // Phase 9.A · Option Z follow-up — protocol-filter set: mint /
@@ -437,6 +442,14 @@ async function main() {
         protocolFilter.push(...queueAddrs);
         protocolFilter.push(...snapshotAddrs);
         protocolFilter.push(...treasuryAddrs);
+        // Wave 5 — the MuHavenStable wrapper is where `wrapUsdc` deposits land
+        // (kernel → wrapper). Adding it to the protocol-filter set excludes
+        // those deposits from the UsdcSend leg (they already surface as a
+        // `Wrap` row). Harmless for the fhERC-20 Transfer leg (RWA shares
+        // never move to the wrapper).
+        if (env.STABLE_ADDRESS) {
+          protocolFilter.push(env.STABLE_ADDRESS as Address);
+        }
 
         // Phase 9.A · Expansion (F1) — `TokenRegistry.IssuerUpdated`
         // subscription. Replaces the operator runbook step
@@ -468,6 +481,13 @@ async function main() {
             muHavenTokenAddresses: tokenAddrs,
             protocolFilterAddresses: protocolFilter,
             oracleAddress: env.ORACLE_ADDRESS as Address | undefined,
+            // Wave 5 — UsdcSend leg: index cleartext USDC sent OUT of our
+            // kernels (CashPage "Send"). Scoped to our users via a
+            // `from: [kernels]` topic filter built from the user repo each
+            // chunk. Unset CIRCLE_USDC_ADDRESS → leg disabled.
+            usdcAddress: env.CIRCLE_USDC_ADDRESS as Address | undefined,
+            getKernelAddresses: () =>
+              container.userRepo.listWalletAddresses?.() ?? Promise.resolve([]),
             tokenRegistryAddress: registryAddr,
             intervalMs: env.TAX_EVENT_POLLER_INTERVAL_MS,
           },

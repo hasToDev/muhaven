@@ -23,6 +23,7 @@ const ALL_EVENT_TYPES: TaxEventType[] = [
   'Wrap',
   'Unwrap',
   'Transfer',
+  'UsdcSend',
 ];
 
 function emptyCounts(): TaxEventCountsByType {
@@ -34,6 +35,7 @@ function emptyCounts(): TaxEventCountsByType {
     Wrap: 0,
     Unwrap: 0,
     Transfer: 0,
+    UsdcSend: 0,
   };
 }
 

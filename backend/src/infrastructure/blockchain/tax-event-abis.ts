@@ -180,6 +180,26 @@ export const tokenRegistryEventsAbi = [
   },
 ] as const;
 
+/**
+ * Wave 5 — standard ERC-20 `Transfer(from, to, value)` for the GLOBAL Circle
+ * USDC contract. Unlike `muHavenTokenTransferAbi` (whose `amount` is an
+ * encrypted euint128 → bytes32), USDC's `value` is a CLEARTEXT `uint256` — the
+ * indexer stores it verbatim in `metadata.cleartext_amount`. Used by the
+ * `UsdcSend` leg, which topic-filters `from: [kernels]` so only our users'
+ * outbound sends are fetched from the shared contract (not global volume).
+ */
+export const usdcTransferAbi = [
+  {
+    type: 'event',
+    name: 'Transfer',
+    inputs: [
+      { name: 'from', type: 'address', indexed: true },
+      { name: 'to', type: 'address', indexed: true },
+      { name: 'value', type: 'uint256', indexed: false },
+    ],
+  },
+] as const;
+
 export const oracleNavViewAbi = [
   {
     type: 'function',

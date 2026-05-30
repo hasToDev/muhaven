@@ -37,6 +37,7 @@ function emptyTaxEventRepo(): ITaxEventRepository {
       Wrap: 0,
       Unwrap: 0,
       Transfer: 0,
+      UsdcSend: 0,
     }),
     dailyCounts: vi.fn().mockResolvedValue([]),
     acquisitionsByToken: vi.fn().mockResolvedValue([]),
@@ -826,5 +827,175 @@ describe('TaxEventIndexer · Transfer dispatch (Option Z follow-up)', () => {
     expect(indexer.getStatus().lastProcessedBlock).toBe('100');
     // Sanity: at least one getLogs call covered fromBlock=100, not 101.
     expect(fromBlocks).toContain(100n);
+  });
+});
+
+/**
+ * Wave 5 — UsdcSend leg coverage. Cleartext USDC sent OUT of a kernel
+ * (CashPage "Send"). The leg topic-filters the GLOBAL USDC contract to our
+ * users' outbound sends and inserts ONE sender-keyed row per send to a
+ * non-protocol address, with the PUBLIC amount in metadata.cleartext_amount.
+ */
+
+const USDC_ADDR: Address = '0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d';
+const STABLE_ADDR: Address = '0x1111111111111111111111111111111111111111';
+const EXTERNAL_ADDR: Address = '0xCccccCCCcccCCcCcCCcCcCcCCcCcccCccCcCccc1';
+
+function usdcSendLog(opts: {
+  from: Address;
+  to: Address;
+  value?: bigint;
+  txHash?: `0x${string}`;
+  blockNumber?: bigint;
+  logIndex?: number;
+}) {
+  return {
+    eventName: 'Transfer',
+    args: {
+      from: opts.from,
+      to: opts.to,
+      value: opts.value ?? 1_000_000n,
+    },
+    transactionHash: opts.txHash ?? '0xUsdcSendTx',
+    blockNumber: opts.blockNumber ?? 102n,
+    logIndex: opts.logIndex ?? 0,
+    address: USDC_ADDR,
+  } as any;
+}
+
+describe('TaxEventIndexer · UsdcSend dispatch (Wave 5)', () => {
+  let taxEventRepo: ITaxEventRepository;
+
+  beforeEach(() => {
+    taxEventRepo = emptyTaxEventRepo();
+  });
+
+  function usdcConfig(overrides: Record<string, unknown> = {}) {
+    return defaultIndexerConfig({
+      usdcAddress: USDC_ADDR,
+      getKernelAddresses: async () => [KERNEL_A],
+      protocolFilterAddresses: [STABLE_ADDR],
+      ...overrides,
+    });
+  }
+
+  function clientWithUsdcLogs(logs: any[]) {
+    let blockCallCount = 0;
+    return createMockClient({
+      getBlockNumber: vi.fn().mockImplementation(() => {
+        blockCallCount++;
+        return Promise.resolve(blockCallCount === 1 ? 100n : 105n);
+      }),
+      getLogs: vi.fn().mockImplementation((params: any) => {
+        const addrs = Array.isArray(params.address) ? params.address : [params.address];
+        if (addrs.some((a: string) => a?.toLowerCase() === USDC_ADDR.toLowerCase())) {
+          return Promise.resolve(logs);
+        }
+        return Promise.resolve([]);
+      }),
+    });
+  }
+
+  it('inserts ONE sender-keyed row for a kernel→external USDC send', async () => {
+    const client = clientWithUsdcLogs([
+      usdcSendLog({ from: KERNEL_A, to: EXTERNAL_ADDR, value: 2_500_000n }),
+    ]);
+    const indexer = new TaxEventIndexer(taxEventRepo, usdcConfig(), client);
+    await indexer.tick();
+    await indexer.tick();
+
+    expect(taxEventRepo.saveMany).toHaveBeenCalledOnce();
+    const events = (taxEventRepo.saveMany as any).mock.calls[0][0];
+    expect(events).toHaveLength(1);
+    expect(events[0].eventType).toBe('UsdcSend');
+    expect(events[0].holderAddress).toBe(KERNEL_A);
+    expect(events[0].tokenAddress).toBeNull();
+    expect(events[0].navAtTime).toBeNull();
+    expect(events[0].metadata).toMatchObject({
+      kind: 'usdc-send',
+      direction: 'outbound',
+      counterparty: EXTERNAL_ADDR,
+      cleartext_amount: '2500000',
+    });
+  });
+
+  it('excludes sends to a protocol address (wrap deposit already shown as Wrap)', async () => {
+    const client = clientWithUsdcLogs([usdcSendLog({ from: KERNEL_A, to: STABLE_ADDR })]);
+    const indexer = new TaxEventIndexer(taxEventRepo, usdcConfig(), client);
+    await indexer.tick();
+    await indexer.tick();
+    expect(taxEventRepo.saveMany).not.toHaveBeenCalled();
+  });
+
+  it('excludes burns (to == 0)', async () => {
+    const client = clientWithUsdcLogs([usdcSendLog({ from: KERNEL_A, to: ZERO_ADDR })]);
+    const indexer = new TaxEventIndexer(taxEventRepo, usdcConfig(), client);
+    await indexer.tick();
+    await indexer.tick();
+    expect(taxEventRepo.saveMany).not.toHaveBeenCalled();
+  });
+
+  it('does NOT subscribe to USDC logs when usdcAddress is unset', async () => {
+    const client = clientWithUsdcLogs([usdcSendLog({ from: KERNEL_A, to: EXTERNAL_ADDR })]);
+    const indexer = new TaxEventIndexer(
+      taxEventRepo,
+      defaultIndexerConfig({ getKernelAddresses: async () => [KERNEL_A] }),
+      client,
+    );
+    await indexer.tick();
+    await indexer.tick();
+    const calls = (client.getLogs as any).mock.calls;
+    for (const [params] of calls) {
+      const addrs = Array.isArray(params.address) ? params.address : [params.address];
+      expect(addrs.some((a: string) => a?.toLowerCase() === USDC_ADDR.toLowerCase())).toBe(false);
+    }
+    expect(taxEventRepo.saveMany).not.toHaveBeenCalled();
+  });
+
+  it('skips the leg when the kernel set is empty (fresh DB)', async () => {
+    const client = clientWithUsdcLogs([usdcSendLog({ from: KERNEL_A, to: EXTERNAL_ADDR })]);
+    const indexer = new TaxEventIndexer(
+      taxEventRepo,
+      usdcConfig({ getKernelAddresses: async () => [] }),
+      client,
+    );
+    await indexer.tick();
+    await indexer.tick();
+    const calls = (client.getLogs as any).mock.calls;
+    for (const [params] of calls) {
+      const addrs = Array.isArray(params.address) ? params.address : [params.address];
+      expect(addrs.some((a: string) => a?.toLowerCase() === USDC_ADDR.toLowerCase())).toBe(false);
+    }
+    expect(taxEventRepo.saveMany).not.toHaveBeenCalled();
+  });
+
+  it('falls back to cleartext_amount: null when value arg missing', async () => {
+    const log = usdcSendLog({ from: KERNEL_A, to: EXTERNAL_ADDR });
+    delete (log.args as any).value;
+    const client = clientWithUsdcLogs([log]);
+    const indexer = new TaxEventIndexer(taxEventRepo, usdcConfig(), client);
+    await indexer.tick();
+    await indexer.tick();
+    const events = (taxEventRepo.saveMany as any).mock.calls[0][0];
+    expect(events).toHaveLength(1);
+    expect((events[0].metadata as any).cleartext_amount).toBeNull();
+  });
+
+  it('tolerates getKernelAddresses throwing — skips the leg, no crash', async () => {
+    const client = clientWithUsdcLogs([usdcSendLog({ from: KERNEL_A, to: EXTERNAL_ADDR })]);
+    const indexer = new TaxEventIndexer(
+      taxEventRepo,
+      usdcConfig({
+        getKernelAddresses: async () => {
+          throw new Error('DB unreachable');
+        },
+      }),
+      client,
+    );
+    await indexer.tick();
+    await indexer.tick();
+    expect(taxEventRepo.saveMany).not.toHaveBeenCalled();
+    // Cursor still advances — a failed kernel fetch is not a tick failure.
+    expect(indexer.getStatus().lastProcessedBlock).toBe('105');
   });
 });

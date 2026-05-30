@@ -754,6 +754,20 @@ export const erc20Abi = [
     ],
     outputs: [{ type: 'bool' }],
   },
+  // Standard ERC-20 transfer — used by the CashPage "Send" flow to move
+  // cleartext USDC from the kernel smart account to an arbitrary external
+  // address (a plain UserOp; no FHE / SDK / coprocessor leg). viem needs the
+  // fragment to `encodeFunctionData`.
+  {
+    name: 'transfer',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'to', type: 'address' },
+      { name: 'amount', type: 'uint256' },
+    ],
+    outputs: [{ type: 'bool' }],
+  },
   {
     name: 'balanceOf',
     type: 'function',

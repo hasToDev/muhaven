@@ -39,6 +39,16 @@ export class PgUserRepository implements IUserRepository {
     return rows.map((r) => this.toDomain(r));
   }
 
+  async listWalletAddresses(): Promise<string[]> {
+    // Wave 5 — kernel-address enumeration for the indexer's UsdcSend topic
+    // filter. Column-only select (no toDomain hydration) keeps it cheap even
+    // as the user table grows.
+    const rows = await this.db
+      .select({ walletAddress: users.walletAddress })
+      .from(users);
+    return rows.map((r) => r.walletAddress);
+  }
+
   async save(user: User): Promise<void> {
     await this.db
       .insert(users)

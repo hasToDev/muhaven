@@ -36,6 +36,7 @@ class StubTaxEventRepo implements ITaxEventRepository {
     Wrap: 0,
     Unwrap: 0,
     Transfer: 0,
+    UsdcSend: 0,
   };
   perTypeDaily: Partial<Record<TaxEventType, DailyCount[]>> = {};
   acquisitionsByTokenRows: AcquisitionsByToken[] = [];

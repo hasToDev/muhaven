@@ -50,6 +50,7 @@ class FakeTaxEventRepo implements ITaxEventRepository {
       Wrap: 0,
       Unwrap: 0,
       Transfer: 0,
+      UsdcSend: 0,
     };
   }
   async dailyCounts() {

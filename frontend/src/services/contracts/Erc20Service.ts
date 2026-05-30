@@ -50,3 +50,21 @@ export async function approve(
 ): Promise<TxHash> {
   return contractWrite(tokenAddress, erc20Abi, 'approve', [spender, amount], 'ERC20')
 }
+
+/**
+ * Plain ERC-20 transfer — moves `amount` base units of `tokenAddress` from the
+ * connected kernel smart account to `to`, dispatched as a single gasless
+ * UserOp. Used by the CashPage "Send" flow to send cleartext USDC out to an
+ * arbitrary external address. NO FHE, no SDK, no async coprocessor leg — this
+ * is the cleartext-money analog of the confidential `TokenService` transfer.
+ *
+ * The caller owns validation (valid/non-zero/non-self recipient, positive
+ * amount, balance cap) — this service just encodes + sends.
+ */
+export async function transfer(
+  tokenAddress: `0x${string}`,
+  to: `0x${string}`,
+  amount: bigint,
+): Promise<TxHash> {
+  return contractWrite(tokenAddress, erc20Abi, 'transfer', [to, amount], 'ERC20')
+}

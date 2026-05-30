@@ -29,7 +29,12 @@ export type ActivityItemType =
   // distinguished by `metadata.direction`); the use-case maps each row
   // to its perspective.
   | 'transfer-out'
-  | 'transfer-in';
+  | 'transfer-in'
+  // Wave 5 — cleartext USDC sent OUT of the kernel (CashPage "Send"). One
+  // row per send. The amount is public, so it rides in
+  // `metadata.cleartext_amount` (base-6 string) — the frontend renders it
+  // directly with no decrypt CTA.
+  | 'usdc-send';
 
 export interface ActivityItemDto {
   id: string;
@@ -125,6 +130,11 @@ function mapType(t: TaxEventType, metadata: Record<string, unknown> | null): Act
       // 'inbound' (recipient's row). Both rows share `(tx_hash,
       // log_index)` and are distinguished by `holder_address` (PK).
       return metadata?.direction === 'inbound' ? 'transfer-in' : 'transfer-out';
+    case 'UsdcSend':
+      // Cleartext USDC send (CashPage "Send"). Always outbound — the indexer
+      // writes only the sender-keyed row; the public amount rides in
+      // `metadata.cleartext_amount`.
+      return 'usdc-send';
     case 'FeeEvent':
       return 'fee';
   }

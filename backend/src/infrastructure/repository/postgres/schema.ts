@@ -445,6 +445,12 @@ export const taxEventTypeEnum = pgEnum('tax_event_type', [
   // `(tx_hash, log_index)`. Mints/burns/protocol-mediated moves are
   // filtered out at the indexer level.
   'Transfer',
+  // Wave 5 — cleartext USDC sent OUT of a kernel to an external address
+  // (CashPage "Send"; a plain ERC-20 transfer, NOT the confidential fhERC-20
+  // `Transfer` above). One row per send keyed by the SENDER's kernel. The
+  // amount is PUBLIC on-chain, stored cleartext in `metadata.cleartext_amount`
+  // (base-6 string) — no encrypted handle, no decrypt CTA.
+  'UsdcSend',
 ]);
 
 export const taxEvents = pgTable(

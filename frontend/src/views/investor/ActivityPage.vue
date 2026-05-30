@@ -51,7 +51,9 @@ function toggleExpand(id: string) {
 }
 
 function isCashType(t: ActivityItemType): boolean {
-  return t === 'wrap' || t === 'unwrap'
+  // `usdc-send` (cleartext outbound USDC) is a cash-rail movement too, so it
+  // collapses under the "Cash" filter alongside wrap/unwrap.
+  return t === 'wrap' || t === 'unwrap' || t === 'usdc-send'
 }
 
 function isTransferType(t: ActivityItemType): boolean {
@@ -200,6 +202,16 @@ const activityMeta: Record<ActivityItemType, {
     iconBorder: 'border-positive/30',
     amountClass: 'text-positive',
   },
+  // Wave 5 — cleartext USDC send (CashPage "Send"). Cool/neutral palette +
+  // send glyph: it's money leaving, shown as a debit. The amount is public
+  // (no decrypt) and rendered with a leading minus.
+  'usdc-send': {
+    icon: Send,
+    iconClass: 'text-cool',
+    iconBg: 'bg-haze/40 dark:bg-white/5',
+    iconBorder: 'border-haze dark:border-white/10',
+    amountClass: 'text-midnight dark:text-white',
+  },
   fee: {
     icon: Wallet,
     iconClass: 'text-cool',
@@ -226,6 +238,28 @@ function counterpartyFromMetadata(item: ActivityItemDto): string {
   return typeof cp === 'string' && cp.startsWith('0x') ? formatAddress(cp) : ''
 }
 
+/**
+ * CR review LOW-3 — format a cleartext USDC-send amount as a signed string
+ * (e.g. "−$12.345678"). The public `cleartext_amount` is a base-6 integer
+ * string from the indexer (`value.toString()`). We:
+ *   - guard against a malformed/non-finite value (→ '' so the row renders no
+ *     amount rather than "−$NaN"),
+ *   - widen to 6 dp for sub-cent NON-zero sends so a dust send (e.g. 0.0004
+ *     USDC) doesn't misleadingly read "−$0.00" — the same precision posture
+ *     the send-side confirm/toast (`formatBase6`) and the withdraw/claim
+ *     `formatRevealedAmount` already use. A genuine 0 still reads "−$0".
+ * Returns the FULL signed string (leading U+2212 minus = money leaving).
+ */
+function formatUsdSendAmount(item: ActivityItemDto): string {
+  const raw = item.metadata?.cleartext_amount
+  if (raw === null || raw === undefined || raw === '') return ''
+  const units = Number(raw)
+  if (!Number.isFinite(units)) return ''
+  const usd = units / 1e6
+  const body = usd > 0 && usd < 0.01 ? formatUSD(usd, 6) : formatUSD(usd)
+  return `−${body}`
+}
+
 function rowTitle(item: ActivityItemDto): string {
   const sym = tokenSymbol(item.token_address)
   switch (item.type) {
@@ -241,6 +275,10 @@ function rowTitle(item: ActivityItemDto): string {
       return 'Wrapped USDC → mhUSDC'
     case 'unwrap':
       return 'Unwrapped mhUSDC → USDC'
+    case 'usdc-send': {
+      const cp = counterpartyFromMetadata(item)
+      return cp ? `Sent USDC to ${cp}` : 'Sent USDC'
+    }
     case 'transfer-out': {
       const cp = counterpartyFromMetadata(item)
       const symFrag = sym ? ` ${sym}` : ' shares'
@@ -769,6 +807,18 @@ const showLoader = computed(() =>
                             </button>
                           </span>
                         </template>
+
+                        <!-- Wave 5 — cleartext USDC send: the amount is
+                             public on-chain, so render it directly (no
+                             decrypt CTA). Leading minus = money leaving. -->
+                        <span
+                          v-if="item.type === 'usdc-send' && formatUsdSendAmount(item)"
+                          class="inline-flex items-center font-mono text-sm font-medium tabular-nums tracking-tight"
+                          :class="activityMeta[item.type].amountClass"
+                          data-testid="activity-usdc-send-amount"
+                        >
+                          {{ formatUsdSendAmount(item) }}
+                        </span>
                       </div>
                       <div class="flex items-center gap-2 flex-wrap">
                         <span

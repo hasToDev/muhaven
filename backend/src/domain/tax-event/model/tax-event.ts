@@ -16,7 +16,15 @@ export type TaxEventType =
   // Phase 9.A · Option Z follow-up — P2P share transfers via
   // `MuHavenToken.Transfer(from, to, amount)`. Two rows per qualifying
   // event (sender + recipient), distinguished by `metadata.direction`.
-  | 'Transfer';
+  | 'Transfer'
+  // Wave 5 — cleartext USDC sent OUT of a kernel to an external address
+  // (CashPage "Send"). One row per send keyed by the sender's kernel. The
+  // amount is public on-chain, so it's stored cleartext in
+  // `metadata.cleartext_amount` (base-6 string) — NO encrypted handle.
+  // Deliberately excluded from INVESTOR_ACTIVITY_EVENT_TYPES (not RWA
+  // history) AND CASH_RAIL_EVENT_TYPES (an outbound send doesn't imply the
+  // user holds mhUSDC) — it's a pure /activity-feed marker.
+  | 'UsdcSend';
 
 /**
  * RWA-related tax-event types — what the `apply-issuer` HAS_INVESTOR_ACTIVITY

@@ -46,6 +46,7 @@ import {
   tokenRegistryEventsAbi,
   redemptionQueueTokenViewAbi,
   oracleNavViewAbi,
+  usdcTransferAbi,
 } from './tax-event-abis.js';
 import { TaxEvent, type TaxEventType } from '../../domain/tax-event/model/tax-event.js';
 import type { ITaxEventRepository } from '../../domain/tax-event/repository/tax-event.repository.js';
@@ -90,6 +91,23 @@ export interface TaxEventIndexerConfig {
   protocolFilterAddresses?: Address[];
   oracleAddress?: Address;
   /**
+   * Wave 5 — the GLOBAL Circle USDC contract address. When set (with a
+   * non-empty `getKernelAddresses`), the indexer fetches USDC `Transfer`
+   * logs topic-filtered to `from: [kernels]` and inserts a `UsdcSend` row
+   * per outbound send to a NON-protocol address (CashPage "Send"). Leave
+   * undefined to disable the USDC-send leg.
+   */
+  usdcAddress?: Address;
+  /**
+   * Wave 5 — returns the current set of MuHaven kernel (smart-account)
+   * addresses. Called once per chunk to build the `from: [kernels]` topic
+   * filter for the USDC-send leg, so only our users' sends are fetched from
+   * the shared USDC contract (never global volume). NOTE: the topic array
+   * grows with the user count — fine at demo/hackathon scale; revisit
+   * (windowed enumeration) if the user base nears RPC topic-filter limits.
+   */
+  getKernelAddresses?: () => Promise<string[]>;
+  /**
    * Phase 9.A · Expansion (F1) — `TokenRegistry` proxy address. When set
    * (alongside a non-null `tokenRegistryHandler`), the indexer subscribes
    * to `IssuerUpdated` events so the operator-runbook step
@@ -112,6 +130,8 @@ export class TaxEventIndexer {
   /** Lower-cased filter set for fast `has()` lookup during Transfer triage. */
   private readonly protocolFilterAddresses: Set<string>;
   private readonly oracleAddress?: Address;
+  private readonly usdcAddress?: Address;
+  private readonly getKernelAddresses?: () => Promise<string[]>;
   private readonly tokenRegistryAddress?: Address;
   private readonly tokenRegistryHandler: TokenRegistryHandler | null;
   private readonly logger: Logger;
@@ -140,6 +160,8 @@ export class TaxEventIndexer {
       (config.protocolFilterAddresses ?? []).map((a) => a.toLowerCase()),
     );
     this.oracleAddress = config.oracleAddress;
+    this.usdcAddress = config.usdcAddress;
+    this.getKernelAddresses = config.getKernelAddresses;
     this.tokenRegistryAddress = config.tokenRegistryAddress;
     // Both the address AND the handler must be present for the registry
     // leg to fire. Pass either alone and the leg stays disabled — the
@@ -163,6 +185,7 @@ export class TaxEventIndexer {
         muHavenTokens: this.muHavenTokenAddresses.length,
         protocolFilter: this.protocolFilterAddresses.size,
         oracle: this.oracleAddress ?? null,
+        usdc: this.usdcAddress ?? null,
         tokenRegistry: this.tokenRegistryAddress ?? null,
         intervalMs,
       },
@@ -209,6 +232,12 @@ export class TaxEventIndexer {
     }
     if (this.tokenRegistryAddress) {
       targets.push({ label: 'tokenRegistry', address: this.tokenRegistryAddress });
+    }
+    // Wave 5 — probe the USDC contract too (BE-Arch review LOW). A stale/wrong
+    // CIRCLE_USDC_ADDRESS (e.g. mainnet USDC pasted into a testnet env) would
+    // silently produce zero send rows; the boot warn catches it.
+    if (this.usdcAddress) {
+      targets.push({ label: 'circleUsdc', address: this.usdcAddress });
     }
     if (targets.length === 0) return;
 
@@ -386,7 +415,73 @@ export class TaxEventIndexer {
       tasks.push(Promise.resolve([] as Log[]));
     }
 
-    const [subLogs, queueLogs, snapLogs, stableLogs, transferLogs, registryLogs] =
+    // Wave 5 — USDC-send leg. Topic-filter the GLOBAL USDC contract to our
+    // users' OUTBOUND sends (`from: [kernels]`) so we never pull global
+    // volume. Fetch the kernel set once per chunk; skip the whole leg if the
+    // address or provider is unset, the fetch fails, or the set is empty (a
+    // fresh DB with no users).
+    let usdcKernels: string[] = [];
+    if (this.usdcAddress && this.getKernelAddresses) {
+      try {
+        usdcKernels = (await this.getKernelAddresses()).filter((a) =>
+          /^0x[0-9a-fA-F]{40}$/.test(a),
+        );
+      } catch (err) {
+        // Deliberate: a kernel-set fetch failure skips ONLY the USDC leg this
+        // chunk (usdcKernels stays []) — the other legs still run and the
+        // cursor advances on chunk success. In practice getKernelAddresses and
+        // saveMany hit the SAME Postgres, so a real DB outage throws in
+        // saveMany too → whole chunk aborts → cursor holds → both recover on
+        // the next tick. The only gap is a kernel-query failure INDEPENDENT of
+        // the write path (e.g. a query timeout while writes succeed), which
+        // would skip those blocks' USDC sends permanently. Acceptable at demo
+        // scale; the alternative (rethrow → stall ALL indexing on a USDC-leg
+        // hiccup) is the worse availability tradeoff. (BE-Arch review LOW-1.)
+        this.logger.warn(
+          { err },
+          'getKernelAddresses failed — skipping USDC-send leg this chunk',
+        );
+      }
+    }
+    if (this.usdcAddress && usdcKernels.length > 0) {
+      tasks.push(
+        // `as any` on the params: viem's getLogs doesn't infer the indexed
+        // `from` topic filter from a `const` abi event element here (it widens
+        // `args` to `undefined`). The call is correct at runtime — `from` is an
+        // indexed param of the standard ERC-20 Transfer event, and an address
+        // array is viem's OR-filter form.
+        // BE-Arch review #2 (load-bearing): isolate THIS leg's failure with a
+        // `.catch(() => [])`. The `from: [kernels]` topic array grows unbounded
+        // with the user count; once it exceeds the RPC's topic-list limit the
+        // getLogs rejects, and inside the bare `Promise.all(tasks)` below that
+        // rejection would propagate → `tick()` catch → cursor NOT advanced →
+        // EVERY tick fails → the WHOLE indexer freezes (Acquisition / Disposition
+        // / yield / Wrap included), the "silent total stall" class this repo has
+        // already been bitten by. Degrading to "no USDC rows this chunk" matches
+        // the failure semantics already chosen for getKernelAddresses above and
+        // keeps the revenue-critical legs alive. The frozen-USDC symptom is
+        // self-evident (no new send rows) vs. a total indexing halt.
+        this.client
+          .getLogs({
+            address: this.usdcAddress,
+            event: usdcTransferAbi[0],
+            args: { from: usdcKernels as `0x${string}`[] },
+            fromBlock,
+            toBlock,
+          } as any)
+          .catch((err: unknown) => {
+            this.logger.warn(
+              { err, kernels: usdcKernels.length },
+              'USDC-send getLogs failed (topic-array limit? RPC error?) — skipping leg this chunk',
+            );
+            return [] as Log[];
+          }) as Promise<Log[]>,
+      );
+    } else {
+      tasks.push(Promise.resolve([] as Log[]));
+    }
+
+    const [subLogs, queueLogs, snapLogs, stableLogs, transferLogs, registryLogs, usdcLogs] =
       await Promise.all(tasks);
 
     const out: TaxEvent[] = [];
@@ -480,6 +575,11 @@ export class TaxEventIndexer {
         // Other registry events (MinInvestmentUpdated etc.) have no DB
         // mirror today; ignore — adding the leg is the next iteration.
       }
+    }
+
+    for (const log of usdcLogs) {
+      const built = await this.fromUsdcSendLog(log, fetchBlockTs);
+      if (built) out.push(built);
     }
 
     return out;
@@ -731,6 +831,62 @@ export class TaxEventIndexer {
         kind: eventName === 'Wrap' ? 'wrap' : 'unwrap',
         encrypted_amount_handle: amountHandle ?? null,
         ephemeral_eoa: ephemeralEOA,
+      },
+    });
+  }
+
+  /**
+   * Wave 5 — cleartext USDC `Transfer(from, to, value)` mapper for the
+   * CashPage "Send" off-ramp. The `from: [kernels]` topic filter guarantees
+   * the sender is one of our kernels, so we key the row by `from` and record
+   * the PUBLIC `value` cleartext in `metadata.cleartext_amount` (no encrypted
+   * handle, no decrypt CTA on the frontend).
+   *
+   * Returns `null` to skip:
+   *   - burns (`to == 0x0`) — defensive; USDC has no burn-to-zero in normal flow
+   *   - sends to a protocol address (`to` in `protocolFilterAddresses`) — the
+   *     `wrapUsdc` deposit pulls USDC kernel→wrapper and already surfaces as a
+   *     `Wrap` row; re-surfacing it as a send would double-count. (The wrapper
+   *     address must be in the filter set — wired in `dev-server.ts`.)
+   *
+   * `tokenAddress` is null (USDC is a cash rail, not an RWA — same convention
+   * as Wrap/Unwrap); `navAtTime` is null (USD-denominated, no NAV semantic).
+   */
+  private async fromUsdcSendLog(
+    log: Log,
+    fetchBlockTs: (b: bigint) => Promise<Date>,
+  ): Promise<TaxEvent | null> {
+    if (!log.transactionHash || log.blockNumber === null || log.logIndex === null) return null;
+    const eventName = (log as Log & { eventName?: string }).eventName;
+    const args = (log as Log & { args?: Record<string, unknown> }).args;
+    if (eventName !== 'Transfer' || !args) return null;
+
+    const from = (args.from as Address | undefined) ?? null;
+    const to = (args.to as Address | undefined) ?? null;
+    const value = args.value as bigint | undefined;
+    if (!from || !to) return null;
+
+    const ZERO = '0x0000000000000000000000000000000000000000';
+    if (to.toLowerCase() === ZERO) return null;
+    if (this.protocolFilterAddresses.has(to.toLowerCase())) return null;
+
+    const ts = await fetchBlockTs(log.blockNumber);
+
+    return new TaxEvent({
+      txHash: log.transactionHash,
+      logIndex: log.logIndex,
+      eventType: 'UsdcSend' as TaxEventType,
+      holderAddress: from,
+      tokenAddress: null,
+      blockNumber: log.blockNumber.toString(),
+      blockTimestamp: ts,
+      navAtTime: null,
+      referenceId: null,
+      metadata: {
+        kind: 'usdc-send',
+        direction: 'outbound',
+        counterparty: to,
+        cleartext_amount: value !== undefined ? value.toString() : null,
       },
     });
   }

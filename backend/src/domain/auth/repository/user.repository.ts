@@ -12,5 +12,18 @@ export interface IUserRepository {
    * address).
    */
   findByWalletAddresses(addresses: string[]): Promise<User[]>;
+  /**
+   * Wave 5 — list every user's kernel wallet address. Used by the tax-event
+   * indexer's `UsdcSend` leg to build the `from: [kernels]` topic filter so
+   * the GLOBAL USDC contract's Transfer logs are scoped to our users (never
+   * global volume). Returns the raw stored addresses (case-as-supplied); the
+   * indexer normalises case as needed.
+   *
+   * Optional: only the production Postgres repo implements it (the tax-event
+   * indexer that consumes it runs only against postgres). The in-memory
+   * test/dev repo may omit it — callers MUST optional-chain + fall back to an
+   * empty set, which disables the UsdcSend leg in those environments.
+   */
+  listWalletAddresses?(): Promise<string[]>;
   save(user: User): Promise<void>;
 }

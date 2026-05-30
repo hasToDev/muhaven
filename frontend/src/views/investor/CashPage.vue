@@ -15,6 +15,7 @@ import * as VaultService from '@/services/contracts/VaultService'
 import * as Erc20Service from '@/services/contracts/Erc20Service'
 import * as MuHavenStableService from '@/services/contracts/MuHavenStableService'
 import * as TaskManagerService from '@/services/contracts/TaskManagerService'
+import { isAddress, parseUnits, formatUnits, getAddress } from 'viem'
 import { addresses, v35Addresses, isZeroAddress } from '@/contracts/addresses'
 import { erc20Abi } from '@/contracts/abis'
 import { muHavenStableAbi } from '@muhaven/sdk'
@@ -25,7 +26,7 @@ import MAddressQR from '@/components/ui/MAddressQR.vue'
 import {
   CheckCircle2, Lock, Shield, EyeOff, ArrowRight, ArrowDownToLine,
   ArrowUpFromLine, Loader2, Copy, Check, RefreshCw, ExternalLink, Coins,
-  Layers, Wallet, Sparkles, Eye, AlertTriangle,
+  Layers, Wallet, Sparkles, Eye, AlertTriangle, Send, ArrowLeft,
 } from 'lucide-vue-next'
 
 // CashPage — Phase 9.A first-run cockpit + wrap wizard.
@@ -50,8 +51,12 @@ type Mode = 'cash' | 'asset'
 // Wave 5 W3 — direction is orthogonal to mode and only meaningful in Cash:
 //   deposit  = USDC → mhUSDC   (single-step direct `wrapUsdc`; Phase 9)
 //   withdraw = mhUSDC → USDC   (direct exit; two-phase async claim)
-// `?mode=unwrap` is the MCP deep-link target → cash + withdraw.
-type Direction = 'deposit' | 'withdraw'
+//   send     = USDC → external (plain ERC-20 transfer out of the kernel; the
+//              off-ramp tail after a withdraw settles cleartext USDC). NO FHE,
+//              no SDK — see `SEND_USDC_PLAN.md`. Human-only (no MCP path).
+// `?mode=unwrap` is the MCP deep-link target → cash + withdraw. Send has NO
+// URL param / deep-link (deliberately not agent-reachable).
+type Direction = 'deposit' | 'withdraw' | 'send'
 
 // Named so App.vue's <keep-alive :include> can target this page (WS-1).
 defineOptions({ name: 'CashPage' })
@@ -137,9 +142,9 @@ function setDirection(next: Direction) {
   if (mode.value !== 'cash') return
   if (direction.value === next) return
   direction.value = next
-  // Reset both forms when toggling so a stale amount / error doesn't bleed
-  // across directions. Pending claims are NOT cleared — they're independent
-  // of which form is currently visible.
+  // Reset all three forms when toggling so a stale amount / error doesn't
+  // bleed across directions. Pending claims are NOT cleared — they're
+  // independent of which form is currently visible.
   amount.value = ''
   withdrawAmount.value = ''
   currentStep.value = 0
@@ -149,13 +154,17 @@ function setDirection(next: Direction) {
   withdrawSuccess.value = false
   withdrawTxHash.value = null
   withdrawErrMsg.value = null
+  resetSendState()
   const nextQuery = { ...route.query }
   if (next === 'withdraw') {
     nextQuery.mode = 'unwrap'
   } else {
-    // Returning to deposit: only drop the `mode` param if it was `unwrap`.
-    // Don't clobber `?mode=asset` (different axis entirely — though the
-    // toggle should not be visible in that state to begin with).
+    // Returning to deposit OR switching to send: only drop the `mode` param
+    // if it was `unwrap`. Don't clobber `?mode=asset` (different axis entirely
+    // — though the toggle should not be visible in that state to begin with).
+    // Send has no URL param of its own (it's not a deep-link target), so the
+    // `watch(unwrapModeRequested)` guard below ignores `direction === 'send'`
+    // to keep this strip-on-send from knocking the user back to deposit.
     if (nextQuery.mode === 'unwrap') delete nextQuery.mode
   }
   void router.replace({ query: nextQuery })
@@ -167,6 +176,101 @@ const isProcessing = ref(false)
 const showSuccess = ref(false)
 const txHash = ref<string | null>(null)
 const errMsg = ref<string | null>(null)
+
+// ── Send (cleartext USDC → external address) state ──────────────────────
+//
+// The off-ramp tail: a plain `USDC.transfer(to, amount)` dispatched as one
+// UserOp from the kernel. No FHE, no SDK, no async claim — this moves USDC
+// that is ALREADY cleartext in the kernel (a settled withdraw, or a faucet
+// drip) out to an arbitrary external wallet. Irreversible + leaves MuHaven,
+// so the flow has an inline two-step shape (form → confirm) that echoes the
+// full recipient + amount before signing. Kept human-only (no MCP/agent tool)
+// — sending funds to an arbitrary address is exfiltration-shaped.
+const sendRecipient = ref('')
+const sendAmount = ref('')
+const sendIsProcessing = ref(false)
+const sendSuccess = ref(false)
+const sendTxHash = ref<string | null>(null)
+const sendErrMsg = ref<string | null>(null)
+// Inline confirm sub-step (NOT a modal — CashPage is keep-alive cached and a
+// new Teleport overlay would risk the cross-page leak class; see
+// `feedback_keepalive_teleport_and_watcher_churn`). 'form' → 'confirm'.
+const sendStep = ref<'form' | 'confirm'>('form')
+
+// A11y focus targets for the send state transitions (mirror the withdraw refs).
+const sendRecipientInputRef = ref<HTMLInputElement | null>(null)
+const sendConfirmButtonRef = ref<any>(null)
+const sendAgainButtonRef = ref<any>(null)
+const sendTryAgainButtonRef = ref<any>(null)
+
+const sendRecipientValid = computed(() => isAddress(sendRecipient.value.trim()))
+/** True when the (valid) recipient is the zero address — a guaranteed
+ *  burn/loss; reject it. `isAddress('0x000…000')` returns true, so this is a
+ *  distinct guard on top of validity. */
+const sendIsZeroAddr = computed(() => {
+  if (!sendRecipientValid.value) return false
+  return isZeroAddress(sendRecipient.value.trim() as `0x${string}`)
+})
+/** True when the recipient is the user's OWN kernel — a no-op fee waste. */
+const sendIsSelf = computed(() => {
+  if (!sendRecipientValid.value || !address.value) return false
+  try {
+    return getAddress(sendRecipient.value.trim()) === getAddress(address.value as `0x${string}`)
+  } catch { return false }
+})
+/** Parse the amount with EXACT 6-decimal precision (USDC is 6-dp). `parseUnits`
+ *  throws on malformed input (too many decimals, non-numeric) — we catch and
+ *  return null so the submit stays disabled rather than crashing. NOT the wrap
+ *  flow's lossy `Math.round(x * 1e6)`. */
+const sendAmountUnits = computed<bigint | null>(() => {
+  const raw = sendAmount.value.trim()
+  if (!raw) return null
+  try {
+    const u = parseUnits(raw as `${number}`, 6)
+    return u >= 0n ? u : null
+  } catch {
+    return null
+  }
+})
+const sendOverBalance = computed(() =>
+  sendAmountUnits.value !== null
+  && sendAmountUnits.value > 0n
+  && usdcBalance.value !== null
+  && sendAmountUnits.value > usdcBalance.value,
+)
+const sendAmountValid = computed(() =>
+  sendAmountUnits.value !== null
+  && sendAmountUnits.value > 0n
+  && usdcBalance.value !== null
+  && sendAmountUnits.value <= usdcBalance.value,
+)
+const sendCanSubmit = computed(() =>
+  !sendIsProcessing.value
+  && sendRecipientValid.value
+  && !sendIsZeroAddr.value
+  && !sendIsSelf.value
+  && sendAmountValid.value,
+)
+/** Human-readable echo of the parsed amount for the confirm step + success
+ *  toast. Uses FULL 6-decimal fidelity (via `formatBase6`, max 6 dp) — NOT
+ *  the 2-dp `formatUSD` — so the irreversible-send review shows EXACTLY the
+ *  amount being signed (`sendAmountUnits`). A user sending 12.345678 USDC must
+ *  see "$12.345678", not a rounded "$12.35". Same posture as the withdraw
+ *  flow's `formatBase6`. */
+const sendAmountDisplay = computed(() =>
+  sendAmountUnits.value !== null ? formatBase6(sendAmountUnits.value) : '—',
+)
+/** The recipient in canonical EIP-55 checksummed form for the confirm echo —
+ *  EXACTLY the address `handleSend` passes on-chain (`getAddress`), so what the
+ *  user verifies on the confirm card is byte-for-byte what Arbiscan will show.
+ *  Falls back to the raw trimmed input if it's not yet a valid address (the
+ *  confirm step is only reachable once `sendCanSubmit`, so the fallback is
+ *  defensive). SecEng review polish (F-3). */
+const sendRecipientChecksummed = computed(() => {
+  const raw = sendRecipient.value.trim()
+  if (!sendRecipientValid.value) return raw
+  try { return getAddress(raw) } catch { return raw }
+})
 
 // ── Wave 5 W3 — Withdraw (mhUSDC → USDC) state ──────────────────────────
 //
@@ -291,6 +395,14 @@ const steps = computed(() => mode.value === 'cash' ? cashSteps : assetSteps)
 
 const quickAmounts = ['100', '1000', '5000']
 const numericAmount = computed(() => parseFloat(amount.value.replace(/,/g, '')) || 0)
+
+// Cash-mode direction segments. Drives the 3-way toggle (Deposit / Withdraw /
+// Send). Icons are lucide components rendered via <component :is>.
+const directionOptions: Array<{ value: Direction; label: string; icon: typeof Send }> = [
+  { value: 'deposit', label: 'Deposit', icon: ArrowDownToLine },
+  { value: 'withdraw', label: 'Withdraw', icon: ArrowUpFromLine },
+  { value: 'send', label: 'Send', icon: Send },
+]
 
 // ── Wallet aside readouts ──────────────────────────────────────────────
 
@@ -603,6 +715,16 @@ onDeactivated(() => {
   clearArmTimer()
   teardownWatchers()
   stopPolling()
+  // CR review MEDIUM-1 — drop out of the send confirm sub-step on nav-away.
+  // CashPage is kept alive, so without this a user who advanced to the confirm
+  // screen then navigated away returns (onActivated) to a PRIMED "Confirm &
+  // Send" button echoing a possibly-stale amount. Bouncing to the form on
+  // deactivate means re-entry always lands on the editable form. Typed values
+  // are intentionally preserved (only the step resets); the form re-validates
+  // live and handleSend re-checks at broadcast, so this is purely a "don't
+  // return to a primed irreversible action" guard. The withdraw flow has no
+  // confirm step so it doesn't need this.
+  if (sendStep.value === 'confirm') sendStep.value = 'form'
 })
 onBeforeUnmount(() => {
   // Flip isUnmounted BEFORE teardown so any in-flight Promise.all resolutions in
@@ -632,6 +754,8 @@ watch(
       teardownWatchers()
       pendingClaims.value = []
       stopPolling()
+      // Don't leave a recipient/amount staged across a logout.
+      resetSendState()
     }
   },
 )
@@ -655,6 +779,10 @@ watch(connected, (val) => {
 // guards prevent a feedback loop with setDirection's own URL write.
 watch(unwrapModeRequested, (isUnwrap) => {
   if (mode.value !== 'cash') return
+  // `send` is a URL-less direction (no deep-link). setDirection('send') strips
+  // any `?mode=unwrap`, which fires this watcher; without this guard it would
+  // immediately knock the user back to deposit. Leave `send` alone.
+  if (direction.value === 'send') return
   const desired: Direction = isUnwrap ? 'withdraw' : 'deposit'
   if (direction.value !== desired) direction.value = desired
 })
@@ -1507,6 +1635,135 @@ function resetForm() {
   errMsg.value = null
 }
 
+// ── Send flow (cleartext USDC → external address) ───────────────────────
+
+/** Clear every send-form ref back to the initial state. Used by setDirection
+ *  (on toggle), resetSendForm (after success/error), and the account-switch
+ *  teardown — so a stale recipient/amount never bleeds across directions or
+ *  sessions. */
+function resetSendState() {
+  sendRecipient.value = ''
+  sendAmount.value = ''
+  sendStep.value = 'form'
+  sendIsProcessing.value = false
+  sendSuccess.value = false
+  sendTxHash.value = null
+  sendErrMsg.value = null
+}
+
+/** Advance from the form to the inline confirm step. Re-validates first so a
+ *  late balance change (another tab spent USDC) can't slip a now-over-balance
+ *  amount into review. Focuses the Confirm button for keyboard/SR users. */
+function reviewSend() {
+  if (!sendCanSubmit.value) return
+  sendErrMsg.value = null
+  sendStep.value = 'confirm'
+  void focusElement(sendConfirmButtonRef.value)
+}
+
+/** Back out of confirm to the editable form (keeps the entered values). */
+function backToSendForm() {
+  sendStep.value = 'form'
+  void focusElement(sendRecipientInputRef.value)
+}
+
+/** Pre-fill the send amount with the full cleartext USDC balance. */
+function setSendMax() {
+  if (usdcBalance.value === null || usdcBalance.value <= 0n) return
+  sendAmount.value = formatUnits(usdcBalance.value, 6)
+}
+
+/**
+ * Execute the send: a plain `USDC.transfer(to, amount)` UserOp from the kernel.
+ * Re-validates the recipient + balance at submit time (the confirm step may
+ * have sat a while) so we never broadcast a self/zero/over-balance transfer.
+ * On success: toast with an Arbiscan link + a MANUAL balance refresh (the
+ * inbound watcher only catches transfers TO the kernel, not outbound).
+ */
+async function handleSend() {
+  if (sendIsProcessing.value || !address.value) return
+  if (!sendCanSubmit.value) return
+
+  sendIsProcessing.value = true
+  sendErrMsg.value = null
+
+  try {
+    const units = sendAmountUnits.value
+    if (units === null || units <= 0n) throw new Error('Enter a valid amount.')
+    // Re-check the balance cap at broadcast time — usdcBalance may have moved
+    // since the confirm step was entered.
+    if (usdcBalance.value === null || units > usdcBalance.value) {
+      throw new Error('Amount exceeds your current USDC balance. Refresh and try again.')
+    }
+    const to = getAddress(sendRecipient.value.trim())
+    // Defensive re-guards (the computeds already gate the button, but the
+    // confirm step decouples validation from submission).
+    if (isZeroAddress(to)) throw new Error('Cannot send to the zero address.')
+    if (to === getAddress(address.value as `0x${string}`)) {
+      throw new Error('Cannot send to your own wallet.')
+    }
+
+    const hash = await Erc20Service.transfer(addresses.usdc, to, units)
+    sendTxHash.value = hash
+    sendSuccess.value = true
+    sendStep.value = 'form'
+    toast.success('USDC sent', {
+      description: `${sendAmountDisplay.value} USDC sent to ${to.slice(0, 6)}…${to.slice(-4)}.`,
+      action: { label: 'View tx', onClick: () => window.open(arbiscanTx(hash), '_blank') },
+    })
+    // The inbound watcher fires only on Transfer TO the kernel — an outbound
+    // send won't trigger it, so refresh the USDC tile manually.
+    void loadBalances()
+  } catch (e) {
+    // Same cause-chain diagnostic as the wrap/withdraw handlers — surfaces the
+    // underlying viem / sender error instead of just the top-level wrapper.
+    console.error('[CashPage] USDC send failed — full chain:')
+    let cur: unknown = e
+    let depth = 0
+    while (cur && depth < 8) {
+      if (cur instanceof Error) {
+        console.error(`  [${depth}] ${cur.constructor.name}:`, cur)
+        const nextCause = (cur as Error & { cause?: unknown }).cause
+        if (nextCause) { cur = nextCause; depth += 1; continue }
+      } else {
+        console.error(`  [${depth}] ${typeof cur}:`, cur)
+      }
+      break
+    }
+    sendErrMsg.value = e instanceof Error ? e.message : 'Send failed'
+    toast.error('Send failed', { description: sendErrMsg.value })
+  } finally {
+    sendIsProcessing.value = false
+  }
+}
+
+/** Reset after a success/error to a fresh empty form. */
+function resetSendForm() {
+  resetSendState()
+  void focusElement(sendRecipientInputRef.value)
+}
+
+// Move focus on send success/error transitions so screen-reader users land on
+// the relevant action button without a focus reset to <body>.
+watch(sendSuccess, (isSuccess) => {
+  if (isSuccess) void focusElement(sendAgainButtonRef.value)
+})
+watch(sendErrMsg, (msg) => {
+  if (msg) void focusElement(sendTryAgainButtonRef.value)
+})
+
+// CR review MEDIUM-2 — if the amount/recipient stops being submittable WHILE
+// the user is on the confirm sub-step (e.g. the USDC balance dropped underneath
+// via the safety poll / inbound watcher / another tab), bounce back to the
+// editable form. The Confirm button already disables reactively (it gates on
+// `sendCanSubmit`) and handleSend re-checks at broadcast, so there's no
+// fund-safety risk — this is the clarity fix: the confirm card has no
+// over-balance banner, so a silently-greyed button would be confusing. Back on
+// the form, the live `sendOverBalance` hint explains why.
+watch(sendCanSubmit, (ok) => {
+  if (!ok && sendStep.value === 'confirm') sendStep.value = 'form'
+})
+
 // ── Mode-aware copy ────────────────────────────────────────────────────
 
 const headerTitle = computed(() =>
@@ -1624,62 +1881,42 @@ const successCopy = computed(() =>
                semantics misled screen readers. aria-pressed announces the
                binary state correctly + each button stays in the natural
                Tab/Shift+Tab order without needing arrow-key handling. -->
+          <!-- Wave 5 — 3-way direction: Deposit / Withdraw / Send. Per-button
+               active gradient (no sliding pill — robust for 3 segments). Hidden
+               while ANY flow is in-flight / succeeded / errored, and while the
+               send flow is on its confirm sub-step (the user is reviewing). -->
           <div
-            v-if="mode === 'cash' && !isProcessing && !showSuccess && !errMsg && !withdrawIsProcessing && !withdrawSuccess && !withdrawErrMsg"
+            v-if="mode === 'cash' && !isProcessing && !showSuccess && !errMsg
+              && !withdrawIsProcessing && !withdrawSuccess && !withdrawErrMsg
+              && !sendIsProcessing && !sendSuccess && !sendErrMsg
+              && !(direction === 'send' && sendStep === 'confirm')"
             data-testid="cash-direction-toggle"
             role="group"
-            aria-label="Deposit or withdraw direction"
-            class="relative inline-flex items-center gap-1 mb-6
+            aria-label="Cash direction: deposit, withdraw, or send"
+            class="relative inline-flex items-center gap-1 mb-6 flex-wrap
                    rounded-full border border-haze dark:border-white/10
                    bg-mist/40 dark:bg-[#1c1b1b]/80 p-1
                    shadow-[inset_0_1px_2px_rgba(63,46,12,0.04)]
                    dark:shadow-[inset_0_1px_2px_rgba(0,0,0,0.4)]"
           >
-            <div
-              aria-hidden="true"
-              class="absolute top-1 bottom-1 w-[calc(50%-0.25rem)] rounded-full
-                     bg-gradient-to-r transition-all duration-300 ease-out
-                     shadow-[0_2px_10px_-2px_rgba(255,186,32,0.45)]
-                     dark:shadow-[0_2px_14px_-2px_rgba(255,220,161,0.35)]"
-              :class="[
-                direction === 'deposit'
-                  ? 'left-1 from-compute to-gold dark:from-signal dark:to-signal/85'
-                  : 'left-[calc(50%+0.05rem)] from-gold to-gold/90 dark:from-signal dark:to-signal/70',
-              ]"
-            />
             <button
+              v-for="opt in directionOptions"
+              :key="opt.value"
               type="button"
-              :aria-pressed="direction === 'deposit'"
-              @click="setDirection('deposit')"
-              data-testid="cash-direction-deposit"
+              :aria-pressed="direction === opt.value"
+              @click="setDirection(opt.value)"
+              :data-testid="`cash-direction-${opt.value}`"
               :class="[
-                'relative z-10 inline-flex items-center justify-center gap-2 px-5 py-2 min-w-[150px] rounded-full',
-                'font-sans text-[11px] uppercase tracking-[0.22em] font-semibold cursor-pointer',
-                'transition-colors duration-200',
-                direction === 'deposit'
-                  ? 'text-midnight'
+                'relative z-10 inline-flex items-center justify-center gap-2 px-4 py-2 min-w-[112px] rounded-full',
+                'font-sans text-[11px] uppercase tracking-[0.18em] font-semibold cursor-pointer',
+                'transition-all duration-200',
+                direction === opt.value
+                  ? 'text-midnight bg-gradient-to-r from-compute to-gold dark:from-signal dark:to-signal/85 shadow-[0_2px_10px_-2px_rgba(255,186,32,0.45)] dark:shadow-[0_2px_14px_-2px_rgba(255,220,161,0.35)]'
                   : 'text-cool hover:text-midnight dark:hover:text-white',
               ]"
             >
-              <ArrowDownToLine :size="13" :stroke-width="2" aria-hidden="true" />
-              Deposit · USDC → mhUSDC
-            </button>
-            <button
-              type="button"
-              :aria-pressed="direction === 'withdraw'"
-              @click="setDirection('withdraw')"
-              data-testid="cash-direction-withdraw"
-              :class="[
-                'relative z-10 inline-flex items-center justify-center gap-2 px-5 py-2 min-w-[150px] rounded-full',
-                'font-sans text-[11px] uppercase tracking-[0.22em] font-semibold cursor-pointer',
-                'transition-colors duration-200',
-                direction === 'withdraw'
-                  ? 'text-midnight'
-                  : 'text-cool hover:text-midnight dark:hover:text-white',
-              ]"
-            >
-              <ArrowUpFromLine :size="13" :stroke-width="2" aria-hidden="true" />
-              Withdraw · mhUSDC → USDC
+              <component :is="opt.icon" :size="13" :stroke-width="2" aria-hidden="true" />
+              {{ opt.label }}
             </button>
           </div>
 
@@ -1916,7 +2153,7 @@ const successCopy = computed(() =>
           </template>
 
           <!-- ── Withdraw branch (Cash only) — Wave 5 W3 ───────────────── -->
-          <template v-else>
+          <template v-else-if="direction === 'withdraw'">
           <!-- Pause-state banners — visible across success / error / form
                states so the user always sees WHY their next action is
                blocked, not just at the form layer. `wrapperPaused()` blocks
@@ -2126,6 +2363,320 @@ const successCopy = computed(() =>
                 {{ withdrawIsProcessing ? 'Submitting…' : 'Withdraw to USDC' }}
               </span>
               <ArrowRight v-if="!withdrawIsProcessing" :size="16" :stroke-width="2" aria-hidden="true" />
+            </button>
+          </div>
+          </template>
+
+          <!-- ── Send branch (Cash only) — cleartext USDC → external ──────
+               A plain ERC-20 `USDC.transfer` out of the kernel. No FHE / SDK /
+               async claim. Two inline steps: form → confirm (the confirm echoes
+               the full recipient + amount + an irreversibility notice). No new
+               modal/Teleport — CashPage is keep-alive cached. -->
+          <template v-else>
+          <!-- Success -->
+          <div v-if="sendSuccess" data-testid="send-success-card" class="flex flex-col items-center gap-5 py-6">
+            <div
+              v-motion
+              :initial="{ opacity: 0, scale: 0.5 }"
+              :enter="{ opacity: 1, scale: 1, transition: { type: 'spring', stiffness: 200, damping: 15 } }"
+              class="w-16 h-16 rounded-full bg-positive/15 border border-positive/30 flex items-center justify-center"
+              aria-hidden="true"
+            >
+              <CheckCircle2 :size="32" :stroke-width="1.8" class="text-positive" />
+            </div>
+            <div class="text-center space-y-1.5">
+              <h2 class="font-accent italic text-2xl md:text-3xl text-midnight dark:text-white tracking-tight">
+                USDC sent
+              </h2>
+              <p class="font-sans text-sm text-cool max-w-md">
+                Your USDC has left your wallet and is on its way to the recipient on Arbitrum Sepolia.
+              </p>
+            </div>
+            <p v-if="sendTxHash" class="font-mono text-[11px] text-cool">
+              tx:
+              <a :href="arbiscanTx(sendTxHash)" target="_blank" rel="noopener"
+                 class="text-compute dark:text-signal hover:underline">
+                {{ sendTxHash.slice(0, 10) }}…{{ sendTxHash.slice(-8) }}
+              </a>
+            </p>
+            <MButton variant="outline" ref="sendAgainButtonRef" @click="resetSendForm">
+              Send more USDC
+            </MButton>
+          </div>
+
+          <!-- Error -->
+          <div v-else-if="sendErrMsg" data-testid="send-error-card" class="flex flex-col items-center gap-5 py-8">
+            <div
+              class="w-14 h-14 rounded-full bg-negative/12 border border-negative/30 flex items-center justify-center"
+              aria-hidden="true"
+            >
+              <Lock :size="26" :stroke-width="1.8" class="text-negative" />
+            </div>
+            <h2 class="font-accent italic text-xl text-midnight dark:text-white tracking-tight text-center">Send failed</h2>
+            <p class="font-sans text-sm text-cool text-center max-w-md">{{ sendErrMsg }}</p>
+            <MButton variant="outline" ref="sendTryAgainButtonRef" @click="resetSendForm">Try again</MButton>
+          </div>
+
+          <!-- Confirm sub-step — echoes the full recipient + amount + an
+               explicit irreversibility notice before signing. -->
+          <div v-else-if="sendStep === 'confirm'" data-testid="send-confirm-card" class="flex flex-col gap-6">
+            <div class="flex items-center gap-3">
+              <div
+                class="w-10 h-10 rounded-lg bg-gold/15 dark:bg-signal/15 text-compute dark:text-signal flex items-center justify-center"
+                aria-hidden="true"
+              >
+                <Send :size="18" :stroke-width="1.8" />
+              </div>
+              <div>
+                <h2 class="font-accent italic text-xl text-midnight dark:text-white leading-tight">Confirm your send</h2>
+                <p class="font-sans text-[11px] text-cool mt-0.5 leading-relaxed">
+                  Review the recipient and amount carefully — this can't be undone.
+                </p>
+              </div>
+            </div>
+
+            <dl class="rounded-lg border border-haze dark:border-white/10 bg-mist/30 dark:bg-white/[0.02] divide-y divide-haze dark:divide-white/10">
+              <div class="flex items-center justify-between gap-4 p-4">
+                <dt class="font-sans text-[11px] uppercase tracking-[0.18em] text-cool font-medium">Amount</dt>
+                <dd class="font-accent italic text-xl text-midnight dark:text-white tabular-nums" data-testid="send-confirm-amount">
+                  {{ sendAmountDisplay }} <span class="font-sans text-[11px] not-italic text-cool">USDC</span>
+                </dd>
+              </div>
+              <div class="flex flex-col gap-1 p-4">
+                <dt class="font-sans text-[11px] uppercase tracking-[0.18em] text-cool font-medium">To</dt>
+                <dd class="font-mono text-[12px] text-midnight dark:text-white break-all" data-testid="send-confirm-recipient">
+                  {{ sendRecipientChecksummed }}
+                </dd>
+              </div>
+            </dl>
+
+            <div
+              data-testid="send-irreversible-notice"
+              role="alert"
+              class="rounded-lg p-3 border border-amber-400/30 bg-amber-500/8 flex items-start gap-2.5"
+            >
+              <AlertTriangle :size="14" class="text-amber-500 flex-shrink-0 mt-0.5" :stroke-width="2" aria-hidden="true" />
+              <p class="font-sans text-[11px] text-cool leading-relaxed">
+                <span class="font-semibold text-midnight dark:text-white">This cannot be undone.</span>
+                You're sending real USDC out of your MuHaven wallet on Arbitrum Sepolia. Funds sent to
+                the wrong address are unrecoverable — double-check it.
+              </p>
+            </div>
+
+            <transition
+              enter-active-class="transition-all duration-300 ease-out"
+              leave-active-class="transition-all duration-200 ease-in"
+              enter-from-class="opacity-0 -translate-y-1"
+              leave-to-class="opacity-0 -translate-y-1"
+            >
+              <div
+                v-if="sendIsProcessing"
+                data-testid="send-inline-rail"
+                role="status"
+                class="rounded-lg p-4 border border-gold/25 dark:border-signal/20
+                       bg-gold/6 dark:bg-signal/5 flex items-center gap-3"
+              >
+                <Loader2 :size="14" class="animate-spin text-compute dark:text-signal flex-shrink-0" aria-hidden="true" />
+                <p class="font-sans text-[11px] text-cool leading-tight">
+                  <span class="font-semibold text-compute dark:text-signal">Sending USDC…</span>
+                  Sign in your wallet to confirm.
+                </p>
+              </div>
+            </transition>
+
+            <div class="flex items-center gap-3">
+              <button
+                type="button"
+                @click="backToSendForm"
+                :disabled="sendIsProcessing"
+                data-testid="send-back"
+                class="inline-flex items-center justify-center gap-2 px-5 py-4 rounded-lg
+                       font-sans font-semibold text-sm tracking-wide
+                       border border-haze dark:border-white/15 text-cool
+                       hover:text-midnight dark:hover:text-white hover:border-gold/50 dark:hover:border-signal/30
+                       transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <ArrowLeft :size="16" :stroke-width="2" aria-hidden="true" />
+                <span class="uppercase tracking-[0.18em]">Back</span>
+              </button>
+              <button
+                type="button"
+                ref="sendConfirmButtonRef"
+                @click="handleSend"
+                :disabled="sendIsProcessing || !sendCanSubmit"
+                data-testid="send-confirm-cta"
+                class="btn-gold-sweep flex-1 py-4 rounded-lg font-sans font-semibold text-sm tracking-wide
+                       flex items-center justify-center gap-2.5 cursor-pointer
+                       transition-all duration-300 hover:-translate-y-0.5"
+              >
+                <Loader2 v-if="sendIsProcessing" :size="16" class="animate-spin" aria-hidden="true" />
+                <Send v-else :size="16" :stroke-width="2" aria-hidden="true" />
+                <span class="uppercase tracking-[0.18em]">{{ sendIsProcessing ? 'Sending…' : 'Confirm & Send' }}</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Form -->
+          <div v-else class="flex flex-col gap-8">
+            <div class="flex items-center gap-3">
+              <div
+                class="w-10 h-10 rounded-lg bg-gold/15 dark:bg-signal/15 text-compute dark:text-signal flex items-center justify-center"
+                aria-hidden="true"
+              >
+                <Send :size="18" :stroke-width="1.8" />
+              </div>
+              <div>
+                <h2 class="font-accent italic text-xl text-midnight dark:text-white leading-tight">
+                  Send USDC
+                </h2>
+                <p class="font-sans text-[11px] text-cool mt-0.5 leading-relaxed">
+                  Send cleartext USDC from your wallet to any external Arbitrum address — an exchange,
+                  a hardware wallet, a friend. This is a public transfer, not a confidential one.
+                </p>
+              </div>
+            </div>
+
+            <!-- Recipient -->
+            <div class="flex flex-col gap-3">
+              <label for="send-recipient-input" class="font-sans text-[11px] uppercase tracking-[0.22em] text-cool font-medium">
+                Recipient address
+              </label>
+              <input
+                id="send-recipient-input"
+                ref="sendRecipientInputRef"
+                v-model.trim="sendRecipient"
+                placeholder="0x…"
+                spellcheck="false"
+                autocomplete="off"
+                aria-describedby="send-recipient-hint"
+                :disabled="sendIsProcessing"
+                data-testid="send-recipient-input"
+                class="w-full bg-transparent border-0 border-b border-haze dark:border-white/10
+                       font-mono text-base text-midnight dark:text-white py-3 px-1
+                       placeholder:text-cool/40 focus:outline-none focus:border-gold dark:focus:border-signal
+                       transition-colors disabled:opacity-50"
+              />
+              <!-- Validation readout (mirrors the TransferPage idiom). -->
+              <p
+                id="send-recipient-hint"
+                v-if="sendRecipient.trim() && !sendRecipientValid"
+                role="alert"
+                data-testid="send-recipient-invalid"
+                class="font-sans text-[10px] text-negative leading-relaxed flex items-center gap-1.5"
+              >
+                <AlertTriangle :size="12" :stroke-width="2" aria-hidden="true" />
+                Not a valid Ethereum address.
+              </p>
+              <p
+                id="send-recipient-hint"
+                v-else-if="sendIsZeroAddr"
+                role="alert"
+                data-testid="send-recipient-zero"
+                class="font-sans text-[10px] text-negative leading-relaxed flex items-center gap-1.5"
+              >
+                <AlertTriangle :size="12" :stroke-width="2" aria-hidden="true" />
+                That's the zero address — funds would be burned. Pick a real address.
+              </p>
+              <p
+                id="send-recipient-hint"
+                v-else-if="sendIsSelf"
+                role="alert"
+                data-testid="send-recipient-self"
+                class="font-sans text-[10px] text-negative leading-relaxed flex items-center gap-1.5"
+              >
+                <AlertTriangle :size="12" :stroke-width="2" aria-hidden="true" />
+                That's your own wallet — sending to yourself just wastes a transaction.
+              </p>
+              <p
+                id="send-recipient-hint"
+                v-else
+                class="font-sans text-[10px] text-cool/80 leading-relaxed"
+                data-testid="send-recipient-hint-default"
+              >
+                The full address is shown again on the confirm screen before you sign.
+              </p>
+            </div>
+
+            <!-- Amount -->
+            <div class="flex flex-col gap-3">
+              <label for="send-amount-input" class="font-sans text-[11px] uppercase tracking-[0.22em] text-cool font-medium">
+                Amount (USDC)
+              </label>
+              <div class="flex items-end gap-2 border-b border-haze dark:border-white/10 pb-2 transition-colors focus-within:border-gold dark:focus-within:border-signal">
+                <span aria-hidden="true" class="font-accent italic text-3xl md:text-4xl text-cool pb-0.5 leading-none">$</span>
+                <input
+                  id="send-amount-input"
+                  v-model="sendAmount"
+                  placeholder="0.00"
+                  inputmode="decimal"
+                  pattern="^\d*(\.\d{0,6})?$"
+                  aria-describedby="send-amount-hint"
+                  :disabled="sendIsProcessing"
+                  data-testid="send-amount-input"
+                  class="w-full bg-transparent border-0 font-accent italic
+                         text-4xl md:text-5xl text-midnight dark:text-white tabular-nums tracking-tight
+                         placeholder:text-cool/40 focus:outline-none focus:ring-0 p-0 leading-none disabled:opacity-50"
+                />
+              </div>
+              <div class="flex flex-wrap items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  @click="setSendMax"
+                  :disabled="sendIsProcessing || usdcBalance === null || usdcBalance === 0n"
+                  data-testid="send-max"
+                  class="font-sans text-[10px] uppercase tracking-[0.2em] font-medium
+                         bg-mist/60 dark:bg-white/5 hover:bg-gold/15 dark:hover:bg-signal/15
+                         text-slate dark:text-body-dark/80 hover:text-compute dark:hover:text-signal
+                         border border-haze dark:border-white/10
+                         px-3 py-2 rounded transition-all duration-200 cursor-pointer
+                         disabled:opacity-50 disabled:cursor-not-allowed"
+                  :title="usdcBalance && usdcBalance > 0n ? 'Send your full USDC balance' : 'No USDC to send'"
+                >
+                  Max
+                </button>
+                <p
+                  id="send-amount-hint"
+                  v-if="sendOverBalance"
+                  role="alert"
+                  data-testid="send-over-balance"
+                  class="font-sans text-[10px] text-negative leading-relaxed flex items-center gap-1.5"
+                >
+                  <AlertTriangle :size="12" :stroke-width="2" aria-hidden="true" />
+                  Amount exceeds your USDC balance ({{ usdcBalance !== null ? formatUSD(Number(usdcBalance) / 1e6) : '—' }}).
+                </p>
+                <p
+                  id="send-amount-hint"
+                  v-else
+                  class="font-sans text-[10px] text-cool/80 leading-relaxed"
+                  data-testid="send-amount-hint-default"
+                >
+                  Available: {{ usdcBalance !== null ? formatUSD(Number(usdcBalance) / 1e6) : '—' }} · 6-decimal precision.
+                </p>
+              </div>
+            </div>
+
+            <!-- Irreversibility framing on the form too (the confirm step has
+                 the load-bearing notice; this is the early heads-up). -->
+            <div class="rounded-lg p-4 border border-gold/25 bg-gold/5 flex items-start gap-3">
+              <AlertTriangle :size="16" :stroke-width="1.8" class="text-gold mt-0.5 flex-shrink-0" aria-hidden="true" />
+              <p class="font-sans text-[11px] text-cool leading-relaxed">
+                Sends leave MuHaven and can't be reversed. You'll review the full recipient and amount
+                before signing.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              @click="reviewSend"
+              :disabled="!sendCanSubmit"
+              data-testid="send-review-cta"
+              class="btn-gold-sweep w-full py-4 rounded-lg font-sans font-semibold text-sm tracking-wide
+                     flex items-center justify-center gap-2.5 cursor-pointer
+                     transition-all duration-300 hover:-translate-y-0.5 mt-2"
+            >
+              <Send :size="16" :stroke-width="2" aria-hidden="true" />
+              <span class="uppercase tracking-[0.18em]">Review send</span>
+              <ArrowRight :size="16" :stroke-width="2" aria-hidden="true" />
             </button>
           </div>
           </template>
