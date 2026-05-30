@@ -1753,15 +1753,23 @@ watch(sendErrMsg, (msg) => {
 })
 
 // CR review MEDIUM-2 — if the amount/recipient stops being submittable WHILE
-// the user is on the confirm sub-step (e.g. the USDC balance dropped underneath
-// via the safety poll / inbound watcher / another tab), bounce back to the
-// editable form. The Confirm button already disables reactively (it gates on
-// `sendCanSubmit`) and handleSend re-checks at broadcast, so there's no
-// fund-safety risk — this is the clarity fix: the confirm card has no
+// the user is IDLE on the confirm sub-step (e.g. the USDC balance dropped
+// underneath via the safety poll / inbound watcher / another tab), bounce back
+// to the editable form. The Confirm button already disables reactively (it
+// gates on `sendCanSubmit`) and handleSend re-checks at broadcast, so there's
+// no fund-safety risk — this is the clarity fix: the confirm card has no
 // over-balance banner, so a silently-greyed button would be confusing. Back on
 // the form, the live `sendOverBalance` hint explains why.
+//
+// CRUCIAL guard: skip while a send is IN FLIGHT. `sendCanSubmit` includes
+// `!sendIsProcessing`, so the instant the user clicks Confirm & Send it flips
+// false — without this guard the watcher would yank them off the confirm card
+// the moment they submit, hiding the "Sending USDC…" progress rail (and
+// flickering to the form mid-send). During processing the confirm card MUST
+// stay so the spinner rail is visible; on success handleSend sets
+// `sendStep = 'form'` + `sendSuccess = true` → the success card takes over.
 watch(sendCanSubmit, (ok) => {
-  if (!ok && sendStep.value === 'confirm') sendStep.value = 'form'
+  if (!ok && !sendIsProcessing.value && sendStep.value === 'confirm') sendStep.value = 'form'
 })
 
 // ── Mode-aware copy ────────────────────────────────────────────────────
