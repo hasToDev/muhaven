@@ -105,6 +105,14 @@ export type RebalancePlan =
       tokens: string[]
     }
   | {
+      // The rebalance can only sell (the underweight targets couldn't produce a
+      // whole-share buy — typically the target allocation is smaller than one
+      // share's price). A sell-only "rebalance to cash" is pointless, so refuse
+      // and explain rather than suggest a sale.
+      status: 'cannot_deploy'
+      tokens: string[]
+    }
+  | {
       // A sell leg would exceed the token's remaining instant-redeem cap →
       // it escalates to the redemption queue, whose proceeds DON'T credit
       // mhUSDC synchronously. The dependent buy legs in the same atomic UserOp
@@ -339,17 +347,30 @@ export function buildRebalancePlan(
     absValue: number
   }
   const candidates: Candidate[] = []
+  // Underweight (buy-intent) tokens that COULDN'T produce a whole-share buy
+  // (target allocation < 1 share's price, or sub-dust). Needed to explain a
+  // sell-only outcome — see the sell-only guard below.
+  const undersizedBuys: string[] = []
   for (const r of included) {
     if (r.navUsd <= 0) continue
     const targetValue = (renormTargetBps(r) / BPS_TOTAL) * totalValue
     const deltaValue = targetValue - r.valueUsd
     const absValue = Math.abs(deltaValue)
-    if (absValue < MIN_LEG_USD) continue
+    if (absValue < MIN_LEG_USD) {
+      if (deltaValue > 0) undersizedBuys.push(r.symbol)
+      continue
+    }
     // Floor shares — conservative: buys never overspend, sells never
     // over-request beyond the computed delta (on-chain Slice-1.5 clamp is the
     // further backstop for sells).
     const shares = BigInt(Math.floor(absValue / r.navUsd))
-    if (shares <= 0n) continue
+    if (shares <= 0n) {
+      // A BUY worth ≥ MIN_LEG_USD but < one share's price → can't buy a whole
+      // share from this rebalance's allocation. Record it; the value can't be
+      // deployed there.
+      if (deltaValue > 0) undersizedBuys.push(r.symbol)
+      continue
+    }
     candidates.push({
       kind: deltaValue < 0 ? 'sell' : 'buy',
       tokenAddress: r.tokenAddress,
@@ -375,6 +396,19 @@ export function buildRebalancePlan(
     ...kept.filter((c) => c.kind === 'buy'),
   ]
   const legs: RebalanceLeg[] = ordered.map(({ absValue: _a, ...leg }) => leg)
+
+  // ── Sell-only guard ──────────────────────────────────────────────────
+  // In a targets-summing-to-100% RWA rebalance, a SELL only exists to fund a
+  // BUY (move value from overweight → underweight). With no buy leg, selling to
+  // cash doesn't even reduce the sold token's RWA weight (the denominator
+  // shrinks proportionally) — it's purely counter-productive. So if the only
+  // executable legs are sells (the underweight targets couldn't produce a
+  // whole-share buy — e.g. you added NVDAon but your portfolio can't allocate a
+  // whole share to it), refuse rather than suggest a pointless sale.
+  // Operator-reported 2026-05-30.
+  if (legs.some((l) => l.kind === 'sell') && !legs.some((l) => l.kind === 'buy')) {
+    return { status: 'cannot_deploy', tokens: undersizedBuys }
+  }
 
   return {
     status: 'legs',

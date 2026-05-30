@@ -87,6 +87,16 @@ describe('describeRebalancePlanShortfall', () => {
     expect(r?.description).toMatch(/minimum investment/i)
   })
 
+  it('maps cannot_deploy to an info nudge that does NOT suggest selling', () => {
+    const r = describeRebalancePlanShortfall({
+      status: 'cannot_deploy',
+      tokens: ['NVDAon'],
+    })
+    expect(r?.severity).toBe('info')
+    expect(r?.description).toContain('NVDAon')
+    expect(r?.description).toMatch(/no sale is suggested|nothing to buy/i)
+  })
+
   it('maps insufficient_funds to an info nudge naming the token + a remedy', () => {
     const r = describeRebalancePlanShortfall({
       status: 'insufficient_funds',

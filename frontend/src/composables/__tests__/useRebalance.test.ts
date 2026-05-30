@@ -147,6 +147,17 @@ describe('buildRebalancePlan', () => {
     expect(plan.legs.length + plan.truncated).toBe(10)
     expect(plan.truncated).toBe(10 - MAX_LEGS)
   })
+
+  it('refuses a sell-only plan when an underweight target is too small to buy a whole share (operator NVDAon case)', () => {
+    // CETES $100 (overweight), NVDAon target 50% but 1 share = $500 → its $50
+    // allocation buys 0 whole shares → the only leg would be a pointless CETES
+    // sell. Must surface cannot_deploy, NOT a "Sell CETES" plan.
+    const cetes = input({ symbol: 'CETES', navUsd: 1, balanceShares: 100n, targetBps: 5000 })
+    const nvdaon = input({ symbol: 'NVDAon', navUsd: 500, balanceShares: 0n, targetBps: 5000 })
+    const plan = buildRebalancePlan(500, [cetes, nvdaon])
+    expect(plan.status).toBe('cannot_deploy')
+    if (plan.status === 'cannot_deploy') expect(plan.tokens).toEqual(['NVDAon'])
+  })
 })
 
 const CONSTRAINT_A = '0x' + 'a'.repeat(40)
