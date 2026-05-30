@@ -26,6 +26,7 @@ import { formatUSD } from '@/lib/utils'
 import { isMhUsdcUnknown, isMhUsdcInsufficient } from '@/lib/tradeGate'
 import { resolveTokenIdentifier, sanitizePrefillAmount } from '@/lib/prefill'
 import MButton from '@/components/ui/MButton.vue'
+import MPageLoader from '@/components/ui/MPageLoader.vue'
 import { muHavenTokenAbi } from '@/contracts/abis'
 import {
   CheckCircle2, Lock, ShieldCheck, EyeOff, TrendingUp, ChevronDown, ArrowRight,
@@ -926,10 +927,21 @@ const ctaDescribedBy = computed<string | undefined>(() => {
   if (mhUsdcUnknown.value) return 'trade-mhusdc-reveal-gate'
   return undefined
 })
+
+// Cold-load gate: show the branded loader until the token catalog (REST) is
+// ready, so the first visit doesn't flash an empty form + token picker while
+// the slow public RPC reads (NAV, balances) are still in flight. The store
+// flag stays true after the first fetch, so a keep-alive re-entry skips the
+// loader (instant). On a load failure we drop through to the form + the
+// retry-banner path rather than spin forever. NAV/balance reads that resolve
+// after the picker is ready keep their existing inline loading affordances.
+const showColdLoader = computed(() => !marketplace.loaded && !marketplaceLoadFailed.value)
 </script>
 
 <template>
   <div>
+    <MPageLoader v-if="showColdLoader" label="Loading trade" caption="Fetching market data" />
+    <template v-else>
     <div class="xl:mr-80">
       <section
         v-motion
@@ -1850,5 +1862,6 @@ const ctaDescribedBy = computed<string | undefined>(() => {
         </div>
       </aside>
     </Teleport>
+    </template>
   </div>
 </template>

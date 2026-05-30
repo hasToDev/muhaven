@@ -12,6 +12,7 @@ import { v35Addresses, isZeroAddress } from '@/contracts/addresses'
 import { buildReadContext } from '@/services/v35/context'
 import { arbiscanTx } from '@/lib/external'
 import MButton from '@/components/ui/MButton.vue'
+import MPageLoader from '@/components/ui/MPageLoader.vue'
 import {
   CheckCircle2, Lock, Send, ShieldCheck, AlertTriangle, Loader2, ArrowRight,
   ChevronDown, UserCheck, UserX,
@@ -274,10 +275,19 @@ const canSubmit = computed(() =>
   && !!selectedToken.value
   && simState.value.kind === 'ok',
 )
+
+// Cold-load gate: show the branded loader until the token catalog (REST) is
+// ready, so the first visit doesn't flash an empty form + token picker. The
+// store flag stays true after the first fetch, so a keep-alive re-entry skips
+// the loader entirely (instant). On a load failure we drop through to the form
+// (empty picker) rather than spin forever.
+const showColdLoader = computed(() => !marketplace.loaded && !marketplace.error)
 </script>
 
 <template>
   <div class="max-w-2xl mx-auto">
+    <MPageLoader v-if="showColdLoader" label="Loading transfer" caption="Fetching your tokens" />
+    <template v-else>
     <header class="mb-8">
       <h1 class="font-accent italic text-3xl md:text-4xl text-midnight dark:text-white tracking-tight">
         Send Shares
@@ -458,5 +468,6 @@ const canSubmit = computed(() =>
         </div>
       </div>
     </section>
+    </template>
   </div>
 </template>

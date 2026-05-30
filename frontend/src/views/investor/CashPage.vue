@@ -22,6 +22,7 @@ import { muHavenStableAbi } from '@muhaven/sdk'
 import { CIRCLE_FAUCET_URL, arbiscanTx } from '@/lib/external'
 import { formatUSD } from '@/lib/utils'
 import MButton from '@/components/ui/MButton.vue'
+import MPageLoader from '@/components/ui/MPageLoader.vue'
 import MAddressQR from '@/components/ui/MAddressQR.vue'
 import {
   CheckCircle2, Lock, Shield, EyeOff, ArrowRight, ArrowDownToLine,
@@ -1802,6 +1803,12 @@ const successCopy = computed(() =>
 <template>
   <div>
     <div class="xl:mr-80">
+      <!-- Cold-load gate: until the first balance read settles (`balancesLoaded`
+           flips true on success/error/no-wallet/1500ms-fallback), show the
+           branded loader instead of a blank column. The flag stays true after,
+           so a keep-alive re-entry skips the loader (instant). The "Your Wallet"
+           aside (address + QR) still renders alongside — it needs no balances. -->
+      <MPageLoader v-if="!balancesLoaded" label="Loading cash" caption="Reading your balances" />
       <!-- ── Anti-layout-shift gate ───────────────────────────────────
            Both the welcome ribbon and the convert card mount only after
            `balancesLoaded` flips true. This guarantees they commit to a
