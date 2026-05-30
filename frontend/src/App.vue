@@ -55,13 +55,25 @@ const RIGHT_RAIL_PATHS = new Set<string>(['/cash', '/trade', '/agent'])
 const hasRightRail = computed(() => RIGHT_RAIL_PATHS.has(route.path))
 
 // WS-1 (PERF_RPC_ROUTEGUARD_PLAN.md) — pages cached across navigation by
-// <keep-alive>. D1 scope: Cash + Portfolio only (the rapid-nav RPC-429 hot
-// path). Matched by component `name` (set via defineOptions in each page).
-// Each page moves its mount-time fetch + polling-watcher arming to
-// onActivated/onDeactivated, so a backgrounded page stops polling and a
-// re-visit reactivates instantly (no re-mount, no re-fetch storm, no loader
-// flash) instead of re-storming the rate-limited public RPC.
-const KEEP_ALIVE_PAGES = ['PortfolioPage', 'CashPage']
+// <keep-alive>. Matched by component `name` (set via defineOptions in each
+// page). Each page moves its mount-time fetch + (for Cash/Portfolio) its
+// polling-watcher arming to onActivated/onDeactivated, so a backgrounded page
+// stops polling and a re-visit reactivates instantly (no re-mount, no re-fetch
+// storm, no loader flash) instead of re-storming the rate-limited public RPC.
+//
+// Original D1 scope: Cash + Portfolio (the rapid-nav RPC-429 hot path; they're
+// the only pages that arm viem watchers, so they alone carry the watcher
+// debounce). NEXT_FIXES #1 (2026-05-30) extends keep-alive to three more
+// read-heavy investor pages via the SIMPLER conversion (onActivated throttled-
+// refetch, NO watcher debounce — none arm watchers). Each was audited for
+// <Teleport>/position:fixed overlays (the "Your Wallet leaked everywhere"
+// regression class) and is clean. TokenDetailPage (a `:ticker` param route) is
+// deliberately EXCLUDED — caching it by name alone would serve the wrong
+// ticker's data.
+const KEEP_ALIVE_PAGES = [
+  'PortfolioPage', 'CashPage',
+  'MarketplacePage', 'YieldsPage', 'ActivityPage',
+]
 
 // Layout padding for the STABLE content wrapper below. The wrapper used to be
 // a per-route `:key`-ed div inside the transition; keeping it keyed would

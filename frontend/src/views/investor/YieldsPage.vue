@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, ref, computed, onMounted, watch } from 'vue'
+import { nextTick, ref, computed, onActivated, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { toast } from 'vue-sonner'
 import type { Address } from 'viem'
@@ -26,6 +26,13 @@ import {
 // amounts are FHE-encrypted; the page surfaces (1) which epochs are
 // claimable, (2) a per-token NAV trend (asset-side, plaintext) so users
 // can verify the underlying is tracking real-world data.
+
+// Named so App.vue's <keep-alive :include> can target this page
+// (NEXT_FIXES #1). Because the page is now cached, onMounted no longer
+// re-fires on re-entry — so the Path-C deep-link (`?token=&epoch=`) is
+// re-parsed from the LIVE route query on every activation (see
+// `parseDeepLink` + `onActivated` below) instead of once at mount.
+defineOptions({ name: 'YieldsPage' })
 
 const epochsStore = useEpochsStore()
 const portfolioStore = usePortfolioStore()
@@ -69,10 +76,10 @@ const prefillTokenMissError = ref<string | null>(null)
  */
 const scrolledToHighlight = ref<boolean>(false)
 
-// Hoisted BEFORE onMounted (and BEFORE the `selectableTokens` watcher
-// registration further down) so a synchronous deep-link assignment in
-// onMounted lands before the immediate:true watcher's first run sees
-// `null` and snaps to `list[0]` — Frontend H-5 race fix.
+// Declared BEFORE the `selectableTokens` watcher (registered further down).
+// `parseDeepLink` (called from onActivated) assigns this to the deep-linked
+// token; the `selectableTokens` immediate watcher keeps an in-list selection
+// on each recompute, so the deep-linked token survives — Frontend H-5 race.
 const selectedToken = ref<Address | null>(null)
 
 const claimingKeys = ref<Set<string>>(new Set())
@@ -86,7 +93,46 @@ const ranges = [
 
 // ── Lifecycle ───────────────────────────────────────────────────────────
 
-onMounted(async () => {
+// Path C deep-link parse, derived from the LIVE route query so it stays
+// correct across keep-alive re-entries (a fresh `/yields?token=X&epoch=N`
+// deep-link re-highlights even though the component isn't re-mounted).
+// Reflects the query fully: sets the highlight when present + resolvable,
+// surfaces the miss banner when present + unresolvable, and CLEARS a stale
+// highlight when the user returns via plain `/yields` (no query). The
+// one-shot scroll guard resets only when the target actually changes, so
+// the same target never re-scrolls but a new one does.
+let lastHighlightKey = ''
+function parseDeepLink() {
+  const queryToken = route.query.token as string | undefined
+  const matched = resolveTokenIdentifier(queryToken, marketplace.tokens)
+  if (queryToken && !matched) {
+    prefillTokenMissError.value = queryToken.trim().slice(0, 32)
+    highlightedTokenAddr.value = null
+  } else if (matched) {
+    prefillTokenMissError.value = null
+    highlightedTokenAddr.value = matched.address.toLowerCase()
+    // Sync the NAV-chart selection to the deep-linked token. Set BEFORE
+    // the `selectableTokens` immediate watcher can snap it to `list[0]`
+    // (Frontend H-5 race); onActivated runs after that watcher's setup-
+    // time first pass, but the watcher keeps an in-list selection on its
+    // next recompute, so the deep-linked token wins.
+    selectedToken.value = matched.address as Address
+  } else {
+    prefillTokenMissError.value = null
+    highlightedTokenAddr.value = null
+  }
+  const queryEpoch = route.query.epoch as string | undefined
+  highlightedEpochId.value = (queryEpoch && /^\d+$/.test(queryEpoch)) ? queryEpoch : null
+
+  const key = `${highlightedTokenAddr.value ?? ''}:${highlightedEpochId.value ?? ''}`
+  if (key !== lastHighlightKey) {
+    lastHighlightKey = key
+    scrolledToHighlight.value = false
+  }
+}
+
+// onActivated fires on the initial mount AND every keep-alive re-entry.
+onActivated(async () => {
   if (!marketplace.loaded) {
     try {
       await marketplace.load()
@@ -97,28 +143,11 @@ onMounted(async () => {
     }
   }
 
-  // Path C deep-link parse — done BEFORE any other awaits so the
-  // `selectableTokens` watcher registered below sees `selectedToken`
-  // already set on its immediate:true first run. Without this ordering,
-  // the watcher would snap selectedToken to `list[0]` and the
-  // deep-link's token assignment would race-overwrite that — producing
-  // a momentary flash of the wrong token in the NAV chart (Frontend H-5).
-  const queryToken = route.query.token as string | undefined
-  const matched = resolveTokenIdentifier(queryToken, marketplace.tokens)
-  if (queryToken && !matched) {
-    prefillTokenMissError.value = queryToken.trim().slice(0, 32)
-  } else if (matched) {
-    highlightedTokenAddr.value = matched.address.toLowerCase()
-    selectedToken.value = matched.address as Address
-  }
-  const queryEpoch = route.query.epoch as string | undefined
-  if (queryEpoch && /^\d+$/.test(queryEpoch)) {
-    highlightedEpochId.value = queryEpoch
-  }
+  // Parse AFTER marketplace is loaded (symbol→address resolution needs the
+  // token list) but BEFORE the epochs load, so the scroll watch below sees
+  // a populated `epochsStore.items` when it first fires.
+  parseDeepLink()
 
-  // Epochs load happens AFTER deep-link parse so the watch below that
-  // owns the scroll-into-view sees a populated `epochsStore.items`
-  // when it first fires.
   if (connected.value && address.value) {
     if (!epochsStore.loaded || epochsStore.lastLoadedFor?.toLowerCase() !== address.value.toLowerCase()) {
       await epochsStore.load(address.value as Address)
@@ -130,7 +159,10 @@ onMounted(async () => {
  * Smooth-scroll to the highlighted epoch row when:
  *  (a) both deep-link refs are set,
  *  (b) `epochsStore.items` has the matching row rendered, AND
- *  (c) we haven't already scrolled in this page lifetime.
+ *  (c) we haven't already scrolled for the CURRENT deep-link target
+ *      (`parseDeepLink` resets `scrolledToHighlight` whenever the
+ *      token/epoch target changes, so a fresh keep-alive re-entry with a
+ *      new `?token=&epoch=` re-scrolls, but the same target never does).
  *
  * Watching `epochsStore.items.length` handles three races the previous
  * one-shot `await nextTick(); querySelector(...)` in onMounted missed:

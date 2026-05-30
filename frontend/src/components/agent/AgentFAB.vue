@@ -1,20 +1,30 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useRoute } from 'vue-router'
-import { useAppStore } from '@/stores/app'
-import { MessageCircle, X } from 'lucide-vue-next'
+import { useRoute, useRouter } from 'vue-router'
+import { MessageCircle } from 'lucide-vue-next'
 
 const route = useRoute()
-const store = useAppStore()
+const router = useRouter()
 
 const isAgentPage = computed(() => route.path === '/agent')
+
+// Operator request (2026-05-30): the FAB now navigates to the full Agent
+// page rather than toggling the AgentSidePanel. The side panel is NOT
+// removed — InsightChip still opens it via store.openAgentPanel(). Since
+// the FAB always navigates (and is hidden on /agent via `isAgentPage`),
+// there's no "close" state to represent, so the icon is a single
+// MessageCircle (the prior X/MessageCircle toggle is gone).
+function openAgent() {
+  router.push('/agent')
+}
 </script>
 
 <template>
   <Transition name="fab">
     <button
       v-if="!isAgentPage"
-      @click="store.agentPanelOpen ? store.closeAgentPanel() : store.openAgentPanel()"
+      @click="openAgent"
+      aria-label="Open AI agent"
       :class="[
         'fixed bottom-6 right-6 z-40 w-14 h-14 rounded-full flex items-center justify-center',
         'bg-gradient-to-br from-signal via-gold to-compute text-midnight',
@@ -22,10 +32,7 @@ const isAgentPage = computed(() => route.path === '/agent')
         'transition-all duration-200 cursor-pointer',
       ]"
     >
-      <Transition name="icon-rotate" mode="out-in">
-        <X v-if="store.agentPanelOpen" :size="22" key="close" />
-        <MessageCircle v-else :size="22" key="chat" />
-      </Transition>
+      <MessageCircle :size="22" />
     </button>
   </Transition>
 </template>
@@ -38,9 +45,4 @@ const isAgentPage = computed(() => route.path === '/agent')
   transform: scale(0.5);
   opacity: 0;
 }
-.icon-rotate-enter-active, .icon-rotate-leave-active {
-  transition: transform 0.15s ease, opacity 0.15s ease;
-}
-.icon-rotate-enter-from { opacity: 0; transform: rotate(-90deg); }
-.icon-rotate-leave-to { opacity: 0; transform: rotate(90deg); }
 </style>

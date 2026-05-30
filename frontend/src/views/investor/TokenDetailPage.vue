@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, useTemplateRef, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, useTemplateRef, watch, type ComponentPublicInstance } from 'vue'
 import { useRouter } from 'vue-router'
 import { useOracleTokensStore } from '@/stores/oracle-tokens'
 import { useMarketplaceStore } from '@/stores/marketplace'
@@ -54,7 +54,12 @@ const snapshot = ref<OracleSnapshotDto | null>(null)
 const loading = ref(true)
 const error = ref<string | null>(null)
 const snapshotError = ref<string | null>(null)
-const backLink = useTemplateRef<HTMLAnchorElement>('backLink')
+// `backLink` is bound to a <RouterLink> (a component), so `.value` is the
+// component public instance, NOT the rendered <a>. Type it as such and
+// reach the DOM node via `$el` to focus it (operator-reported:
+// `B.value?.focus is not a function` — focus() was being called on the
+// component instance, which has no .focus method).
+const backLink = useTemplateRef<ComponentPublicInstance>('backLink')
 
 // Monotonically-increasing request token — every load() captures the
 // current value and bails on any await whose token has been
@@ -117,7 +122,10 @@ onMounted(async () => {
   // Move focus to the back link so AT users land on meaningful nav
   // rather than the document body. nextTick so the link is in the DOM.
   await nextTick()
-  backLink.value?.focus()
+  // RouterLink renders an <a> as its root element; focus that, guarding
+  // against the instance not yet being mounted or rendering a non-element.
+  const el = backLink.value?.$el
+  if (el instanceof HTMLElement) el.focus()
 })
 
 watch(() => props.ticker, load)

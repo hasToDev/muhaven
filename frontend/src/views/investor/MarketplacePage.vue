@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onActivated } from 'vue'
 import { useOracleTokensStore } from '@/stores/oracle-tokens'
 import { formatUSD } from '@/lib/utils'
 import MButton from '@/components/ui/MButton.vue'
@@ -36,11 +36,21 @@ import type { OracleTokenListItemDto } from '@/services/api'
  * Asset class is the primary investor-facing taxonomy.
  */
 
+// Named so App.vue's <keep-alive :include> can target this page
+// (NEXT_FIXES #1). The catalog + active search/filter state already live in
+// the oracle store, so the keep-alive win is preserved scroll position +
+// sparkline renders + no re-mount cost.
+defineOptions({ name: 'MarketplacePage' })
+
 const oracle = useOracleTokensStore()
 
-onMounted(async () => {
+// keep-alive lifecycle: onActivated fires on the initial mount AND on every
+// re-entry. The store-level `loaded` guard keeps this a true no-op on revisit
+// (the catalog is fetched once per session), so there's no per-entry refetch
+// storm to throttle — the page just reactivates instantly with cached data.
+onActivated(() => {
   if (oracle.loaded) return
-  await oracle.load()
+  void oracle.load()
 })
 
 const showLoader = computed(() =>

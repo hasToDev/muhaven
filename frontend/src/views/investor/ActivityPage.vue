@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, reactive } from 'vue'
+import { ref, computed, onActivated, onDeactivated, reactive } from 'vue'
 import { useActivityStore } from '@/stores/activity'
 import { useMarketplaceStore } from '@/stores/marketplace'
 import { formatUSD, formatAddress } from '@/lib/utils'
@@ -15,6 +15,14 @@ import {
   Inbox, ChevronDown, Loader2, Eye, ShieldCheck, RefreshCw, Wallet,
   Send, Download,
 } from 'lucide-vue-next'
+
+// Named so App.vue's <keep-alive :include> can target this page
+// (NEXT_FIXES #1). Keeping the page alive preserves the decrypt cache
+// (revealedAmounts), the active filter, and the expanded-proof row across
+// navigation — no <Teleport>/fixed overlay in this subtree (the analytics
+// column is `lg:sticky`, which stays inside the cached subtree), so it's
+// leak-safe.
+defineOptions({ name: 'ActivityPage' })
 
 const activity = useActivityStore()
 const marketplace = useMarketplaceStore()
@@ -270,20 +278,23 @@ function statusAccent(status: string): { text: string; ring: string; bg: string 
 // Reactive `now` tick for relative-time labels — incremented every 30s so
 // rows that started at "Just now" age into "30s ago" / "2m ago" / etc.
 // without a manual page reload. Reading `nowTick` inside `formatTime`
-// makes the computed dependent on it; cleared on unmount.
+// makes the computed dependent on it. Armed on activate / cleared on
+// deactivate (below) so a backgrounded (kept-alive) page doesn't keep
+// re-rendering off-screen every 30s.
 const nowTick = ref(Date.now())
 let nowTickInterval: ReturnType<typeof setInterval> | null = null
-onMounted(() => {
+function startNowTick() {
+  if (nowTickInterval) return
   nowTickInterval = setInterval(() => {
     nowTick.value = Date.now()
   }, 30_000)
-})
-onBeforeUnmount(() => {
+}
+function stopNowTick() {
   if (nowTickInterval) {
     clearInterval(nowTickInterval)
     nowTickInterval = null
   }
-})
+}
 
 function formatTime(timestamp: string): string {
   // Touch `nowTick` so this fn re-runs on tick; the value itself isn't
@@ -561,19 +572,32 @@ function formatRevealedAmount(item: ActivityItemDto): string {
   return sym ? `${numStr} ${sym}` : numStr
 }
 
-onMounted(async () => {
+// keep-alive lifecycle (NEXT_FIXES #1). onActivated fires on the initial
+// mount AND every re-entry; onDeactivated on nav-away (and before a true
+// unmount).
+//
+// We ALWAYS refetch the inbox on entry — deliberately, NOT throttled:
+//   - `activity.load()` hits the BACKEND REST API (activityApi.getAll), not
+//     the rate-limited public Arb RPC, so it's not part of the RPC-429 hot
+//     path that motivated the Cash/Portfolio throttle. No storm to throttle.
+//   - the store already dedupes concurrent loads (activity.ts:20: skip while
+//     loading/loadingMore), so rapid back-and-forth can't stack calls.
+//   - `/activity` has no post-trade PUSH refresh (unlike Portfolio's
+//     refreshAfterTrade), so this activate-refetch is its ONLY freshness
+//     path — a throttle would surface a stale inbox after a just-made trade.
+// The instant-return win still holds: `showLoader` gates on `!loaded`, so a
+// revisit paints the cached rows immediately while the refetch runs silently.
+onActivated(() => {
+  startNowTick()
   // Marketplace tokens give us symbol resolution for buy/sell/yield rows.
-  // Don't await — we'd rather render activity instantly with truncated
-  // addresses than block the page on the tokens fetch. The labels swap to
-  // symbols reactively once the list lands.
+  // Don't await — render activity instantly with truncated addresses; the
+  // labels swap to symbols reactively once the list lands.
   if (!marketplace.loaded) void marketplace.load()
-  // Always refetch on mount. The previous `if (activity.loaded) return`
-  // guard was an inbox-staleness footgun: a user who visits /activity
-  // within the indexer's 15s polling window after a trade would see an
-  // empty list, the store would latch `loaded=true`, and every revisit
-  // would skip the refetch — even after the indexer had caught up. The
-  // round-trip cost is tiny vs. an inbox showing nothing.
-  await activity.load()
+  void activity.load()
+})
+
+onDeactivated(() => {
+  stopNowTick()
 })
 
 const showLoader = computed(() =>

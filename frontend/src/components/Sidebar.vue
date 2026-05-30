@@ -203,7 +203,13 @@ onBeforeUnmount(() => {
     </RouterLink>
 
     <!-- Nav items -->
-    <nav class="flex-1 px-3 space-y-1 overflow-y-auto no-scrollbar">
+    <!-- `py-1`: the active nav item draws its highlight with `ring-1`
+         (a 1px OUTSET, painted outside the box). The first item sits
+         flush against the top of this `overflow-y-auto` container, so
+         without top padding its top ring is clipped (operator-reported:
+         "Cash menu top border cut off"). 4px clears the 1px ring + the
+         last item's bottom ring with room to spare. -->
+    <nav class="flex-1 px-3 py-1 space-y-1 overflow-y-auto no-scrollbar">
       <!-- Phase 9.A · Expansion (F2) — issuer onboarding wizard.
            Pinned ABOVE the regular issuer nav because onboarding is
            the prerequisite gate for everything below it (Cash /
