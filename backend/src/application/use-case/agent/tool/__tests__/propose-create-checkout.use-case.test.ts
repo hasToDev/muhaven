@@ -221,11 +221,9 @@ describe('ProposeCreateCheckoutToolUseCase', () => {
         pauseMetadata: null,
         enteredAt: NOW,
         validatorAddress: null,
-        validatorInstalledAt: null,
-        validatorUninstalledAt: null,
         confirmedActionCount: 0,
-        kycRevoked: false,
-        risksConfirmedAt: null,
+        riskQuestionnaireComplete: false,
+        createdAt: NOW,
         updatedAt: NOW,
       }),
     );

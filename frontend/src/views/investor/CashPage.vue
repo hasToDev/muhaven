@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onActivated, onDeactivated, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useMediaQuery } from '@vueuse/core'
 import { useRoute, useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
@@ -52,6 +52,9 @@ type Mode = 'cash' | 'asset'
 //   withdraw = mhUSDC → USDC   (direct exit; two-phase async claim)
 // `?mode=unwrap` is the MCP deep-link target → cash + withdraw.
 type Direction = 'deposit' | 'withdraw'
+
+// Named so App.vue's <keep-alive :include> can target this page (WS-1).
+defineOptions({ name: 'CashPage' })
 
 const route = useRoute()
 const router = useRouter()
@@ -244,6 +247,13 @@ const CLAIM_POLL_INTERVAL_SECONDS = Math.round(CLAIM_POLL_INTERVAL_MS / 1000)
 // code could call `toast.success` etc. on a component the user already
 // navigated away from. Short-circuit at the top of each async map callback.
 let isUnmounted = false
+
+// WS-1 keep-alive — true only while the page is the active route. Distinct
+// from `isUnmounted` (which flips once, on TRUE destroy): under <keep-alive>
+// the component is NOT destroyed on navigate-away, just deactivated. This flag
+// gates the polling watchers + the claim-poll re-arm so a BACKGROUNDED /cash
+// stops hitting the RPC, then resumes on re-entry via onActivated.
+const isActive = ref(false)
 
 // Round-2 review (CR H-1) — in-flight guard for `loadPendingClaims`. With
 // four reactive triggers (watch address immediate + connected + route.path +
@@ -547,11 +557,15 @@ function setupInboundWatchers(kernelAddress: `0x${string}`) {
   }, SAFETY_POLL_MS)
 }
 
-// Re-arm the watchers whenever the connected address changes (login /
-// logout / account-switch). Tear down on unmount.
+// Account switch WHILE active → re-arm watchers + re-discover claims for the
+// new kernel. Gated on isActive (no `immediate`): first-entry arming is owned
+// by onActivated below; a switch landing while this page is backgrounded
+// (kept alive) is a no-op — onActivated re-arms with the current address on
+// return.
 watch(
   () => address.value,
   (addr) => {
+    if (!isActive.value) return
     if (addr) {
       setupInboundWatchers(addr as `0x${string}`)
       // Wave 5 W3 — re-discover pending USDC claims for the new account.
@@ -564,33 +578,48 @@ watch(
       stopPolling()
     }
   },
-  { immediate: true },
 )
+
+// WS-1 keep-alive. onActivated fires on first mount AND every re-entry; it
+// owns the per-entry refetch + watcher arming (the cross-account freshness +
+// "re-discover on return to /cash" the old route.path watch used to provide).
+// onDeactivated stops ALL polling while backgrounded. onBeforeUnmount handles
+// the TRUE destroy (logout / cache eviction).
+onActivated(() => {
+  isActive.value = true
+  if (connected.value && address.value) {
+    void loadBalances()
+    void loadPendingClaims()
+    setupInboundWatchers(address.value as `0x${string}`)
+  }
+})
+onDeactivated(() => {
+  isActive.value = false
+  teardownWatchers()
+  stopPolling()
+})
 onBeforeUnmount(() => {
   // Round-2 (FE Dev HIGH) — flip the flag BEFORE teardown so any in-flight
   // Promise.all resolutions in pollPendingDecrypts / loadPendingClaims /
   // claimWithdrawal short-circuit before mutating refs / firing toasts.
   isUnmounted = true
+  isActive.value = false
   teardownWatchers()
   stopPolling()
 })
 
+// Late-connect (user signs in while sitting on /cash). Gated on isActive so a
+// connection event that lands while backgrounded is a no-op — onActivated
+// refetches on return. The old `watch(route.path === '/cash')` re-discovery is
+// gone: under keep-alive, onActivated is the precise navigate-back-to-/cash
+// hook and already re-runs loadPendingClaims.
 watch(connected, (val) => {
+  if (!isActive.value) return
   if (val) {
     loadBalances()
     void loadPendingClaims()
   }
 })
-
-// Re-discover when the user navigates back to /cash (e.g. from /portfolio)
-// since the watcher above only fires on address change, not route change.
-// Cheap — single read for users with no pending claims.
-watch(
-  () => route.path,
-  (path) => {
-    if (path === '/cash' && address.value) void loadPendingClaims()
-  },
-)
 
 // Wave 5 W3 — keep the `direction` ref in sync with the URL on back/forward
 // navigation + MCP deep-links that fire after mount. setDirection() owns
@@ -626,14 +655,12 @@ watch(mode, (m) => {
 })
 
 onMounted(() => {
-  if (connected.value) {
-    loadBalances()
-    // Round-2 (FE Dev HIGH) — explicit mount-path discovery for the case
-    // where `watch(address, immediate)` raced ahead of the wallet adapter
-    // resolving `address.value`. The in-flight guard coalesces duplicates
-    // if both paths fire.
-    void loadPendingClaims()
-  } else {
+  // Balance + claim discovery for a connected wallet now runs in onActivated
+  // (which fires right after onMounted on first mount AND on every re-entry),
+  // so it isn't duplicated here. onMounted keeps only the TRUE first-mount
+  // concerns: the no-wallet render fast-path, issuer context, the render
+  // fallback timeout, and the MCP deep-link prefill.
+  if (!connected.value) {
     // No wallet on mount — render the page immediately so the user sees
     // the form rather than a blank column while we wait for an event
     // that may never come (`watch(connected)` covers the late-connect
@@ -1154,10 +1181,20 @@ async function loadPendingClaimsImpl() {
   // banners + the submit-button disabled state. Failures degrade silently
   // (banners hide); a console.warn helps debugging if the stale `false`
   // surprises an operator (round-2 CR L-4).
-  try { claimsKillSwitch.value = await MuHavenStableService.claimsPaused() }
-  catch (e) { console.warn('[CashPage] claimsPaused read failed', e) }
-  try { wrapperPaused.value = await MuHavenStableService.paused() }
-  catch (e) { console.warn('[CashPage] paused read failed', e) }
+  // Read both pause flags in the SAME tick so multicall folds them into one
+  // aggregate eth_call (they were two sequential awaits → two round-trips, and
+  // loadPendingClaims now re-runs on every /cash re-entry under keep-alive).
+  // allSettled keeps the per-flag silent-degrade contract (a failed read hides
+  // its banner; the console.warn helps if a stale `false` surprises an
+  // operator — round-2 CR L-4).
+  const [claimsRes, pausedRes] = await Promise.allSettled([
+    MuHavenStableService.claimsPaused(),
+    MuHavenStableService.paused(),
+  ])
+  if (claimsRes.status === 'fulfilled') claimsKillSwitch.value = claimsRes.value
+  else console.warn('[CashPage] claimsPaused read failed', claimsRes.reason)
+  if (pausedRes.status === 'fulfilled') wrapperPaused.value = pausedRes.value
+  else console.warn('[CashPage] paused read failed', pausedRes.reason)
 
   try {
     const ids = await MuHavenStableService.getUserWithdrawClaims(address.value as `0x${string}`)
@@ -1255,6 +1292,11 @@ async function pollPendingDecrypts() {
 }
 
 function ensurePollingActive() {
+  // WS-1 — never arm (or re-arm) the claim poll on a backgrounded kept-alive
+  // page. An in-flight loadPendingClaims that resolves AFTER onDeactivated
+  // would otherwise restart the 5s interval on a hidden page. onActivated
+  // re-runs loadPendingClaims (→ here) on re-entry, so polling resumes then.
+  if (!isActive.value) return
   if (claimPollTimer) return
   if (pendingClaims.value.every((c) => c.ready)) return // nothing to wait for
   claimPollTimer = setInterval(() => { void pollPendingDecrypts() }, CLAIM_POLL_INTERVAL_MS)

@@ -3,6 +3,8 @@
  * Zero dependencies — uses native fetch with token injection and 401 refresh.
  */
 
+import { cachedFetch } from './readCache'
+
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://api.muhaven.app/api/v1'
 
 export const TOKEN_KEY = 'muhaven-auth-tokens'
@@ -553,8 +555,23 @@ export const deviceFlowApi = {
 // ── Token endpoints (public) ────────────────────────────────────────
 
 export const tokensApi = {
-  getAll(): Promise<{ tokens: TokenResponseDto[] }> {
-    return request('/tokens')
+  // Token metadata + latest_nav is near-static and is read ~3x per Portfolio
+  // open (portfolio.load + marketplace.load + inbound-watcher setup). Memoize
+  // with a short TTL + in-flight de-dup so the duplicate GETs collapse to one
+  // round-trip; 15s is well under any meaningful NAV-staleness threshold (the
+  // portfolio's authoritative NAV is read on-chain per holding, not from here).
+  //
+  // Return a FRESH array wrapper each call: cachedFetch hands every caller the
+  // same cached object, so a consumer that assigns `res.tokens` to a reactive
+  // ref and later sorts/filters it in place would otherwise corrupt the shared
+  // cache for the TTL window. The token DTOs inside are read-only display data.
+  async getAll(): Promise<{ tokens: TokenResponseDto[] }> {
+    const res = await cachedFetch<{ tokens: TokenResponseDto[] }>(
+      'tokens:getAll',
+      15_000,
+      () => request('/tokens'),
+    )
+    return { tokens: [...res.tokens] }
   },
 
   getByAddress(address: string): Promise<TokenResponseDto> {

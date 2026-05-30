@@ -1,12 +1,11 @@
 <script setup lang="ts">
-import { ref, reactive, onMounted, onBeforeUnmount, computed, watch } from 'vue'
+import { ref, reactive, onActivated, onDeactivated, onBeforeUnmount, computed, watch, defineAsyncComponent } from 'vue'
 import { usePortfolioStore } from '@/stores/portfolio'
 import { useMarketplaceStore } from '@/stores/marketplace'
 import { useWallet } from '@/composables/useWallet'
 import MFaucetBanner from '@/components/ui/MFaucetBanner.vue'
 import MButton from '@/components/ui/MButton.vue'
 import MPageLoader from '@/components/ui/MPageLoader.vue'
-import PortfolioDonut from '@/components/charts/PortfolioDonut.vue'
 import RebalancePanel from '@/components/portfolio/RebalancePanel.vue'
 import { getPublicClient } from '@/services/v35/context'
 import { erc20Abi, muHavenTokenAbi } from '@/contracts/abis'
@@ -17,6 +16,14 @@ import {
   Loader2, Unlock, RefreshCw,
 } from 'lucide-vue-next'
 import { formatUSD, cn } from '@/lib/utils'
+
+// Named so App.vue's <keep-alive :include> can target this page (WS-1).
+defineOptions({ name: 'PortfolioPage' })
+
+// Defer Chart.js off the critical path: the donut only renders on the
+// allocation hero tab, so async-loading it keeps Chart.js out of the initial
+// page chunk and shortens first paint. WS-1 polish.
+const PortfolioDonut = defineAsyncComponent(() => import('@/components/charts/PortfolioDonut.vue'))
 
 const portfolio = usePortfolioStore()
 const marketplace = useMarketplaceStore()
@@ -37,9 +44,27 @@ const activeTab = ref<HeroTab>('value')
 // below), so revisits don't flash a logo while the data is in
 // flight. Decrypt state is reset by `load()` and re-cleared via
 // `refreshAfterTrade` / `refreshAfterTransfer` on the action pages.
-onMounted(async () => {
-  if (!address.value) return
-  await portfolio.load(address.value as `0x${string}`)
+// Keep-alive lifecycle (WS-1). This page is cached across navigation, so
+// onMounted/onBeforeUnmount fire only on TRUE mount/unmount. Per-ENTRY work
+// (refetch + arm the inbound polling watchers) runs on onActivated; per-EXIT
+// teardown (stop the 12s watchers + 30s safety poll while backgrounded) runs
+// on onDeactivated. Refetching on every entry preserves the cross-account
+// freshness contract documented above; multicall + the read cache keep rapid
+// re-entries from storming the RPC. The loader stays gated on `!loaded`, so a
+// re-visit shows cached holdings instantly while the refetch lands in place.
+const isActive = ref(false)
+
+onActivated(() => {
+  isActive.value = true
+  const addr = address.value as `0x${string}` | undefined
+  if (!addr) return
+  void portfolio.load(addr)
+  void setupInboundWatchers(addr)
+})
+
+onDeactivated(() => {
+  isActive.value = false
+  teardownInboundWatchers()
 })
 
 // ── Inbound auto-refresh + holding bloom ───────────────────────────────
@@ -201,6 +226,11 @@ async function setupInboundWatchers(kernelAddress: `0x${string}`) {
       return
     }
   }
+  // Re-check after the await: if the user navigated away (deactivated this
+  // kept-alive page) while marketplace.load was in flight, do NOT arm the
+  // watchers/safety poll — that would leave a BACKGROUNDED page polling, the
+  // exact leak keep-alive is meant to kill. onActivated re-arms on return.
+  if (!isActive.value) return
   const publicClient = getPublicClient()
 
   for (const t of marketplace.tokens) {
@@ -261,7 +291,7 @@ async function setupInboundWatchers(kernelAddress: `0x${string}`) {
   // fires if the user has revealed it (privacy: no surprise session
   // signature on a passive interval).
   safetyPollTimer = setInterval(() => {
-    if (!address.value) return
+    if (!isActive.value || !address.value) return
     void portfolio.load(address.value as `0x${string}`)
     if (portfolio.pusdcConfidentialBalance !== null) {
       void portfolio.decryptPusdc(address.value as `0x${string}`)
@@ -269,13 +299,17 @@ async function setupInboundWatchers(kernelAddress: `0x${string}`) {
   }, PORTFOLIO_SAFETY_POLL_MS)
 }
 
+// Account switch WHILE active → re-arm watchers for the new kernel. Gated on
+// isActive so a switch that lands while this page is backgrounded (kept alive)
+// is a no-op — onActivated re-arms with the current address on return. No
+// `immediate`: first-entry arming is owned by onActivated above.
 watch(
   () => address.value,
   (addr) => {
+    if (!isActive.value) return
     if (addr) void setupInboundWatchers(addr as `0x${string}`)
     else teardownInboundWatchers()
   },
-  { immediate: true },
 )
 onBeforeUnmount(teardownInboundWatchers)
 

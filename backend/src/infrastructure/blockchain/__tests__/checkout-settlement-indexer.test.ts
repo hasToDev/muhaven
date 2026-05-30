@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi, type MockInstance } from 'vitest';
 
 process.env.JWT_SECRET =
   process.env.JWT_SECRET || 'test-secret-that-is-at-least-32-chars-long';
@@ -106,7 +106,7 @@ describe('CheckoutSettlementIndexer', () => {
   let repo: MemoryCheckoutSessionRepository;
   let sse: SseChannelService;
   let settleUseCase: SettleFromEventUseCase;
-  let publishSpy: ReturnType<typeof vi.spyOn>;
+  let publishSpy: MockInstance;
 
   beforeEach(() => {
     repo = new MemoryCheckoutSessionRepository();

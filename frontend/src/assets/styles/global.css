@@ -208,6 +208,16 @@ body {
   100% { transform: translate(10%, 10%) scale(1.1); }
 }
 
+/* Honor reduced-motion: keep the ambient mesh as a static wash (no drift).
+   Kept separate from the `.reveal` reduced-motion block below because the
+   balls must RETAIN their low opacity — only the perpetual animation is
+   removed, not the blob itself. WS-1 (PERF_RPC_ROUTEGUARD_PLAN.md). */
+@media (prefers-reduced-motion: reduce) {
+  .mesh-ball {
+    animation: none;
+  }
+}
+
 @keyframes float {
   0%, 100% { transform: translateY(0) rotate(0deg); }
   50% { transform: translateY(-8px) rotate(1.5deg); }
@@ -346,6 +356,16 @@ body {
     filter: none;
     transition: none;
   }
+
+  /* WS-1 motion pass — the in-app page transition (<transition name="page">)
+     plays a slide-fade on EVERY navigation, including the rapid Cash<->Portfolio
+     path this work targets. Snap instead of animate for reduced-motion users. */
+  .page-enter-active, .page-leave-active { transition: none; }
+  .page-enter-from, .page-leave-to { opacity: 1; transform: none; }
+
+  /* Global `html { scroll-behavior: smooth }` would animate the router's
+     scroll-to-top on every nav — make it an instant jump under reduced-motion. */
+  html { scroll-behavior: auto; }
 }
 
 /* ── HavenBot typing indicator ──

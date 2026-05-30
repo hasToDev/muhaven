@@ -202,7 +202,7 @@ describe('MintScopedSessionUseCase', () => {
       status: ScopedSessionStatus.Active,
       signerAddress: '0xbbbb000000000000000000000000000000000002',
       permissionId: '0xdeadbeef',
-      targetContracts: [SUBSCRIPTION_ADDR.toLowerCase()],
+      targetContracts: [SUBSCRIPTION_ADDR.toLowerCase() as `0x${string}`],
       selectorCaps: [{ selector: PURCHASE_SELECTOR, capArgIndex: 2, maxAmount: '1000000' }],
       maxPerOpUsd6: 100_000_000n,
       totalSpentUsd6: 0n,

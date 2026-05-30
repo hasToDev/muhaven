@@ -91,9 +91,12 @@ export class GetIssuerStatsUseCase {
     return {
       range,
       total,
+      // `Object.fromEntries` widens to `{ [k: string]: number }`; the map
+      // iterates every status value so the cast back to the exhaustive
+      // record is sound.
       byStatus: Object.fromEntries(
         CHECKOUT_SESSION_STATUS_VALUES.map((s) => [s, byStatus[s] ?? 0]),
-      ),
+      ) as Record<CheckoutSessionStatus, number>,
       conversionRate,
       daily,
     };

@@ -69,7 +69,7 @@ describeIfPg('PgNavHistoryRepository · case-insensitive token-address lookup (r
       tokenAddress,
       nav,
       apy: '3.69',
-      totalAum: null,
+      totalAum: undefined,
       yieldRate: '3.69',
       source: 'fred:DGS3MO',
       sourceType: 'api',

@@ -28,6 +28,7 @@ function emptyTaxEventRepo(): ITaxEventRepository {
     saveMany: vi.fn().mockResolvedValue(0),
     findByHolder: vi.fn().mockResolvedValue([]),
     hasInvestorActivity: vi.fn().mockResolvedValue(false),
+    hasCashRailActivity: vi.fn().mockResolvedValue(false),
     aggregateCounts: vi.fn().mockResolvedValue({
       Acquisition: 0,
       Disposition: 0,

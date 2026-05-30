@@ -24,9 +24,14 @@ const RPC_URL = import.meta.env.VITE_RPC_URL || 'https://sepolia-rollup.arbitrum
 let _publicClient: PublicClient | null = null
 export function getPublicClient(): PublicClient {
   if (!_publicClient) {
+    // `batch.multicall` folds concurrent v3.5 reads (Oracle.isFresh, NAV,
+    // registry lookups fired together) into a single Multicall3 aggregate —
+    // see the legacy provider for the full rationale. Multicall3 is at the
+    // canonical address on Arb Sepolia (viem resolves it from the chain def).
     _publicClient = createPublicClient({
       chain: arbitrumSepolia,
       transport: http(RPC_URL),
+      batch: { multicall: true },
     })
   }
   return _publicClient

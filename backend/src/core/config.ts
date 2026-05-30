@@ -85,6 +85,10 @@ const EnvSchema = z.object({
 
   // ReineiraOS Contract Addresses (Arb Sepolia)
   REINEIRA_ESCROW_ADDRESS: z.string().optional(),
+  // On-chain escrow contract surfaced in the public-escrow + withdrawal
+  // responses (`escrow_contract`). Optional — consumers fall back to '' when
+  // unset; declared here so the typed `getEnv()` access resolves.
+  ESCROW_CONTRACT_ADDRESS: z.string().optional(),
   PUSDC_WRAPPER_ADDRESS: z.string().optional(),
   SIMPLE_CONDITION_ADDRESS: z.string().optional(),
   CIRCLE_USDC_ADDRESS: z.string().optional(),

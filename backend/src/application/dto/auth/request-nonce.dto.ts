@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ethAddressSchema } from '@core/validator';
+import { ethAddressSchema } from '../../../core/validator.js';
 
 export const RequestNonceDtoSchema = z.object({
   wallet_address: ethAddressSchema,

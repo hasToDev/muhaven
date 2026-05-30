@@ -54,6 +54,27 @@ const showChrome = computed(() => !isLandingPage.value && !isLoginPage.value)
 const RIGHT_RAIL_PATHS = new Set<string>(['/cash', '/trade', '/agent'])
 const hasRightRail = computed(() => RIGHT_RAIL_PATHS.has(route.path))
 
+// WS-1 (PERF_RPC_ROUTEGUARD_PLAN.md) — pages cached across navigation by
+// <keep-alive>. D1 scope: Cash + Portfolio only (the rapid-nav RPC-429 hot
+// path). Matched by component `name` (set via defineOptions in each page).
+// Each page moves its mount-time fetch + polling-watcher arming to
+// onActivated/onDeactivated, so a backgrounded page stops polling and a
+// re-visit reactivates instantly (no re-mount, no re-fetch storm, no loader
+// flash) instead of re-storming the rate-limited public RPC.
+const KEEP_ALIVE_PAGES = ['PortfolioPage', 'CashPage']
+
+// Layout padding for the STABLE content wrapper below. The wrapper used to be
+// a per-route `:key`-ed div inside the transition; keeping it keyed would
+// destroy+recreate it on every nav and evict the keep-alive cache with it. A
+// single stable wrapper whose class tracks the current route's layout keeps
+// the cache alive. Mirrors the previous inline class ladder exactly.
+const contentWrapperClass = computed(() => {
+  const layout = route.meta.layout
+  if (layout === 'landing' || layout === 'login') return ''
+  if (layout === 'agent') return 'max-w-7xl mx-auto w-full px-6 sm:px-10 lg:px-12 pt-8 pb-3'
+  return 'max-w-7xl mx-auto w-full px-6 sm:px-10 lg:px-12 pt-8 pb-28 md:pb-16'
+})
+
 // Wave 5 Option D · C4 re-smoke — the global banner is a normal-flow strip
 // ABOVE <router-view>. On the viewport-locked `/agent` page (its chat column
 // is `height: calc(100vh - 2.75rem - …)`) the banner's added height would push
@@ -138,22 +159,26 @@ onMounted(() => {
           <ScopedSessionBanner />
         </div>
       </div>
-      <router-view v-slot="{ Component, route: viewRoute }">
-        <transition name="page" mode="out-in">
-          <div
-            :key="viewRoute.path"
-            :class="[
-              viewRoute.meta.layout === 'landing' || viewRoute.meta.layout === 'login'
-                ? ''
-                : viewRoute.meta.layout === 'agent'
-                  ? 'max-w-7xl mx-auto w-full px-6 sm:px-10 lg:px-12 pt-8 pb-3'
-                  : 'max-w-7xl mx-auto w-full px-6 sm:px-10 lg:px-12 pt-8 pb-28 md:pb-16',
-            ]"
-          >
-            <component :is="Component" />
-          </div>
-        </transition>
-      </router-view>
+      <!-- Stable layout wrapper: the max-width + padding live HERE (reactive to
+           the current route's layout) rather than on a per-nav keyed div, so
+           <keep-alive> can cache PortfolioPage / CashPage without the wrapper
+           teardown evicting the cache. Per-page enter/leave still animates via
+           the transition + the component's own `:key`. WS-1 in
+           development/DEV_WAVE_5/PERF_RPC_ROUTEGUARD_PLAN.md. -->
+      <div :class="contentWrapperClass">
+        <router-view v-slot="{ Component }">
+          <transition name="page" mode="out-in">
+            <keep-alive :include="KEEP_ALIVE_PAGES">
+              <!-- No `:key` — keep-alive then caches by component type (the
+                   canonical pattern). Each route is a distinct component, so
+                   the transition still fires on type change; a path key would
+                   only add a needless cached-instance swap and risk a future
+                   param route fragmenting the cache. -->
+              <component :is="Component" />
+            </keep-alive>
+          </transition>
+        </router-view>
+      </div>
     </main>
     <template v-if="showChrome">
       <AgentFAB />

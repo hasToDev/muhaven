@@ -338,6 +338,17 @@ export const usePortfolioStore = defineStore('portfolio', () => {
           prevBalanceByAddress.set(h.tokenAddress.toLowerCase(), h.decryptedBalance)
         }
       }
+      // Kick the (non-encrypted) USDC balance read off NOW so it overlaps the
+      // per-holding NAV reads instead of running serially after them — a
+      // wall-clock latency win. (It rides the legacy `provider` client while
+      // the NAV reads ride the v35 client, so the two don't share a multicall
+      // aggregate; the gain is parallelism, not a lower call count.)
+      // `.catch(noop)` only marks the promise handled so a holdings failure
+      // (which throws first) can't orphan it as an unhandledrejection; the real
+      // value + errors still propagate at the `await usdcPromise` below.
+      const usdcPromise = Erc20Service.balanceOf(addresses.usdc, walletAddress)
+      usdcPromise.catch(() => {})
+
       const holdingsWithMeta = await Promise.all(
         allPositions.map(async (pos) => {
           const tokenAddr = pos.token_address as `0x${string}`
@@ -368,10 +379,11 @@ export const usePortfolioStore = defineStore('portfolio', () => {
       )
       holdings.value = holdingsWithMeta
 
-      // Load USDC balance (non-encrypted, standard ERC-20). The mhUSDC
-      // confidential balance stays null until the user clicks "Decrypt" —
-      // same opt-in pattern as fhERC-20 holdings.
-      usdcBalance.value = await Erc20Service.balanceOf(addresses.usdc, walletAddress)
+      // USDC balance (non-encrypted, standard ERC-20) — kicked off above so it
+      // runs in parallel with the NAV reads. The mhUSDC confidential balance
+      // stays null until the user clicks "Decrypt" (same opt-in pattern as
+      // fhERC-20 holdings).
+      usdcBalance.value = await usdcPromise
 
       loaded.value = true
     } catch (e) {

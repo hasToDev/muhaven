@@ -8,6 +8,7 @@ import { createPublicClient, http, encodeFunctionData } from 'viem'
 import { arbitrumSepolia } from 'viem/chains'
 import { useWalletStore } from '@/stores/wallet'
 import { WalletNotConnectedError, ContractReadError, UserOpError, DecryptPendingError } from './errors'
+import { dedupe, contractReadKey } from '../readCache'
 import type { TxHash } from './types'
 
 const RPC_URL = import.meta.env.VITE_RPC_URL || 'https://sepolia-rollup.arbitrum.io/rpc'
@@ -16,7 +17,16 @@ const RPC_URL = import.meta.env.VITE_RPC_URL || 'https://sepolia-rollup.arbitrum
 let _publicClient: ReturnType<typeof createPublicClient> | null = null
 function getPublicClient() {
   if (!_publicClient) {
-    _publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(RPC_URL) })
+    // `batch.multicall` collapses concurrent eth_calls in the same tick into a
+    // single Multicall3 aggregate call — the portfolio auto-discovery walk
+    // (~11 encryptedBalanceOf reads + per-holding NAV) folds into 1–2 RPC
+    // round-trips instead of one HTTP POST each. Multicall3 lives at the
+    // canonical 0xcA11…CA11 on Arb Sepolia (viem reads it from the chain def).
+    _publicClient = createPublicClient({
+      chain: arbitrumSepolia,
+      transport: http(RPC_URL),
+      batch: { multicall: true },
+    })
   }
   return _publicClient
 }
@@ -33,12 +43,19 @@ export async function contractRead<TAbi extends readonly unknown[]>(
   contractName = 'Contract',
 ): Promise<unknown> {
   try {
-    return await getPublicClient().readContract({
-      address,
-      abi: abi as any,
-      functionName,
-      args,
-    })
+    // In-flight de-dup: concurrent identical reads (same address+fn+args)
+    // fired during a nav burst share one eth_call instead of stacking. No
+    // staleness window — the entry drops the instant the read settles, so the
+    // next call re-fetches. Multicall batches DIFFERENT reads in a tick; this
+    // collapses DUPLICATE ones across overlapping callers.
+    return await dedupe(contractReadKey(address, functionName, args), () =>
+      getPublicClient().readContract({
+        address,
+        abi: abi as any,
+        functionName,
+        args,
+      }),
+    )
   } catch (e) {
     throw new ContractReadError(contractName, functionName, e)
   }

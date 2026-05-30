@@ -21,12 +21,10 @@ import { getEnv } from '../../../../../../src/core/config.js';
 import { container } from '../../../../../../src/infrastructure/container.js';
 import { deployEventBus, type DeployEvent } from '../../../../../../src/infrastructure/onboarding/deploy-event-bus.js';
 
-interface RawResponse extends VercelResponse {
-  write(chunk: string): boolean;
-  end(): void;
-  flushHeaders?: () => void;
-}
-
+// `VercelResponse` already extends Node's `ServerResponse`, so `write`,
+// `end`, and `flushHeaders` are all present — no narrowing wrapper needed
+// (a previous `RawResponse extends VercelResponse` re-declaration clashed
+// with @vercel/node v5's stricter overload set).
 async function authenticate(
   req: VercelRequest,
 ): Promise<{ userId: string; role: string } | null> {
@@ -105,7 +103,7 @@ export default async function handler(
     return;
   }
 
-  const raw = res as RawResponse;
+  const raw = res;
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');

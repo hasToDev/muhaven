@@ -163,7 +163,6 @@ describe('OperatorAlertPayloadSchema — wire-boundary parse', () => {
     expect(() =>
       OperatorAlertPayloadSchema.parse({
         ...payload(),
-        // @ts-expect-error — exercising runtime guard
         severity: 'critical',
       }),
     ).toThrow();
@@ -182,7 +181,6 @@ describe('OperatorAlertPayloadSchema — wire-boundary parse', () => {
     expect(() =>
       OperatorAlertPayloadSchema.parse({
         ...payload(),
-        // @ts-expect-error — exercising runtime guard
         epochId: 42,
       }),
     ).toThrow();
