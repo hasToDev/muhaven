@@ -1224,6 +1224,29 @@ export const agentToolsApi = {
       auth: true,
     })
   },
+  /**
+   * Wave 5 Slice 3 — mint a hash-bound rebalance confirm token over EXPLICIT
+   * legs. The browser computes the legs client-side (drift = decrypted
+   * balances × public NAV vs. saved targets — see `useRebalance.ts`) and
+   * passes them here; the backend hashes the legs into the confirm token so
+   * the ConfirmModal preview + audit-commit are cryptographically pinned to
+   * exactly what the user approves. (Calling propose_rebalance with NO legs
+   * returns a client-compute directive instead — handled in `useAgentChat`.)
+   */
+  proposeRebalance(args: {
+    legs: Array<{
+      kind: 'sell' | 'buy'
+      tokenAddress: string
+      shares: string
+      maxSharesHint?: string
+    }>
+  }): Promise<ActionDescriptor> {
+    return request('/agent/tools/propose_rebalance', {
+      method: 'POST',
+      body: args,
+      auth: true,
+    })
+  },
   pause(args: { surface?: Surface }): Promise<ActionDescriptor> {
     return request('/agent/tools/pause', {
       method: 'POST',

@@ -153,8 +153,17 @@ export const ProposeRebalanceLegSchema = z
 export const ProposeRebalanceDtoSchema = z
   .object({
     /** ≤8 legs per intent — practical Arb Sepolia ceiling for atomic
-     *  policy-engine validation. The frontend signs each leg sequentially. */
-    legs: z.array(ProposeRebalanceLegSchema).min(1).max(8),
+     *  policy-engine validation. The frontend signs all legs in ONE
+     *  silent UserOp (Wave 5 Slice 3).
+     *
+     *  OPTIONAL by design: when `legs` is omitted, the call is a
+     *  "rebalance toward my saved targets" DIRECTIVE — the dashboard (which
+     *  alone holds the decrypt permit) computes the legs client-side from
+     *  the user's encrypted balances × public NAV vs. their stored target
+     *  allocations, then re-calls this tool with the computed `legs`. The
+     *  LLM must NEVER invent leg amounts — it cannot read encrypted
+     *  balances. See `propose-rebalance.use-case.ts`. */
+    legs: z.array(ProposeRebalanceLegSchema).min(1).max(8).optional(),
   })
   .strict();
 
@@ -333,6 +342,25 @@ export interface ClaimActionDescriptor extends ActionDescriptorBase {
     distributionId: number;
   };
 }
+
+/**
+ * Wave 5 Slice 3 — returned by `muhaven_propose_rebalance` when called with
+ * NO `legs` (the "rebalance toward my saved targets" request). This is NOT a
+ * confirm-able ActionDescriptor (no confirm token, no hash-bound legs): the
+ * legs aren't known server-side. The frontend recognises the `directive`,
+ * computes the legs from the user's decrypt permit, then re-calls the tool
+ * with explicit `legs` to mint the real hash-bound RebalanceActionDescriptor.
+ */
+export interface RebalanceComposerDirective {
+  tool: 'muhaven_propose_rebalance';
+  directive: 'open_rebalance_composer';
+  mode: 'toward_targets';
+  explanation: string;
+}
+
+export type ProposeRebalanceResult =
+  | RebalanceActionDescriptor
+  | RebalanceComposerDirective;
 
 export interface RebalanceActionDescriptor extends ActionDescriptorBase {
   kind: 'rebalance';

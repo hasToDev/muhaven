@@ -254,6 +254,12 @@ export const useAgentStore = defineStore('agent', () => {
     return chat.consumePendingTelegramLink()
   }
 
+  /** Wave 5 Slice 3 — drain the "rebalance toward my targets" directive so
+   *  AgentPage launches the client-side composer exactly once. */
+  function consumeRebalanceDirective() {
+    return chat.consumeRebalanceDirective()
+  }
+
   function openWithPrompt(prompt: string): void {
     pendingPrompt.value = prompt
   }
@@ -278,10 +284,12 @@ export const useAgentStore = defineStore('agent', () => {
     streamingText: chat.streamingText,
     pendingActions: chat.pendingActions,
     pendingTelegramLink: chat.pendingTelegramLink,
+    pendingRebalanceDirective: chat.pendingRebalanceDirective,
     lastError: chat.lastError,
     pendingPrompt,
     consumePendingAction,
     consumePendingTelegramLink,
+    consumeRebalanceDirective,
     sendMessage,
     openWithPrompt,
     consumePrompt,

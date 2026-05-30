@@ -9,6 +9,7 @@ import { renderMarkdownSafe, renderMarkdownStreaming } from '@/lib/markdown'
 import ActionCard from '@/components/agent/ActionCard.vue'
 import ConfirmModal from '@/components/agent/ConfirmModal.vue'
 import { runAgentAction } from '@/composables/useAgentActionRunner'
+import { useRebalanceLauncher } from '@/composables/useRebalanceLauncher'
 import { useOpenClawIntentEvents } from '@/composables/useOpenClawIntentEvents'
 import type { ActionDescriptor } from '@/services/api'
 import { openClawApi, portfolioApi } from '@/services/api'
@@ -326,6 +327,32 @@ watch(
   },
 )
 
+// ── Wave 5 Slice 3 — "rebalance toward my targets" launcher ──────────
+//
+// When `muhaven_propose_rebalance` is called with no legs, the backend
+// returns a directive (not a confirm-able descriptor). The dashboard — the
+// only place with the decrypt permit — computes the legs from the user's
+// encrypted balances × public NAV vs. their saved targets, mints the
+// hash-bound confirm token via `proposeRebalance(legs)`, and opens the same
+// ConfirmModal the explicit-legs / CTA paths use. Non-leg outcomes
+// (already-balanced / no-targets / nothing-to-rebalance) surface as toasts.
+const rebalanceLauncher = useRebalanceLauncher()
+
+// Drain the chat directive exactly once per emission → launch the composer.
+// On legs, the shared launcher hands back the hash-bound descriptor and we
+// open the SAME ConfirmModal the explicit-legs path uses.
+watch(
+  () => agentStore.pendingRebalanceDirective,
+  (directive) => {
+    if (!directive) return
+    agentStore.consumeRebalanceDirective()
+    const addr = walletAddress.value as `0x${string}` | undefined
+    void rebalanceLauncher.launch(addr ?? null, (descriptor) => {
+      activeAction.value = descriptor
+    })
+  },
+)
+
 function onConfirmComplete(payload: {
   action: ActionDescriptor
   ok: boolean
@@ -392,6 +419,17 @@ function onConfirmComplete(payload: {
         console.warn('[AgentPage] post-buy portfolio refresh failed', e)
       }
     })()
+  }
+
+  // Wave 5 Slice 3 — a rebalance moved multiple holdings (+ mhUSDC) in one
+  // tx. Refresh the portfolio so /portfolio + the glance bar reflect the new
+  // weights; refreshAfterTrade re-decrypts the revealed holdings. Fire-and-
+  // forget — a refresh failure must not mask the success.
+  if (payload.ok === true && payload.action.kind === 'rebalance' && walletAddress.value) {
+    const addr = walletAddress.value as `0x${string}`
+    void portfolio.refreshAfterTrade(addr).catch((e) => {
+      console.warn('[AgentPage] post-rebalance portfolio refresh failed', e)
+    })
   }
 }
 

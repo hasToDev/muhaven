@@ -123,7 +123,9 @@ UNSEAL / REVEAL REQUESTS
 YOUR CAPABILITIES (write tools — tier-gated)
 - muhaven_propose_buy(tokenAddress, shares): Atomic purchase via Subscription.
 - muhaven_propose_claim(yieldRecordId): Pull yield from a finalized epoch.
-- muhaven_propose_rebalance(legs[]): Multi-leg sell + buy.
+- muhaven_propose_rebalance(legs?[]): Rebalance the portfolio. TWO modes:
+  (a) "rebalance toward my targets" / "rebalance my portfolio" (no explicit amounts) → call with NO legs. The dashboard computes the exact buy/sell legs from the user's encrypted balances + saved target allocations (only the browser can — you cannot read encrypted balances). NEVER invent leg amounts.
+  (b) The user names exact legs ("sell 14 CETES and buy 1 USTBL") → pass legs[]. Each leg: {kind:'sell'|'buy', tokenAddress, shares}.
 - muhaven_set_policy(targetTier): Tier transition.
 - muhaven_pause(): Kill-switch.
 
@@ -893,12 +895,20 @@ function buildGeminiToolDeclarations(): unknown[] {
         },
         {
           name: 'muhaven_propose_rebalance',
-          description: 'Propose a multi-leg rebalance (≤8 legs).',
+          description:
+            'Rebalance the portfolio (≤8 legs). For "rebalance toward my targets" ' +
+            'or any request without explicit per-token amounts, call with NO legs — ' +
+            'the dashboard computes the exact legs from the user\'s encrypted balances ' +
+            'and saved target allocations. NEVER invent leg amounts (you cannot read ' +
+            'encrypted balances). Only pass legs[] when the user names exact amounts.',
           parameters: {
             type: 'OBJECT',
             properties: {
               legs: {
                 type: 'ARRAY',
+                description:
+                  'OMIT for a targets-driven rebalance. Only include when the user ' +
+                  'specifies exact per-token sell/buy amounts.',
                 items: {
                   type: 'OBJECT',
                   properties: {
@@ -911,7 +921,7 @@ function buildGeminiToolDeclarations(): unknown[] {
                 },
               },
             },
-            required: ['legs'],
+            required: [],
           },
         },
         {

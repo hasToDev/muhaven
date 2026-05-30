@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { ShieldCheck, Lock, X, Loader2, AlertTriangle, AlertCircle, ExternalLink, ArrowRight, Send } from 'lucide-vue-next'
+import { ShieldCheck, Lock, X, Loader2, AlertTriangle, AlertCircle, ExternalLink, ArrowRight, ArrowDownRight, ArrowUpRight, Send } from 'lucide-vue-next'
 import {
   agentToolsApi,
   checkoutAgentApi,
@@ -14,8 +14,43 @@ import {
   type DistributeProgressPhase,
 } from '@/composables/useAgentDistributeProgress'
 import { formatMhUsdcBigInt } from '@/lib/money'
+import { useMarketplaceStore } from '@/stores/marketplace'
 
 const router = useRouter()
+const marketplace = useMarketplaceStore()
+
+/**
+ * Wave 5 Slice 3 — per-leg view for the rebalance preview. `preview.legs`
+ * MUST stay byte-identical to the hash-bound `actionPayload.legs` (kind,
+ * tokenAddress, shares, maxSharesHint) — so the symbol is resolved from the
+ * marketplace store for DISPLAY only, never added to the echoed payload (that
+ * would 403 the commit hash check). The launcher (`useRebalance`) loads the
+ * marketplace store before the modal opens; an unresolved token falls back to
+ * a short address.
+ */
+interface RebalanceLegView {
+  kind: 'sell' | 'buy'
+  symbol: string
+  shares: string
+}
+const rebalanceLegs = computed<RebalanceLegView[]>(() => {
+  if (props.action?.kind !== 'rebalance') return []
+  const legs =
+    (props.action.preview.legs as
+      | Array<{ kind: string; tokenAddress: string; shares: string }>
+      | undefined) ?? []
+  return legs.map((l) => {
+    const meta = marketplace.getByAddress(l.tokenAddress)
+    return {
+      kind: l.kind === 'sell' ? 'sell' : 'buy',
+      symbol: meta?.symbol ?? `${l.tokenAddress.slice(0, 6)}…${l.tokenAddress.slice(-4)}`,
+      shares: String(l.shares),
+    }
+  })
+})
+const rebalancePrivacyNote = computed(() =>
+  props.action?.kind === 'rebalance' ? String(props.action.preview.privacyNote ?? '') : '',
+)
 
 /**
  * Wave 4 P2 — per-action confirmation modal with cleartext preview.
@@ -463,12 +498,30 @@ async function reportResult(
       return
     }
     // Closes the propose → confirm → commit loop.
+    //
+    // Wave 5 Slice 3 — stamp a `rebalanceCycleId` into the audit metadata so
+    // the multi-leg cycle is correlated by a single handle (mirrors
+    // reinvest_cycle_executed). The legs themselves are already in the
+    // hash-bound actionPayload + the single txHash; the cycle id is the
+    // human-friendly correlation key. The commit use-case persists request
+    // `metadata` into the PermitGranted audit row (no backend change).
+    const commitMetadata =
+      props.action.kind === 'rebalance'
+        ? {
+            rebalanceCycleId:
+              typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+                ? crypto.randomUUID()
+                : `rb_${Date.now()}`,
+            legCount: rebalanceLegs.value.length,
+          }
+        : undefined
     await agentToolsApi.commit({
       surface: 'havenbot',
       actionKind: actionKind(props.action),
       actionPayload: extractActionPayload(props.action),
       confirmToken: props.action.confirmTokenId,
       txHash: payload.txHash ?? null,
+      ...(commitMetadata ? { metadata: commitMetadata } : {}),
     })
     status.value = 'success'
     emit('complete', { action: props.action, ok: true, txHash: payload.txHash ?? null })
@@ -632,12 +685,9 @@ const previewRows = computed(() => {
         { label: 'Escrow ID', value: String(props.action.preview.onChainEscrowId ?? '—') },
       ]
     case 'rebalance':
-      return [
-        {
-          label: 'Legs',
-          value: `${(props.action.preview.legs as unknown[] | undefined)?.length ?? 0}`,
-        },
-      ]
+      // Rendered by the dedicated leg-list block below (richer than a
+      // key/value row), so the generic preview table stays empty here.
+      return []
     case 'set_policy':
       return [
         { label: 'Surface', value: String(props.action.preview.surface) },
@@ -794,6 +844,7 @@ const arbiscanUrl = computed(() =>
 
         <!-- Preview rows (cleartext only — encrypted handles never shown) -->
         <dl
+          v-if="previewRows.length"
           class="rounded-xl border border-haze dark:border-white/10
                  bg-mist/40 dark:bg-[#0d0e10] overflow-hidden mb-5"
         >
@@ -811,6 +862,51 @@ const arbiscanUrl = computed(() =>
             </dd>
           </div>
         </dl>
+
+        <!-- Wave 5 Slice 3 — rebalance leg list. One silent atomic UserOp
+             (sells first). Sell = warm-amber down, buy = positive up. -->
+        <div
+          v-if="action.kind === 'rebalance' && rebalanceLegs.length"
+          role="list"
+          aria-label="Rebalance legs, sells first"
+          data-testid="agent-confirm-rebalance-legs"
+          class="rounded-xl border border-haze dark:border-white/10
+                 bg-mist/40 dark:bg-[#0d0e10] overflow-hidden mb-5"
+        >
+          <div
+            v-for="(leg, i) in rebalanceLegs"
+            :key="`${leg.kind}-${leg.symbol}-${i}`"
+            role="listitem"
+            :data-testid="`agent-confirm-rebalance-leg-${i}`"
+            class="flex items-center justify-between px-4 py-3
+                   border-b border-haze dark:border-white/5 last:border-b-0"
+          >
+            <span
+              class="inline-flex items-center gap-1.5 font-sans text-[10px] uppercase
+                     tracking-[0.18em] font-semibold flex-shrink-0"
+              :class="leg.kind === 'sell' ? 'text-gold dark:text-signal' : 'text-positive'"
+            >
+              <component
+                :is="leg.kind === 'sell' ? ArrowDownRight : ArrowUpRight"
+                :size="13"
+                :stroke-width="2.2"
+                aria-hidden="true"
+              />
+              {{ leg.kind }}
+            </span>
+            <span class="font-mono text-sm text-midnight dark:text-white truncate ml-3 min-w-0">
+              {{ leg.shares }} {{ leg.symbol }}
+            </span>
+          </div>
+        </div>
+
+        <p
+          v-if="action.kind === 'rebalance' && rebalancePrivacyNote"
+          class="font-sans text-xs text-cool leading-relaxed -mt-2 mb-5"
+          data-testid="agent-confirm-rebalance-note"
+        >
+          {{ rebalancePrivacyNote }}
+        </p>
 
         <!-- Privacy strip -->
         <div

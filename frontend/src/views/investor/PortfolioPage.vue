@@ -7,6 +7,7 @@ import MFaucetBanner from '@/components/ui/MFaucetBanner.vue'
 import MButton from '@/components/ui/MButton.vue'
 import MPageLoader from '@/components/ui/MPageLoader.vue'
 import PortfolioDonut from '@/components/charts/PortfolioDonut.vue'
+import RebalancePanel from '@/components/portfolio/RebalancePanel.vue'
 import { getPublicClient } from '@/services/v35/context'
 import { erc20Abi, muHavenTokenAbi } from '@/contracts/abis'
 import { addresses, v35Addresses, isZeroAddress } from '@/contracts/addresses'
@@ -957,6 +958,11 @@ const showBlurredAllocation = computed(() =>
           Retry
         </button>
       </div>
+
+      <!-- ══════════════════════════════════════════════════════════
+           Auto-rebalance (Wave 5 Slice 3) — targets editor + CTA
+           ══════════════════════════════════════════════════════════ -->
+      <RebalancePanel :wallet-address="address ?? null" />
 
       <!-- ══════════════════════════════════════════════════════════
            Holdings

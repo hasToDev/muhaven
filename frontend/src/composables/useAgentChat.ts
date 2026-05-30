@@ -32,7 +32,13 @@ export interface UseAgentChat {
    *  result lands; AgentPage mounts LinkTelegramModal with this
    *  prefetched data. Cleared via `consumePendingTelegramLink()`. */
   pendingTelegramLink: Ref<TelegramLinkIssueResponse | null>
+  /** Wave 5 Slice 3 — set when `muhaven_propose_rebalance` returns the
+   *  "rebalance toward my targets" directive (no legs). AgentPage watches
+   *  this and launches the client-side rebalance composer. Cleared via
+   *  `consumeRebalanceDirective()`. */
+  pendingRebalanceDirective: Ref<{ toolCallId: string } | null>
   consumePendingTelegramLink: () => TelegramLinkIssueResponse | null
+  consumeRebalanceDirective: () => { toolCallId: string } | null
   consumePendingAction: (toolCallId: string) => ActionDescriptor | null
   /** Returns the final accumulated text + any ActionDescriptors emitted +
    * a count of tool_result events seen on this turn + the suggestions
@@ -65,11 +71,35 @@ export function useAgentChat(): UseAgentChat {
   const lastError = ref<string | null>(null)
   const pendingActions = ref<ActionDescriptor[]>([])
   const pendingTelegramLink = ref<TelegramLinkIssueResponse | null>(null)
+  // Wave 5 Slice 3 — "rebalance toward my targets" directive. The backend
+  // tool returns this (NOT a confirm-able ActionDescriptor) when called with
+  // no legs; the dashboard computes the legs under the user's decrypt permit
+  // and re-proposes. AgentPage watches this ref and launches the composer.
+  const pendingRebalanceDirective = ref<{ toolCallId: string } | null>(null)
 
   function consumePendingTelegramLink(): TelegramLinkIssueResponse | null {
     const v = pendingTelegramLink.value
     pendingTelegramLink.value = null
     return v
+  }
+
+  function consumeRebalanceDirective(): { toolCallId: string } | null {
+    const v = pendingRebalanceDirective.value
+    pendingRebalanceDirective.value = null
+    return v
+  }
+
+  function isRebalanceComposerDirective(value: unknown): value is {
+    tool: 'muhaven_propose_rebalance'
+    directive: 'open_rebalance_composer'
+    mode: 'toward_targets'
+  } {
+    if (!value || typeof value !== 'object') return false
+    const v = value as Record<string, unknown>
+    return (
+      v.tool === 'muhaven_propose_rebalance'
+      && v.directive === 'open_rebalance_composer'
+    )
   }
 
   function isLinkTelegramResult(value: unknown): value is {
@@ -197,6 +227,12 @@ export function useAgentChat(): UseAgentChat {
         if (event.ok && event.result && isActionDescriptor(event.result)) {
           pendingActions.value.push(event.result)
           turnActions.push(event.result)
+        } else if (event.ok && event.result && isRebalanceComposerDirective(event.result)) {
+          // Wave 5 Slice 3 — surface the directive so AgentPage launches the
+          // client-side rebalance composer (compute legs → proposeRebalance →
+          // ConfirmModal). Not pushed to pendingActions (it's not a
+          // confirm-able descriptor — no hash-bound legs yet).
+          pendingRebalanceDirective.value = { toolCallId: event.toolCallId }
         } else if (event.ok && event.result && isLinkTelegramResult(event.result)) {
           // Q4 Part B — the muhaven_link_telegram tool result mounts
           // LinkTelegramModal with the prefetched code (rather than
@@ -241,6 +277,7 @@ export function useAgentChat(): UseAgentChat {
     lastError.value = null
     pendingActions.value = []
     pendingTelegramLink.value = null
+    pendingRebalanceDirective.value = null
   }
 
   return {
@@ -249,7 +286,9 @@ export function useAgentChat(): UseAgentChat {
     lastError,
     pendingActions,
     pendingTelegramLink,
+    pendingRebalanceDirective,
     consumePendingTelegramLink,
+    consumeRebalanceDirective,
     consumePendingAction,
     send,
     abort,

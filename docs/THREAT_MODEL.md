@@ -197,6 +197,43 @@ the kernel calldata (not just the hash) to re-derive + bind, a protocol change
 deferred. The `reinvest_cycle_executed` audit row is **broker-asserted**
 provenance (not platform-verified); the on-chain tx is the authoritative record.
 
+### 5.2 In-app rebalance (Wave 5 Slice 3 — user-in-the-loop, in-browser)
+
+Unlike the headless reinvest runner (§5.1), the in-app rebalance is **user-
+initiated and runs entirely in the browser** under the user's decrypt permit, so
+its trust posture is closer to a manual buy/sell than to an autonomous spend:
+
+- **Drift is computed client-side only.** The browser decrypts the user's own
+  per-token balances (`decryptForView`) × public NAV vs. the user's saved target
+  allocations. No encrypted balance or ciphertext handle ever reaches the backend
+  or the LLM (privacy invariant R-8 holds — the LLM that triggers the
+  `toward_targets` directive is explicitly told it cannot read balances and must
+  never invent leg amounts).
+- **Disclosure boundary = same as a manual trade.** The computed legs (cleartext
+  integer share counts) are sent to `/agent/tools/propose_rebalance` and hashed
+  into a single-use confirm token; the user reviews + approves the exact rendered
+  legs in the ConfirmModal. This is identical disclosure to authorising a manual
+  `buy`/`sell` — the agent/server sees the user-approved cleartext legs, never the
+  balances behind them.
+- **Execution envelope.** All legs settle in ONE atomic UserOp via the in-tab
+  Scoped session key, using ONLY `subscription.purchase`/`redeem` (+ the mhUSDC
+  `setOperator` grant) — all already in `SESSION_PERMISSIONS`. `muHavenToken.transfer`
+  stays EXCLUDED (T-2), so a rebalance can never move RWA shares to an arbitrary
+  address. The runner re-validates the hash-bound legs (`parseRebalanceLegs`) and
+  hardcodes every on-chain target (never reads an address from the descriptor), so
+  a tampered descriptor can at worst alter token/shares within the Subscription —
+  which the user-approved preview + the commit hash check + the on-chain
+  KYC/registration gates already bound.
+- **Target allocations are cleartext** (localStorage v0) — a `%` mix is not
+  sensitive; only balances are confidential, and those are read client-side, never
+  persisted. A tampered targets blob is re-validated at compute AND round-tripped
+  through the hash-bound propose, so the worst case is a different *but still
+  user-approved* rebalance.
+- **Atomicity caveat surfaced, not silent:** a sell over the instant-redeem cap
+  escalates to the redemption queue (proceeds settle later), so the dashboard
+  refuses a mixed sell+buy batch in that case rather than letting dependent buys
+  silent-fail — the user is told to run the large sell on its own first.
+
 ---
 
 ## 6. Future Privacy Enhancements

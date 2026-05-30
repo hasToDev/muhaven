@@ -3,10 +3,12 @@ import {
   YieldSnapshotClient,
   RATE_SCALE,
   tokenRegistryAbi,
+  muhavenSubscriptionAbi,
+  muHavenStableAbi,
   // RedemptionQueueClient — not yet wired into agent claim path; see Wave 5 follow-up note.
 } from '@muhaven/sdk'
 import type { ProgressCallback } from '@muhaven/sdk'
-import type { Address, Hash } from 'viem'
+import { encodeFunctionData, type Address, type Hash } from 'viem'
 import { v35Addresses, isZeroAddress } from '@/contracts/addresses'
 import { buildWriteContext } from '@/services/v35/context'
 import { useFhe } from '@/composables/useFhe'
@@ -101,11 +103,10 @@ export async function runAgentAction(action: ActionDescriptor): Promise<RunResul
           reason: 'Claim ceremony lives on /yields. Continue there to settle.',
         }
       case 'rebalance':
-        // Wave 5 multi-leg.
-        return {
-          ok: false,
-          error: 'Rebalance ceremony lands in Wave 5 — please use /trade for now.',
-        }
+        // Wave 5 Slice 3 — all legs settle in ONE silent atomic UserOp via
+        // the in-tab Scoped session key (sells before buys). Returns the
+        // UserOp tx hash for the audit-commit POST.
+        return { ok: true, txHash: await runRebalance(action) }
       case 'set_policy': {
         // Wave 4 Q1 — /agent/policy/transition owns the passkey-bound tier
         // transition + session-key reveal flow (closes §3e⁶
@@ -289,6 +290,168 @@ async function runBuy(action: ActionDescriptor): Promise<string> {
 
   const hash = await sub.purchase(tokenAddress, shares, maxSharesHint, ephemeralEOA)
   return hash
+}
+
+/**
+ * Wave 5 Slice 3 — execute a multi-leg rebalance as ONE silent atomic UserOp.
+ *
+ * Mirrors `runBuy`'s encrypt-then-submit shape, but instead of one
+ * `SubscriptionClient.purchase` (which sends its own UserOp), it encrypts
+ * every leg and hand-builds a `calls[]` array submitted via ONE
+ * `wallet.sendUserOperation(calls)`. Because every call targets the
+ * Subscription (`purchase`/`redeem`) or mhUSDC (`setOperator`) — all in
+ * `SESSION_PERMISSIONS` — the provider routes the whole batch to the in-tab
+ * Scoped session kernel and signs it silently (first-ever session op fires
+ * one enableSig passkey; silent after). Sells are ordered before buys so the
+ * sell proceeds credit mhUSDC in-batch before the buy legs spend it.
+ *
+ * The legs come from `action.preview.legs`, which the backend hashes into the
+ * confirm token — the commit POST 403s on any drift. Since the runner fires
+ * BEFORE the commit, we ALSO re-validate the legs structurally here and
+ * hardcode every on-chain target (never trust an address from the descriptor)
+ * so a tampered descriptor can't retarget the kernel or smuggle a non-buy/sell
+ * selector — the same H-1/H-2 posture as `dispatchActionTxs`.
+ */
+
+/** Matches the backend `ProposeRebalanceDtoSchema` `.max(8)` + kernel batch ceiling. */
+export const MAX_REBALANCE_LEGS = 8
+
+export interface RebalanceLegSpec {
+  kind: 'sell' | 'buy'
+  tokenAddress: Address
+  shares: bigint
+  maxSharesHint: bigint
+}
+
+/**
+ * Re-validate the hash-bound `preview.legs` into typed leg specs (mirror of
+ * `dispatchActionTxs`'s H-1/H-2 posture). Pure + exported so the
+ * tampered-descriptor rejection is directly unit-tested. Throws
+ * `AgentActionRunnerError` on any structural violation; the on-chain TARGET
+ * (Subscription) is hardcoded by the caller and never read from a leg, so a
+ * tampered descriptor can at worst alter token/shares within the
+ * Subscription — and that would 403 the commit hash check.
+ */
+export function parseRebalanceLegs(rawLegs: unknown): RebalanceLegSpec[] {
+  if (!Array.isArray(rawLegs) || rawLegs.length === 0) {
+    throw new AgentActionRunnerError('Rebalance descriptor carries no legs.')
+  }
+  if (rawLegs.length > MAX_REBALANCE_LEGS) {
+    throw new AgentActionRunnerError(
+      `Rebalance exceeds the ${MAX_REBALANCE_LEGS}-leg limit (${rawLegs.length}).`,
+    )
+  }
+  return rawLegs.map((raw, i) => {
+    const leg = (raw ?? {}) as Record<string, unknown>
+    if (leg.kind !== 'sell' && leg.kind !== 'buy') {
+      throw new AgentActionRunnerError(`Rebalance leg ${i}: kind must be 'sell' or 'buy'.`)
+    }
+    const tokenAddress = leg.tokenAddress
+    if (typeof tokenAddress !== 'string' || !/^0x[a-fA-F0-9]{40}$/.test(tokenAddress)) {
+      throw new AgentActionRunnerError(`Rebalance leg ${i}: invalid tokenAddress.`)
+    }
+    const sharesStr = String(leg.shares)
+    const hintStr = String(leg.maxSharesHint ?? leg.shares)
+    if (!/^\d+$/.test(sharesStr) || !/^\d+$/.test(hintStr)) {
+      throw new AgentActionRunnerError(
+        `Rebalance leg ${i}: shares/maxSharesHint must be positive integers.`,
+      )
+    }
+    const shares = BigInt(sharesStr)
+    const maxSharesHint = BigInt(hintStr)
+    if (shares <= 0n) throw new AgentActionRunnerError(`Rebalance leg ${i}: shares must be > 0.`)
+    if (shares > maxSharesHint) {
+      throw new AgentActionRunnerError(
+        `Rebalance leg ${i}: shares (${shares}) > maxSharesHint (${maxSharesHint}).`,
+      )
+    }
+    return { kind: leg.kind, tokenAddress: tokenAddress as Address, shares, maxSharesHint }
+  })
+}
+
+async function runRebalance(action: ActionDescriptor): Promise<string> {
+  if (action.kind !== 'rebalance') throw new AgentActionRunnerError('not a rebalance')
+  if (isZeroAddress(v35Addresses.subscription)) {
+    throw new AgentActionRunnerError('Subscription not deployed in this environment.')
+  }
+
+  // ── Re-validate the hash-bound legs (mirror dispatchActionTxs H-1/H-2) ──
+  const legs = parseRebalanceLegs((action.preview as { legs?: unknown }).legs)
+
+  // Sells before buys — proceeds credit mhUSDC in-batch before buys spend it.
+  // The plan already emits sells-first, so this is a DEFENSIVE re-assert (a
+  // reordered descriptor can't break the funding invariant). Execution order
+  // doesn't affect the confirm-token hash, so this never causes a commit 403.
+  legs.sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'sell' ? -1 : 1))
+
+  const fhe = useFhe()
+  await fhe.initialize?.()
+  const ephemeralEOA = fhe.getEphemeralEOA()
+  if (!ephemeralEOA) {
+    throw new AgentActionRunnerError('Ephemeral EOA missing — initialize FHE first.')
+  }
+  const { useWalletStore } = await import('@/stores/wallet')
+  const wallet = useWalletStore()
+  const kernelAddress = wallet.address as Address | null
+  if (!kernelAddress) {
+    throw new AgentActionRunnerError('No connected kernel address — sign in first.')
+  }
+
+  const subscription = v35Addresses.subscription
+  const calls: { to: `0x${string}`; data: `0x${string}` }[] = []
+
+  // mhUSDC operator grant on the Subscription — buy legs pull mhUSDC via
+  // confidentialTransferFrom (mirrors runBuy's setOperator). Sells burn via
+  // the Subscription's contract-level role and need no per-user grant. We add
+  // it IN-BATCH as the first call (idempotent long-expiry) so the whole
+  // rebalance is one atomic UserOp; `setOperator` is in SESSION_PERMISSIONS so
+  // the batch stays in silent session scope.
+  const hasBuyLeg = legs.some((l) => l.kind === 'buy')
+  if (hasBuyLeg) {
+    if (isZeroAddress(v35Addresses.muHavenStable)) {
+      throw new AgentActionRunnerError('mhUSDC wrapper not configured — cannot fund buy legs.')
+    }
+    const expiry = BigInt(Math.floor(Date.now() / 1000) + OPERATOR_EXPIRY_SECONDS)
+    calls.push({
+      to: v35Addresses.muHavenStable,
+      data: encodeFunctionData({
+        // `abi as any` mirrors zeroDevSender's pattern — viem's strict arg
+        // inference (uint48 `until`, the InEuint128 tuple's `0x`-bytes
+        // `signature`) fights the runtime-correct shapes the SDK already uses.
+        abi: muHavenStableAbi as any,
+        functionName: 'setOperator',
+        args: [subscription, expiry],
+      }),
+    })
+  }
+
+  // Encrypt + encode each leg. Sequential — the cofhe client isn't built for
+  // concurrent encryptInputs and ≤8 legs is a small loop. Encryption is bound
+  // to the kernel (senderAccount) so the on-chain FHE.asEuint128 verifier
+  // signer matches msg.sender (the kernel), per services/v35/context.ts.
+  for (const leg of legs) {
+    const enc = await fhe.encryptUint128(leg.shares, { senderAccount: kernelAddress })
+    const data = encodeFunctionData({
+      // `abi as any` — see the setOperator note above (InEuint128 tuple's
+      // `signature` is a plain string at runtime, not viem's `0x${string}`).
+      abi: muhavenSubscriptionAbi as any,
+      functionName: leg.kind === 'buy' ? 'purchase' : 'redeem',
+      args: [
+        leg.tokenAddress,
+        {
+          ctHash: enc.ctHash,
+          securityZone: enc.securityZone,
+          utype: enc.utype,
+          signature: enc.signature,
+        },
+        leg.maxSharesHint,
+        ephemeralEOA,
+      ],
+    })
+    calls.push({ to: subscription, data })
+  }
+
+  return wallet.sendUserOperation(calls)
 }
 
 /**

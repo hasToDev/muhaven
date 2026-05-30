@@ -523,7 +523,7 @@ describe('Wave 4 P2 — tool use cases', () => {
   });
 
   describe('ProposeRebalanceToolUseCase', () => {
-    it('rejects an empty leg list at the schema layer (use-case still rejects 0 if reached)', async () => {
+    it('builds a hash-bound descriptor for explicit legs', async () => {
       const uc = new ProposeRebalanceToolUseCase(rwaTokenRepo, getPolicy, confirmTokens, appendAudit);
       const goodLeg = { kind: 'buy' as const, tokenAddress: TOKEN, shares: '10' };
       const out = await uc.execute(
@@ -531,7 +531,29 @@ describe('Wave 4 P2 — tool use cases', () => {
         { legs: [goodLeg] },
         NOW,
       );
+      // Explicit legs → a confirm-able RebalanceActionDescriptor.
+      if (!('kind' in out)) throw new Error('expected a RebalanceActionDescriptor');
+      expect(out.kind).toBe('rebalance');
       expect(out.preview.legCount).toBe(1);
+    });
+
+    it('returns a client-compute directive (no confirm token) when legs are omitted', async () => {
+      // Wave 5 Slice 3 — "rebalance toward my targets": the server can't read
+      // encrypted balances, so it returns a directive; the dashboard computes
+      // the legs under the user's permit and re-proposes with explicit legs.
+      const uc = new ProposeRebalanceToolUseCase(rwaTokenRepo, getPolicy, confirmTokens, appendAudit);
+      const out = await uc.execute(
+        { userId: USER_ID, surface: Surface.HavenBot },
+        {},
+        NOW,
+      );
+      expect(out).toMatchObject({
+        tool: 'muhaven_propose_rebalance',
+        directive: 'open_rebalance_composer',
+        mode: 'toward_targets',
+      });
+      // The directive is NOT a confirm-able descriptor — no confirmTokenId.
+      expect('confirmTokenId' in out).toBe(false);
     });
 
     it('hard-fails when any leg references an archived token', async () => {
