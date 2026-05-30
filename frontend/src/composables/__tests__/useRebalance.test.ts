@@ -9,7 +9,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   buildRebalancePlan,
-  applyExecutionConstraints,
+  applyMinInvestmentConstraints,
+  applyEscalationCheck,
   applyBudgetConstraints,
   MIN_LEG_USD,
   MAX_LEGS,
@@ -148,52 +149,48 @@ describe('buildRebalancePlan', () => {
   })
 })
 
-describe('applyExecutionConstraints', () => {
-  const A = '0x' + 'a'.repeat(40)
-  const B = '0x' + 'b'.repeat(40)
+const CONSTRAINT_A = '0x' + 'a'.repeat(40)
+const CONSTRAINT_B = '0x' + 'b'.repeat(40)
 
-  function legsPlan(
-    legs: Extract<RebalancePlan, { status: 'legs' }>['legs'],
-  ): Extract<RebalancePlan, { status: 'legs' }> {
-    return {
-      status: 'legs',
-      legs,
-      rows: [],
-      maxDriftBps: 3000,
-      toleranceBps: 500,
-      excluded: [],
-      truncated: 0,
-      belowMin: [],
-      unaffordable: [],
-    }
+function constraintLegsPlan(
+  legs: Extract<RebalancePlan, { status: 'legs' }>['legs'],
+): Extract<RebalancePlan, { status: 'legs' }> {
+  return {
+    status: 'legs',
+    legs,
+    rows: [],
+    maxDriftBps: 3000,
+    toleranceBps: 500,
+    excluded: [],
+    truncated: 0,
+    belowMin: [],
+    unaffordable: [],
   }
+}
+const csSell = {
+  kind: 'sell' as const,
+  tokenAddress: CONSTRAINT_A as `0x${string}`,
+  symbol: 'A',
+  shares: '30',
+  maxSharesHint: '30',
+  estValueUsd: 30,
+}
+const csBuy = {
+  kind: 'buy' as const,
+  tokenAddress: CONSTRAINT_B as `0x${string}`,
+  symbol: 'B',
+  shares: '30',
+  maxSharesHint: '30',
+  estValueUsd: 30,
+}
 
-  const sellLeg = {
-    kind: 'sell' as const,
-    tokenAddress: A as `0x${string}`,
-    symbol: 'A',
-    shares: '30',
-    maxSharesHint: '30',
-    estValueUsd: 30,
-  }
-  const buyLeg = {
-    kind: 'buy' as const,
-    tokenAddress: B as `0x${string}`,
-    symbol: 'B',
-    shares: '30',
-    maxSharesHint: '30',
-    estValueUsd: 30,
-  }
-
-  it('passes legs through untouched when all constraints are satisfied', () => {
-    // Generous cap, zero minInvestment → nothing binds. (NB: in production
-    // computeRebalancePlan ALWAYS populates a constraint per leg; an EMPTY map
-    // for a sell+buy is the M-2 unknown-cap case and correctly refuses.)
+describe('applyMinInvestmentConstraints', () => {
+  it('passes legs through when nothing is below minInvestment', () => {
     const c = new Map<string, LegExecutionConstraint>([
-      [A.toLowerCase(), { minInvestmentShares: 0n, instantCapRemainingBase6: 1_000_000_000n }],
-      [B.toLowerCase(), { minInvestmentShares: 0n, instantCapRemainingBase6: null }],
+      [CONSTRAINT_A.toLowerCase(), { minInvestmentShares: 0n, instantCapRemainingBase6: null }],
+      [CONSTRAINT_B.toLowerCase(), { minInvestmentShares: 0n, instantCapRemainingBase6: null }],
     ])
-    const plan = applyExecutionConstraints(legsPlan([sellLeg, buyLeg]), c)
+    const plan = applyMinInvestmentConstraints(constraintLegsPlan([csSell, csBuy]), c)
     expect(plan.status).toBe('legs')
     if (plan.status !== 'legs') return
     expect(plan.legs).toHaveLength(2)
@@ -202,77 +199,74 @@ describe('applyExecutionConstraints', () => {
 
   it('drops a leg below the token minInvestment + records it in belowMin', () => {
     const c = new Map<string, LegExecutionConstraint>([
-      [A.toLowerCase(), { minInvestmentShares: 100n, instantCapRemainingBase6: null }], // 30 < 100 → drop
-      [B.toLowerCase(), { minInvestmentShares: 1n, instantCapRemainingBase6: null }],
+      [CONSTRAINT_A.toLowerCase(), { minInvestmentShares: 100n, instantCapRemainingBase6: null }], // 30 < 100
+      [CONSTRAINT_B.toLowerCase(), { minInvestmentShares: 1n, instantCapRemainingBase6: null }],
     ])
-    const plan = applyExecutionConstraints(legsPlan([sellLeg, buyLeg]), c)
+    const plan = applyMinInvestmentConstraints(constraintLegsPlan([csSell, csBuy]), c)
     expect(plan.status).toBe('legs')
     if (plan.status !== 'legs') return
     expect(plan.belowMin).toEqual(['A'])
     expect(plan.legs.map((l) => l.symbol)).toEqual(['B'])
   })
 
-  it('refuses the mixed batch when a sell would escalate to the queue', () => {
-    // Sell A costs $30 = 30_000_000 base-6; remaining cap is only 10_000_000.
-    const c = new Map<string, LegExecutionConstraint>([
-      [A.toLowerCase(), { minInvestmentShares: 0n, instantCapRemainingBase6: 10_000_000n }],
-      [B.toLowerCase(), { minInvestmentShares: 0n, instantCapRemainingBase6: null }],
-    ])
-    const plan = applyExecutionConstraints(legsPlan([sellLeg, buyLeg]), c)
-    expect(plan.status).toBe('sell_exceeds_instant')
-    if (plan.status === 'sell_exceeds_instant') {
-      expect(plan.tokens).toEqual(['A'])
-    }
-  })
-
-  it('allows a queue-escalating sell when there are NO buys (sell queues safely)', () => {
-    const c = new Map<string, LegExecutionConstraint>([
-      [A.toLowerCase(), { minInvestmentShares: 0n, instantCapRemainingBase6: 10_000_000n }],
-    ])
-    const plan = applyExecutionConstraints(legsPlan([sellLeg]), c)
-    expect(plan.status).toBe('legs') // no dependent buys → fine to queue
-  })
-
   it('returns "all_below_min" (NOT balanced) when minInvestment drops every leg', () => {
     const c = new Map<string, LegExecutionConstraint>([
-      [A.toLowerCase(), { minInvestmentShares: 1000n, instantCapRemainingBase6: null }],
-      [B.toLowerCase(), { minInvestmentShares: 1000n, instantCapRemainingBase6: null }],
+      [CONSTRAINT_A.toLowerCase(), { minInvestmentShares: 1000n, instantCapRemainingBase6: null }],
+      [CONSTRAINT_B.toLowerCase(), { minInvestmentShares: 1000n, instantCapRemainingBase6: null }],
     ])
-    const plan = applyExecutionConstraints(legsPlan([sellLeg, buyLeg]), c)
-    // Drift exceeded tolerance — must NOT claim "balanced" (CR M-1).
+    const plan = applyMinInvestmentConstraints(constraintLegsPlan([csSell, csBuy]), c)
     expect(plan.status).toBe('all_below_min')
     if (plan.status === 'all_below_min') {
       expect(plan.belowMin.sort()).toEqual(['A', 'B'])
       expect(plan.maxDriftBps).toBe(3000)
     }
   })
+})
+
+describe('applyEscalationCheck', () => {
+  it('refuses the mixed batch when a sell would escalate to the queue', () => {
+    // Sell A costs $30 = 30_000_000 base-6; remaining cap is only 10_000_000.
+    const c = new Map<string, LegExecutionConstraint>([
+      [CONSTRAINT_A.toLowerCase(), { minInvestmentShares: 0n, instantCapRemainingBase6: 10_000_000n }],
+      [CONSTRAINT_B.toLowerCase(), { minInvestmentShares: 0n, instantCapRemainingBase6: null }],
+    ])
+    const plan = applyEscalationCheck(constraintLegsPlan([csSell, csBuy]), c)
+    expect(plan.status).toBe('sell_exceeds_instant')
+    if (plan.status === 'sell_exceeds_instant') expect(plan.tokens).toEqual(['A'])
+  })
+
+  it('allows a queue-escalating sell when there are NO buys (sell queues safely)', () => {
+    const c = new Map<string, LegExecutionConstraint>([
+      [CONSTRAINT_A.toLowerCase(), { minInvestmentShares: 0n, instantCapRemainingBase6: 10_000_000n }],
+    ])
+    const plan = applyEscalationCheck(constraintLegsPlan([csSell]), c)
+    expect(plan.status).toBe('legs')
+  })
 
   it('treats an UNKNOWN sell cap as would-escalate when buys are present (CR M-2)', () => {
-    // Cap read failed for the sell (null) while a buy leg is present → refuse
-    // the mixed batch rather than risk a silent half-trade.
     const c = new Map<string, LegExecutionConstraint>([
-      [A.toLowerCase(), { minInvestmentShares: 0n, instantCapRemainingBase6: null }],
-      [B.toLowerCase(), { minInvestmentShares: 0n, instantCapRemainingBase6: null }],
+      [CONSTRAINT_A.toLowerCase(), { minInvestmentShares: 0n, instantCapRemainingBase6: null }],
+      [CONSTRAINT_B.toLowerCase(), { minInvestmentShares: 0n, instantCapRemainingBase6: null }],
     ])
-    const plan = applyExecutionConstraints(legsPlan([sellLeg, buyLeg]), c)
+    const plan = applyEscalationCheck(constraintLegsPlan([csSell, csBuy]), c)
     expect(plan.status).toBe('sell_exceeds_instant')
     if (plan.status === 'sell_exceeds_instant') expect(plan.tokens).toEqual(['A'])
   })
 
   it('an UNKNOWN sell cap with NO buys still proceeds (sell queues safely)', () => {
     const c = new Map<string, LegExecutionConstraint>([
-      [A.toLowerCase(), { minInvestmentShares: 0n, instantCapRemainingBase6: null }],
+      [CONSTRAINT_A.toLowerCase(), { minInvestmentShares: 0n, instantCapRemainingBase6: null }],
     ])
-    const plan = applyExecutionConstraints(legsPlan([sellLeg]), c)
+    const plan = applyEscalationCheck(constraintLegsPlan([csSell]), c)
     expect(plan.status).toBe('legs')
   })
 
   it('does not flag escalation when the sell fits within the remaining cap', () => {
     const c = new Map<string, LegExecutionConstraint>([
-      [A.toLowerCase(), { minInvestmentShares: 0n, instantCapRemainingBase6: 100_000_000n }], // $100 ≥ $30
-      [B.toLowerCase(), { minInvestmentShares: 0n, instantCapRemainingBase6: null }],
+      [CONSTRAINT_A.toLowerCase(), { minInvestmentShares: 0n, instantCapRemainingBase6: 100_000_000n }],
+      [CONSTRAINT_B.toLowerCase(), { minInvestmentShares: 0n, instantCapRemainingBase6: null }],
     ])
-    const plan = applyExecutionConstraints(legsPlan([sellLeg, buyLeg]), c)
+    const plan = applyEscalationCheck(constraintLegsPlan([csSell, csBuy]), c)
     expect(plan.status).toBe('legs')
   })
 })
@@ -317,12 +311,13 @@ describe('applyBudgetConstraints', () => {
     expect(plan.unaffordable).toEqual([])
   })
 
-  it('skips an exactly-at-proceeds buy (CR L-1 haircut prevents an on-chain under-fund)', () => {
-    // sell A $30 → proceeds haircut to $29.97 < $30 → buy B can't be safely funded.
-    const plan = applyBudgetConstraints(legsPlan([sell('A', A, 30), buy('B', B, 30)]), 0n)
+  it('skips an exactly-at-proceeds buy via the haircut while a partial rebalance proceeds (CR L-1)', () => {
+    // sell A $30 → proceeds haircut to $29.97. Buy B $30 is exactly-at-proceeds
+    // → skipped (would under-fund on-chain). Buy C $5 still fits → kept.
+    const plan = applyBudgetConstraints(legsPlan([sell('A', A, 30), buy('B', B, 30), buy('C', C, 5)]), 0n)
     expect(plan.status).toBe('legs')
     if (plan.status !== 'legs') return
-    expect(plan.legs.map((l) => l.symbol)).toEqual(['A'])
+    expect(plan.legs.map((l) => l.symbol)).toEqual(['A', 'C'])
     expect(plan.unaffordable).toEqual(['B'])
   })
 
@@ -352,13 +347,13 @@ describe('applyBudgetConstraints', () => {
     expect(plan.unaffordable).toEqual(['C'])
   })
 
-  it('keeps the sells when all buys are unaffordable (partial rebalance to cash)', () => {
-    // sell A $10, buy B $30: budget $10 < $30 → skip B but KEEP the sell.
+  it('refuses (insufficient_funds, NOT a pointless sell) when ALL buys are unaffordable', () => {
+    // The operator's NVDAon case: sell A $10, buy B $30. Even with A's proceeds
+    // the buy is unaffordable → there's NO reason to sell A. Surface the
+    // shortfall instead of proposing a sell-only batch.
     const plan = applyBudgetConstraints(legsPlan([sell('A', A, 10), buy('B', B, 30)]), 0n)
-    expect(plan.status).toBe('legs')
-    if (plan.status !== 'legs') return
-    expect(plan.legs.map((l) => l.symbol)).toEqual(['A'])
-    expect(plan.unaffordable).toEqual(['B'])
+    expect(plan.status).toBe('insufficient_funds')
+    if (plan.status === 'insufficient_funds') expect(plan.tokens).toEqual(['B'])
   })
 
   it('is a no-op when there are no buys', () => {
@@ -366,5 +361,58 @@ describe('applyBudgetConstraints', () => {
     expect(plan.status).toBe('legs')
     if (plan.status !== 'legs') return
     expect(plan.legs).toHaveLength(1)
+  })
+})
+
+describe('pipeline ordering (minInvestment → budget → escalation)', () => {
+  const CETES = '0x' + 'a'.repeat(40)
+  const NVDAON = '0x' + 'd'.repeat(40)
+  function plan(legs: RebalanceLeg[]): Extract<RebalancePlan, { status: 'legs' }> {
+    return {
+      status: 'legs',
+      legs,
+      rows: [],
+      maxDriftBps: 3000,
+      toleranceBps: 500,
+      excluded: [],
+      truncated: 0,
+      belowMin: [],
+      unaffordable: [],
+    }
+  }
+  const sellCetes: RebalanceLeg = {
+    kind: 'sell',
+    tokenAddress: CETES as `0x${string}`,
+    symbol: 'CETES',
+    shares: '30',
+    maxSharesHint: '30',
+    estValueUsd: 30,
+  }
+  const buyNvdaon: RebalanceLeg = {
+    kind: 'buy',
+    tokenAddress: NVDAON as `0x${string}`,
+    symbol: 'NVDAon',
+    shares: '1',
+    maxSharesHint: '1',
+    estValueUsd: 500, // 1 share = $500, far above the $30 CETES proceeds
+  }
+
+  it('an unaffordable buy yields insufficient_funds — NOT "sell CETES first" (operator 2026-05-30)', () => {
+    // CETES sell WOULD escalate (cap $10 < cost $30), so the OLD order would
+    // have returned sell_exceeds_instant ("sell CETES first") — pointless,
+    // because NVDAon ($500) is unaffordable even with the proceeds. With budget
+    // BEFORE escalation, we instead surface insufficient_funds.
+    const constraints = new Map<string, LegExecutionConstraint>([
+      [CETES.toLowerCase(), { minInvestmentShares: 0n, instantCapRemainingBase6: 10_000_000n }],
+      [NVDAON.toLowerCase(), { minInvestmentShares: 0n, instantCapRemainingBase6: null }],
+    ])
+    const p0 = plan([sellCetes, buyNvdaon])
+    const p1 = applyMinInvestmentConstraints(p0, constraints)
+    expect(p1.status).toBe('legs')
+    if (p1.status !== 'legs') return
+    const p2 = applyBudgetConstraints(p1, 0n) // no cash, only $30 sell proceeds
+    expect(p2.status).toBe('insufficient_funds')
+    if (p2.status === 'insufficient_funds') expect(p2.tokens).toEqual(['NVDAon'])
+    // Escalation never runs because p2 isn't a legs plan → no "sell CETES first".
   })
 })

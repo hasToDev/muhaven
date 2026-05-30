@@ -69,9 +69,9 @@ export function describeRebalancePlanShortfall(
       return {
         severity: 'info',
         title: 'Not enough balance to buy your targets',
-        description: `You don't hold enough mhUSDC to buy ${plan.tokens.join(
+        description: `Even after selling your overweight holdings, you don't have enough mhUSDC to buy ${plan.tokens.join(
           ', ',
-        )} (not even one share). Wrap more USDC into mhUSDC on the Cash page, or sell an overweight holding first, then rebalance again.`,
+        )} (not even one share) — so there's nothing to do. Wrap more USDC into mhUSDC on the Cash page and rebalance again, or lower the target.`,
       }
     case 'error':
       return { severity: 'error', title: 'Rebalance failed', description: plan.reason }

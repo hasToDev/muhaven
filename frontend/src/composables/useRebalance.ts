@@ -127,16 +127,20 @@ export interface LegExecutionConstraint {
   instantCapRemainingBase6: bigint | null
 }
 
+// ── Execution-constraint pipeline (PURE, unit-testable) ──────────────────
+// Order is LOAD-BEARING: `applyMinInvestmentConstraints` → `applyBudgetConstraints`
+// → `applyEscalationCheck`. Affordability MUST run before the escalation check:
+// if the buys a sell would fund are unaffordable (e.g. you can't buy 1 share of
+// NVDAon even after selling everything), the rebalance is futile and we must
+// surface `insufficient_funds` — NOT tell the user to "sell CETES first" for a
+// buy that will never happen (operator-reported 2026-05-30).
+
 /**
- * PURE post-drift execution feasibility pass (unit-testable). Given the legs
- * plan + per-token on-chain constraints:
- *   - drop legs below `minInvestment` (they'd revert the whole atomic UserOp),
- *     surfaced via `belowMin`;
- *   - if any remaining SELL would escalate to the redemption queue while BUYS
- *     are present, refuse the mixed batch (`sell_exceeds_instant`) — the queued
- *     sell's proceeds can't fund the buys in the same UserOp.
+ * Drop legs below their token's on-chain `minInvestment` (they'd revert the
+ * whole atomic UserOp), surfaced via `belowMin`. Returns `all_below_min` when
+ * nothing survives (the portfolio is drifted but nothing is executable).
  */
-export function applyExecutionConstraints(
+export function applyMinInvestmentConstraints(
   plan: Extract<RebalancePlan, { status: 'legs' }>,
   constraints: Map<string, LegExecutionConstraint>,
 ): RebalancePlan {
@@ -151,42 +155,7 @@ export function applyExecutionConstraints(
     kept.push(leg)
   }
 
-  const hasBuy = kept.some((l) => l.kind === 'buy')
-  if (hasBuy) {
-    const escalating: string[] = []
-    for (const leg of kept) {
-      if (leg.kind !== 'sell') continue
-      const c = constraints.get(leg.tokenAddress.toLowerCase())
-      // CR M-2: a sell with an UNKNOWN cap (read failed) coexisting with buys
-      // is treated CONSERVATIVELY as would-escalate. Skipping it here would
-      // re-open the exact silent-half-trade blocker this status exists to
-      // close — a benign "try again / sell it separately" beats a
-      // successful-looking tx that funded no buys. (With no buys present this
-      // whole block is skipped, so a sell-only batch still queues safely.)
-      if (!c || c.instantCapRemainingBase6 === null) {
-        escalating.push(leg.symbol)
-        continue
-      }
-      // hintCost (base-6) = maxSharesHint × nav = estValueUsd × 1e6 (shares ===
-      // maxSharesHint in buildRebalancePlan). Strict `>` MATCHES the contract's
-      // `used + hintCost > cap` (`MuHavenSubscription.sol:446`). Accepted as an
-      // ESTIMATE, not a guarantee: (L-1) the `(x/1e6)*1e6` Number round-trip can
-      // deviate ~±2.4e-4 base-6 at an exact boundary, and (L-2) estValueUsd may
-      // use a backend-NAV fallback if the oracle read failed — both bounded by
-      // the on-chain silent-fail backstop, and a near-boundary miss is far rarer
-      // than the read-failure case M-2 already handles conservatively.
-      const costBase6 = leg.estValueUsd * 1e6
-      if (costBase6 > Number(c.instantCapRemainingBase6)) escalating.push(leg.symbol)
-    }
-    if (escalating.length > 0) {
-      return { status: 'sell_exceeds_instant', tokens: escalating }
-    }
-  }
-
   if (kept.length === 0) {
-    // Everything was dropped by min-investment — the portfolio is drifted but
-    // nothing is executable. NOT 'balanced' (that would claim no drift); a
-    // dedicated status keeps the copy truthful + carries the `belowMin` reason.
     return {
       status: 'all_below_min',
       belowMin,
@@ -194,8 +163,42 @@ export function applyExecutionConstraints(
       toleranceBps: plan.toleranceBps,
     }
   }
+  return { ...plan, legs: kept, belowMin: [...plan.belowMin, ...belowMin] }
+}
 
-  return { ...plan, legs: kept, belowMin }
+/**
+ * If any SELL would exceed its token's remaining instant-redeem cap while BUYS
+ * are present, refuse the mixed batch (`sell_exceeds_instant`) — the queued
+ * sell's proceeds can't fund the buys in the same UserOp. Runs LAST (after the
+ * budget pass has already dropped unaffordable buys), so a sell whose only buy
+ * is unaffordable never reaches here.
+ */
+export function applyEscalationCheck(
+  plan: Extract<RebalancePlan, { status: 'legs' }>,
+  constraints: Map<string, LegExecutionConstraint>,
+): RebalancePlan {
+  if (!plan.legs.some((l) => l.kind === 'buy')) return plan // sell-only queues safely
+  const escalating: string[] = []
+  for (const leg of plan.legs) {
+    if (leg.kind !== 'sell') continue
+    const c = constraints.get(leg.tokenAddress.toLowerCase())
+    // CR M-2: an UNKNOWN cap (read failed) coexisting with buys is treated
+    // CONSERVATIVELY as would-escalate — a benign "sell it separately / retry"
+    // beats a successful-looking tx that funded no buys.
+    if (!c || c.instantCapRemainingBase6 === null) {
+      escalating.push(leg.symbol)
+      continue
+    }
+    // hintCost (base-6) = maxSharesHint × nav = estValueUsd × 1e6 (shares ===
+    // maxSharesHint). Strict `>` MATCHES the contract's `used + hintCost > cap`
+    // (`MuHavenSubscription.sol:446`). Accepted as an ESTIMATE (L-1 float
+    // boundary ~±2.4e-4; L-2 backend-NAV fallback) bounded by the on-chain
+    // silent-fail backstop + the M-2 conservative path.
+    const costBase6 = leg.estValueUsd * 1e6
+    if (costBase6 > Number(c.instantCapRemainingBase6)) escalating.push(leg.symbol)
+  }
+  if (escalating.length > 0) return { status: 'sell_exceeds_instant', tokens: escalating }
+  return plan
 }
 
 /**
@@ -205,8 +208,12 @@ export function applyExecutionConstraints(
  * 0"), so we SKIP it here + surface it in `unaffordable` rather than producing
  * a doomed leg. Buys are funded largest-first (biggest drift correction first),
  * cumulatively, so the kept buys' total never exceeds the budget → they all
- * settle. If every buy is unaffordable AND there are no sells, there's nothing
- * to do (`insufficient_funds`).
+ * settle. If EVERY buy is unaffordable, the result is `insufficient_funds` —
+ * even when there are sells, because in a targets-summing-to-100% rebalance the
+ * sells only exist to fund those buys, so selling them to sit on cash isn't a
+ * rebalance the user asked for ("no reason to sell CETES if NVDAon can't be
+ * bought"). When SOME buys are affordable, the sells + affordable buys proceed
+ * and the unaffordable ones are surfaced in `unaffordable`.
  *
  * @param mhUsdcBase6 the user's decrypted mhUSDC balance (base-6); pass 0n when
  *   it couldn't be read (conservative — buys then funded by sell proceeds only).
@@ -240,8 +247,10 @@ export function applyBudgetConstraints(
     }
   }
 
-  if (keptBuys.length === 0 && sells.length === 0) {
-    // Only buys were requested and none can be funded.
+  if (keptBuys.length === 0) {
+    // No buy can be funded — the rebalance is futile (the sells, if any, only
+    // existed to fund these buys). Surface the shortfall; don't propose a
+    // pointless sell-only batch.
     return { status: 'insufficient_funds', tokens: unaffordable }
   }
 
@@ -375,7 +384,7 @@ export function buildRebalancePlan(
     toleranceBps,
     excluded: excludedRows,
     truncated,
-    belowMin: [], // populated by applyExecutionConstraints (on-chain pass)
+    belowMin: [], // populated by applyMinInvestmentConstraints (on-chain pass)
     unaffordable: [], // populated by applyBudgetConstraints (mhUSDC budget pass)
   }
 }
@@ -488,12 +497,11 @@ export function useRebalance() {
     const plan = buildRebalancePlan(toleranceBps, inputs)
     if (plan.status !== 'legs') return plan
 
-    // ── On-chain execution feasibility (CR #1 + #2) ──────────────────────
+    // ── On-chain execution feasibility ───────────────────────────────────
     // Gather per-token `minInvestment` (legs below it revert the atomic batch)
     // and, for SELL legs, the remaining instant-redeem cap (a sell over it
     // escalates to the redemption queue, whose proceeds can't fund the buys in
-    // the same UserOp). `applyExecutionConstraints` then drops sub-min legs and
-    // refuses a mixed batch when a sell would queue.
+    // the same UserOp). Fed to the minInvestment + escalation passes below.
     const constraints = new Map<string, LegExecutionConstraint>()
     const publicClient = getPublicClient()
     const sub = !isZeroAddress(v35Addresses.subscription)
@@ -529,17 +537,20 @@ export function useRebalance() {
       }),
     )
 
-    const constrained = applyExecutionConstraints(plan, constraints)
-    if (constrained.status !== 'legs') return constrained
+    // Pipeline (order is load-bearing — see the function-group comment):
+    // 1) minInvestment → 2) affordability → 3) sell-escalation.
+    const afterMin = applyMinInvestmentConstraints(plan, constraints)
+    if (afterMin.status !== 'legs') return afterMin
 
-    // ── Buy affordability (#4) ───────────────────────────────────────────
+    // ── Buy affordability (#4) — BEFORE the escalation check ──────────────
     // Buys are funded in-batch by existing mhUSDC + the sell legs' instant
-    // proceeds. Decrypt the user's mhUSDC so we can skip buy legs the budget
-    // can't cover (they'd silent-fail on-chain) rather than ship a doomed leg.
-    // On a decrypt failure, fund buys from sell proceeds only (mhUSDC = 0n) —
+    // proceeds. Decrypt mhUSDC so we can skip (or refuse) buys the budget can't
+    // cover BEFORE deciding whether a sell would escalate — otherwise we'd tell
+    // the user to "sell CETES first" to fund a buy (NVDAon) that's unaffordable
+    // anyway. On a decrypt failure, fund buys from sell proceeds only (0n) —
     // conservative (may skip an affordable buy, never ships an unfundable one).
     let mhUsdcBase6 = 0n
-    if (constrained.legs.some((l) => l.kind === 'buy')) {
+    if (afterMin.legs.some((l) => l.kind === 'buy')) {
       try {
         const MuHavenStableService = await import('@/services/contracts/MuHavenStableService')
         if (MuHavenStableService.isAvailable()) {
@@ -550,8 +561,11 @@ export function useRebalance() {
         console.warn('[useRebalance] mhUSDC decrypt failed; funding buys from sell proceeds only', e)
       }
     }
+    const afterBudget = applyBudgetConstraints(afterMin, mhUsdcBase6)
+    if (afterBudget.status !== 'legs') return afterBudget
 
-    return applyBudgetConstraints(constrained, mhUsdcBase6)
+    // Sell-escalation LAST — only on the surviving (fundable) leg set.
+    return applyEscalationCheck(afterBudget, constraints)
   }
 
   /**
