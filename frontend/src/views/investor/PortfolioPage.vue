@@ -45,25 +45,54 @@ const activeTab = ref<HeroTab>('value')
 // flight. Decrypt state is reset by `load()` and re-cleared via
 // `refreshAfterTrade` / `refreshAfterTransfer` on the action pages.
 // Keep-alive lifecycle (WS-1). This page is cached across navigation, so
-// onMounted/onBeforeUnmount fire only on TRUE mount/unmount. Per-ENTRY work
-// (refetch + arm the inbound polling watchers) runs on onActivated; per-EXIT
-// teardown (stop the 12s watchers + 30s safety poll while backgrounded) runs
-// on onDeactivated. Refetching on every entry preserves the cross-account
-// freshness contract documented above; multicall + the read cache keep rapid
-// re-entries from storming the RPC. The loader stays gated on `!loaded`, so a
-// re-visit shows cached holdings instantly while the refetch lands in place.
+// onMounted/onBeforeUnmount fire only on TRUE mount/unmount; per-entry work
+// runs on onActivated, per-exit teardown on onDeactivated.
+//
+// Two guards make rapid Cash<->Portfolio nav cheap (the RPC-429 fix):
+//   - refetch is THROTTLED: skip portfolio.load() if it ran < LOAD_THROTTLE_MS
+//     ago. A re-visit within the window shows the still-fresh cached holdings
+//     instantly; an explicit Refresh / post-trade refresh bypasses this (it
+//     calls load() directly, not through here).
+//   - watcher arming is DEBOUNCED: viem's watchContractEvent fires one
+//     eth_newFilter PER WATCHER the instant it's armed (~13 here), and
+//     multicall does NOT batch those — re-arming on every entry was the real
+//     429 source. We only arm after the user settles >ARM_DEBOUNCE_MS on the
+//     page; onDeactivated cancels a pending arm, so flitting never arms.
 const isActive = ref(false)
+const ARM_DEBOUNCE_MS = 1200
+const LOAD_THROTTLE_MS = 8000
+let armTimer: ReturnType<typeof setTimeout> | null = null
+let lastLoadAt = 0
+
+function clearArmTimer() {
+  if (armTimer) { clearTimeout(armTimer); armTimer = null }
+}
+function armWatchersDebounced() {
+  clearArmTimer()
+  armTimer = setTimeout(() => {
+    armTimer = null
+    const a = address.value as `0x${string}` | undefined
+    if (isActive.value && a) void setupInboundWatchers(a)
+  }, ARM_DEBOUNCE_MS)
+}
+function refetchThrottled() {
+  const addr = address.value as `0x${string}` | undefined
+  if (!addr) return
+  if (Date.now() - lastLoadAt < LOAD_THROTTLE_MS) return
+  lastLoadAt = Date.now()
+  void portfolio.load(addr)
+}
 
 onActivated(() => {
   isActive.value = true
-  const addr = address.value as `0x${string}` | undefined
-  if (!addr) return
-  void portfolio.load(addr)
-  void setupInboundWatchers(addr)
+  if (!address.value) return
+  refetchThrottled()
+  armWatchersDebounced()
 })
 
 onDeactivated(() => {
   isActive.value = false
+  clearArmTimer()
   teardownInboundWatchers()
 })
 
@@ -299,19 +328,27 @@ async function setupInboundWatchers(kernelAddress: `0x${string}`) {
   }, PORTFOLIO_SAFETY_POLL_MS)
 }
 
-// Account switch WHILE active → re-arm watchers for the new kernel. Gated on
-// isActive so a switch that lands while this page is backgrounded (kept alive)
-// is a no-op — onActivated re-arms with the current address on return. No
-// `immediate`: first-entry arming is owned by onActivated above.
+// Account switch WHILE active → the new kernel needs fresh holdings + its own
+// watchers. Bypass the load throttle (lastLoadAt=0) and re-arm (debounced).
+// Gated on isActive so a switch landing while backgrounded is a no-op —
+// onActivated re-syncs on return. No `immediate`: first-entry is onActivated.
 watch(
   () => address.value,
   (addr) => {
     if (!isActive.value) return
-    if (addr) void setupInboundWatchers(addr as `0x${string}`)
-    else teardownInboundWatchers()
+    clearArmTimer()
+    teardownInboundWatchers()
+    if (addr) {
+      lastLoadAt = 0
+      refetchThrottled()
+      armWatchersDebounced()
+    }
   },
 )
-onBeforeUnmount(teardownInboundWatchers)
+onBeforeUnmount(() => {
+  clearArmTimer()
+  teardownInboundWatchers()
+})
 
 // Show the logo loader only while we're waiting for the very first fetch.
 // Once `loaded` is true the loader never returns (manual refetches update

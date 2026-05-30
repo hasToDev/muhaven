@@ -550,6 +550,7 @@ function setupInboundWatchers(kernelAddress: `0x${string}`) {
   // bloom is the watcher's job. This guarantees the displayed value
   // is at most ~30s stale even when the watcher fully fails.
   safetyPollTimer = setInterval(() => {
+    if (!isActive.value) return  // never heavy-reload a backgrounded kept-alive page
     void loadBalances()
     if (portfolio.pusdcConfidentialBalance !== null && address.value) {
       void portfolio.decryptPusdc(address.value as `0x${string}`)
@@ -557,21 +558,76 @@ function setupInboundWatchers(kernelAddress: `0x${string}`) {
   }, SAFETY_POLL_MS)
 }
 
-// Account switch WHILE active → re-arm watchers + re-discover claims for the
-// new kernel. Gated on isActive (no `immediate`): first-entry arming is owned
-// by onActivated below; a switch landing while this page is backgrounded
-// (kept alive) is a no-op — onActivated re-arms with the current address on
-// return.
+// ── WS-1 keep-alive lifecycle + rapid-nav guards ───────────────────────────
+// Same two guards as PortfolioPage (the RPC-429 fix): the per-entry refetch is
+// THROTTLED and watcher arming is DEBOUNCED. viem arms an eth_newFilter the
+// instant watchContractEvent is called and multicall can't batch those, so
+// re-arming on every entry was the real 429 source — flitting Cash<->Portfolio
+// now never arms (the pending arm is cancelled on deactivate). isUnmounted
+// (one-way, TRUE-destroy only) stays distinct from isActive (activate/deactivate).
+const ARM_DEBOUNCE_MS = 1200
+const LOAD_THROTTLE_MS = 8000
+let armTimer: ReturnType<typeof setTimeout> | null = null
+let lastCashLoadAt = 0
+
+function clearArmTimer() {
+  if (armTimer) { clearTimeout(armTimer); armTimer = null }
+}
+function armWatchersDebounced() {
+  clearArmTimer()
+  armTimer = setTimeout(() => {
+    armTimer = null
+    if (isActive.value && address.value) setupInboundWatchers(address.value as `0x${string}`)
+  }, ARM_DEBOUNCE_MS)
+}
+function refetchCashThrottled() {
+  if (!(connected.value && address.value)) return
+  if (Date.now() - lastCashLoadAt < LOAD_THROTTLE_MS) return
+  lastCashLoadAt = Date.now()
+  void loadBalances()
+  void loadPendingClaims()
+}
+
+onActivated(() => {
+  isActive.value = true
+  refetchCashThrottled()
+  if (connected.value && address.value) armWatchersDebounced()
+  // Re-arm the claim poll from CACHED pending claims even when the refetch
+  // above was throttled (settling on /cash within the throttle window would
+  // otherwise leave the 5s readiness poll off until the next load). Idempotent:
+  // no-ops if a timer already exists or every cached claim is ready.
+  ensurePollingActive()
+})
+onDeactivated(() => {
+  isActive.value = false
+  clearArmTimer()
+  teardownWatchers()
+  stopPolling()
+})
+onBeforeUnmount(() => {
+  // Flip isUnmounted BEFORE teardown so any in-flight Promise.all resolutions in
+  // pollPendingDecrypts / loadPendingClaims / claimWithdrawal short-circuit
+  // before mutating refs / firing toasts.
+  isUnmounted = true
+  isActive.value = false
+  clearArmTimer()
+  teardownWatchers()
+  stopPolling()
+})
+
+// Account switch WHILE active → new kernel: bypass the load throttle + re-arm
+// (debounced); logout (addr falsy) tears everything down. Gated on isActive so
+// a switch landing while backgrounded is a no-op (onActivated re-syncs on
+// return). No `immediate`: first entry is owned by onActivated above.
 watch(
   () => address.value,
   (addr) => {
     if (!isActive.value) return
+    clearArmTimer()
     if (addr) {
-      setupInboundWatchers(addr as `0x${string}`)
-      // Wave 5 W3 — re-discover pending USDC claims for the new account.
-      // Stops any prior account's poll loop via loadPendingClaims's empty-list
-      // path (or its ensurePollingActive call for the new account).
-      void loadPendingClaims()
+      lastCashLoadAt = 0
+      refetchCashThrottled()
+      armWatchersDebounced()
     } else {
       teardownWatchers()
       pendingClaims.value = []
@@ -580,44 +636,14 @@ watch(
   },
 )
 
-// WS-1 keep-alive. onActivated fires on first mount AND every re-entry; it
-// owns the per-entry refetch + watcher arming (the cross-account freshness +
-// "re-discover on return to /cash" the old route.path watch used to provide).
-// onDeactivated stops ALL polling while backgrounded. onBeforeUnmount handles
-// the TRUE destroy (logout / cache eviction).
-onActivated(() => {
-  isActive.value = true
-  if (connected.value && address.value) {
-    void loadBalances()
-    void loadPendingClaims()
-    setupInboundWatchers(address.value as `0x${string}`)
-  }
-})
-onDeactivated(() => {
-  isActive.value = false
-  teardownWatchers()
-  stopPolling()
-})
-onBeforeUnmount(() => {
-  // Round-2 (FE Dev HIGH) — flip the flag BEFORE teardown so any in-flight
-  // Promise.all resolutions in pollPendingDecrypts / loadPendingClaims /
-  // claimWithdrawal short-circuit before mutating refs / firing toasts.
-  isUnmounted = true
-  isActive.value = false
-  teardownWatchers()
-  stopPolling()
-})
-
 // Late-connect (user signs in while sitting on /cash). Gated on isActive so a
-// connection event that lands while backgrounded is a no-op — onActivated
-// refetches on return. The old `watch(route.path === '/cash')` re-discovery is
-// gone: under keep-alive, onActivated is the precise navigate-back-to-/cash
-// hook and already re-runs loadPendingClaims.
+// connection event landing while backgrounded is a no-op — onActivated
+// refetches on return. (Replaces the removed watch(route.path==='/cash').)
 watch(connected, (val) => {
   if (!isActive.value) return
   if (val) {
-    loadBalances()
-    void loadPendingClaims()
+    refetchCashThrottled()
+    armWatchersDebounced()
   }
 })
 
@@ -2257,7 +2283,17 @@ const successCopy = computed(() =>
     </div>
 
     <Teleport to="body" :disabled="!isXl">
+      <!-- WS-1 fix: when teleported to <body> (xl), keep-alive does NOT relocate
+           this node on deactivate, so a backgrounded /cash would leave the
+           fixed "Your Wallet" aside painted over every other page. Gate the
+           teleported render on `isActive` so it unmounts from <body> when the
+           page is backgrounded. Below xl the teleport is disabled (in-flow), so
+           keep-alive moves it normally — show unconditionally there. v-show (not
+           v-if) so the v-motion entrance doesn't replay on every Cash re-entry
+           and the node isn't remounted; a display:none fixed node isn't painted,
+           so the leak is fixed either way. -->
       <aside
+        v-show="isActive || !isXl"
         v-motion
         :initial="{ opacity: 0, y: 20 }"
         :visible-once="{ opacity: 1, y: 0, transition: { duration: 520, delay: 120 } }"
