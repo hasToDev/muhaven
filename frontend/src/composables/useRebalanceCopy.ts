@@ -65,6 +65,14 @@ export function describeRebalancePlanShortfall(
           plan.belowMin.length ? ` (${plan.belowMin.join(', ')})` : ''
         } is below the token's minimum investment — there's nothing executable this round.`,
       }
+    case 'insufficient_funds':
+      return {
+        severity: 'info',
+        title: 'Not enough balance to buy your targets',
+        description: `You don't hold enough mhUSDC to buy ${plan.tokens.join(
+          ', ',
+        )} (not even one share). Wrap more USDC into mhUSDC on the Cash page, or sell an overweight holding first, then rebalance again.`,
+      }
     case 'error':
       return { severity: 'error', title: 'Rebalance failed', description: plan.reason }
     default: {
@@ -94,6 +102,11 @@ export function rebalanceNotices(plan: Extract<RebalancePlan, { status: 'legs' }
   if (plan.belowMin.length > 0) {
     out.push(
       `Skipped ${plan.belowMin.join(', ')} — the adjustment was below the token's minimum investment.`,
+    )
+  }
+  if (plan.unaffordable.length > 0) {
+    out.push(
+      `Skipped buying ${plan.unaffordable.join(', ')} — not enough mhUSDC (cash + sell proceeds) to fund it this round. Wrap more mhUSDC or re-run after your sells settle.`,
     )
   }
   if (plan.truncated > 0) {

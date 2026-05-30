@@ -10,10 +10,12 @@ import { describe, it, expect } from 'vitest'
 import {
   buildRebalancePlan,
   applyExecutionConstraints,
+  applyBudgetConstraints,
   MIN_LEG_USD,
   MAX_LEGS,
   type RebalanceTokenInput,
   type RebalancePlan,
+  type RebalanceLeg,
   type LegExecutionConstraint,
 } from '@/composables/useRebalance'
 
@@ -162,6 +164,7 @@ describe('applyExecutionConstraints', () => {
       excluded: [],
       truncated: 0,
       belowMin: [],
+      unaffordable: [],
     }
   }
 
@@ -271,5 +274,97 @@ describe('applyExecutionConstraints', () => {
     ])
     const plan = applyExecutionConstraints(legsPlan([sellLeg, buyLeg]), c)
     expect(plan.status).toBe('legs')
+  })
+})
+
+describe('applyBudgetConstraints', () => {
+  const A = '0x' + 'a'.repeat(40)
+  const B = '0x' + 'b'.repeat(40)
+  const C = '0x' + 'c'.repeat(40)
+
+  function legsPlan(legs: RebalanceLeg[]): Extract<RebalancePlan, { status: 'legs' }> {
+    return {
+      status: 'legs',
+      legs,
+      rows: [],
+      maxDriftBps: 3000,
+      toleranceBps: 500,
+      excluded: [],
+      truncated: 0,
+      belowMin: [],
+      unaffordable: [],
+    }
+  }
+  const sell = (sym: string, addr: string, usd: number): RebalanceLeg => ({
+    kind: 'sell',
+    tokenAddress: addr as `0x${string}`,
+    symbol: sym,
+    shares: '1',
+    maxSharesHint: '1',
+    estValueUsd: usd,
+  })
+  const buy = (sym: string, addr: string, usd: number): RebalanceLeg => ({
+    ...sell(sym, addr, usd),
+    kind: 'buy',
+  })
+
+  it('passes buys through when sell proceeds cover them (with headroom)', () => {
+    // sell A $30 (proceeds ~$29.97 after haircut) funds buy B $29 (cash 0).
+    const plan = applyBudgetConstraints(legsPlan([sell('A', A, 30), buy('B', B, 29)]), 0n)
+    expect(plan.status).toBe('legs')
+    if (plan.status !== 'legs') return
+    expect(plan.legs.map((l) => l.symbol)).toEqual(['A', 'B'])
+    expect(plan.unaffordable).toEqual([])
+  })
+
+  it('skips an exactly-at-proceeds buy (CR L-1 haircut prevents an on-chain under-fund)', () => {
+    // sell A $30 → proceeds haircut to $29.97 < $30 → buy B can't be safely funded.
+    const plan = applyBudgetConstraints(legsPlan([sell('A', A, 30), buy('B', B, 30)]), 0n)
+    expect(plan.status).toBe('legs')
+    if (plan.status !== 'legs') return
+    expect(plan.legs.map((l) => l.symbol)).toEqual(['A'])
+    expect(plan.unaffordable).toEqual(['B'])
+  })
+
+  it('skips a buy the budget cannot fund (the operator TSLAx case)', () => {
+    // No sells, cash $0 → buy B $30 unaffordable. Only-buys → insufficient_funds.
+    const plan = applyBudgetConstraints(legsPlan([buy('B', B, 30)]), 0n)
+    expect(plan.status).toBe('insufficient_funds')
+    if (plan.status === 'insufficient_funds') expect(plan.tokens).toEqual(['B'])
+  })
+
+  it('funds buys from existing mhUSDC when there are no sells', () => {
+    // $30 cash funds the $30 buy.
+    const plan = applyBudgetConstraints(legsPlan([buy('B', B, 30)]), 30_000_000n)
+    expect(plan.status).toBe('legs')
+  })
+
+  it('funds the largest-impact buy first and skips the rest when budget is tight', () => {
+    // sell A $30 → budget ~$29.97. Two buys: B $25, C $20 → keep B (bigger,
+    // leaves ~$4.97), skip C ($20 > $4.97).
+    const plan = applyBudgetConstraints(
+      legsPlan([sell('A', A, 30), buy('B', B, 25), buy('C', C, 20)]),
+      0n,
+    )
+    expect(plan.status).toBe('legs')
+    if (plan.status !== 'legs') return
+    expect(plan.legs.map((l) => l.symbol)).toEqual(['A', 'B'])
+    expect(plan.unaffordable).toEqual(['C'])
+  })
+
+  it('keeps the sells when all buys are unaffordable (partial rebalance to cash)', () => {
+    // sell A $10, buy B $30: budget $10 < $30 → skip B but KEEP the sell.
+    const plan = applyBudgetConstraints(legsPlan([sell('A', A, 10), buy('B', B, 30)]), 0n)
+    expect(plan.status).toBe('legs')
+    if (plan.status !== 'legs') return
+    expect(plan.legs.map((l) => l.symbol)).toEqual(['A'])
+    expect(plan.unaffordable).toEqual(['B'])
+  })
+
+  it('is a no-op when there are no buys', () => {
+    const plan = applyBudgetConstraints(legsPlan([sell('A', A, 30)]), 0n)
+    expect(plan.status).toBe('legs')
+    if (plan.status !== 'legs') return
+    expect(plan.legs).toHaveLength(1)
   })
 })

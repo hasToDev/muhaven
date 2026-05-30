@@ -960,11 +960,6 @@ const showBlurredAllocation = computed(() =>
       </div>
 
       <!-- ══════════════════════════════════════════════════════════
-           Auto-rebalance (Wave 5 Slice 3) — targets editor + CTA
-           ══════════════════════════════════════════════════════════ -->
-      <RebalancePanel :wallet-address="address ?? null" />
-
-      <!-- ══════════════════════════════════════════════════════════
            Holdings
            ══════════════════════════════════════════════════════════ -->
       <section class="space-y-6">
@@ -1150,6 +1145,12 @@ const showBlurredAllocation = computed(() =>
 
         </div>
       </section>
+
+      <!-- ══════════════════════════════════════════════════════════
+           Auto-rebalance (Wave 5 Slice 3) — below Holdings (the priority
+           section); collapses to a status strip + RWA-only verification.
+           ══════════════════════════════════════════════════════════ -->
+      <RebalancePanel :wallet-address="address ?? null" />
 
       <!-- ══════════════════════════════════════════════════════════
            Footer privacy pill

@@ -94,6 +94,15 @@ export type RebalancePlan =
       /** Symbols of legs dropped because they fell below the token's on-chain
        *  `minInvestment` (would revert the atomic batch). */
       belowMin: string[]
+      /** Symbols of BUY legs skipped because the available mhUSDC (cash + sell
+       *  proceeds) can't fund them — they'd silent-fail on-chain otherwise. */
+      unaffordable: string[]
+    }
+  | {
+      // Every BUY leg was unaffordable and there were no sells to fund them
+      // (e.g. you'd need to deploy cash you don't have). Nothing executable.
+      status: 'insufficient_funds'
+      tokens: string[]
     }
   | {
       // A sell leg would exceed the token's remaining instant-redeem cap →
@@ -187,6 +196,58 @@ export function applyExecutionConstraints(
   }
 
   return { ...plan, legs: kept, belowMin }
+}
+
+/**
+ * PURE buy-affordability pass (unit-testable). The buy legs are funded in-batch
+ * by the user's existing mhUSDC PLUS the sell legs' instant proceeds. A buy
+ * whose cost exceeds the running budget would silent-fail on-chain (you'd "buy
+ * 0"), so we SKIP it here + surface it in `unaffordable` rather than producing
+ * a doomed leg. Buys are funded largest-first (biggest drift correction first),
+ * cumulatively, so the kept buys' total never exceeds the budget → they all
+ * settle. If every buy is unaffordable AND there are no sells, there's nothing
+ * to do (`insufficient_funds`).
+ *
+ * @param mhUsdcBase6 the user's decrypted mhUSDC balance (base-6); pass 0n when
+ *   it couldn't be read (conservative — buys then funded by sell proceeds only).
+ */
+export function applyBudgetConstraints(
+  plan: Extract<RebalancePlan, { status: 'legs' }>,
+  mhUsdcBase6: bigint,
+): RebalancePlan {
+  const sells = plan.legs.filter((l) => l.kind === 'sell')
+  const buys = plan.legs.filter((l) => l.kind === 'buy')
+  if (buys.length === 0) return plan // nothing to fund
+
+  // The user's mhUSDC is exact; the sell PROCEEDS are an estimate (floored-share
+  // × compute-time NAV, minus base-6 rounding + the Slice-1.5 clamp). Haircut
+  // the proceeds slightly (CR L-1) so a buy funded at exactly the estimated
+  // budget isn't shipped only to silent-fail on-chain by a sub-cent shortfall —
+  // it's surfaced as `unaffordable` (a clear "re-run after sells settle") instead.
+  const SELL_PROCEEDS_HAIRCUT = 0.999
+  const sellProceedsUsd = sells.reduce((s, l) => s + l.estValueUsd, 0) * SELL_PROCEEDS_HAIRCUT
+  let remaining = Number(mhUsdcBase6) / 1e6 + sellProceedsUsd
+
+  const keptBuys: RebalanceLeg[] = []
+  const unaffordable: string[] = []
+  // Largest-impact buys first so the cash funds the biggest corrections.
+  for (const buy of [...buys].sort((a, b) => b.estValueUsd - a.estValueUsd)) {
+    if (buy.estValueUsd <= remaining) {
+      keptBuys.push(buy)
+      remaining -= buy.estValueUsd
+    } else {
+      unaffordable.push(buy.symbol)
+    }
+  }
+
+  if (keptBuys.length === 0 && sells.length === 0) {
+    // Only buys were requested and none can be funded.
+    return { status: 'insufficient_funds', tokens: unaffordable }
+  }
+
+  // Re-assemble sells-first, buys ordered by impact (matches funding order).
+  const legs: RebalanceLeg[] = [...sells, ...keptBuys]
+  return { ...plan, legs, unaffordable: [...plan.unaffordable, ...unaffordable] }
 }
 
 /**
@@ -315,6 +376,7 @@ export function buildRebalancePlan(
     excluded: excludedRows,
     truncated,
     belowMin: [], // populated by applyExecutionConstraints (on-chain pass)
+    unaffordable: [], // populated by applyBudgetConstraints (mhUSDC budget pass)
   }
 }
 
@@ -467,7 +529,29 @@ export function useRebalance() {
       }),
     )
 
-    return applyExecutionConstraints(plan, constraints)
+    const constrained = applyExecutionConstraints(plan, constraints)
+    if (constrained.status !== 'legs') return constrained
+
+    // ── Buy affordability (#4) ───────────────────────────────────────────
+    // Buys are funded in-batch by existing mhUSDC + the sell legs' instant
+    // proceeds. Decrypt the user's mhUSDC so we can skip buy legs the budget
+    // can't cover (they'd silent-fail on-chain) rather than ship a doomed leg.
+    // On a decrypt failure, fund buys from sell proceeds only (mhUSDC = 0n) —
+    // conservative (may skip an affordable buy, never ships an unfundable one).
+    let mhUsdcBase6 = 0n
+    if (constrained.legs.some((l) => l.kind === 'buy')) {
+      try {
+        const MuHavenStableService = await import('@/services/contracts/MuHavenStableService')
+        if (MuHavenStableService.isAvailable()) {
+          const ct = await MuHavenStableService.confidentialBalanceOf(walletAddress)
+          mhUsdcBase6 = await fhe.decryptMhUsdcForView(ct)
+        }
+      } catch (e) {
+        console.warn('[useRebalance] mhUSDC decrypt failed; funding buys from sell proceeds only', e)
+      }
+    }
+
+    return applyBudgetConstraints(constrained, mhUsdcBase6)
   }
 
   /**

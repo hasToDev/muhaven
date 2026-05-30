@@ -50,6 +50,7 @@ describe('describeRebalancePlanShortfall', () => {
       excluded: [],
       truncated: 0,
       belowMin: [],
+      unaffordable: [],
     }
     expect(describeRebalancePlanShortfall(plan)).toBeNull()
   })
@@ -84,6 +85,16 @@ describe('describeRebalancePlanShortfall', () => {
     expect(r?.description).toContain('30%')
     expect(r?.description).toContain('CETES')
     expect(r?.description).toMatch(/minimum investment/i)
+  })
+
+  it('maps insufficient_funds to an info nudge naming the token + a remedy', () => {
+    const r = describeRebalancePlanShortfall({
+      status: 'insufficient_funds',
+      tokens: ['TSLAX'],
+    })
+    expect(r?.severity).toBe('info')
+    expect(r?.description).toContain('TSLAX')
+    expect(r?.description).toMatch(/mhUSDC/i)
   })
 
   it('maps sell_exceeds_instant to an actionable info nudge naming the token', () => {
@@ -131,6 +142,7 @@ describe('rebalanceNotices', () => {
       excluded: [row('CETES'), row('GOLD1')],
       truncated: 0,
       belowMin: [],
+      unaffordable: [],
     })
     expect(notes).toHaveLength(1)
     expect(notes[0]).toContain('CETES, GOLD1')
@@ -146,10 +158,28 @@ describe('rebalanceNotices', () => {
       excluded: [],
       truncated: 0,
       belowMin: ['TBILL1'],
+      unaffordable: [],
     })
     expect(notes).toHaveLength(1)
     expect(notes[0]).toContain('TBILL1')
     expect(notes[0]).toMatch(/minimum investment/i)
+  })
+
+  it('flags buys skipped for insufficient mhUSDC (unaffordable)', () => {
+    const notes = rebalanceNotices({
+      status: 'legs',
+      legs: [leg({})],
+      rows: [],
+      maxDriftBps: 1000,
+      toleranceBps: 500,
+      excluded: [],
+      truncated: 0,
+      belowMin: [],
+      unaffordable: ['TSLAX'],
+    })
+    expect(notes).toHaveLength(1)
+    expect(notes[0]).toContain('TSLAX')
+    expect(notes[0]).toMatch(/mhUSDC/i)
   })
 
   it('flags leg-cap truncation', () => {
@@ -162,6 +192,7 @@ describe('rebalanceNotices', () => {
       excluded: [],
       truncated: 3,
       belowMin: [],
+      unaffordable: [],
     })
     expect(notes).toHaveLength(1)
     expect(notes[0]).toContain('3 smaller adjustment')
@@ -178,6 +209,7 @@ describe('rebalanceNotices', () => {
         excluded: [],
         truncated: 0,
         belowMin: [],
+        unaffordable: [],
       }),
     ).toEqual([])
   })
