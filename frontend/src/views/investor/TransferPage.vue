@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onDeactivated, watch } from 'vue'
 import { toast } from 'vue-sonner'
 import { isAddress } from 'viem'
 import { IdentityRegistryClient } from '@muhaven/sdk'
@@ -21,6 +21,13 @@ import {
 // pre-flight. Simulation-first: we read the recipient's KYC state + dev-mode
 // flag before signing so the user sees why a transfer would revert instead of
 // burning gas on a guaranteed-revert tx.
+
+// WS-1 perf: this page is <keep-alive>d (App.vue KEEP_ALIVE_PAGES) so a
+// re-visit reactivates the cached instance instead of re-mounting + re-running
+// the marketplace fetch + re-animating the card. Load is REST-only (no on-chain
+// reads on mount) and the page arms no event watchers, so no debounce/throttle
+// is needed — only the simulation debounce timer is torn down on deactivate.
+defineOptions({ name: 'TransferPage' })
 
 const { address } = useWallet()
 const { encryptUint128, getEphemeralEOA } = useFhe()
@@ -127,6 +134,16 @@ let simTimer: ReturnType<typeof setTimeout> | null = null
 watch(recipient, () => {
   if (simTimer) clearTimeout(simTimer)
   simTimer = setTimeout(runSimulation, 300)
+})
+
+// keep-alive: cancel a pending debounced simulation when the page is
+// backgrounded so it can't fire a stray RPC read on a hidden page. Also reset
+// a completed/failed transfer's success/error card so a return to the cached
+// page lands on a fresh form, not a stale "Transfer submitted" card. An
+// in-flight tx (isProcessing) keeps its state untouched.
+onDeactivated(() => {
+  if (simTimer) { clearTimeout(simTimer); simTimer = null }
+  if (!isProcessing.value && (showSuccess.value || errMsg.value)) resetForm()
 })
 
 // ── Transfer handler ────────────────────────────────────────────────────

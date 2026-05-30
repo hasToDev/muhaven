@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onActivated, onDeactivated, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useMediaQuery } from '@vueuse/core'
 import { toast } from 'vue-sonner'
@@ -44,6 +44,14 @@ import {
 
 type Mode = 'buy' | 'sell'
 
+// WS-1 perf: this page is <keep-alive>d (App.vue KEEP_ALIVE_PAGES) so a
+// re-visit reactivates the cached instance instead of re-mounting + re-firing
+// the connected-wallet reads (USDC balance, KYC, operator status) and
+// re-animating the form. See onActivated/onDeactivated below for the
+// re-entry refresh (throttled), the deep-link re-parse (a fresh ?token/?mode
+// query while backgrounded), and the fixed-aside leak guard (`isActive`).
+defineOptions({ name: 'TradePage' })
+
 const route = useRoute()
 const router = useRouter()
 const marketplace = useMarketplaceStore()
@@ -53,6 +61,23 @@ const fhe = useFhe()
 const { encryptUint128, getEphemeralEOA, decryptUint128ForView, initialize: initFhe } = fhe
 
 const isXl = useMediaQuery('(min-width: 1280px)')
+
+// keep-alive active state — gates the teleported fixed aside (v-show) so a
+// backgrounded /trade doesn't leave its `xl:fixed` "Account" rail painted over
+// every other page (the cross-page leak class — feedback_keepalive_teleport_
+// and_watcher_churn). Set in onActivated/onDeactivated.
+const isActive = ref(false)
+// Skip the first onActivated (it fires right after the initial onMounted, which
+// already owns the first load + prefill); only RE-entries do the refresh.
+let firstActivate = true
+// Throttle the connected-wallet read refresh on re-entry so rapid nav back to
+// /trade can't re-storm the rate-limited public RPC.
+const READ_THROTTLE_MS = 8000
+let lastConnectedReadsAt = 0
+// Signature of the query parts that drive prefill; re-applied on activate only
+// when it CHANGES (a fresh deep-link), so a plain re-entry never clobbers the
+// user's in-progress form.
+const appliedQueryKey = ref('')
 
 // ── Mode + form state ──────────────────────────────────────────────────
 
@@ -439,26 +464,20 @@ watch(connected, (val) => {
   }
 })
 
-onMounted(async () => {
-  if (connected.value) {
-    loadBalances()
-    refreshKyc()
-    refreshSubOperatorStatus()
-  }
-  // Surface marketplace.load() failures (Frontend H-2). Without this
-  // try/catch, a backend hiccup leaves the page half-rendered with no
-  // error state and no retry path — the user sees a blank token picker
-  // and thinks the deep-link broke.
-  if (!marketplace.loaded) {
-    try {
-      await marketplace.load()
-    } catch (err) {
-      console.warn('[TradePage] marketplace.load failed:', err)
-      marketplaceLoadFailed.value = true
-      // Continue — we can still render the mode toggle + an error banner.
-    }
-  }
+// Signature of the prefill-driving query parts. `applyRouteState` is re-run on
+// keep-alive re-entry only when this CHANGES (a new deep-link), so resuming a
+// cached /trade never clobbers an in-progress form.
+function currentQueryKey(): string {
+  const q = route.query
+  return JSON.stringify([q.token ?? '', q.amount ?? '', q.shares ?? '', q.mode ?? ''])
+}
 
+/**
+ * Apply mode + token + amount from the route query (the MCP / marketplace
+ * deep-link path). Extracted from onMounted so onActivated can re-apply a fresh
+ * deep-link that arrives while the page is backgrounded (keep-alive cached).
+ */
+function applyRouteState() {
   mode.value = readQueryMode()
 
   // Token can be either a 0x-address OR a symbol (e.g. "TBILL1") so MCP
@@ -472,15 +491,17 @@ onMounted(async () => {
   // most-traded TBILL1 silently fills in) → user taps Buy on wrong asset.
   const queryToken = route.query.token as string | undefined
   const matched = resolveTokenIdentifier(queryToken, marketplace.tokens)
+  prefillTokenMissError.value = null
   if (queryToken && !matched) {
     prefillTokenMissError.value = queryToken.trim().slice(0, 32)
     // Leave selectedToken empty — user must explicitly pick from the
     // dropdown. The banner makes the failure mode visible.
   } else if (matched) {
     selectedToken.value = matched.address
-  } else if (marketplace.filtered.length > 0) {
+  } else if (!selectedToken.value && marketplace.filtered.length > 0) {
     // No queryToken AND we have a list — default to first as before.
     // This path is the "direct nav to /trade" UX, NOT the deep-link path.
+    // Guarded on an empty selection so a cached re-entry keeps the prior pick.
     selectedToken.value = marketplace.filtered[0].address
   }
 
@@ -509,6 +530,74 @@ onMounted(async () => {
   if (mode.value === 'sell') {
     refreshHolding()
     refreshInstantCap()
+  }
+
+  appliedQueryKey.value = currentQueryKey()
+}
+
+/** Connected-wallet reads (USDC balance, KYC, operator status), throttled so a
+ *  rapid re-visit can't re-storm the rate-limited public RPC. */
+function refreshConnectedReadsThrottled() {
+  if (!connected.value) return
+  const now = Date.now()
+  if (now - lastConnectedReadsAt < READ_THROTTLE_MS) return
+  lastConnectedReadsAt = now
+  loadBalances()
+  refreshKyc()
+  refreshSubOperatorStatus()
+}
+
+onMounted(async () => {
+  if (connected.value) {
+    loadBalances()
+    refreshKyc()
+    refreshSubOperatorStatus()
+    lastConnectedReadsAt = Date.now()
+  }
+  // Surface marketplace.load() failures (Frontend H-2). Without this
+  // try/catch, a backend hiccup leaves the page half-rendered with no
+  // error state and no retry path — the user sees a blank token picker
+  // and thinks the deep-link broke.
+  if (!marketplace.loaded) {
+    try {
+      await marketplace.load()
+    } catch (err) {
+      console.warn('[TradePage] marketplace.load failed:', err)
+      marketplaceLoadFailed.value = true
+      // Continue — we can still render the mode toggle + an error banner.
+    }
+  }
+
+  applyRouteState()
+})
+
+// keep-alive lifecycle. onActivated fires on the initial mount AND every
+// re-entry; the `firstActivate` guard hands the first pass to onMounted (which
+// already loaded + prefilled). Re-entries get a throttled read refresh and, if
+// a fresh deep-link query arrived while backgrounded, a prefill re-apply.
+onActivated(() => {
+  isActive.value = true
+  if (firstActivate) {
+    firstActivate = false
+    return
+  }
+  refreshConnectedReadsThrottled()
+  if (currentQueryKey() !== appliedQueryKey.value) applyRouteState()
+})
+
+onDeactivated(() => {
+  isActive.value = false
+  // keep-alive: don't leave a completed/failed trade's success/error card on
+  // screen when the user returns to the cached page — reset to the form view.
+  // An in-flight tx keeps its progress (neither terminal flag is set while
+  // processing, so the guard leaves it alone).
+  if (!isProcessing.value && (showSuccess.value || errMsg.value)) {
+    showSuccess.value = false
+    errMsg.value = null
+    txHash.value = null
+    settledAs.value = null
+    queuedRequestId.value = null
+    currentStep.value = 0
   }
 })
 
@@ -1551,7 +1640,16 @@ const ctaDescribedBy = computed<string | undefined>(() => {
 
     <!-- Aside: balances + progress rail -->
     <Teleport to="body" :disabled="!isXl">
+      <!-- keep-alive leak guard: when teleported to <body> (xl), keep-alive does
+           NOT relocate this node on deactivate, so a backgrounded /trade would
+           leave the fixed "Account" rail painted over every other page. Gate the
+           teleported render on `isActive` so it's display:none (not painted, not
+           hit-tested) while backgrounded. Below xl the teleport is disabled
+           (in-flow) so keep-alive moves it normally — show unconditionally. Use
+           v-show (not v-if) so the v-motion entrance doesn't replay on re-entry.
+           See feedback_keepalive_teleport_and_watcher_churn. -->
       <aside
+        v-show="isActive || !isXl"
         v-motion
         :initial="{ opacity: 0, y: 20 }"
         :visible-once="{ opacity: 1, y: 0, transition: { duration: 520, delay: 120 } }"

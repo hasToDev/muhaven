@@ -73,6 +73,12 @@ const hasRightRail = computed(() => RIGHT_RAIL_PATHS.has(route.path))
 const KEEP_ALIVE_PAGES = [
   'PortfolioPage', 'CashPage',
   'MarketplacePage', 'YieldsPage', 'ActivityPage',
+  // 2026-05-30: the two remaining read-heavy investor pages. Both re-mounted +
+  // re-fetched on every visit (no caching), and their un-cached read bursts
+  // pressured the shared public RPC — slowing Cash/Marketplace too. TradePage
+  // carries an `isActive`-gated fixed aside + onActivated deep-link re-parse +
+  // throttled re-entry reads; TransferPage is REST-only (no watchers/overlays).
+  'TradePage', 'TransferPage',
 ]
 
 // Layout padding for the STABLE content wrapper below. The wrapper used to be
