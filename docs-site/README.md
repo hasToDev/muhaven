@@ -4,7 +4,8 @@ User-facing documentation for MuHaven — the confidential RWA portfolio
 platform. Focus: the four agentic surfaces (HavenBot, MCP, OpenClaw,
 Hosted Checkout).
 
-Production target: **https://docs.muhaven.app** (static deploy, TBD).
+Production: **https://docs.muhaven.app** (static deploy via the
+`muhaven-document-web` GitHub Pages repo — see "Deploy" below).
 Local development: **http://127.0.0.1:5174**.
 
 ## Run locally
@@ -74,13 +75,37 @@ docs-site/
 - **No emojis** in body content unless a section deliberately leans on
   one for a quick visual cue (✅ / ❌ in tables, occasional 🪙).
 
-## Deploy to docs.muhaven.app (TODO)
+## Deploy to docs.muhaven.app
 
-1. Configure Cloudflare DNS for `docs.muhaven.app` → static-host CNAME.
-2. Wire a CI workflow on push-to-master that runs `pnpm build` and
-   uploads `.vitepress/dist/` to the chosen static host.
-3. Mirror the `muhaven-web` deploy pattern in `scripts/deploy-homelab.sh`
-   for consistency.
+The docs deploy mirrors the `muhaven-web` recipe: build the static site,
+sync `dist/` into a sibling GitHub Pages repo, then `git push` that repo.
+GitHub Pages serves it at the custom domain `docs.muhaven.app`.
+
+```bash
+cd docs-site
+pnpm deploy            # vitepress build → sync .vitepress/dist/ → ../../muhaven-document-web
+```
+
+`scripts/deploy-to-muhaven-document-web.mjs` copies `.vitepress/dist/` into
+the sibling `../../muhaven-document-web` repo (override the target with
+`MUHAVEN_DOCUMENT_WEB_TARGET_DIR`), removes stale hashed assets, and
+**preserves** the repo's `CNAME`, `.nojekyll`, and `README.md`. It skips
+gracefully (build still succeeds) if the sibling repo isn't present.
+
+After `pnpm deploy`, publish from the sibling repo:
+
+```bash
+cd ../../muhaven-document-web
+git add -A && git commit -m "docs: <summary>" && git push
+```
+
+One-time setup of the sibling repo (already done locally):
+
+- `git init`, branch `master`, remote `git@github.com:hasToDev/muhaven-document-web.git`
+- `CNAME` = `docs.muhaven.app`, empty `.nojekyll`, a `README.md`
+- GitHub repo `hasToDev/muhaven-document-web` → Pages: deploy from `master`
+  root + custom domain `docs.muhaven.app` (operator)
+- DNS: `CNAME docs.muhaven.app → hasToDev.github.io` (operator)
 
 ## License
 

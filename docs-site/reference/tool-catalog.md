@@ -58,6 +58,13 @@ Column abbreviations below: **HB** = HavenBot · **MCP** = MuHaven MCP server ·
 | List checkouts | `list_checkouts` (via chat) | (n/a) | ❌ | n/a |
 | Cancel checkout | `cancel_checkout` | (dashboard-only) | ❌ | n/a |
 
+::: info 🚧 Some tools are not deployed on the demo testnet
+The **P11** tools — `muhaven.governance.propose`, `muhaven.governance.cast_vote`,
+`muhaven.read.protection_coverage`, and `muhaven.read.kyc_attestation` — exist and respond,
+but return a structured **`not_deployed`** result because their contracts aren't on the
+demo deployment. See [Not in this guide](/guide/not-in-this-guide).
+:::
+
 ## Governance tools (encrypted)
 
 | Capability | HB | MCP | OC | Pay |

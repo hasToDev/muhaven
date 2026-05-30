@@ -12,6 +12,9 @@ hero:
     alt: MuHaven
   actions:
     - theme: brand
+      text: ⭐ Testing Guide (judges start here)
+      link: /guide/
+    - theme: alt
       text: Get started
       link: /get-started/quickstart
     - theme: alt
@@ -51,6 +54,10 @@ features:
 MuHaven hides the chain. You sign in with a passkey, your balances are encrypted end-to-end with [Fhenix CoFHE](https://docs.fhenix.io), and an agent handles the rest — at the tier of autonomy *you* pick. Read-only? Confirm every move? Bounded automation? Your call.
 
 <div class="mh-card-grid">
+  <a class="mh-card" href="/guide/happy-path">
+    <h3>⭐ 10-minute happy path</h3>
+    <p>The fastest way to see the privacy "aha" — sign in, fund, buy encrypted, reveal, verify.</p>
+  </a>
   <a class="mh-card" href="/get-started/quickstart">
     <h3>Quickstart</h3>
     <p>From passkey to first encrypted buy — across all four surfaces.</p>

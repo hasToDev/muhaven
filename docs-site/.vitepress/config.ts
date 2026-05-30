@@ -8,6 +8,8 @@ export default defineConfig({
   description:
     'User guide for MuHaven — the confidential RWA portfolio with four agentic surfaces (HavenBot, MCP, OpenClaw, Hosted Checkout).',
   lang: 'en-US',
+  // Custom-domain GitHub Pages deploy (docs.muhaven.app) → served from repo root.
+  base: '/',
   cleanUrls: true,
   lastUpdated: true,
   appearance: 'dark',
@@ -41,6 +43,7 @@ export default defineConfig({
     },
     siteTitle: 'MuHaven',
     nav: [
+      { text: 'Testing Guide', link: '/guide/', activeMatch: '^/guide/' },
       { text: 'Get Started', link: '/get-started/introduction', activeMatch: '^/get-started/' },
       { text: 'HavenBot', link: '/havenbot/overview', activeMatch: '^/havenbot/' },
       { text: 'MCP', link: '/mcp/overview', activeMatch: '^/mcp/' },
@@ -57,6 +60,68 @@ export default defineConfig({
       },
     ],
     sidebar: {
+      '/guide/': [
+        {
+          text: 'Start here',
+          items: [
+            { text: 'Testing Guide overview', link: '/guide/' },
+            { text: 'Before you begin', link: '/guide/before-you-begin' },
+            { text: '⭐ The 10-minute happy path', link: '/guide/happy-path' },
+            { text: 'Not in this guide', link: '/guide/not-in-this-guide' },
+          ],
+        },
+        {
+          text: 'Investor tasks',
+          collapsed: false,
+          items: [
+            { text: 'I1 · Sign in with a passkey', link: '/guide/investor/sign-in' },
+            { text: 'I2 · Get testnet funds', link: '/guide/investor/get-funds' },
+            { text: 'I3 · Deposit USDC → mhUSDC', link: '/guide/investor/deposit' },
+            { text: 'I4 · Browse the marketplace', link: '/guide/investor/marketplace' },
+            { text: 'I5 · Buy an encrypted position', link: '/guide/investor/buy' },
+            { text: 'I6 · Reveal your balance', link: '/guide/investor/reveal-balance' },
+            { text: 'I7 · Sell a position', link: '/guide/investor/sell' },
+            { text: 'I8 · Claim yield', link: '/guide/investor/claim-yield' },
+            { text: 'I9 · Redemption-queue claim', link: '/guide/investor/redemption-queue' },
+            { text: 'I10 · Transfer (encrypted)', link: '/guide/investor/transfer' },
+            { text: 'I11 · Withdraw mhUSDC → USDC', link: '/guide/investor/withdraw' },
+            { text: 'I12 · Activity feed', link: '/guide/investor/activity' },
+            { text: 'I13 · Portfolio dashboard', link: '/guide/investor/portfolio' },
+          ],
+        },
+        {
+          text: 'AI agent tasks',
+          collapsed: false,
+          items: [
+            { text: 'A1 · Chat with HavenBot', link: '/guide/agent/chat' },
+            { text: 'A2 · Agent reads your portfolio', link: '/guide/agent/reads' },
+            { text: 'A3 · Set the autonomy tier', link: '/guide/agent/set-tier' },
+            { text: 'A4 · Autonomous execution', link: '/guide/agent/autonomous' },
+            { text: 'A5 · Advisory + deep-link confirm', link: '/guide/agent/deep-link-confirm' },
+            { text: 'A6 · Pause / kill-switch', link: '/guide/agent/pause' },
+            { text: 'A7 · Session status + audit', link: '/guide/agent/session-audit' },
+          ],
+        },
+        {
+          text: 'Issuer tasks',
+          collapsed: false,
+          items: [
+            { text: 'S1 · Become an issuer', link: '/guide/issuer/become-issuer' },
+            { text: 'S2 · Issue a token', link: '/guide/issuer/issue-token' },
+            { text: 'S3 · Distribute yield', link: '/guide/issuer/distribute-yield' },
+            { text: 'S4 · Issued-tokens dashboard', link: '/guide/issuer/tokens-dashboard' },
+            { text: 'S5 · Investor registry', link: '/guide/issuer/investor-registry' },
+            { text: 'S6 · Compliance dashboard', link: '/guide/issuer/compliance' },
+          ],
+        },
+        {
+          text: 'Reference & help',
+          items: [
+            { text: 'Reference appendix', link: '/guide/reference' },
+            { text: 'Troubleshooting & FAQ', link: '/guide/troubleshooting' },
+          ],
+        },
+      ],
       '/get-started/': [
         {
           text: 'Welcome',

@@ -5,6 +5,13 @@ description: One-click pay links for issuers to sell to non-customer buyers.
 
 # Hosted Checkout
 
+::: warning 🚧 In development — not in the Testing Guide
+Hosted Checkout is still being hardened and isn't part of the judge/user
+[Testing Guide](/guide/). These pages describe the intended design. To evaluate
+MuHaven's agentic flows today, use [HavenBot](/havenbot/overview) or the
+[MCP server](/mcp/overview) instead.
+:::
+
 `muhaven.app/pay` is MuHaven's **hosted checkout** surface. It lets an issuer mint a one-off pay link, share it (Telegram, email, Twitter DM), and have a non-customer buyer pay with a passkey — no MuHaven account required ahead of time.
 
 It's the only surface designed for **users who don't yet have a MuHaven wallet**. The first-time buyer's MuHaven wallet is provisioned via `@zerodev/passkey-validator` at checkout; returning buyers reuse it.

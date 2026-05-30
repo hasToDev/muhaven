@@ -7,7 +7,8 @@
   "scripts": {
     "dev": "vitepress dev --port 5174 --host 127.0.0.1",
     "build": "vitepress build",
-    "preview": "vitepress preview --port 5174 --host 127.0.0.1"
+    "preview": "vitepress preview --port 5174 --host 127.0.0.1",
+    "deploy": "vitepress build && node scripts/deploy-to-muhaven-document-web.mjs"
   },
   "devDependencies": {
     "vitepress": "^1.5.0",

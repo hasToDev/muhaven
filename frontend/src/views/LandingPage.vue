@@ -89,6 +89,7 @@ const navLinks = [
   { name: 'How It Works', href: '#how-it-works' },
   { name: 'Privacy', href: '#privacy' },
   { name: 'FAQ', href: '#faq' },
+  { name: 'Docs', href: 'https://docs.muhaven.app' },
 ]
 
 // Shared motion config (matches ShadowDAO ease) — visibleOnce = animate once, never re-trigger
@@ -146,6 +147,8 @@ function scaleIn(delay = 0) {
             v-for="link in navLinks"
             :key="link.name"
             :href="link.href"
+            :target="link.href.startsWith('http') ? '_blank' : undefined"
+            :rel="link.href.startsWith('http') ? 'noopener noreferrer' : undefined"
             class="label-text text-[11px] text-slate/70 dark:text-[#d5c4ab]/70 transition-all duration-300 hover:text-compute dark:hover:text-signal hover:bg-haze/20 dark:hover:bg-[#1f2022]/80 px-3 py-1.5 rounded-md"
           >
             {{ link.name }}
@@ -186,6 +189,8 @@ function scaleIn(delay = 0) {
           :key="link.name"
           :ref="(el) => { if (i === 0) mobileMenuFirstLink = el as HTMLAnchorElement }"
           :href="link.href"
+          :target="link.href.startsWith('http') ? '_blank' : undefined"
+          :rel="link.href.startsWith('http') ? 'noopener noreferrer' : undefined"
           :class="cn(
             'text-4xl font-sans font-bold text-compute dark:text-signal transition-all duration-500',
             mobileMenuOpen ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4',
@@ -796,6 +801,7 @@ function scaleIn(delay = 0) {
           </div>
         </div>
         <div class="flex items-center gap-6">
+          <a class="label-text text-xs text-cool hover:text-compute dark:hover:text-signal transition-colors" href="https://docs.muhaven.app" target="_blank" rel="noopener noreferrer">Docs</a>
           <a class="label-text text-xs text-cool hover:text-compute dark:hover:text-signal transition-colors" href="#">Privacy</a>
           <a class="label-text text-xs text-cool hover:text-compute dark:hover:text-signal transition-colors" href="#">Terms</a>
           <a class="label-text text-xs text-cool hover:text-compute dark:hover:text-signal transition-colors" href="#">Twitter</a>
