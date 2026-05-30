@@ -71,6 +71,22 @@ export const TelegramLinkConsumeDtoSchema = z
   .strict();
 export type TelegramLinkConsumeDto = z.infer<typeof TelegramLinkConsumeDtoSchema>;
 
+/**
+ * Wave 5 Option D · C5 — Telegram `/revoke_session` kill-switch. The bot
+ * worker forwards only the `telegramChatId` (the chat that issued the
+ * command); the backend resolves the bound MuHaven user via
+ * `telegram_links` and revokes every active scoped session for that user.
+ * No user-supplied sessionId — the chat binding is the sole authority,
+ * so a service-secret holder cannot revoke a session it does not own a
+ * chat binding for.
+ */
+export const TelegramRevokeSessionDtoSchema = z
+  .object({
+    telegramChatId: z.string().regex(/^-?\d{1,32}$/),
+  })
+  .strict();
+export type TelegramRevokeSessionDto = z.infer<typeof TelegramRevokeSessionDtoSchema>;
+
 // Plan A (2026-05-15) — dashboard-driven unlink. Body is OPTIONAL; the
 // route handler reads `userId` from the JWT and unlinks every active
 // row when chatId is omitted (sidebar's "Unlink" CTA).

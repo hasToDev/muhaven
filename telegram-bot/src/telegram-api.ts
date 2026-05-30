@@ -92,6 +92,18 @@ export class TelegramApi {
   }
 
   /**
+   * Register the bot's command menu (the `/` autocomplete + the Menu
+   * button list). Idempotent — `setMyCommands` REPLACES the whole list,
+   * so the caller passes the complete set every boot. Resolves on
+   * success; throws `TelegramApiError` on a Bot-API failure.
+   */
+  async setMyCommands(
+    commands: ReadonlyArray<{ command: string; description: string }>,
+  ): Promise<void> {
+    await this.call<boolean>('setMyCommands', { commands: [...commands] });
+  }
+
+  /**
    * Long-poll wrapper. Returns up to ~100 updates after `offset` with a
    * server-side wait of `timeoutSec` if no updates are pending. Used by
    * the dev long-poll mode in `index.ts`.

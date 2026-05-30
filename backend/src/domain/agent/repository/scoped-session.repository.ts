@@ -92,6 +92,30 @@ export interface IScopedSessionRepository {
   ): Promise<ScopedSession | null>;
 
   /**
+   * Wave 5 Option D · C5 (Telegram `/revoke_session` kill-switch) —
+   * surface-AGNOSTIC active lookup. Returns EVERY active session for
+   * `userId` whose `validUntilSec > nowSec`, across all surfaces (mcp,
+   * havenbot, openclaw, checkout). Distinct from `findLatestActive`,
+   * which returns the single most-recent active row for ONE
+   * `(userId, surface)` pair.
+   *
+   * The Telegram phone kill-switch must kill autonomous trading on
+   * EVERY surface at once — "stop everything" — not just the `mcp`
+   * surface the dashboard hard-locks scoped sessions under today. If a
+   * future surface ever mints a scoped session, an explicit user
+   * kill-switch must still reach it; keying the revoke to one surface
+   * would silently leave such a session live.
+   *
+   * Orphaned rows (`userId IS NULL` after the CASCADE SET NULL on user
+   * deletion) are excluded by the `userId` equality predicate — NULL
+   * never equals a string in SQL. Returns an empty array when none
+   * match (the use-case layer maps empty → 409 "nothing to revoke").
+   * Order is deterministic (surface, then sessionId) so the use-case's
+   * revoke loop and the integration tests see a stable sequence.
+   */
+  findActiveByUser(userId: string, nowSec: number): Promise<ScopedSession[]>;
+
+  /**
    * Mark `sessionId` as `status='revoked'` with `revokedAt = now`.
    * Returns the revoked entity, OR `null` if:
    *   - row not found, OR

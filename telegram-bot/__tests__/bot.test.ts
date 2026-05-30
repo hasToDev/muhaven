@@ -41,6 +41,9 @@ function stubBackend(): BackendClient {
   stub.denyIntent = vi.fn().mockResolvedValue({
     intent: { intentId: 'oci_AAAAAAAAAAAAAAAAAAAAAAAAAA', status: 'denied' },
   }) as typeof stub.denyIntent;
+  stub.revokeSessionForChatId = vi
+    .fn()
+    .mockResolvedValue({ revoked: 1 }) as typeof stub.revokeSessionForChatId;
   return stub;
 }
 
@@ -193,6 +196,111 @@ describe('BotHandler — free-form text', () => {
       },
     };
     const effects = await handler.handleUpdate(update);
+    expect(effects.length).toBe(1);
+    expect(effects[0]!.kind).toBe('send');
+  });
+});
+
+// ── /revoke_session kill-switch ──────────────────────────────────────
+
+describe('BotHandler — /revoke_session', () => {
+  let backend: BackendClient;
+  let handler: BotHandler;
+
+  beforeEach(() => {
+    backend = stubBackend();
+    handler = buildHandler(backend);
+  });
+
+  function revokeUpdate(over: Partial<TelegramUpdate['message']> = {}): TelegramUpdate {
+    return {
+      update_id: 1,
+      message: {
+        message_id: 1,
+        date: 0,
+        chat: { id: 12345, type: 'private' },
+        from: { id: 12345, is_bot: false, first_name: 'Alice', username: 'alice' },
+        text: '/revoke_session',
+        ...over,
+      },
+    };
+  }
+
+  it('forwards the chat-id to the backend + confirms success', async () => {
+    const effects = await handler.handleUpdate(revokeUpdate());
+    expect(backend.revokeSessionForChatId).toHaveBeenCalledWith({
+      telegramChatId: '12345',
+    });
+    expect(effects.length).toBe(1);
+    expect(effects[0]!.kind).toBe('send');
+    if (effects[0]!.kind === 'send') {
+      expect(effects[0]!.payload.text).toMatch(/off/i);
+    }
+  });
+
+  it('refuses + does NOT call backend when from.id ≠ chat.id (chat-id guard)', async () => {
+    const effects = await handler.handleUpdate(
+      revokeUpdate({ from: { id: 67890, is_bot: false, first_name: 'Eve' } }),
+    );
+    expect(backend.revokeSessionForChatId).not.toHaveBeenCalled();
+    expect(effects.length).toBe(1);
+    expect(effects[0]!.kind).toBe('send');
+    if (effects[0]!.kind === 'send') {
+      expect(effects[0]!.payload.text).toMatch(/mismatch/i);
+    }
+  });
+
+  it('refuses + does NOT call backend when message.from is absent', async () => {
+    const effects = await handler.handleUpdate(revokeUpdate({ from: undefined }));
+    expect(backend.revokeSessionForChatId).not.toHaveBeenCalled();
+    expect(effects.length).toBe(1);
+  });
+
+  it('maps a 404 to a not-linked guidance message', async () => {
+    backend.revokeSessionForChatId = vi
+      .fn()
+      .mockRejectedValue(new BackendClientError(404, 'not linked'));
+    const effects = await handler.handleUpdate(revokeUpdate());
+    expect(effects.length).toBe(1);
+    if (effects[0]!.kind === 'send') {
+      expect(effects[0]!.payload.text).toMatch(/not linked/i);
+    }
+  });
+
+  it('maps a 409 to an already-off message', async () => {
+    backend.revokeSessionForChatId = vi
+      .fn()
+      .mockRejectedValue(new BackendClientError(409, 'no active session'));
+    const effects = await handler.handleUpdate(revokeUpdate());
+    expect(effects.length).toBe(1);
+    if (effects[0]!.kind === 'send') {
+      expect(effects[0]!.payload.text).toMatch(/already off/i);
+    }
+  });
+
+  it('maps an unexpected backend error to a retry message', async () => {
+    backend.revokeSessionForChatId = vi
+      .fn()
+      .mockRejectedValue(new BackendClientError(500, 'boom'));
+    const effects = await handler.handleUpdate(revokeUpdate());
+    expect(effects.length).toBe(1);
+    if (effects[0]!.kind === 'send') {
+      expect(effects[0]!.payload.text).toMatch(/try again/i);
+    }
+  });
+
+  it('refuses /revoke_session in a group chat (no backend call)', async () => {
+    const effects = await handler.handleUpdate({
+      update_id: 1,
+      message: {
+        message_id: 1,
+        date: 0,
+        chat: { id: -100123, type: 'supergroup', title: 'crypto chat' },
+        from: { id: 12345, is_bot: false, first_name: 'Alice' },
+        text: '/revoke_session',
+      },
+    });
+    expect(backend.revokeSessionForChatId).not.toHaveBeenCalled();
     expect(effects.length).toBe(1);
     expect(effects[0]!.kind).toBe('send');
   });

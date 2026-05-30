@@ -333,6 +333,41 @@ describeIfPg('PgScopedSessionRepository (real postgres)', () => {
     });
   });
 
+  describe('findActiveByUser (C5 surface-agnostic kill-switch lookup)', () => {
+    it('returns active rows across ALL surfaces for the user', async () => {
+      await repo.create(makeSession({ sessionId: 'session-mcp', surface: Surface.MCP }));
+      await repo.create(
+        makeSession({ sessionId: 'session-hb', surface: Surface.HavenBot }),
+      );
+      const rows = await repo.findActiveByUser(U1, NOW_SEC);
+      expect(rows.map((r) => r.sessionId).sort()).toEqual(['session-hb', 'session-mcp']);
+    });
+
+    it('excludes terminal + TTL-expired rows', async () => {
+      await repo.create(
+        makeSession({
+          sessionId: 'session-revoked',
+          surface: Surface.MCP,
+          status: ScopedSessionStatus.Revoked,
+          revokedAt: NOW,
+        }),
+      );
+      await repo.create(
+        makeSession({
+          sessionId: 'session-expired',
+          surface: Surface.HavenBot,
+          validUntilSec: NOW_SEC, // not > now → filtered
+        }),
+      );
+      expect(await repo.findActiveByUser(U1, NOW_SEC)).toEqual([]);
+    });
+
+    it('does not cross users', async () => {
+      await repo.create(makeSession({ userId: U2 }));
+      expect(await repo.findActiveByUser(U1, NOW_SEC)).toEqual([]);
+    });
+  });
+
   describe('revoke', () => {
     it('happy path — flips active → revoked + sets revokedAt', async () => {
       await repo.create(makeSession());

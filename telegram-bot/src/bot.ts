@@ -190,6 +190,9 @@ export class BotHandler {
         ),
       ];
     }
+    if (text === '/revoke_session') {
+      return this.handleRevokeSession(message);
+    }
     // Free-form text — refuse politely. The LLM lives in the
     // user's OpenClaw skill on the host side, not in this bot worker.
     return [
@@ -342,6 +345,73 @@ export class BotHandler {
   }
 
   /**
+   * Wave 5 Option D · C5 — `/revoke_session` phone kill-switch. Forwards
+   * the chat to the backend, which resolves the bound user and revokes
+   * every active scoped session for them. The bot worker NEVER sees the
+   * user's JWT or signs anything — the backend's mirror-row flip is the
+   * authoritative stop (the per-buy gate reads it).
+   */
+  private async handleRevokeSession(
+    message: TelegramMessage,
+  ): Promise<BotEffect[]> {
+    // Defense-in-depth (mirrors the callback-handler chat-id guard at
+    // `:225`): in a private chat Telegram guarantees `chat.id === from.id`.
+    // `handleMessage` already rejects non-private chats up-stream; this is
+    // the second gate so a crafted update whose `from` diverges from `chat`
+    // can't drive a kill-switch for a chat the sender doesn't own.
+    if (!message.from || message.from.id !== message.chat.id) {
+      return [
+        sendText(
+          message.chat.id,
+          'Identity mismatch\\. Send `/revoke_session` from your private chat with me\\.',
+        ),
+      ];
+    }
+    try {
+      await this.opts.backend.revokeSessionForChatId({
+        telegramChatId: String(message.chat.id),
+      });
+      return [
+        sendText(
+          message.chat.id,
+          [
+            '✅ Revoked — autonomous trading is now *off*\\.',
+            '',
+            'Your agent can no longer place trades on your behalf\\. To turn autonomy back on, mint a new session from the dashboard\\.',
+            '',
+            `[Open dashboard](${escapeMarkdownV2(this.opts.dashboardUrl)})`,
+          ].join('\n'),
+        ),
+      ];
+    } catch (err) {
+      if (err instanceof BackendClientError) {
+        if (err.status === 404) {
+          return [
+            sendText(
+              message.chat.id,
+              'This chat is not linked to a MuHaven account yet\\. Link it from the dashboard → Agent → Telegram, then try again\\.',
+            ),
+          ];
+        }
+        if (err.status === 409) {
+          return [
+            sendText(
+              message.chat.id,
+              'No active session — autonomous trading is already off\\.',
+            ),
+          ];
+        }
+      }
+      return [
+        sendText(
+          message.chat.id,
+          'I could not revoke the session right now\\. Please try again in a moment, or use the kill\\-switch on the dashboard\\.',
+        ),
+      ];
+    }
+  }
+
+  /**
    * Render the inline-keyboard for an intent. Used by the message the
    * backend (or this bot) posts to the user with the intent preview.
    * Keep this pure — it does NOT call the API; the caller decides when
@@ -398,6 +468,7 @@ export class BotHandler {
       '`/start <code>` — link this chat to your MuHaven account',
       '`/help` — show this message',
       '`/pause` — link to the dashboard pause control',
+      '`/revoke_session` — revoke your autonomous agent session \\(kill\\-switch\\)',
       '`/unlink` — instructions to unlink Telegram',
       '',
       'I am NOT a chat agent\\. To talk to the MuHaven agent, open the dashboard or use the OpenClaw skill on your computer\\.',

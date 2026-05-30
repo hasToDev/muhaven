@@ -65,6 +65,22 @@ export class BackendClient {
     return this.post<ConsumeLinkResult>('/api/v1/agent/openclaw/link/consume', input);
   }
 
+  /**
+   * Wave 5 Option D · C5 — the `/revoke_session` phone kill-switch. The
+   * backend resolves the chat to its bound MuHaven user and revokes
+   * every active scoped session for that user. Throws `BackendClientError`
+   * with status 404 (chat not linked) or 409 (no active session); 200
+   * returns `{ revoked, found }`.
+   */
+  async revokeSessionForChatId(input: {
+    telegramChatId: string;
+  }): Promise<{ revoked: number; found: number }> {
+    return this.post<{ revoked: number; found: number }>(
+      '/api/v1/agent/telegram/revoke-session',
+      input,
+    );
+  }
+
   async createIntent(input: {
     userId: string;
     kind: 'buy' | 'claim';

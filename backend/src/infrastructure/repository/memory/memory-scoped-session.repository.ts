@@ -131,6 +131,26 @@ export class MemoryScopedSessionRepository implements IScopedSessionRepository {
     return matches[0]!;
   }
 
+  async findActiveByUser(userId: string, nowSec: number): Promise<ScopedSession[]> {
+    // Wave 5 Option D · C5 — surface-agnostic active lookup mirroring the
+    // Pg variant: every active, non-expired row for the user, across all
+    // surfaces. Deterministic order (surface, then sessionId) for stable
+    // tests + a stable revoke loop in the use-case.
+    const matches: ScopedSession[] = [];
+    for (const session of this.store.values()) {
+      if (session.userId !== userId) continue;
+      if (session.status !== ScopedSessionStatus.Active) continue;
+      if (session.validUntilSec <= nowSec) continue;
+      matches.push(session);
+    }
+    matches.sort((a, b) => {
+      const s = a.surface.localeCompare(b.surface);
+      if (s !== 0) return s;
+      return a.sessionId.localeCompare(b.sessionId);
+    });
+    return matches;
+  }
+
   async revoke(sessionId: string, now: Date): Promise<ScopedSession | null> {
     const existing = this.store.get(sessionId);
     if (!existing) return null;

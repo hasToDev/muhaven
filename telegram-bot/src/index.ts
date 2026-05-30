@@ -66,6 +66,28 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Register the slash-command menu (the `/` autocomplete + Menu button).
+  // `setMyCommands` REPLACES the whole list, so we pass the complete set.
+  // Non-fatal: a transient Bot-API hiccup here must not crash boot — the
+  // commands still work without the menu (the handler dispatches on the
+  // raw text), the menu is purely discoverability sugar.
+  try {
+    await api.setMyCommands([
+      { command: 'help', description: 'Show available commands' },
+      { command: 'pause', description: 'How to pause your agent' },
+      {
+        command: 'revoke_session',
+        description: 'Revoke autonomous session (kill-switch)',
+      },
+      { command: 'unlink', description: 'How to unlink Telegram' },
+    ]);
+    // eslint-disable-next-line no-console
+    console.log('[telegram-bot] command menu registered');
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[telegram-bot] setMyCommands failed (non-fatal):', err);
+  }
+
   const app = express();
   app.use(express.json({ limit: '256kb' }));
   // Round-2 API-Tester M-1 — Express's default body-parser error for

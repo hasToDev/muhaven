@@ -153,6 +153,27 @@ export class PgScopedSessionRepository implements IScopedSessionRepository {
     return row ? this.toDomain(row) : null;
   }
 
+  async findActiveByUser(userId: string, nowSec: number): Promise<ScopedSession[]> {
+    // Wave 5 Option D · C5 (Telegram kill-switch) — surface-agnostic
+    // active lookup. Same active-row predicate as `findLatestActive`
+    // (status='active' AND valid_until_sec > now) but WITHOUT the
+    // `surface` filter, so the phone kill-switch reaches every surface at
+    // once. The partial active index still narrows the scan by
+    // status='active'; ordering by (surface, session_id) keeps the
+    // revoke loop + tests deterministic. Orphaned rows (user_id IS NULL)
+    // are excluded by the `eq(userId, $)` predicate.
+    const rows = await this.db.query.agentScopedSessions.findMany({
+      where: and(
+        eq(agentScopedSessions.userId, userId),
+        eq(agentScopedSessions.status, ScopedSessionStatus.Active),
+        gt(agentScopedSessions.validUntilSec, nowSec),
+      ),
+      orderBy: [asc(agentScopedSessions.surface), agentScopedSessions.sessionId],
+      columns: { enableData: false, enableSig: false },
+    });
+    return rows.map((r) => this.toDomain(r));
+  }
+
   async findInstallMaterialById(
     sessionId: string,
     userId: string,
