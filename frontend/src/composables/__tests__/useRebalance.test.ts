@@ -158,6 +158,53 @@ describe('buildRebalancePlan', () => {
     expect(plan.status).toBe('cannot_deploy')
     if (plan.status === 'cannot_deploy') expect(plan.tokens).toEqual(['NVDAon'])
   })
+
+  it('deploys idle mhUSDC toward targets (cash makes an underweight target buyable)', () => {
+    // CETES $50 held, NVDAon $130/share, 50/50 target. RWA-only ($50) can't buy
+    // a whole NVDAon share, but with $210 mhUSDC the total is $260 → each target
+    // $130 → NVDAon buys 1 share. Both legs are BUYS (deploying cash), no sells.
+    const cetes = input({ symbol: 'CETES', navUsd: 1, balanceShares: 50n, targetBps: 5000 })
+    const nvdaon = input({ symbol: 'NVDAon', navUsd: 130, balanceShares: 0n, targetBps: 5000 })
+    const plan = buildRebalancePlan(500, [cetes, nvdaon], 210)
+    expect(plan.status).toBe('legs')
+    if (plan.status !== 'legs') return
+    expect(plan.legs.every((l) => l.kind === 'buy')).toBe(true)
+    const nv = plan.legs.find((l) => l.symbol === 'NVDAon')!
+    expect(nv.shares).toBe('1')
+  })
+
+  it('rejects ONLY the genuinely-infeasible token, even with cash (operator EUTBL+NVDAon case)', () => {
+    // With $100 mhUSDC: total $150. Each target 1/3. EUTBL ($10/share) target
+    // ~$50 → buyable. NVDAon ($500/share) target ~$50 → still < 1 share →
+    // infeasible. Must reject naming ONLY NVDAon (not EUTBL).
+    const cetes = input({ symbol: 'CETES', navUsd: 1, balanceShares: 50n, targetBps: 3334 })
+    const eutbl = input({ symbol: 'EUTBL', navUsd: 10, balanceShares: 0n, targetBps: 3333 })
+    const nvdaon = input({ symbol: 'NVDAon', navUsd: 500, balanceShares: 0n, targetBps: 3333 })
+    const plan = buildRebalancePlan(500, [cetes, eutbl, nvdaon], 100)
+    expect(plan.status).toBe('cannot_deploy')
+    if (plan.status === 'cannot_deploy') expect(plan.tokens).toEqual(['NVDAon'])
+  })
+
+  it('idle mhUSDC alone makes a single 100%-target token drifted (deploys cash)', () => {
+    // Hold $100 CETES (target 100%) + $100 mhUSDC → CETES is 50% of the $200
+    // total → drifted → buy CETES to deploy the cash.
+    const cetes = input({ symbol: 'CETES', navUsd: 1, balanceShares: 100n, targetBps: 10000 })
+    const plan = buildRebalancePlan(500, [cetes], 100)
+    expect(plan.status).toBe('legs')
+    if (plan.status !== 'legs') return
+    expect(plan.legs).toHaveLength(1)
+    expect(plan.legs[0].kind).toBe('buy')
+  })
+
+  it('buys with mhUSDC even when holding none of the targeted tokens', () => {
+    // Hold $0 RWA but $200 mhUSDC, target CETES 100% → buy CETES with the cash
+    // (NOT no_value).
+    const cetes = input({ symbol: 'CETES', navUsd: 1, balanceShares: 0n, targetBps: 10000 })
+    const plan = buildRebalancePlan(500, [cetes], 200)
+    expect(plan.status).toBe('legs')
+    if (plan.status !== 'legs') return
+    expect(plan.legs[0].kind).toBe('buy')
+  })
 })
 
 const CONSTRAINT_A = '0x' + 'a'.repeat(40)

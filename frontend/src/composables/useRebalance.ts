@@ -281,15 +281,23 @@ export interface RebalanceTokenInput {
 }
 
 /**
- * PURE drift → legs math (no chain / no decrypt — unit-testable). Given the
- * gathered per-token inputs + tolerance, produce the plan: renormalise target
- * weights over the INCLUDED set, short-circuit when max|drift| < tolerance,
- * else build minimal sell/buy legs (sells first, dust-filtered, capped at
- * MAX_LEGS keeping the largest-impact legs).
+ * PURE drift → legs math (no chain / no decrypt — unit-testable). Targets apply
+ * to the TOTAL investable balance = RWA holdings + deployable mhUSDC (operator
+ * 2026-05-30), so rebalancing also DEPLOYS idle mhUSDC toward the target mix.
+ * Produces the plan: renormalise target weights over the INCLUDED set,
+ * short-circuit when max|drift| < tolerance, else build minimal sell/buy legs.
+ *
+ * Feasibility (operator choice): if ANY underweight target can't buy even one
+ * whole share even after counting mhUSDC, REJECT the whole rebalance
+ * (`cannot_deploy`) naming only those tokens — rather than skip them.
+ *
+ * @param mhUsdcUsd deployable mhUSDC (USD). Idle cash → tokens read underweight
+ *   → the rebalance buys to deploy it. Pass 0 to rebalance holdings only.
  */
 export function buildRebalancePlan(
   toleranceBps: number,
   inputs: RebalanceTokenInput[],
+  mhUsdcUsd = 0,
 ): RebalancePlan {
   const rows: RebalanceDriftRow[] = inputs.map((inp) => {
     const excluded = inp.navUsd === null || inp.balanceShares === null
@@ -312,7 +320,10 @@ export function buildRebalancePlan(
 
   const included = rows.filter((r) => !r.excluded)
   const excludedRows = rows.filter((r) => r.excluded)
-  const totalValue = included.reduce((s, r) => s + r.valueUsd, 0)
+  const rwaValue = included.reduce((s, r) => s + r.valueUsd, 0)
+  // Denominator = RWA holdings + deployable mhUSDC. The mhUSDC slice has no
+  // per-token target, so it gets allocated across the targets (deployed).
+  const totalValue = rwaValue + Math.max(0, mhUsdcUsd)
 
   if (totalValue <= 0) {
     return {
@@ -320,7 +331,7 @@ export function buildRebalancePlan(
       reason:
         excludedRows.length > 0
           ? 'Could not read your encrypted balances for the targeted tokens, so there is nothing to rebalance right now. Try again in a moment.'
-          : 'You hold no value in your targeted tokens yet — buy into them first, then rebalance toward your targets.',
+          : 'You hold no value in your targeted tokens and no mhUSDC to deploy — wrap some USDC into mhUSDC first, then rebalance toward your targets.',
     }
   }
 
@@ -333,6 +344,8 @@ export function buildRebalancePlan(
 
   let maxDriftBps = 0
   for (const r of included) {
+    // currentBps is the token's share of the TOTAL (incl. cash) — so idle cash
+    // shows every token as underweight until it's deployed.
     r.currentBps = Math.round((r.valueUsd / totalValue) * BPS_TOTAL)
     r.driftBps = r.currentBps - Math.round(renormTargetBps(r))
     const abs = Math.abs(r.driftBps)
@@ -347,17 +360,19 @@ export function buildRebalancePlan(
     absValue: number
   }
   const candidates: Candidate[] = []
-  // Underweight (buy-intent) tokens that COULDN'T produce a whole-share buy
-  // (target allocation < 1 share's price, or sub-dust). Needed to explain a
-  // sell-only outcome — see the sell-only guard below.
-  const undersizedBuys: string[] = []
+  // Underweight targets worth ≥ MIN_LEG_USD that STILL can't buy one whole
+  // share even with mhUSDC counted → genuinely infeasible. Operator choice:
+  // reject the whole rebalance naming these (not skip them).
+  const infeasibleBuys: string[] = []
+  // Underweight adjustments below MIN_LEG_USD — "already close enough", skipped.
+  const dustUnderweight: string[] = []
   for (const r of included) {
     if (r.navUsd <= 0) continue
     const targetValue = (renormTargetBps(r) / BPS_TOTAL) * totalValue
     const deltaValue = targetValue - r.valueUsd
     const absValue = Math.abs(deltaValue)
     if (absValue < MIN_LEG_USD) {
-      if (deltaValue > 0) undersizedBuys.push(r.symbol)
+      if (deltaValue > 0) dustUnderweight.push(r.symbol)
       continue
     }
     // Floor shares — conservative: buys never overspend, sells never
@@ -365,10 +380,7 @@ export function buildRebalancePlan(
     // further backstop for sells).
     const shares = BigInt(Math.floor(absValue / r.navUsd))
     if (shares <= 0n) {
-      // A BUY worth ≥ MIN_LEG_USD but < one share's price → can't buy a whole
-      // share from this rebalance's allocation. Record it; the value can't be
-      // deployed there.
-      if (deltaValue > 0) undersizedBuys.push(r.symbol)
+      if (deltaValue > 0) infeasibleBuys.push(r.symbol)
       continue
     }
     candidates.push({
@@ -382,8 +394,15 @@ export function buildRebalancePlan(
     })
   }
 
+  // A target you're meaningfully underweight (≥ $1) but can't buy a whole share
+  // of even with cash → reject the WHOLE rebalance (operator choice), naming
+  // only the offenders.
+  if (infeasibleBuys.length > 0) {
+    return { status: 'cannot_deploy', tokens: infeasibleBuys }
+  }
+
   if (candidates.length === 0) {
-    // Drift exceeded tolerance but every leg is sub-dust / sub-share.
+    // Drift exceeded tolerance but every adjustment is sub-dust.
     return { status: 'balanced', rows, maxDriftBps, toleranceBps }
   }
 
@@ -398,16 +417,14 @@ export function buildRebalancePlan(
   const legs: RebalanceLeg[] = ordered.map(({ absValue: _a, ...leg }) => leg)
 
   // ── Sell-only guard ──────────────────────────────────────────────────
-  // In a targets-summing-to-100% RWA rebalance, a SELL only exists to fund a
-  // BUY (move value from overweight → underweight). With no buy leg, selling to
-  // cash doesn't even reduce the sold token's RWA weight (the denominator
-  // shrinks proportionally) — it's purely counter-productive. So if the only
-  // executable legs are sells (the underweight targets couldn't produce a
-  // whole-share buy — e.g. you added NVDAon but your portfolio can't allocate a
-  // whole share to it), refuse rather than suggest a pointless sale.
-  // Operator-reported 2026-05-30.
+  // A SELL only exists to fund a BUY (move value from overweight → underweight,
+  // or deploy cash). With no buy leg, selling to cash is counter-productive
+  // (the token's weight doesn't even fall — the denominator shrinks with it).
+  // So if the only executable legs are sells (the underweight adjustments were
+  // all sub-dust), refuse rather than suggest a pointless sale. (Infeasible
+  // ≥-$1 buys already rejected above.) Operator-reported 2026-05-30.
   if (legs.some((l) => l.kind === 'sell') && !legs.some((l) => l.kind === 'buy')) {
-    return { status: 'cannot_deploy', tokens: undersizedBuys }
+    return { status: 'cannot_deploy', tokens: dustUnderweight }
   }
 
   return {
@@ -528,7 +545,23 @@ export function useRebalance() {
       inputs.push({ tokenAddress, symbol, navUsd, balanceShares, targetBps })
     }
 
-    const plan = buildRebalancePlan(toleranceBps, inputs)
+    // Decrypt the user's deployable mhUSDC — it's part of the target
+    // denominator (idle cash is deployed toward targets) AND the buy-funding
+    // budget. Decrypt once, reuse for both. On failure, treat as 0 (rebalance
+    // holdings only + fund buys from sell proceeds — conservative).
+    let mhUsdcBase6 = 0n
+    try {
+      const MuHavenStableService = await import('@/services/contracts/MuHavenStableService')
+      if (MuHavenStableService.isAvailable()) {
+        const ct = await MuHavenStableService.confidentialBalanceOf(walletAddress)
+        mhUsdcBase6 = await fhe.decryptMhUsdcForView(ct)
+      }
+    } catch (e) {
+      console.warn('[useRebalance] mhUSDC decrypt failed; treating deployable cash as 0', e)
+    }
+    const mhUsdcUsd = Number(mhUsdcBase6) / 1e6
+
+    const plan = buildRebalancePlan(toleranceBps, inputs, mhUsdcUsd)
     if (plan.status !== 'legs') return plan
 
     // ── On-chain execution feasibility ───────────────────────────────────
@@ -576,25 +609,11 @@ export function useRebalance() {
     const afterMin = applyMinInvestmentConstraints(plan, constraints)
     if (afterMin.status !== 'legs') return afterMin
 
-    // ── Buy affordability (#4) — BEFORE the escalation check ──────────────
-    // Buys are funded in-batch by existing mhUSDC + the sell legs' instant
-    // proceeds. Decrypt mhUSDC so we can skip (or refuse) buys the budget can't
-    // cover BEFORE deciding whether a sell would escalate — otherwise we'd tell
-    // the user to "sell CETES first" to fund a buy (NVDAon) that's unaffordable
-    // anyway. On a decrypt failure, fund buys from sell proceeds only (0n) —
-    // conservative (may skip an affordable buy, never ships an unfundable one).
-    let mhUsdcBase6 = 0n
-    if (afterMin.legs.some((l) => l.kind === 'buy')) {
-      try {
-        const MuHavenStableService = await import('@/services/contracts/MuHavenStableService')
-        if (MuHavenStableService.isAvailable()) {
-          const ct = await MuHavenStableService.confidentialBalanceOf(walletAddress)
-          mhUsdcBase6 = await fhe.decryptMhUsdcForView(ct)
-        }
-      } catch (e) {
-        console.warn('[useRebalance] mhUSDC decrypt failed; funding buys from sell proceeds only', e)
-      }
-    }
+    // ── Buy affordability — BEFORE the escalation check ──────────────────
+    // Buys are funded in-batch by mhUSDC (decrypted above) + the sell legs'
+    // instant proceeds. Run the budget pass BEFORE deciding whether a sell
+    // would escalate — otherwise we'd tell the user to "sell CETES first" to
+    // fund a buy that's unaffordable anyway.
     const afterBudget = applyBudgetConstraints(afterMin, mhUsdcBase6)
     if (afterBudget.status !== 'legs') return afterBudget
 

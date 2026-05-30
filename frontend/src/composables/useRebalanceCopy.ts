@@ -78,12 +78,14 @@ export function describeRebalancePlanShortfall(
         severity: 'info',
         title: 'Target too small to buy a whole share',
         description: plan.tokens.length
-          ? `Your portfolio can't allocate even one whole share to ${plan.tokens.join(
+          ? `Even counting your mhUSDC, your target slice for ${plan.tokens.join(
               ', ',
-            )} at its current price — so this rebalance has nothing to buy, and selling your other holdings to cash wouldn't help (no sale is suggested). Buy ${plan.tokens.join(
+            )} is smaller than one whole share at its current price — so the whole rebalance is blocked until it's feasible. Raise ${plan.tokens.join(
               ', ',
-            )} directly with mhUSDC, grow your portfolio, or raise its target first.`
-          : `This rebalance has nothing to buy, so there's no sale to make. Adjust your targets or grow your positions first.`,
+            )}'s target %, wrap more mhUSDC, grow your portfolio, or buy ${plan.tokens.join(
+              ', ',
+            )} directly first.`
+          : `This rebalance has nothing it can buy, so there's no sale to make. Adjust your targets or wrap more mhUSDC first.`,
       }
     case 'error':
       return { severity: 'error', title: 'Rebalance failed', description: plan.reason }

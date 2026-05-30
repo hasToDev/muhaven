@@ -68,18 +68,34 @@ function symbolFor(addr: string): string {
   return holdingFor(addr)?.symbol ?? marketplace.getByAddress(addr)?.symbol ?? shortAddr(addr)
 }
 
-// ── RWA-only verification readout (#2 + #3) ──────────────────────────
-// Reuses already-revealed balances; never triggers a decrypt itself.
+// ── Verification readout (#2 + #3) ───────────────────────────────────
+// Targets apply to (RWA holdings + deployable mhUSDC) — same model the launcher
+// uses — so the readout shows tokens underweight while cash is idle, then
+// converging once the rebalance deploys it. Reuses already-revealed balances;
+// never triggers a decrypt itself (the reveal nudge does, opt-in).
 const targetEntries = computed(
   () => Object.entries(targetsStore.targets) as [string, number][],
 )
 
-/** A targeted token that IS held but still locked → the readout would lie. */
-const anyTargetedLocked = computed(() =>
-  targetEntries.value.some(([addr]) => {
-    const h = holdingFor(addr)
-    return h != null && h.decryptedBalance === null
-  }),
+/** Deployable mhUSDC in USD — part of the target denominator. Null until the
+ *  user reveals it (Cash card) → the readout can't compute cash-inclusive
+ *  weights, so it shows the reveal nudge. */
+const cashUsd = computed(() =>
+  portfolio.pusdcConfidentialBalance !== null
+    ? Number(portfolio.pusdcConfidentialBalance) / 1e6
+    : null,
+)
+const cashRevealed = computed(() => cashUsd.value !== null)
+
+/** Locked when a targeted holding OR the mhUSDC balance is still encrypted —
+ *  either makes the cash-inclusive weights wrong. */
+const anyTargetedLocked = computed(
+  () =>
+    !cashRevealed.value ||
+    targetEntries.value.some(([addr]) => {
+      const h = holdingFor(addr)
+      return h != null && h.decryptedBalance === null
+    }),
 )
 
 /** A held targeted token is "readable" for the RWA-only weight math only when
@@ -102,6 +118,13 @@ const rwaTotal = computed(() => {
   return t
 })
 
+/** Target denominator = RWA holdings + deployable mhUSDC. */
+const totalInvestable = computed(() => rwaTotal.value + (cashUsd.value ?? 0))
+/** Idle cash as a % of the investable total — the "to deploy" slice. */
+const idleCashPct = computed(() =>
+  totalInvestable.value > 0 ? ((cashUsd.value ?? 0) / totalInvestable.value) * 100 : 0,
+)
+
 interface DriftRow {
   address: string
   symbol: string
@@ -111,7 +134,7 @@ interface DriftRow {
   withinTolerance: boolean
 }
 const driftRows = computed<DriftRow[]>(() => {
-  const total = rwaTotal.value
+  const total = totalInvestable.value
   const tol = tolerancePctVal.value
   const out: DriftRow[] = []
   for (const [addr, bps] of targetEntries.value) {
@@ -296,9 +319,9 @@ function resetTargets(): void {
   toast.info('Targets cleared')
 }
 
-/** Reveal the targeted holdings so the verification readout can compute (the
- *  user opted in — same as the Holdings "Reveal" buttons). Sequential to avoid
- *  nonce collisions, mirroring portfolio.refreshAfterTrade. */
+/** Reveal the targeted holdings AND mhUSDC so the verification readout can
+ *  compute the cash-inclusive weights (the user opted in — same as the Holdings
+ *  / Cash "Reveal" buttons). Sequential to avoid nonce collisions. */
 async function revealTargeted(): Promise<void> {
   const addr = props.walletAddress as `0x${string}` | null
   if (!addr) return
@@ -312,6 +335,13 @@ async function revealTargeted(): Promise<void> {
       } catch (e) {
         console.warn('[RebalancePanel] reveal-for-verify failed', e)
       }
+    }
+  }
+  if (portfolio.pusdcConfidentialBalance === null) {
+    try {
+      await portfolio.decryptPusdc(addr)
+    } catch (e) {
+      console.warn('[RebalancePanel] reveal mhUSDC for verify failed', e)
     }
   }
 }
@@ -451,7 +481,7 @@ function onComplete(payload: { action: ActionDescriptor; ok: boolean }): void {
         class="flex items-center justify-between gap-3 px-3 py-2 rounded-lg
                bg-mist/40 dark:bg-[#0d0e10] border border-haze dark:border-white/10"
       >
-        <span class="font-sans text-xs text-cool">Reveal your holdings to see current vs target.</span>
+        <span class="font-sans text-xs text-cool">Reveal your holdings + cash to see current vs target.</span>
         <button
           type="button"
           @click="revealTargeted"
@@ -463,8 +493,16 @@ function onComplete(payload: { action: ActionDescriptor; ok: boolean }): void {
         </button>
       </div>
 
-      <!-- Drift rows -->
-      <div v-else class="space-y-2" data-testid="rebalance-drift">
+      <!-- Drift readout (idle-cash note + per-token rows) -->
+      <div v-else>
+        <p
+          v-if="idleCashPct >= 1"
+          class="font-sans text-[11px] text-cool mb-2"
+          data-testid="rebalance-idle-cash"
+        >
+          {{ fmtPct(idleCashPct) }} of your balance is idle mhUSDC — rebalancing deploys it toward your targets.
+        </p>
+        <div class="space-y-2" data-testid="rebalance-drift">
         <div
           v-for="row in driftRows"
           :key="row.address"
@@ -497,6 +535,7 @@ function onComplete(payload: { action: ActionDescriptor; ok: boolean }): void {
             <Check v-if="row.withinTolerance" :size="11" :stroke-width="2.4" aria-hidden="true" />
             <template v-else>{{ fmtSigned(row.driftPct) }}</template>
           </span>
+        </div>
         </div>
       </div>
     </div>
