@@ -476,12 +476,20 @@ function holdingUsdValue(h: typeof portfolio.holdings[number]): string {
 }
 
 // Wave 5: hide fully-exited positions from the Holdings list. A holding
-// revealed to exactly 0 (e.g. the whole position was just sold) should drop
-// off rather than linger as a confusing "0 SYMBOL" row. Only KNOWN-zero is
-// hidden — an unrevealed holding (decryptedBalance === null) stays visible
-// behind its reveal gate, and any positive balance stays. The original store
-// index `i` is preserved so per-card reveal (`decryptOne(i)`) still targets
-// the right holding.
+// revealed to exactly 0 (e.g. the whole position was just sold, or an
+// under-funded buy that silent-failed to 0 shares) should drop off rather
+// than linger as a confusing "0 SYMBOL" row. Only KNOWN-zero is hidden — an
+// unrevealed holding (decryptedBalance === null) stays visible behind its
+// reveal gate, and any positive balance stays. The original store index `i`
+// is preserved so per-card reveal (`decryptOne(i)`) still targets the right
+// holding.
+//
+// This also drives the Holdings COUNT cell — using `visibleHoldings.length`
+// rather than the raw store length keeps a decrypted-to-zero phantom from
+// being counted as an asset (it's already filtered from the cards + donut).
+// We can't prune the store array itself: the token stays in the backend
+// position list (+ auto-discovery re-finds its encrypted-zero handle), so the
+// next 30s `load()` poll would just re-add it as a locked card — whack-a-mole.
 const visibleHoldings = computed(() =>
   portfolio.holdings
     .map((h, i) => ({ h, i }))
@@ -996,10 +1004,10 @@ const showBlurredAllocation = computed(() =>
                 Holdings
               </p>
               <p class="font-accent italic text-2xl text-midnight dark:text-white">
-                {{ portfolio.holdings.length }}
+                {{ visibleHoldings.length }}
               </p>
               <p class="font-sans text-[10px] text-cool/70 tracking-wide">
-                {{ portfolio.holdings.length === 1 ? 'RWA asset' : 'RWA assets' }}
+                {{ visibleHoldings.length === 1 ? 'RWA asset' : 'RWA assets' }}
               </p>
             </div>
           </div>

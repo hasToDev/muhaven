@@ -23,6 +23,7 @@ import * as MuHavenStableService from '@/services/contracts/MuHavenStableService
 import { addresses } from '@/contracts/addresses'
 import { arbiscanTx } from '@/lib/external'
 import { formatUSD } from '@/lib/utils'
+import { isMhUsdcUnknown, isMhUsdcInsufficient } from '@/lib/tradeGate'
 import { resolveTokenIdentifier, sanitizePrefillAmount } from '@/lib/prefill'
 import MButton from '@/components/ui/MButton.vue'
 import { muHavenTokenAbi } from '@/contracts/abis'
@@ -327,11 +328,30 @@ async function refreshAfterTrade() {
   }
 }
 
-const insufficientMhUsdc = computed<boolean>(() => {
-  if (mode.value !== 'buy') return false
-  if (portfolio.pusdcConfidentialBalance === null || estimatedCostPusdc.value === null) return false
-  return estimatedCostPusdc.value > portfolio.pusdcConfidentialBalance
-})
+// Buy affordability gate (pure logic in `@/lib/tradeGate`). Two states matter
+// in buy mode:
+//   - `mhUsdcUnknown`: balance still encrypted (null) + a cost typed → we
+//     CANNOT know affordability without the owner's own permit-decrypt (FHE
+//     law — an on-chain reject is impossible; see tradeGate.ts). Block the CTA
+//     and prompt a Reveal first. This also prevents the phantom-row foot-gun:
+//     an under-funded buy is never submitted, so no zero-share `Purchased`.
+//   - `insufficientMhUsdc`: balance revealed + < cost → block (the tx would
+//     silent-fail via `FHE.select` and burn gas for 0 shares).
+const insufficientMhUsdc = computed<boolean>(() =>
+  isMhUsdcInsufficient({
+    mode: mode.value,
+    mhUsdcBalance: portfolio.pusdcConfidentialBalance,
+    estimatedCost: estimatedCostPusdc.value,
+  }),
+)
+
+const mhUsdcUnknown = computed<boolean>(() =>
+  isMhUsdcUnknown({
+    mode: mode.value,
+    mhUsdcBalance: portfolio.pusdcConfidentialBalance,
+    estimatedCost: estimatedCostPusdc.value,
+  }),
+)
 
 watch(selectedToken, () => {
   refreshNav()
@@ -530,6 +550,13 @@ async function handleSubmit() {
 
 async function handlePurchase() {
   if (!amount.value || isProcessing.value || !address.value || !selectedToken.value) return
+  // Defense-in-depth: the disabled CTA is the primary affordability gate, but
+  // re-assert it here so any future programmatic caller can't tap through to a
+  // buy that's unknown (balance still encrypted) or known-underfunded — both
+  // would silent-fail on-chain (0 shares) and burn gas for nothing. No funds
+  // or privacy are at risk either way (FHE.select backstop), but this keeps
+  // the foot-gun closed if a second entry path is ever added.
+  if (mhUsdcUnknown.value || insufficientMhUsdc.value) return
   if (isZeroAddress(v35Addresses.subscription)) {
     errMsg.value =
       'Subscription contract not configured for this build. '
@@ -770,12 +797,17 @@ const ctaDisabled = computed(() => {
   if (!amount.value.trim() || numericAmount.value <= 0) return true
   if (isVerified.value === false && devModeActive.value !== true) return true
   if (mode.value === 'sell' && exceedsHolding.value) return true
-  // Buy mode: block the silent-fail click path. When the user has
-  // revealed mhUSDC and it can't cover the typed cost, the contract
-  // would zero-out the pull and leave the user paying gas for nothing.
-  // The right-aside glance bar already shows the "short $Z" warning +
-  // a loud Top-up-cash CTA; disabling the button removes the foot-gun.
-  if (mode.value === 'buy' && insufficientMhUsdc.value) return true
+  // Buy mode: block the silent-fail click path. Two cases:
+  //  • `mhUsdcUnknown` — balance still encrypted + a cost typed. We can't
+  //    know affordability without the owner's own permit-decrypt (an
+  //    on-chain reject is impossible by FHE law). Block + prompt a Reveal
+  //    via the in-form reveal gate below the CTA. Without this, the Buy
+  //    button was live against an unknown balance: an under-funded buy
+  //    silent-failed on-chain (0 shares) but still emitted a phantom row.
+  //  • `insufficientMhUsdc` — balance revealed and below the typed cost; the
+  //    contract would zero-out the pull and burn gas for nothing. The
+  //    glance bar shows the "short $Z" warning + a loud Top-up-cash CTA.
+  if (mode.value === 'buy' && (mhUsdcUnknown.value || insufficientMhUsdc.value)) return true
   // Wave 5 zero-burn: retired tokens (winding_down / paused / archived)
   // cannot be bought; existing holders can still sell on-chain. The
   // deprecation banner above the form explains the gate so users
@@ -792,6 +824,19 @@ const cashLinkLoud = computed(() =>
   mode.value === 'buy'
   && (usdcBalance.value === 0n || insufficientMhUsdc.value),
 )
+
+// Reason the Buy CTA is disabled, surfaced to assistive tech via
+// `aria-describedby`. A disabled <button> isn't focusable so an SR user
+// can't land on it directly — but the reveal gate (when mhUsdcUnknown) holds
+// its own focusable Reveal button + a `role="status"` announcement, so the
+// reason is reachable either way. Retired takes precedence (reveal won't
+// help a retired token); the reveal gate is the next reason.
+const ctaDescribedBy = computed<string | undefined>(() => {
+  if (mode.value !== 'buy') return undefined
+  if (tokenIsRetired.value) return 'trade-retired-banner'
+  if (mhUsdcUnknown.value) return 'trade-mhusdc-reveal-gate'
+  return undefined
+})
 </script>
 
 <template>
@@ -1391,17 +1436,82 @@ const cashLinkLoud = computed(() =>
               </div>
             </transition>
 
-            <!-- CTA. `aria-describedby` ties the disabled state to the
-                 retirement banner so an SR user tabbing to the dead
-                 button hears the reason ("TBILL1 is winding down…")
-                 without needing to backtrack. Cleared when the token is
-                 active so the dropdown's prior-traverse announcement
-                 isn't repeated for healthy tokens. -->
+            <!-- Reveal-to-continue gate (buy mode). By FHE law the
+                 affordability check CANNOT run on an encrypted balance: the
+                 EVM can't branch on the `ebool` from `balance >= cost`, and
+                 publishing it would leak the buyer's hidden balance. So when
+                 mhUSDC is still encrypted and a buy cost is typed, the CTA is
+                 disabled and we ask the user to decrypt their OWN balance —
+                 a permit-based off-chain decrypt (zero tx, zero leak). After
+                 reveal, the cleartext `insufficientMhUsdc` check takes over.
+                 `role="status"` announces the gate when it appears; the inner
+                 Reveal button is the focusable affordance for keyboard/SR
+                 users (the disabled CTA itself isn't focusable). -->
+            <transition
+              enter-active-class="transition-all duration-300 ease-out"
+              leave-active-class="transition-all duration-200 ease-in"
+              enter-from-class="opacity-0 -translate-y-1"
+              leave-to-class="opacity-0 -translate-y-1"
+            >
+              <div
+                v-if="mhUsdcUnknown && !tokenIsRetired"
+                id="trade-mhusdc-reveal-gate"
+                data-testid="trade-mhusdc-reveal-gate"
+                role="status"
+                class="rounded-lg p-4 border border-compute/25 dark:border-signal/20
+                       bg-compute/5 dark:bg-signal/5 flex items-start gap-3"
+              >
+                <Lock :size="16" :stroke-width="1.8" class="text-compute dark:text-signal mt-0.5 flex-shrink-0" aria-hidden="true" />
+                <div class="flex-1 min-w-0">
+                  <p class="font-sans text-[11px] text-cool leading-relaxed">
+                    Your mhUSDC balance is encrypted. Reveal it to confirm this
+                    purchase is covered — we can't check an encrypted balance,
+                    and it never leaves your browser.
+                  </p>
+                  <button
+                    type="button"
+                    @click="decryptMhUsdcBalance"
+                    :disabled="portfolio.pusdcDecrypting || !address"
+                    data-testid="trade-mhusdc-reveal-cta"
+                    :aria-label="portfolio.pusdcDecrypting ? 'Revealing mhUSDC balance' : 'Reveal mhUSDC balance to continue'"
+                    class="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded
+                           font-sans text-[10px] uppercase tracking-[0.18em] font-semibold
+                           border border-compute/40 dark:border-signal/40
+                           text-compute dark:text-signal cursor-pointer
+                           hover:bg-compute hover:text-white dark:hover:bg-signal dark:hover:text-[#412d00]
+                           transition-colors duration-200
+                           disabled:opacity-60 disabled:cursor-wait"
+                  >
+                    <Loader2 v-if="portfolio.pusdcDecrypting" :size="11" class="animate-spin" />
+                    <Eye v-else :size="11" :stroke-width="2" />
+                    Reveal mhUSDC to continue
+                  </button>
+                  <!-- Fresh-reveal failure lands here (where the user just
+                       clicked) instead of only in the right-aside glance bar.
+                       The Reveal button above doubles as the retry. -->
+                  <p
+                    v-if="portfolio.pusdcError"
+                    data-testid="trade-mhusdc-reveal-error"
+                    role="alert"
+                    class="mt-2 font-sans text-[10px] text-gold dark:text-signal leading-tight"
+                  >
+                    Couldn't reveal your balance — please try again.
+                  </p>
+                </div>
+              </div>
+            </transition>
+
+            <!-- CTA. `aria-describedby` ties the disabled state to a reason
+                 an SR user can act on — the retirement banner (token winding
+                 down) or the reveal gate (encrypted balance must be revealed
+                 first). Cleared when the token is active + balance known so
+                 the dropdown's prior-traverse announcement isn't repeated for
+                 a healthy, buyable token. -->
             <button
               type="button"
               @click="handleSubmit"
               :disabled="ctaDisabled"
-              :aria-describedby="mode === 'buy' && tokenIsRetired ? 'trade-retired-banner' : undefined"
+              :aria-describedby="ctaDescribedBy"
               :data-testid="mode === 'buy' ? 'buy-cta' : 'redeem-cta'"
               class="btn-gold-sweep w-full py-4 rounded-lg font-sans font-semibold text-sm tracking-wide
                      flex items-center justify-center gap-2.5 cursor-pointer
