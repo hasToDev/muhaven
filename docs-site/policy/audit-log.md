@@ -19,7 +19,7 @@ Read tools intentionally **do not** log — that's a privacy floor. Forensic com
 | `tier_transition` | User changes their tier | from tier, to tier |
 | `pause_triggered` | Pause cascade fires | manual / auto / breach |
 | `pause_lifted` | Resume cascade fires | (manual only — auto-pauses require manual resume) |
-| `breach_detected` | Policy-bound cron observes a threshold breach | breach type, encrypted handle (no cleartext) |
+| `breach_detected` | Policy-bound cron observes a threshold breach (designed — that cron is disabled in every deployment today) | breach type, encrypted handle (no cleartext) |
 | `policy_template_built` | User mints a new session-key scope | scope summary, validity window |
 | `device_code_consumed` | MCP device-flow login succeeds | client metadata, scope claims |
 | `telegram_link_consumed` | Telegram bot `/link` succeeds | chat_id, user_id |
@@ -67,7 +67,8 @@ Every `permit_granted` row carries a server-derived `source` field that says **h
 |---|---|
 | `dashboard_passkey` | Dashboard ConfirmModal + passkey ceremony |
 | `dashboard_session_key` | Dashboard ConfirmModal + session-key signature (Confirm-per-action tier) |
-| `policy_bound_cron` | Cron policy engine signed within bounds |
+| `policy_bound_cron` | Cron policy engine signed within bounds (designed — cron disabled in every deployment today) |
+| `scoped_autonomy` | Broker daemon signed within the Scoped session's per-trade cap + TTL (the live autonomous path) |
 | `mcp_broker` | MCP propose → user confirmed on dashboard or host UI |
 | `telegram_inline` | Telegram inline-button confirmation (tier 1 ≤$200) |
 | `mini_app` | Telegram Mini App OTP confirmation (tier 2 $200-$5K) |

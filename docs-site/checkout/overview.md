@@ -94,7 +94,7 @@ The buyer-facing page renders this in cleartext after the fragment-key decrypts 
 - Stripe-style `MuHaven-Signature: t=,v1=` HMAC-SHA256 webhook signing with 5-min replay window.
 - In-process SSE channel with terminal-state auto-close + 25s heartbeat.
 - SSRF guard on outbound webhook URLs (blocks RFC1918 + 169.254 + IPv6 ULA + link-local).
-- Pluggable `FundingProvider` abstraction in `apps/checkout-pay/` Vite project — `FaucetRedirectProvider` for testnet; provider slots for on-ramp services on production.
+- Pluggable `FundingProvider` abstraction in `apps/checkout-pay/` Vite project — `FaucetRedirectProvider` for testnet (Arb Sepolia); provider slots for on-ramp services on a future Arbitrum One mainnet deployment (roadmap).
 - Passkey ceremony for first-time buyers (RP-ID pinned to `muhaven.app`) via the ZeroDev-powered MuHaven wallet.
 
 ## Where next

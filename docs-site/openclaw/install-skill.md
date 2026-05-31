@@ -1,6 +1,6 @@
 ---
 title: OpenClaw — install the skill
-description: Install muhaven-rwa-skill from ClawHub into your OpenClaw runtime.
+description: The intended install flow for muhaven-rwa-skill (in development — not yet on ClawHub).
 ---
 
 ::: warning 🚧 In development — not in the Testing Guide
@@ -9,7 +9,7 @@ This surface is still being hardened and isn't part of the [Testing Guide](/guid
 
 # Install the MuHaven OpenClaw skill
 
-`muhaven-rwa-skill` is published to ClawHub. Installing it into your OpenClaw runtime takes three steps.
+`muhaven-rwa-skill` is in development and not yet published to ClawHub. The steps below describe the intended install flow once it ships; installing it into your OpenClaw runtime will take three steps.
 
 ## Prerequisites
 

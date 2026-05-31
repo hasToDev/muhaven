@@ -94,7 +94,7 @@ Current balance: 0.00 mhUSDC
 
 On testnet (Arb Sepolia), the **faucet redirect** opens a new tab to the public testnet faucet. Pick the amount, request, come back to the checkout tab — it polls your balance every 5 seconds and auto-advances when funds land.
 
-On production (Arb One), the checkout uses an on-ramp picker — pay with card / Apple Pay / Google Pay and the page polls until funds arrive.
+On an Arbitrum One mainnet deployment (roadmap — not yet deployed), the checkout is planned to use an on-ramp picker — pay with card / Apple Pay / Google Pay and the page polls until funds arrive.
 
 ## Step 3 — Confirm the purchase
 

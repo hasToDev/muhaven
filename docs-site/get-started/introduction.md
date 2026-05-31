@@ -51,13 +51,19 @@ See [Choosing a surface](/get-started/choosing-a-surface) for a decision tree.
 
 ## What's available
 
-The four surfaces are live on Arbitrum Sepolia (testnet) and rolling out on Arbitrum One (production):
+MuHaven runs live on Arbitrum Sepolia (testnet); Arbitrum One (mainnet) is on the roadmap. Three surfaces are live today and two are in development:
+
+**Live:**
 
 - HavenBot at `muhaven.app/agent` — streaming chat, per-action ConfirmModal, 17 tools.
 - `@muhaven/mcp` published on npm — install in any MCP host, 25 tools (8 read-only with the read-only flag).
-- OpenClaw skill `muhaven-rwa-skill` on ClawHub + Telegram bot live.
-- Hosted checkout at `muhaven.app/pay` — fragment-key URL scheme, AES-256-GCM payload, Stripe-pattern webhooks.
+- Telegram bot — live, phone-first investor flow.
 - Tiered autonomy engine + audit log + `/pause` kill-switch.
+
+**In development (not yet live):**
+
+- OpenClaw skill (`muhaven-rwa-skill` on ClawHub) — design in progress.
+- Hosted checkout at `muhaven.app/pay` — fragment-key URL scheme, AES-256-GCM payload, Stripe-pattern webhooks.
 
 ## Where next
 
@@ -76,6 +82,6 @@ The four surfaces are live on Arbitrum Sepolia (testnet) and rolling out on Arbi
   </a>
   <a class="mh-card" href="/policy/tiered-autonomy">
     <h3>Tiered autonomy</h3>
-    <p>How Advisory / Confirm / Policy-bound actually work.</p>
+    <p>How Advisory / Confirm / Policy-bound / Scoped autonomy actually work.</p>
   </a>
 </div>

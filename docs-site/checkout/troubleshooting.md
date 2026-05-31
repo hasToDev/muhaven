@@ -72,8 +72,8 @@ Three possibilities:
 
 You need mhUSDC to complete the purchase.
 
-- **On testnet:** click the **Faucet** button; receive 100 mhUSDC; come back.
-- **On production:** use the on-ramp picker shown at checkout (pay with card / Apple Pay / Google Pay).
+- **On testnet (Arb Sepolia):** click the **Faucet** button; receive 100 mhUSDC; come back.
+- **On a future Arbitrum One mainnet deployment (roadmap):** use the on-ramp picker shown at checkout (pay with card / Apple Pay / Google Pay).
 
 ### "Funding succeeded but checkout still says 'Waiting for funds'"
 

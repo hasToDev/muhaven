@@ -53,7 +53,7 @@ The MuHaven backend handles:
 - Routing your tool calls to the right contract / SDK method.
 - Stamping audit log rows.
 - Writing public NAVs as the issuer.
-- Running the policy-engine cron tick (which uses *encrypted* inputs end-to-end).
+- Running the policy-engine cron tick (which uses *encrypted* inputs end-to-end). This is the Policy-bound design; the encrypted-threshold engine is built but disabled in every deployment today, so this tick does not auto-sign.
 
 It does **not** decrypt FHE handles. The FHE decrypt pipeline is:
 
@@ -62,7 +62,7 @@ It does **not** decrypt FHE handles. The FHE decrypt pipeline is:
 3. The CoFHE threshold network checks the permit's ACL on-chain, returns cleartext **to you**.
 4. The backend is not involved in this path.
 
-There's one narrow exception: the policy-engine breach path emits a one-time `decryptForTx` *of the breach event itself* so a `RiskBreach` can be settled on-chain. The breach event surfaces "your tier auto-paused; here's a generic reason code"; it does **not** decrypt the underlying balance.
+There's one narrow exception in the Policy-bound design: the policy-engine breach path would emit a one-time `decryptForTx` *of the breach event itself* so a `RiskBreach` can be settled on-chain. The breach event surfaces "your tier auto-paused; here's a generic reason code"; it does **not** decrypt the underlying balance. (This breach path is part of the disabled Policy-bound engine — it is present in the contracts but not driven in any deployment today.)
 
 ## What the LLM sees
 

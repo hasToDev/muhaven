@@ -15,21 +15,23 @@ the [MCP server](/mcp/overview).
 
 The OpenClaw surface is MuHaven's **phone-first** interface. It bundles three things:
 
-1. **`muhaven-rwa-skill`** — an [OpenClaw](https://openclaw.dev) skill published to [ClawHub](https://clawhub.com). Install it once into your OpenClaw runtime; the skill bundles `@muhaven/mcp` with an investor-only subset (11 of 25 tools).
-2. **`@muhaven_bot`** — the official MuHaven Telegram bot. Conversational interface for the same 11 tools.
-3. **Telegram Mini App** — the in-Telegram web view that handles mid-tier confirmations (the $200-$5K window).
+1. **`muhaven-rwa-skill`** — an [OpenClaw](https://openclaw.dev) skill (in development; not yet published). Once published, you install it into your OpenClaw runtime; the skill bundles `@muhaven/mcp` with an investor-only subset (11 of 25 tools).
+2. **`@muhaven_bot`** — the official MuHaven Telegram bot (live). Conversational interface for the same 11 tools.
+3. **Telegram Mini App** — the in-Telegram web view that handles mid-tier confirmations (the $200-$5K window); part of the in-development OpenClaw mid-tier flow.
 
 All three share the same MuHaven wallet and the same audit log as HavenBot, MCP, and the hosted checkout.
 
 ## What's available
 
+The **Telegram bot is live** — one of MuHaven's three live surfaces (HavenBot, `@muhaven/mcp`, Telegram). The **OpenClaw skill** and the **Telegram Mini App** are still in development.
+
 | Component | Status |
 |---|---|
-| `muhaven-rwa-skill@0.1.2` | Published to ClawHub |
-| `@muhaven_bot` Telegram bot | Live on Arb Sepolia + Arb One |
-| Telegram Mini App | Live at `tg.muhaven.app` (prod) / `tg-stage.muhaven.app` (stage) |
+| `muhaven-rwa-skill` (OpenClaw skill) | In development — not yet published |
+| `@muhaven_bot` Telegram bot | Live on Arbitrum Sepolia (testnet) |
+| Telegram Mini App | In development (mid-tier confirmation UI) |
 | Three-tier confirmation classifier | Inline ≤$200 / Mini-App OTP $200–$5K / passkey deeplink >$5K |
-| Sigstore + GitHub OIDC publish | Trusted publisher configured; tag-push triggers a signed release |
+| Sigstore + GitHub OIDC publish | Trusted publisher configured; tag-push will trigger a signed release |
 
 ## The 11-tool subset (and what's deliberately excluded)
 
@@ -71,7 +73,7 @@ See [Three confirmation tiers](/openclaw/confirmation-tiers) for the full flow p
 
 ## How OpenClaw fits in
 
-[OpenClaw](https://openclaw.dev) is an open standard for agent skills — bundled MCP servers + a manifest that declares network egress, secret storage, and tool subset. The MuHaven skill is published to [ClawHub](https://clawhub.com) (the central skill registry) as `muhaven-rwa-skill@0.1.2`.
+[OpenClaw](https://openclaw.dev) is an open standard for agent skills — bundled MCP servers + a manifest that declares network egress, secret storage, and tool subset. The MuHaven skill (`muhaven-rwa-skill`) is in development; once published it will live on [ClawHub](https://clawhub.com) (the central skill registry).
 
 When you install the skill, the OpenClaw runtime:
 

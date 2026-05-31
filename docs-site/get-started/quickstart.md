@@ -21,10 +21,10 @@ The five steps below:
 
 - A modern browser that supports WebAuthn passkeys (Chrome, Edge, Safari, Firefox — current versions).
 - A device with a biometric authenticator (Touch ID, Windows Hello, Android fingerprint) **or** a YubiKey-style hardware key. iCloud Keychain / Google Password Manager / 1Password also work.
-- A small amount of test mhUSDC (we'll show you the faucet step below). On production, an on-ramp swap is one click — testnet uses a free faucet.
+- A small amount of test mhUSDC (we'll show you the faucet step below) — testnet uses a free faucet.
 
-::: tip Testnet vs production
-The walkthrough below uses Arbitrum Sepolia (testnet). The `muhaven.app` dashboard supports both networks; switch in the top-right network selector. Steps are identical — only the funding source differs (faucet vs. on-ramp).
+::: tip Testnet only
+The walkthrough below uses Arbitrum Sepolia (testnet) — the only network MuHaven runs on today. Arbitrum One (mainnet) is on the roadmap, not yet deployed.
 :::
 
 ## Step 1 — Sign in with a passkey
@@ -75,9 +75,9 @@ Welcome to MuHaven. You just made a confidential RWA purchase: the cleartext amo
 
 ## Step 4 — Pick your tier (optional, but recommended)
 
-By default you're in **Advisory** tier — every action needs a passkey confirmation. After ≥5 confirmed actions you'll be offered a graduation to **Confirm-per-action** (session-key signs without re-prompting your passkey for 1 hour). Power users can opt into **Policy-bound** (the agent acts within your encrypted thresholds without per-action confirmation; breaches trigger a `RiskBreach` and an auto-pause).
+By default you're in **Advisory** tier — every action needs a passkey confirmation. After ≥5 confirmed actions you'll be offered a graduation to **Confirm-per-action** (session-key signs without re-prompting your passkey for 1 hour). The live autonomous tier is **Scoped autonomy** — a bounded session key plus a broker daemon that signs without prompting within a per-trade cap and TTL. **Policy-bound** is a designed automation tier whose encrypted-threshold auto-signing engine is built but disabled in every deployment; selecting it gives an allowlist-scoped tier without a live risk engine. The full set of states is Advisory / Confirm-per-action / Policy-bound / Scoped autonomy / Paused.
 
-Set your tier from `Sidebar → Policy → Tier`, or ask HavenBot: *"Switch me to Confirm-per-action."* See [Tiered autonomy](/policy/tiered-autonomy) for the full ladder.
+Set your tier from `Sidebar → Policy → Tier`, or ask HavenBot: *"Switch me to Confirm-per-action."* See [Tiered autonomy](/policy/tiered-autonomy) for the full model.
 
 ## Step 5 — Pick more surfaces (optional)
 
@@ -96,6 +96,6 @@ Your passkey-bound MuHaven wallet is the same account across all four surfaces. 
 
 - **Passkey dialog didn't appear** — check that your browser is up-to-date and that hardware-backed credentials are enabled. iCloud Keychain users on macOS need to enable it in System Settings → Passwords.
 - **Sign-in succeeded but the dashboard is empty** — verify you're on Arbitrum Sepolia. Switch the network selector top-right.
-- **Faucet wouldn't dispense** — testnet faucets are rate-limited. Wait and retry, or use the on-ramp on production.
+- **Faucet wouldn't dispense** — testnet faucets are rate-limited. Wait and retry.
 - **ConfirmModal shows an encrypted handle instead of a number** — that's the policy gate's safety net. Re-run the action; if it persists, see [HavenBot troubleshooting](/havenbot/troubleshooting).
 - **Everything is unreachable** — check status with the MuHaven team.

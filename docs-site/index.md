@@ -64,7 +64,7 @@ MuHaven hides the chain. You sign in with a passkey, your balances are encrypted
   </a>
   <a class="mh-card" href="/policy/tiered-autonomy">
     <h3>Tiered autonomy</h3>
-    <p>Advisory · Confirm-per-action · Policy-bound · Paused. Pick once, change anytime.</p>
+    <p>Advisory · Confirm-per-action · Policy-bound · Scoped autonomy · Paused. Pick once, change anytime.</p>
   </a>
   <a class="mh-card" href="/policy/pause">
     <h3>The /pause kill-switch</h3>

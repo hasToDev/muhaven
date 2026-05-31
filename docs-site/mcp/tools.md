@@ -22,8 +22,8 @@ Always available. No signing required.
 | `muhaven.read.tokens` | RWA tokens you currently hold (address, symbol, decimals, asset class, status). | `mcp.read.*` | none |
 | `muhaven.read.audit` | Your tiered-autonomy audit log (cursor-paginated). User-self only. | `mcp.read.*` | none |
 | `muhaven.read.activity` | On-chain activity feed (buys / sells / wraps / unwraps / yield claims / transfers). Each row carries token address, tx hash, block timestamp, and event type — amounts are encrypted handles only. Use to verify a dashboard action settled after position.buy / position.sell / cash.wrap. | `mcp.read.*` | none |
-| `muhaven.read.protection_coverage` | DefaultProtection coverage state for a token (on-chain proxy state). Returns `not_deployed` when the P11.A contract is not yet on-chain. | `mcp.read.*` | none |
-| `muhaven.read.kyc_attestation` | KYC attestation registry status (informational). Returns `not_deployed` when the P11.C registry is not yet on-chain. | `mcp.read.*` | none |
+| `muhaven.read.protection_coverage` | DefaultProtection coverage state for a token (on-chain proxy state). Returns `not_deployed` when the protection contract is not yet on-chain. | `mcp.read.*` | none |
+| `muhaven.read.kyc_attestation` | KYC attestation registry status (informational). Returns `not_deployed` when the attestation registry is not yet on-chain. | `mcp.read.*` | none |
 
 ::: tip Read tools are intentionally non-auditing by design
 We do **not** log every "user looked at portfolio" call. Only `position.*` / `policy.*` / `issuer.*` / `governance.*` propose+commit events emit audit rows. This is a privacy choice; the trade-off is forensic — see [Audit log](/policy/audit-log).
@@ -51,7 +51,7 @@ All position tools return an **unsigned UserOp envelope plus a broker signature*
 
 | Tool | What it does | Scope | Tier-gate |
 |---|---|---|---|
-| `muhaven.policy.set_tier` | Request or commit a tier transition. Tiers: Advisory / Confirm-per-action / Policy-bound / Paused. | `mcp.propose.*` | special — Paused → any requires the dashboard ceremony |
+| `muhaven.policy.set_tier` | Request or commit a tier transition. Tiers: Advisory / Confirm-per-action / Policy-bound / Scoped autonomy / Paused. | `mcp.propose.*` | special — Paused → any requires the dashboard ceremony |
 | `muhaven.policy.pause` | Activate the `/pause` kill-switch. Uninstalls the on-chain validator in ≤1 Arb block. | `mcp.propose.*` | idempotent (always allowed) |
 | `muhaven.policy.audit_export` | Drain your audit log to a downloadable JSON. | `mcp.read.*` | none |
 | `muhaven.policy.session_key_status` | Inspect the ZeroDev session-key state — install fingerprint, expiration, scope. | `mcp.read.*` | none |
@@ -89,7 +89,7 @@ If an `npm update` ever changes a tool's description, your install will refuse t
 
 ## Why no `muhaven.checkout.*` MCP tools?
 
-The hosted-checkout surface creates URLs that buyers redeem in a browser. It's not LLM-callable end-to-end: an LLM can mint a checkout link (via HavenBot's `create_checkout` tool), but the buyer-side flow needs a real browser for the passkey ceremony.
+The hosted-checkout surface (in development) creates URLs that buyers redeem in a browser. It's not LLM-callable end-to-end: even once shipped, the link-minting step lives on HavenBot, and the buyer-side flow needs a real browser for the passkey ceremony.
 
 ## Where next
 

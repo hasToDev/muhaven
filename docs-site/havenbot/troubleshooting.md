@@ -11,7 +11,7 @@ A symptom-first reference. If your issue isn't here, ping the MuHaven team or fi
 
 ### "Sign in succeeded, but the dashboard is empty."
 
-Check the network selector top-right. You may be on a network where your MuHaven wallet doesn't exist (e.g., signed in on Arb Sepolia but viewing Arb One). Switch to the network where your MuHaven wallet was deployed.
+Check the network selector top-right. You may be on a network where your MuHaven wallet doesn't exist. MuHaven runs on Arbitrum Sepolia today — switch to Arbitrum Sepolia, the network where your MuHaven wallet was deployed.
 
 ### "Passkey dialog doesn't appear."
 
@@ -76,7 +76,7 @@ Rare — usually the LLM stream was interrupted before it could format. Refresh 
 
 Two possibilities:
 
-1. **Tier mismatch.** The tool exists but your tier excludes it (e.g., set_policy → Policy-bound is blocked while you're in Advisory's onboarding window).
+1. **Tier mismatch.** The tool exists but your current tier excludes it (e.g., an autonomous action when you're in Advisory, which requires a passkey on every write). Pick the tier you want directly in the tier picker — see [Tiered autonomy](/policy/tiered-autonomy).
 2. **Role mismatch.** Issuer tools are hidden from investor passkeys. Sign in with your issuer passkey if you have one — see [Investor vs issuer](/get-started/investor-vs-issuer).
 
 ### "Streaming response stops mid-sentence."
@@ -92,7 +92,7 @@ The encrypted preview decrypt failed (permit expired, ACL not granted, RPC lag).
 ### "Confirm button is disabled."
 
 - **Insufficient mhUSDC** for a buy. The amount-vs-balance check is client-side. Top up.
-- **Tier doesn't allow this action.** The modal's footer explains why (e.g., "Policy-bound caps your daily spend at $500; this would push you to $620").
+- **Tier doesn't allow this action.** The modal's footer explains why (e.g., a per-trade or per-session cap would be exceeded).
 - **Session key has insufficient remaining allowance.** Pause and resume to mint a fresh key with reset allowances.
 
 ### "I clicked Confirm but nothing happened."

@@ -91,7 +91,11 @@ Issuer audit is **self-only with a 90-day window cap**.
 
 ## Create a hosted-checkout link
 
-The hosted-checkout surface at `muhaven.app/pay/...` is operated entirely from the issuer side via HavenBot:
+::: warning In development
+Hosted checkout is an in-development surface — it isn't live yet. The phrasing below describes the planned issuer-side flow.
+:::
+
+The hosted-checkout surface at `muhaven.app/pay/...` is designed to be operated entirely from the issuer side via HavenBot:
 
 | You want | Say |
 |---|---|

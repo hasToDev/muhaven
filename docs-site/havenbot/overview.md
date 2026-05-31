@@ -42,7 +42,7 @@ Both pages are conversation-first: each row is **say this → agent calls that �
 **Propose (signed via passkey or session key):**
 
 - Buy / claim / rebalance.
-- Set tier (Advisory ↔ Confirm-per-action ↔ Policy-bound).
+- Set tier (Advisory ↔ Confirm-per-action ↔ Policy-bound ↔ Scoped autonomy).
 - Pause the agent (kill-switch).
 - Encrypted governance vote.
 
@@ -108,7 +108,7 @@ Your message
        │
        ▼
 ┌──────────────────┐
-│  Policy gate     │  tier check (Advisory/Confirm/Policy-bound)
+│  Policy gate     │  tier check (Advisory/Confirm/Policy-bound/Scoped)
 │  (deterministic) │  @zerodev/permissions validator scope
 │                  │  RiskParams encrypted threshold check
 └──────┬───────────┘
@@ -134,7 +134,7 @@ A prompt-injection attempt that would have triggered an off-policy tool call is 
 First-time visitors land on `/agent/onboarding` instead of `/agent` proper. The wizard is a four-step explainer:
 
 1. Welcome (sealed-glass-envelope copy).
-2. Funding (faucet for testnet; on-ramp for production).
+2. Funding (faucet on Arbitrum Sepolia, the live testnet; a mainnet on-ramp is on the roadmap).
 3. First buy (pick a token, set an amount, confirm).
 4. Celebrate (set tier, link Telegram, install MCP).
 
@@ -159,7 +159,7 @@ Read the full walkthrough at [Onboarding](/havenbot/onboarding).
 
 ❌ You want to bring your own LLM (use [MCP](/mcp/overview)).
 ❌ You're on a phone and want one-tap actions (use [Telegram](/openclaw/telegram-bot)).
-❌ You're an issuer minting a one-off pay link for someone without a MuHaven account (use [Hosted Checkout](/checkout/overview)).
+❌ You're an issuer minting a one-off pay link for someone without a MuHaven account ([Hosted Checkout](/checkout/overview) covers this — it's in development today).
 
 ## Where next
 

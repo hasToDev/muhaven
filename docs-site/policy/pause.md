@@ -7,7 +7,7 @@ description: One tap. ≤1 Arbitrum block. Global across all four surfaces.
 
 `/pause` is MuHaven's **single-tx kill-switch**. It uninstalls your MuHaven wallet's session-key validator in **≤1 Arbitrum block**. After it fires, every `propose` tool on every surface returns `423 PAUSED` until you explicitly resume.
 
-It's the same surface across HavenBot, MCP, OpenClaw, and the audit copilot — one command, one tx, global effect.
+It's the same kill-switch across every surface — HavenBot, the `@muhaven/mcp` broker, and the Telegram bot are live today; OpenClaw is in development. One command, one tx, global effect.
 
 ## How to pause
 
@@ -56,7 +56,7 @@ Pausing cascades across surfaces (T-1 through T-7 in the backend's `PauseAgentUs
 |---|---|
 | T-1 | On-chain validator uninstall (the tx above) |
 | T-2 | Backend marks user state `paused=true` in `agent_user_state` |
-| T-3 | Cron policy engine drops the user from its scheduled tick set |
+| T-3 | The policy-engine cron drops the user from its scheduled tick set (that cron is built but disabled in every deployment today, so this is a no-op in practice) |
 | T-4 | Open SSE connections (HavenBot chat, checkout buyer-side) receive a `pause` event |
 | T-5 | Audit row written |
 | T-6 | Webhook subscribers (issuer-side checkout webhooks) receive a `policy.paused` event |
@@ -96,13 +96,17 @@ The resume flow:
 3. Your master passkey signs (WebAuthn ceremony).
 4. Bundler relays; ~1 block to install.
 5. Backend writes `pause_lifted` audit row.
-6. Cron policy engine re-adds the user.
+6. The policy-engine cron re-adds the user (no-op today, since that cron is disabled in every deployment).
 
 After resume, you're back in your previous tier (resume doesn't downgrade you). If you want to downgrade as part of resume, use the tier picker in `/agent/policy/transition`.
 
-## Pause + Policy-bound interaction
+## Pause + Policy-bound interaction (designed — not yet driven)
 
-If you're in Policy-bound tier and the cron engine detects a **breach** (e.g., your $500 daily-spend cap is exceeded), the engine **auto-pauses** to Advisory:
+::: warning Not yet live
+The breach auto-pause below is part of the **Policy-bound** design. The contract pieces are deployed, but **no cron runs them in any current deployment**, so there is no automatic breach → pause today. The manual `/pause` kill-switch (above) is fully live. The live autonomous tier is **Scoped autonomy**, bounded by a per-trade cap + TTL + this manual kill-switch.
+:::
+
+As designed, if you're in Policy-bound tier and the engine detects a **breach** (e.g., your $500 daily-spend cap is exceeded), it would **auto-pause** to Advisory:
 
 1. Encrypted threshold check via `RiskParams.checkAndExecute` returns `breach=true`.
 2. Engine async-decrypts the breach (TN decrypt + on-chain `settleBreachDecrypt`).
@@ -110,7 +114,7 @@ If you're in Policy-bound tier and the cron engine detects a **breach** (e.g., y
 4. Engine calls `PauseAgentUseCase` for the user (same cascade as a manual pause).
 5. User notified via Telegram (if linked) + dashboard banner on next sign-in.
 
-The auto-pause is the **fail-safe** for Policy-bound — bounded autonomy that exits to manual review if bounds are crossed.
+The auto-pause is the intended **fail-safe** for Policy-bound — bounded autonomy that exits to manual review if bounds are crossed. Until the engine is enabled, use **Scoped autonomy** for autonomous execution and the manual `/pause` as your live safeguard.
 
 ## Pause is not "stop everything"
 
@@ -126,11 +130,11 @@ The brief soft-real-time window between pause and validator uninstall means ther
 
 - **Lost or stolen laptop.** Pause from your phone (`/pause` in Telegram, or sign in from a different device).
 - **Suspicious activity in audit log.** Pause first, investigate second.
-- **Major market move.** Stop the policy-bound cron from automating something into a fast-moving market.
+- **Major market move.** Stop a Scoped autonomy session from automating something into a fast-moving market.
 - **Maintenance window.** Pause before a personal-side migration (e.g., moving to a new password manager).
 
 ## Where next
 
-- [Tiered autonomy](/policy/tiered-autonomy) — how pause fits the four-tier ladder.
+- [Tiered autonomy](/policy/tiered-autonomy) — how pause fits the tier dial.
 - [Session keys](/policy/session-keys) — what the validator the pause uninstalls actually authorized.
 - [Audit log](/policy/audit-log) — what pause/resume write to the log.

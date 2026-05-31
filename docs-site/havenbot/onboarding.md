@@ -25,21 +25,19 @@ Click **Get started** to advance.
 
 You need a small amount of confidential USDC (called **mhUSDC**) to buy your first RWA token.
 
-**Testnet (Arbitrum Sepolia):**
+**Testnet (Arbitrum Sepolia) — the live network:**
 - Click **Open faucet** — a new tab opens to the public mhUSDC testnet faucet.
 - Paste your wallet address (the wizard shows it; click to copy).
 - Request the daily drip. (Some faucets dispense less than the full ~100 mhUSDC on first try; rerun if you need more.)
 - Come back to the wizard tab and click **I've funded my wallet**.
 
-**Production (Arbitrum One):**
-- Click **Buy mhUSDC** — opens the on-ramp picker.
-- Pay with card / Apple Pay / Google Pay.
-- Wait for on-ramp settlement.
+**Arbitrum One (mainnet) — on the roadmap:**
+- MuHaven runs on Arbitrum Sepolia today; a mainnet deployment with a card / Apple Pay / Google Pay on-ramp is planned but not yet live.
 
 The wizard polls your mhUSDC balance and advances automatically once funds land.
 
 ::: warning Wrap-to-mhUSDC leaks
-The wrap from USDC → mhUSDC is the one MuHaven flow that leaks deposit size to a chain observer. If your deposit size needs to stay private, use the issuer-minted hosted checkout flow (which routes through a non-customer MuHaven wallet).
+The wrap from USDC → mhUSDC is the one MuHaven flow that leaks deposit size to a chain observer. If your deposit size needs to stay private, the planned issuer-minted hosted checkout flow (which routes through a non-customer MuHaven wallet) will address this — that surface is in development today.
 :::
 
 ### Step 3 — First buy

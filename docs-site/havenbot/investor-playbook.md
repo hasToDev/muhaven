@@ -58,11 +58,11 @@ Tier changes are signed by your passkey (not the session key) — see [Tiered au
 
 | You want | Say |
 |---|---|
-| Switch tier | "Switch me to Confirm-per-action." or "Move me to Policy-bound." |
+| Switch tier | "Switch me to Confirm-per-action." or "Arm Scoped autonomy." |
 | Inspect current tier | "What tier am I in?" |
 | See my session-key scope | "Show my session-key permissions." |
-| Set a daily spend cap | "Cap my daily spend at $500." *(Policy-bound only)* |
-| Set a max drawdown | "Don't let me lose more than 10% in a single position." *(Policy-bound only)* |
+| Set a per-trade cap (Scoped autonomy) | "Arm Scoped autonomy with a $500 per-trade cap." |
+| Set a max drawdown | "Don't let me lose more than 10% in a single position." *(Policy-bound — designed; the risk engine isn't running today)* |
 | Re-authorize the session key | "Renew my session key for another hour." |
 
 ## The /pause kill-switch
@@ -93,7 +93,7 @@ The audit log is your forensic record. See [Audit log](/policy/audit-log) for wh
 
 - **It won't give financial advice.** Ask "should I buy `<TOKEN>`?" and HavenBot will give you the NAV, the recent yield history, the protection-pool state — not "yes, buy it."
 - **It won't move funds out of your MuHaven wallet.** The session-key scope is locked to MuHaven contracts. There is no `transfer-to-external-EOA` tool.
-- **It won't bypass your tier.** Asking "buy $50K of `<TOKEN>`" while in Advisory tier triggers a passkey prompt; while in Policy-bound tier with a $5K cap, it's rejected by the gate (not silently downgraded to $5K).
+- **It won't bypass your tier.** Asking "buy $50K of `<TOKEN>`" while in Advisory tier triggers a passkey prompt; while running under a Scoped autonomy session with a $5K per-trade cap, it's rejected by the on-chain validator (not silently downgraded to $5K).
 - **It won't act in another user's account.** Cross-user audit access and encrypted-vote retrieval require permits the other user must sign.
 
 ## Common mistakes

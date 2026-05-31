@@ -26,8 +26,8 @@ You pick one of four tiers:
 
 - **Advisory** — read-only. Every write needs a fresh passkey signature.
 - **Confirm per action** — the agent proposes; you confirm each write.
-- **Policy-bound** — the agent writes within an allowlist plus spend caps.
-- **Scoped autonomy** — grants capped, time-bounded signing within a **per-trade cap** and **TTL**. The **MCP broker** then trades with **no prompt**, and **HavenBot auto-executes your buys/sells** (card flashes, no click/passkey) plus hands-off auto-reinvest + rebalance.
+- **Policy-bound** — a designed tier where the agent would write within an allowlist plus spend caps. Its auto-signing engine is built but **not enabled in any current deployment**, so use **Scoped autonomy** (below) for live hands-off execution.
+- **Scoped autonomy** — the **live autonomous tier**. Grants capped, time-bounded signing within a **per-trade cap** and **TTL**. The **MCP broker** then trades with **no prompt**, and **HavenBot auto-executes your buys/sells** (card flashes, no click/passkey) plus hands-off auto-reinvest + rebalance.
 
 ## Steps
 1. Go to `/agent/policy/transition` (you can also ask HavenBot to *"open my agent settings"*).

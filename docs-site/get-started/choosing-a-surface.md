@@ -5,7 +5,7 @@ description: Decision tree for HavenBot vs MCP vs OpenClaw vs Hosted Checkout.
 
 # Choosing a surface
 
-MuHaven exposes the same SDK and the same policy gate behind four different agentic surfaces. You don't have to pick one — most users run two or three side by side. But there's a natural starting surface for any given context.
+MuHaven is architected around four agentic surfaces that share the same SDK and the same policy gate. Three are live today — **HavenBot**, **`@muhaven/mcp`**, and the **Telegram bot** — while the **OpenClaw skill** and **Hosted Checkout** are in development. You don't have to pick one — most users run two or three side by side. But there's a natural starting surface for any given context.
 
 ## Quick chooser
 
@@ -35,7 +35,7 @@ Who are you? ───┤
 
 ## Feature parity matrix
 
-All four surfaces eventually route through the same tools and the same policy gate. They differ in (1) which subset of tools they expose, (2) where confirmations happen, and (3) what host runtime they need.
+All four surfaces route through the same tools and the same policy gate. They differ in (1) which subset of tools they expose, (2) where confirmations happen, and (3) what host runtime they need. The matrix below describes the architected capabilities of each surface; the OpenClaw + Telegram column reflects the design for the OpenClaw skill (the Telegram bot itself is live, the broader OpenClaw skill is in development), and the Hosted Checkout column is in development.
 
 | Capability | HavenBot | MCP | OpenClaw + Telegram | Hosted Checkout |
 |---|---|---|---|---|
@@ -53,7 +53,7 @@ All four surfaces eventually route through the same tools and the same policy ga
 | Read-only mode | ❌ | ✅ `MUHAVEN_READ_ONLY=true` | n/a (skill subset) | n/a |
 | Bring your own LLM | ❌ (Gemini today) | ✅ | n/a (no LLM at the bot edge) | n/a |
 
-Legend: ✅ shipped · ⛔ deliberately excluded · ❌ not applicable.
+Legend: ✅ supported by design · ⛔ deliberately excluded · ❌ not applicable. (OpenClaw skill + Hosted Checkout are in development; the Telegram bot, HavenBot, and MCP are live.)
 
 ## Confirmation surface differences
 

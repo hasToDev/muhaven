@@ -9,6 +9,11 @@ This surface is still being hardened and isn't part of the [Testing Guide](/guid
 
 # OpenClaw + Telegram troubleshooting
 
+> The OpenClaw skill is in development and not yet published, so the skill-install
+> symptoms below (and the `@muhaven/mcp@0.1.x` version pins they reference) are
+> forward-looking/illustrative — they describe the intended install behavior once
+> the skill ships, not current operational guidance. The Telegram bot section is live.
+
 ## Skill install
 
 ### "ClawHub install succeeded but the skill won't start"

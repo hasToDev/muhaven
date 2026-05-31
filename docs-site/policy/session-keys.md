@@ -7,7 +7,7 @@ description: The short-lived signers that handle your day-to-day actions.
 
 A **session key** is a short-lived ECDSA key with **narrow scope** installed in your MuHaven wallet (a ZeroDev-powered smart account) by your passkey. For its lifetime (default 1 hour), it can sign MuHaven UserOps without prompting you for a passkey on every action.
 
-Session keys are how Confirm-per-action tier feels frictionless without sacrificing scope safety. They're also how the cron policy engine signs in Policy-bound tier.
+Session keys are how Confirm-per-action tier feels frictionless without sacrificing scope safety. They're also what powers the live **Scoped autonomy** tier: a bounded session key held by the broker daemon signs the agent's buys, sells, and claims within a per-trade cap + TTL, without prompting you. (The Policy-bound cron is also designed to sign via a session key, but that engine is built and disabled in every deployment today — see [Tiered autonomy](/policy/tiered-autonomy).)
 
 ## What the session key can do
 
@@ -27,7 +27,7 @@ Three reasons:
 
 1. **UX.** Touch ID / Windows Hello on every click is exhausting. The session key signs without prompting; the passkey ceremony requires a biometric prompt every time.
 2. **Scope reduction.** Your passkey signs *anything* the MuHaven wallet asks. The session key signs only what the validators allow. A leaked session key isn't a drain-the-account key.
-3. **Cron-friendly.** A passkey requires a user-present WebAuthn ceremony. A session key can be invoked by a backend cron (Policy-bound tier) without user interaction.
+3. **Daemon-friendly.** A passkey requires a user-present WebAuthn ceremony. A session key can be invoked without user interaction — this is what lets the broker daemon sign for the live **Scoped autonomy** tier (and, by the same mechanism, the designed-but-disabled Policy-bound cron).
 
 ## Lifecycle
 
@@ -65,12 +65,12 @@ Depends on the surface:
 | Surface | Private half held by |
 |---|---|
 | **HavenBot dashboard** | Browser-local (`window.localStorage` + Web Crypto subtle key, encrypted with a wallet-derived key) |
-| **`@muhaven/mcp`** | `muhaven-broker` daemon — in OS keychain or 0600-mode file |
+| **`@muhaven/mcp`** | `muhaven-broker` daemon — in OS keychain or 0600-mode file. This daemon is what signs for the live **Scoped autonomy** tier. |
 | **OpenClaw + Telegram inline** | Backend service-secret bound to the inline tier; signed server-side via the MuHaven wallet's session-key validator |
 | **OpenClaw + Telegram Mini-App OTP** | Same as inline — backend-side, gated by Mini App OTP |
 | **OpenClaw + Telegram passkey deeplink** | Browser-local (deeplink to dashboard `/agent/confirm`) |
 | **Hosted Checkout** | Browser-local during checkout; transient session, no persistence |
-| **Policy-bound cron** | Backend cron service, stored in TPM-backed or KMS-bound keystore on the policy-engine host |
+| **Policy-bound cron** *(designed; cron disabled in every deployment today)* | Backend cron service, stored in TPM-backed or KMS-bound keystore on the policy-engine host |
 
 The session key **never** lives in an LLM process, an env var, or a long-lived browser cookie. The broker pattern + OS keychain ensures the LLM-jailbreak path cannot exfiltrate the key.
 

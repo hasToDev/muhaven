@@ -15,7 +15,7 @@ description: Terms used across MuHaven docs.
 | **MuHaven wallet** | The passkey-bound EIP-4337 smart account every MuHaven user holds. Powered by a [ZeroDev](https://docs.zerodev.app/) kernel under the hood; supports passkey signing, session keys, and pluggable validators. |
 | **Passkey** | A WebAuthn credential — biometric (Touch ID, Windows Hello) or hardware key (YubiKey). The master signer for every MuHaven wallet. |
 | **Session key** | A short-lived ECDSA key with narrow scope (target allowlist, selector allowlist, value cap, validUntil). Signs day-to-day actions without re-prompting the passkey. |
-| **Tiered autonomy** | MuHaven's four-state machine: Advisory / Confirm-per-action / Policy-bound / Paused. Controls how much the agent can do without asking. |
+| **Tiered autonomy** | MuHaven's five-state machine: Advisory / Confirm-per-action / Policy-bound / Scoped autonomy / Paused. Controls how much the agent can do without asking. The live autonomous tier is Scoped autonomy. |
 | **Policy gate** | Deterministic non-LLM code between the LLM and the signing path. Validates every tool intent against your tier + on-chain policy primitives. The LLM proposes; the gate disposes. |
 | **CaMeL** | "Capability-aware Multi-LLM" pattern. Planner/action split — the planning LLM never directly invokes signers; a deterministic action layer mediates. |
 | **PromptArmor** | Backend preprocessing layer that strips known prompt-injection patterns before the LLM sees user input. |
@@ -48,5 +48,6 @@ description: Terms used across MuHaven docs.
 | **`/pause`** | The kill-switch. Uninstalls the session-key validator in ≤1 Arbitrum block. Global across all surfaces. |
 | **Advisory tier** | Every action prompts your passkey via WebAuthn. The default tier for fresh investors. |
 | **Confirm-per-action tier** | Session key signs without re-prompting passkey within the 1-hour TTL. ConfirmModal still opens for cleartext preview. |
-| **Policy-bound tier** | Cron policy engine signs within your encrypted thresholds without per-action confirmation. Breaches auto-pause. Opt-in. |
+| **Policy-bound tier** | Designed automation tier: a cron policy engine would sign within your encrypted thresholds without per-action confirmation, auto-pausing on breach. The auto-signing engine is built but disabled in every deployment — selecting it gives an allowlist-scoped tier without a live risk engine. Not the live autonomous tier. |
+| **Scoped autonomy tier** | The live autonomous tier. A bounded session key plus a broker daemon sign without prompting within a per-trade cap and TTL. Opt-in; revocable via `/pause`. |
 | **Paused tier** | All `propose` tools return 423. Read tools work. Resume requires master passkey. |

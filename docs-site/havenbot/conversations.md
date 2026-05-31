@@ -78,7 +78,7 @@ Your MuHaven wallet has two signers:
 1. **Master passkey** — your WebAuthn credential. Used at sign-in, for MuHaven wallet rebind, and for high-stakes confirmations.
 2. **Session key** — a short-lived (default 1h) ECDSA key with **narrow scope** (only MuHaven functions, only your wallet, only for the session). Installed by your passkey at sign-in; uninstalled by `/pause`.
 
-In Advisory tier, every action prompts your passkey. In Confirm-per-action tier, the session key signs without re-prompting the passkey for the session duration. In Policy-bound tier, the cron policy engine signs within your encrypted thresholds without per-action confirmation.
+In Advisory tier, every action prompts your passkey. In Confirm-per-action tier, the session key signs without re-prompting the passkey for the session duration (you still confirm each action). In **Scoped autonomy** — the live autonomous tier — a bounded session key held by the broker daemon signs the agent's buys, sells, and claims without prompting you, up to a per-trade cap and until the TTL expires. **Policy-bound** is a designed automation tier whose encrypted-threshold auto-signing cron is built but disabled in every deployment, so it does not auto-sign today.
 
 See [Session keys](/policy/session-keys) for the full scope spec.
 
@@ -113,7 +113,7 @@ The current chat loop is **single-turn**: text → tool_call → tool_result →
 
 ## What HavenBot won't do
 
-- **Sign without showing you the preview.** Even in Policy-bound tier, the modal renders a brief "policy-bound auto-confirm" notice — there's no truly silent execution.
+- **Sign without showing you the preview in an interactive session.** Every interactive action opens the ConfirmModal. (Scoped autonomy is the exception by design: once you've armed a bounded session key with a per-trade cap + TTL, the broker daemon signs buys/sells/claims within those bounds without a per-action prompt — that's the whole point of the autonomous tier.)
 - **Submit a tool call that the policy gate rejected.** A jailbreak that fabricates "approved" in the LLM response cannot bypass the deterministic gate.
 - **Decrypt your balance server-side.** All `decryptForView` calls run in your browser with your local permit.
 - **Hold your private key.** The MuHaven wallet + session key are signers; the LLM is not.
@@ -122,4 +122,4 @@ The current chat loop is **single-turn**: text → tool_call → tool_result →
 
 - [Investor playbook](/havenbot/investor-playbook) — phrasing that works.
 - [Issuer playbook](/havenbot/issuer-playbook) — distribute yield, KYC churn, unpause.
-- [Tiered autonomy](/policy/tiered-autonomy) — how Advisory / Confirm / Policy-bound interact with ConfirmModal.
+- [Tiered autonomy](/policy/tiered-autonomy) — how Advisory / Confirm / Policy-bound / Scoped autonomy interact with ConfirmModal.
