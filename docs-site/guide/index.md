@@ -66,19 +66,35 @@ reveal your own balances, claim yield, transfer, and withdraw.
   <a class="mh-card" href="/guide/investor/portfolio"><h3>I13 · Portfolio</h3><p>Your dashboard.</p></a>
 </div>
 
-### AI agent tasks (A1–A7)
+### AI agent tasks — two tracks
 
 The differentiator: an agent that **reads aggregates, never your raw key**, and — once
-you grant a scoped session — executes trades autonomously inside your policy.
+you grant a Scoped session — executes trades autonomously inside your policy. Two parallel
+tracks drive the same flows: **HavenBot** (the in-dashboard copilot) and **MCP** (your own
+LLM via the `@muhaven/mcp` terminal server).
+
+#### AI agent · HavenBot (H1–H7)
 
 <div class="mh-card-grid">
-  <a class="mh-card" href="/guide/agent/chat"><h3>A1 · Chat</h3><p>Talk to HavenBot.</p></a>
-  <a class="mh-card" href="/guide/agent/reads"><h3>A2 · Reads</h3><p>Portfolio / yields / activity.</p></a>
-  <a class="mh-card" href="/guide/agent/set-tier"><h3>A3 · Set tier</h3><p>Advisory → Scoped.</p></a>
-  <a class="mh-card" href="/guide/agent/autonomous"><h3>A4 · Autonomous</h3><p>Buy/sell/reinvest/rebalance.</p></a>
-  <a class="mh-card" href="/guide/agent/deep-link-confirm"><h3>A5 · Confirm</h3><p>Deep-link passkey approve.</p></a>
-  <a class="mh-card" href="/guide/agent/pause"><h3>A6 · Pause</h3><p>The kill-switch.</p></a>
-  <a class="mh-card" href="/guide/agent/session-audit"><h3>A7 · Audit</h3><p>Session status + export.</p></a>
+  <a class="mh-card" href="/guide/agent/chat"><h3>H1 · Chat</h3><p>Talk to HavenBot.</p></a>
+  <a class="mh-card" href="/guide/agent/reads"><h3>H2 · Reads</h3><p>Portfolio / yields / activity.</p></a>
+  <a class="mh-card" href="/guide/agent/set-tier"><h3>H3 · Set tier</h3><p>Advisory → Scoped.</p></a>
+  <a class="mh-card" href="/guide/agent/autonomous"><h3>H4 · Autonomous</h3><p>Buy/sell/reinvest/rebalance.</p></a>
+  <a class="mh-card" href="/guide/agent/deep-link-confirm"><h3>H5 · Confirm</h3><p>Deep-link passkey approve.</p></a>
+  <a class="mh-card" href="/guide/agent/pause"><h3>H6 · Pause</h3><p>The kill-switch.</p></a>
+  <a class="mh-card" href="/guide/agent/session-audit"><h3>H7 · Audit</h3><p>Session status + export.</p></a>
+</div>
+
+#### AI agent · MCP — your own LLM (M1–M7)
+
+<div class="mh-card-grid">
+  <a class="mh-card" href="/guide/mcp/install"><h3>M1 · Install</h3><p>Install & verify the MCP server.</p></a>
+  <a class="mh-card" href="/guide/mcp/reads"><h3>M2 · Reads</h3><p>Portfolio / yields / activity.</p></a>
+  <a class="mh-card" href="/guide/mcp/buy"><h3>M3 · Buy</h3><p>Buy a position via MCP.</p></a>
+  <a class="mh-card" href="/guide/mcp/sell"><h3>M4 · Sell</h3><p>Sell a position via MCP.</p></a>
+  <a class="mh-card" href="/guide/mcp/set-tier"><h3>M5 · Set tier</h3><p>Autonomy via MCP.</p></a>
+  <a class="mh-card" href="/guide/mcp/autonomous"><h3>M6 · Autonomous</h3><p>Scoped tx via MCP.</p></a>
+  <a class="mh-card" href="/guide/mcp/pause"><h3>M7 · Pause</h3><p>Kill-switch via MCP.</p></a>
 </div>
 
 ### Issuer tasks (S1–S6)

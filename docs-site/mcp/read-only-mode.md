@@ -72,7 +72,7 @@ All eight read tools function normally:
 - `muhaven.read.distribution` — epoch status.
 - `muhaven.read.tokens` — RWA tokens you hold.
 - `muhaven.read.audit` — your tiered-autonomy audit log.
-- `muhaven.read.activity` — on-chain activity feed (buys / sells / wraps / unwraps / yield claims / transfers). Useful for verifying that a Path C action settled.
+- `muhaven.read.activity` — on-chain activity feed (buys / sells / wraps / unwraps / yield claims / transfers). Useful for verifying that a dashboard action settled.
 - `muhaven.read.protection_coverage` — DefaultProtection state for a token.
 - `muhaven.read.kyc_attestation` — KYC attestation registry status.
 

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-05-31
+
+### Changed
+
+- **Reword user-facing "Path C / Path D" routing jargon to plain language** in tool
+  descriptions and fallback messages. Users and the host LLM now see "the dashboard
+  deep-link" (formerly "Path C") and "autonomous (Scoped) execution" (formerly "Path D")
+  in every string they can read. Internal code comments, the `attemptPathD` function name,
+  and the programmatic `path: 'C' | 'D'` response field are unchanged.
+
 ## [0.6.1] — 2026-05-29
 
 Wave 5 Slice 2c follow-ups — the auto-reinvest runner now self-heals after a

@@ -21,7 +21,7 @@ Always available. No signing required.
 | `muhaven.read.distribution` | Distribution status for a (tokenAddress, epochId) tuple — funded / settled / claim-window. | `mcp.read.*` | none |
 | `muhaven.read.tokens` | RWA tokens you currently hold (address, symbol, decimals, asset class, status). | `mcp.read.*` | none |
 | `muhaven.read.audit` | Your tiered-autonomy audit log (cursor-paginated). User-self only. | `mcp.read.*` | none |
-| `muhaven.read.activity` | On-chain activity feed (buys / sells / wraps / unwraps / yield claims / transfers). Each row carries token address, tx hash, block timestamp, and event type — amounts are encrypted handles only. Use to verify a Path C action settled after position.buy / position.sell / cash.wrap. | `mcp.read.*` | none |
+| `muhaven.read.activity` | On-chain activity feed (buys / sells / wraps / unwraps / yield claims / transfers). Each row carries token address, tx hash, block timestamp, and event type — amounts are encrypted handles only. Use to verify a dashboard action settled after position.buy / position.sell / cash.wrap. | `mcp.read.*` | none |
 | `muhaven.read.protection_coverage` | DefaultProtection coverage state for a token (on-chain proxy state). Returns `not_deployed` when the P11.A contract is not yet on-chain. | `mcp.read.*` | none |
 | `muhaven.read.kyc_attestation` | KYC attestation registry status (informational). Returns `not_deployed` when the P11.C registry is not yet on-chain. | `mcp.read.*` | none |
 

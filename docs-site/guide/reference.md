@@ -98,7 +98,7 @@ Each token's detail page links its on-chain address.
 | **Passkey** | A device-bound WebAuthn credential (Touch ID, Windows Hello, security key). Your login and your signer — there's no password or seed phrase. |
 | **Kernel / ZeroDev** | Your smart account (ERC-4337) created by ZeroDev and controlled by your passkey. Enables sponsored gas and scoped session keys. |
 | **Scoped session key** | A short-lived, narrowly-permissioned key you grant the agent so it can execute *within your policy* without holding your passkey. |
-| **Path C vs Path D** | How an agent acts. **Path C** = it proposes, you approve with a passkey via a deep-link. **Path D** = it executes autonomously with a scoped session you granted. |
+| **How the agent acts** | Either it proposes and you approve each action with your passkey (a dashboard deep-link), or — with a Scoped session you granted — it executes autonomously within your per-trade cap. |
 | **NAV** | Net Asset Value per share, set by the issuer's oracle. A buy reverts if the NAV is stale. |
 | **Redemption queue** | When an instant sell exceeds the per-epoch instant cap, the overflow is queued and settles in a later epoch. |
 | **KYC / ERC-3643** | The compliance whitelist. On testnet, a dev-mode bypass lets you transfer freely. |

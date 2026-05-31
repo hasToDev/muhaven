@@ -93,7 +93,7 @@ export const TOOL_DESCRIPTORS: readonly ToolDescriptor[] = [
     name: 'muhaven.read.activity',
     group: 'read',
     description:
-      'Return the authenticated investor\'s on-chain activity feed (buys / sells / wraps / unwraps / yield claims / transfers). Each row carries token address, tx hash, block timestamp, and event type — but NEVER cleartext amounts (encrypted handles only, decryptable client-side via permit). USE THIS to verify a Path C dashboard action settled: after position.buy / position.sell / cash.wrap, the user opens the deep-link, taps Authorize, the on-chain tx lands → a new row appears here. Far more reliable than re-calling read.portfolio (which only changes shape when a NEW token enters the catalog).',
+      'Return the authenticated investor\'s on-chain activity feed (buys / sells / wraps / unwraps / yield claims / transfers). Each row carries token address, tx hash, block timestamp, and event type — but NEVER cleartext amounts (encrypted handles only, decryptable client-side via permit). USE THIS to verify a dashboard action settled: after position.buy / position.sell / cash.wrap, the user opens the deep-link, taps Authorize, the on-chain tx lands → a new row appears here. Far more reliable than re-calling read.portfolio (which only changes shape when a NEW token enters the catalog).',
     sensitive: false,
   },
   {
@@ -136,7 +136,7 @@ export const TOOL_DESCRIPTORS: readonly ToolDescriptor[] = [
     name: 'muhaven.cash.unwrap',
     group: 'cash',
     description:
-      'User-initiated only (no autonomous Path-D). Prepare an mhUSDC → USDC withdrawal (inverse of cash.wrap; Wave 5 W3). Returns a dashboard deep-link (muhaven.app/cash?mode=unwrap&...) that lands on the Withdraw form. Input amountUsdc is the dollar amount to convert back; mhUSDC↔USDC is 1:1 at 6 decimals so "withdraw 50 mhUSDC" or "convert $50 back to USDC" both map to amountUsdc: "50" (never include "$" or convert to base units). Optional — omit to let the user pick on the form. Two-phase async: (1) burn mhUSDC + request coprocessor decrypt (~30-60s), (2) claim USDC from the wrapper\'s on-chain reserve. The dashboard form drives both phases; this tool NEVER submits the burn or claim. To verify in-conversation, call muhaven.read.activity ONLY AFTER the user reports the claim landed — look for an "unwrap" row with a non-null claim tx hash. Seeing only the burn row means step 2 has not happened yet (do NOT declare settled).',
+      'User-initiated only (no autonomous execution). Prepare an mhUSDC → USDC withdrawal (inverse of cash.wrap; Wave 5 W3). Returns a dashboard deep-link (muhaven.app/cash?mode=unwrap&...) that lands on the Withdraw form. Input amountUsdc is the dollar amount to convert back; mhUSDC↔USDC is 1:1 at 6 decimals so "withdraw 50 mhUSDC" or "convert $50 back to USDC" both map to amountUsdc: "50" (never include "$" or convert to base units). Optional — omit to let the user pick on the form. Two-phase async: (1) burn mhUSDC + request coprocessor decrypt (~30-60s), (2) claim USDC from the wrapper\'s on-chain reserve. The dashboard form drives both phases; this tool NEVER submits the burn or claim. To verify in-conversation, call muhaven.read.activity ONLY AFTER the user reports the claim landed — look for an "unwrap" row with a non-null claim tx hash. Seeing only the burn row means step 2 has not happened yet (do NOT declare settled).',
     sensitive: true,
   },
   {

@@ -88,9 +88,9 @@ Autonomous execution requires a **scoped session** at the right tier. If the age
 *proposes* (gives you a confirm link), either:
 
 - you're in **Advisory / Confirm-per-action** — approve via the deep-link
-  ([A5](/guide/agent/deep-link-confirm)), or
+  ([H5](/guide/agent/deep-link-confirm)), or
 - you haven't granted a **Scoped** session yet — do that in
-  [A3 · Set the tier](/guide/agent/set-tier).
+  [H3 · Set the tier](/guide/agent/set-tier).
 
 To stop the agent at any time, use the [pause / kill-switch](/guide/agent/pause).
 
@@ -99,7 +99,7 @@ To stop the agent at any time, use the [pause / kill-switch](/guide/agent/pause)
 Multi-leg **rebalance runs through HavenBot in the dashboard** (and the Portfolio
 "Rebalance to targets" panel), not the standalone external `position.rebalance` MCP tool,
 which intentionally returns `not_implemented`. Use HavenBot — see
-[A4 · Autonomous execution](/guide/agent/autonomous).
+[H4 · Autonomous execution](/guide/agent/autonomous).
 
 ## A feature returns "not deployed"
 

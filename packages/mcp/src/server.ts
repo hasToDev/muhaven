@@ -371,7 +371,7 @@ export async function runMcpStdioCli(opts: RunMcpStdioCliOptions = {}): Promise<
       process.stderr.write(
         `[muhaven-mcp] bundler chain-id assert failed: ${
           err instanceof Error ? err.message : String(err)
-        } — Path D autonomous-buys will fail until MUHAVEN_BUNDLER_URL + MUHAVEN_CHAIN_ID agree\n`,
+        } — autonomous (Scoped) buys will fail until MUHAVEN_BUNDLER_URL + MUHAVEN_CHAIN_ID agree\n`,
       );
     });
   }

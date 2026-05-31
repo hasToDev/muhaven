@@ -39,4 +39,4 @@ Every autonomous action is logged and exportable. These reads expose what the ag
 | `valid-until` is in the past | The session expired; grant a fresh one if you still want autonomy. |
 | Audit export looks empty | The agent hasn't taken any autonomous actions yet — try [autonomous execution](/guide/agent/autonomous) first. |
 
-→ Next: [Become an issuer](/guide/issuer/become-issuer)
+→ Next: [Install & verify the MCP server](/guide/mcp/install)

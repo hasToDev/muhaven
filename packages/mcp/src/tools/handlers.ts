@@ -1644,7 +1644,7 @@ async function attemptPathD(
       kind: 'fallback',
       reason: 'entry_point_unset',
       message:
-        'MUHAVEN_ENTRY_POINT resolved to undefined — Path D requires the EntryPoint v0.7 address',
+        'MUHAVEN_ENTRY_POINT resolved to undefined — autonomous (Scoped) execution requires the EntryPoint v0.7 address',
     };
   }
   if (typeof deps.chainId !== 'number') {
@@ -1652,7 +1652,7 @@ async function attemptPathD(
       kind: 'fallback',
       reason: 'chain_id_unset',
       message:
-        'MUHAVEN_CHAIN_ID not configured — Path D autonomous-trade requires a chain id for userOpHash',
+        'MUHAVEN_CHAIN_ID not configured — autonomous (Scoped) execution requires a chain id for userOpHash',
     };
   }
   const entryPointAddress = deps.entryPointAddress;
@@ -1669,7 +1669,7 @@ async function attemptPathD(
         kind: 'fallback',
         reason: 'target_not_in_snapshot',
         message:
-          'sell-queued requires the per-token RedemptionQueue address but none was resolved — falling back to Path C deep-link',
+          'sell-queued requires the per-token RedemptionQueue address but none was resolved — falling back to the dashboard deep-link',
       };
     }
     targetAddress = queueAddress;
@@ -1679,7 +1679,7 @@ async function attemptPathD(
         kind: 'fallback',
         reason: 'target_not_in_snapshot',
         message:
-          'claim requires the per-token YieldSnapshot address but none was resolved — falling back to Path C deep-link',
+          'claim requires the per-token YieldSnapshot address but none was resolved — falling back to the dashboard deep-link',
       };
     }
     targetAddress = snapshotAddress;
@@ -1689,7 +1689,7 @@ async function attemptPathD(
         kind: 'fallback',
         reason: 'subscription_address_unset',
         message:
-          'MUHAVEN_SUBSCRIPTION_ADDRESS not configured — Path D autonomous-trade disabled until the operator sets it in the MCP env',
+          'MUHAVEN_SUBSCRIPTION_ADDRESS not configured — autonomous (Scoped) execution disabled until the operator sets it in the MCP env',
       };
     }
     targetAddress = deps.subscriptionAddress;
@@ -1701,14 +1701,14 @@ async function attemptPathD(
       return {
         kind: 'fallback',
         reason: 'broker_unreachable',
-        message: `broker daemon not reachable (${preflight.message}) — falling back to Path C dashboard deep-link`,
+        message: `broker daemon not reachable (${preflight.message}) — falling back to the dashboard deep-link`,
       };
     }
     if (preflight.reason === 'version_too_old') {
       return {
         kind: 'fallback',
         reason: 'version_too_old',
-        message: `broker speaks ${preflight.daemonVersion}, Path D requires ≥${preflight.requiredVersion} — upgrade @muhaven/mcp and restart the broker`,
+        message: `broker speaks ${preflight.daemonVersion}, autonomous (Scoped) execution requires ≥${preflight.requiredVersion} — upgrade @muhaven/mcp and restart the broker`,
       };
     }
     // session_key_unavailable
@@ -1716,7 +1716,7 @@ async function attemptPathD(
       kind: 'fallback',
       reason: 'session_key_unavailable',
       message:
-        'broker is running in read-only posture (no MUHAVEN_BROKER_SESSION_KEY set) — Path D requires a loaded session key',
+        'broker is running in read-only posture (no MUHAVEN_BROKER_SESSION_KEY set) — autonomous (Scoped) execution requires a loaded session key',
     };
   }
   // 2. Is there a unique active scoped session?
@@ -1865,8 +1865,8 @@ async function attemptPathD(
         `active scoped session does not authorize ${spec.functionName} (selector ${spec.selector}) ` +
         `even after a mirror re-sync — ` +
         (spec.op === 'sell-queued'
-          ? 'the backend may not have the per-token RedemptionQueue address configured; falling back to Path C deep-link'
-          : 're-mint the session, or fall back to Path C deep-link'),
+          ? 'the backend may not have the per-token RedemptionQueue address configured; falling back to the dashboard deep-link'
+          : 're-mint the session, or fall back to the dashboard deep-link'),
     };
   }
   // 5. Per-op cap. `claim` (capArgIndex null) moves no user-chosen amount,
@@ -1889,7 +1889,7 @@ async function attemptPathD(
       return {
         kind: 'fallback',
         reason: 'out_of_scope',
-        message: `requested ${shares} shares exceeds the active session's per-op cap of ${maxShares} shares — fall back to Path C dashboard deep-link for this larger ${spec.intentVerb}`,
+        message: `requested ${shares} shares exceeds the active session's per-op cap of ${maxShares} shares — fall back to the dashboard deep-link for this larger ${spec.intentVerb}`,
       };
     }
   }
@@ -1904,7 +1904,7 @@ async function attemptPathD(
       reason: 'target_not_in_snapshot',
       message: `target ${targetAddress} not in active session's target allowlist (op=${spec.op}) — ${
         spec.op === 'sell-queued'
-          ? 'the backend RedemptionQueue map may be unconfigured; falling back to Path C deep-link'
+          ? 'the backend RedemptionQueue map may be unconfigured; falling back to the dashboard deep-link'
           : 're-mint the session with this contract in scope'
       }`,
     };
@@ -2001,7 +2001,7 @@ async function attemptPathD(
       reason: 'session_revoked',
       message:
         'the Scoped session was revoked (or expired) on the dashboard — the broker snapshot is ' +
-        'stale; purged it and falling back to Path C. Re-mint a Scoped session to resume autonomous buys.',
+        'stale; purged it and falling back to the dashboard deep-link. Re-mint a Scoped session to resume autonomous buys.',
     };
   }
 
@@ -2016,7 +2016,7 @@ async function attemptPathD(
       kind: 'fallback',
       reason: 'no_permission_id_in_snapshot',
       message:
-        'active scoped session snapshot lacks permissionId — frontend storePolicySnapshot wire-up is a Slice 2 prerequisite; falling back to Path C',
+        'active scoped session snapshot lacks permissionId — frontend storePolicySnapshot wire-up is a Slice 2 prerequisite; falling back to the dashboard deep-link',
     };
   }
   const permissionId = snapshot.permissionId;
@@ -3101,7 +3101,7 @@ export async function positionSell(
     // no enum reason since no Path D UserOp was attempted).
     pathDFallbackDetail =
       'viaQueue requested but no RedemptionQueue address is configured for this token — ' +
-      'using the Path C dashboard deep-link instead (instant redeem still auto-escalates to the queue on overflow).';
+      'using the dashboard deep-link instead (instant redeem still auto-escalates to the queue on overflow).';
   }
 
   const dashboardUrl = buildPositionDeeplink(resolveDashboardBaseUrl(deps), 'sell', {

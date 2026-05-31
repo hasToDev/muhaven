@@ -84,7 +84,7 @@ encrypted handle. That's the whole point: <strong>provably yours, publicly unrea
 
 ## 6 · Ask HavenBot about it · ~1 min
 
-[Full task → A1](/guide/agent/chat)
+[Full task → H1](/guide/agent/chat)
 
 1. Open **Agent** (the HavenBot chat).
 2. Type: *"Summarise my portfolio."*
@@ -93,8 +93,9 @@ encrypted handle. That's the whole point: <strong>provably yours, publicly unrea
    you've revealed).
 
 > **Go further:** to let the agent *act* — autonomously reinvest yield or rebalance to
-> targets — grant it a scoped session in [A3 · Set the tier](/guide/agent/set-tier) and
-> watch it execute in [A4 · Autonomous execution](/guide/agent/autonomous).
+> targets — grant it a Scoped session in [H3 · Set the tier](/guide/agent/set-tier) and
+> watch it execute in [H4 · Autonomous execution](/guide/agent/autonomous). Prefer your own
+> LLM? Run the same flows over the [MCP track](/guide/mcp/install).
 
 ## 7 · Verify on-chain · ~1 min
 

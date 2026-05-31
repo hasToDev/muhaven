@@ -1,6 +1,6 @@
 ---
 title: Approve an action via deep-link
-description: When the agent isn't autonomous, you sign each proposed action with your passkey (Path C).
+description: When the agent isn't autonomous, you sign each proposed action with your passkey via a dashboard deep-link.
 ---
 
 # Approve an action via deep-link
@@ -11,7 +11,7 @@ description: When the agent isn't autonomous, you sign each proposed action with
 
 ## Before you begin
 ::: info Prerequisites
-Be signed in. This is the **Advisory / Confirm per action** flow (Path C) — used whenever the agent isn't acting autonomously. Both HavenBot and the MCP server can produce these deep-links.
+Be signed in. This is the **Advisory / Confirm per action** flow — a dashboard deep-link you approve with your passkey — used whenever the agent isn't acting autonomously. Both HavenBot and the MCP server can produce these deep-links.
 :::
 
 ## Steps

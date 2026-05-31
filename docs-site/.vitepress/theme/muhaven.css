@@ -554,45 +554,50 @@ kbd {
     background-color: transparent !important;
   }
 
-  /* The painted band — bounded left to VP's stock padding-left
-   * minus 24px (so menu text has a comfortable "inner padding"
-   * between its left edge and the band's left edge), right to the
-   * sidebar's own right edge. z-index 0 keeps it behind any
-   * positioned descendants but above the page (positioned-fixed
-   * parent creates its own stacking context).
+  /* The painted band lives on `.nav` (the scrolling CONTENT element),
+   * NOT on `.VPSidebar` (the fixed scroll CONTAINER). A `::before` on
+   * the fixed container is sized to the visible box and SCROLLS with
+   * the content, so a menu taller than the viewport loses its
+   * background past the fold (the bug the operator saw: paint stopped
+   * at "A4 Autonomous execution"). `.nav` is full-content-height, so
+   * its `::before` covers EVERY item; `min-height: 100%` makes it also
+   * fill the viewport when the menu is SHORTER than the screen.
    *
-   * Why 24px (and not 16): the previous 16px felt cramped at
-   * viewports where the chrome's left margin is growing — once VP's
-   * dynamic padding-left wins the max() (viewport > max-width + 64),
-   * the band starts tracking the chrome rightward while the inside
-   * breathing-room stays fixed. 16px is enough at narrow viewports
-   * but the eye expects more room inside the painted band as the
-   * surrounding chrome margin gets larger. 24px reads as comfortable
-   * across the full 960px-to-4K range. */
-  .VPSidebar::before {
+   * Horizontal bounds are now automatic: `.nav` already sits INSIDE
+   * the sidebar's (wide-screen-expanding) padding, so small negative
+   * insets keep the band hugging the menu column at every viewport —
+   * no `100vw` gutter math needed (that's why the old ≥1440
+   * `.VPSidebar::before` left-calc block below was removed).
+   * left: -24px = breathing room into the left padding;
+   * right: -32px = out to the sidebar's right edge;
+   * bottom: -96px = down through the sidebar's bottom padding. */
+  .VPSidebar .nav {
+    position: relative;
+    min-height: 100%;
+  }
+  .VPSidebar .nav::before {
     content: '';
     position: absolute;
     top: 0;
-    right: 0;
-    bottom: 0;
-    left: 8px; /* VP stock padding-left (32px) minus 24px breathing room */
+    right: -32px;
+    bottom: -96px;
+    left: -24px;
     background-color: var(--vp-sidebar-bg-color);
-    /* Subtle right-edge column boundary so the sidebar reads as a
-     * defined column once the gutter to its left disappears. */
+    /* Right-edge column boundary so the sidebar reads as a defined
+     * column once the gutter to its left disappears. */
     box-shadow: inset -1px 0 0 var(--vp-c-divider);
     z-index: 0;
     pointer-events: none;
   }
 
   /* Menu items + headings sit on top of the band. */
-  .VPSidebar > * {
+  .VPSidebar .nav > * {
     position: relative;
     z-index: 1;
   }
 
-  /* Dark-mode ambient amber bloom inside the painted band — adds
-   * the subtle warmth without bleeding past the band's left edge. */
-  html.dark .VPSidebar::before {
+  /* Dark-mode ambient amber bloom inside the painted band. */
+  html.dark .VPSidebar .nav::before {
     background-image: radial-gradient(
       ellipse 60% 40% at 50% -10%,
       rgba(255, 220, 161, 0.05),
@@ -601,35 +606,9 @@ kbd {
   }
 }
 
-@media (min-width: 1440px) {
-  /* At ≥1440px VP shifts padding-left to a centered-gutter
-   * expression. Match VP's stock formula but using `100vw` instead
-   * of `100%`.
-   *
-   * Why: VP's stock `.VPSidebar { padding-left: max(32px, calc((100% -
-   * (var(--vp-layout-max-width) - 64px)) / 2)) }` applies to the sidebar
-   * itself, which is `position: fixed; left: 0`. For `padding`'s `%`
-   * resolution, the containing block of a fixed element is the initial
-   * containing block (viewport), so `100%` in VP's rule means viewport.
-   *
-   * Our `::before` is `position: absolute` — its containing block is the
-   * nearest positioned ancestor, which IS `.VPSidebar` (the fixed parent).
-   * So `100%` in the pseudo-element's `left` resolves to the SIDEBAR'S
-   * own width, not viewport. On a 4K (3840px) display the sidebar width
-   * is ~1312px, making `(100% - 1696)/2` negative; the `max()` falls
-   * back to 32px while VP's actual padding-left is ~1072px. The painted
-   * band starts 1040px to the left of the menu items — gross bleed.
-   *
-   * Fix: use `100vw` so the expression evaluates against viewport width
-   * regardless of containing-block resolution rules. This produces the
-   * SAME number VP's own padding-left computes, at every viewport. */
-  .VPSidebar::before {
-    left: max(
-      8px,
-      calc((100vw - (var(--vp-layout-max-width) - 64px)) / 2 - 24px)
-    );
-  }
-}
+/* (The old ≥1440px `.VPSidebar::before { left: max(…100vw…) }` block was
+ * removed — the band now lives on `.nav` with automatic negative-inset
+ * bounds, so the centered-gutter `100vw` math is no longer needed.) */
 
 /* ── Logo strip (.VPNavBarTitle) — align with sidebar painted band.
  *

@@ -18,7 +18,7 @@ Be signed in with your passkey. You decide how much rope the agent gets, and you
 - **Advisory** — read-only. Every write needs a fresh passkey signature.
 - **Confirm per action** — the agent proposes; you confirm each write.
 - **Policy-bound** — the agent writes within an allowlist plus spend caps.
-- **Scoped autonomy** — autonomous (Path D): buys/sells within a per-action ceiling and a time limit, with no per-trade prompt.
+- **Scoped autonomy** — autonomous execution with a Scoped session: buys/sells within a per-action ceiling and a time limit, with no per-trade prompt.
 
 ## Steps
 1. Go to `/agent/policy/transition` (also reachable from a HavenBot deep-link).
@@ -32,7 +32,7 @@ The ephemeral session key is generated **client-side** and is **never sent over 
 :::
 
 ::: tip MCP equivalent
-The same change is available as the MCP tool `muhaven.policy.set_tier`.
+The same change is available from your own LLM via the MCP tool `muhaven.policy.set_tier` — see [M5 · Set the autonomy tier via MCP](/guide/mcp/set-tier).
 :::
 
 ## Expected result
