@@ -563,14 +563,24 @@ kbd {
    * its `::before` covers EVERY item; `min-height: 100%` makes it also
    * fill the viewport when the menu is SHORTER than the screen.
    *
-   * Horizontal bounds are now automatic: `.nav` already sits INSIDE
-   * the sidebar's (wide-screen-expanding) padding, so small negative
-   * insets keep the band hugging the menu column at every viewport —
-   * no `100vw` gutter math needed (that's why the old ≥1440
-   * `.VPSidebar::before` left-calc block below was removed).
-   * left: -24px = breathing room into the left padding;
-   * right: -32px = out to the sidebar's right edge;
-   * bottom: -96px = down through the sidebar's bottom padding. */
+   * Horizontal bounds are MATCHED to the logo strip band
+   * (`.VPNavBar.has-sidebar .title::before`, which spans
+   * [8px-from-left, sidebar-right]) so the logo strip + the menu read
+   * as ONE column with no step at the top-right (the operator saw the
+   * logo background ending ~10px short of the menu band):
+   *   left:  -24px → 8px from the sidebar's left edge (= the logo band's
+   *          `left: 8px`). `.nav` sits at padding-left (32px), so -24 = 8.
+   *   right: -64px → a deliberate OVERSHOOT (32px padding + scrollbar
+   *          margin). `.VPSidebar` is `overflow-x: hidden`, so the band
+   *          is CLIPPED to the sidebar's true right edge — exactly where
+   *          the logo strip band ends. Arithmetic insets (-32px) didn't
+   *          line up in-browser once the scrollbar claimed space;
+   *          clipping pins the right edge to the real column edge,
+   *          scrollbar or not.
+   *   bottom: -96px → down through the sidebar's bottom padding.
+   * No right box-shadow divider: it would render at the overshot,
+   * clipped-away edge and never show — and the logo strip band has no
+   * right divider either, so dropping it keeps the two consistent. */
   .VPSidebar .nav {
     position: relative;
     min-height: 100%;
@@ -579,13 +589,10 @@ kbd {
     content: '';
     position: absolute;
     top: 0;
-    right: -32px;
+    right: -64px;
     bottom: -96px;
     left: -24px;
     background-color: var(--vp-sidebar-bg-color);
-    /* Right-edge column boundary so the sidebar reads as a defined
-     * column once the gutter to its left disappears. */
-    box-shadow: inset -1px 0 0 var(--vp-c-divider);
     z-index: 0;
     pointer-events: none;
   }
