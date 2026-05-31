@@ -1162,3 +1162,86 @@ describe('TaxEventIndexer · WrapUsdc dispatch (W3 Phase 9 cash-rail)', () => {
     });
   });
 });
+
+// Yield-claim activity fix — the YieldSnapshot watch-list is (env list) ∪ (DB
+// token registry's per-token yieldSnapshotAddress). A token whose snapshot
+// proxy is only in the DB (onboarded after boot, never added to
+// YIELD_SNAPSHOT_ADDRESSES_JSON) must still be watched, or its YieldClaimed →
+// IncomeAccrual → /activity 'yield' row never appears.
+describe('TaxEventIndexer · YieldSnapshot dynamic watch-list', () => {
+  const DYNAMIC_SNAP: Address = '0xcccccccccccccccccccccccccccccccccccccccc';
+  const ENV_SNAP: Address = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+  let taxEventRepo: ITaxEventRepository;
+
+  beforeEach(() => {
+    taxEventRepo = emptyTaxEventRepo();
+  });
+
+  function twoTickClient(getLogs: ReturnType<typeof vi.fn>) {
+    let n = 0;
+    return createMockClient({
+      getBlockNumber: vi.fn().mockImplementation(() => {
+        n++;
+        return Promise.resolve(n === 1 ? 100n : 105n);
+      }),
+      getLogs,
+    });
+  }
+
+  function snapAddrsOf(getLogs: ReturnType<typeof vi.fn>): string[] {
+    return getLogs.mock.calls.flatMap((call: any[]) => {
+      const addr = call[0]?.address;
+      return Array.isArray(addr) ? addr : addr ? [addr] : [];
+    }).map((a: string) => a.toLowerCase());
+  }
+
+  it('watches a YieldSnapshot address supplied ONLY by the dynamic resolver (empty env)', async () => {
+    const getLogs = vi.fn().mockResolvedValue([]);
+    const indexer = new TaxEventIndexer(
+      taxEventRepo,
+      defaultIndexerConfig({
+        yieldSnapshotAddresses: [],
+        getYieldSnapshotAddresses: async () => [DYNAMIC_SNAP, null, undefined],
+      }),
+      twoTickClient(getLogs),
+    );
+    await indexer.tick();
+    await indexer.tick();
+    expect(snapAddrsOf(getLogs)).toContain(DYNAMIC_SNAP.toLowerCase());
+  });
+
+  it('falls back to the env snapshot list when the resolver throws', async () => {
+    const getLogs = vi.fn().mockResolvedValue([]);
+    const indexer = new TaxEventIndexer(
+      taxEventRepo,
+      defaultIndexerConfig({
+        yieldSnapshotAddresses: [ENV_SNAP],
+        getYieldSnapshotAddresses: async () => {
+          throw new Error('DB unreachable');
+        },
+      }),
+      twoTickClient(getLogs),
+    );
+    await indexer.tick();
+    await indexer.tick();
+    expect(snapAddrsOf(getLogs)).toContain(ENV_SNAP.toLowerCase());
+  });
+
+  it('does NOT stall the indexer when the YieldSnapshot getLogs rejects', async () => {
+    const getLogs = vi.fn().mockImplementation((p: any) => {
+      const addrs = Array.isArray(p.address) ? p.address : [p.address];
+      if (addrs.some((a: string) => a?.toLowerCase() === ENV_SNAP.toLowerCase())) {
+        return Promise.reject(new Error('eth_getLogs: too many addresses'));
+      }
+      return Promise.resolve([]);
+    });
+    const indexer = new TaxEventIndexer(
+      taxEventRepo,
+      defaultIndexerConfig({ yieldSnapshotAddresses: [ENV_SNAP] }),
+      twoTickClient(getLogs),
+    );
+    await indexer.tick();
+    await expect(indexer.tick()).resolves.toBeUndefined();
+    expect(indexer.getStatus().lastProcessedBlock).toBe('105');
+  });
+});

@@ -92,6 +92,19 @@ export interface TaxEventIndexerConfig {
    */
   getMuHavenTokenAddresses?: () => Promise<string[]>;
   /**
+   * Yield-claim activity fix (2026-05-31) — DB-backed dynamic resolver for the
+   * per-RWA YieldSnapshot proxy set. Called once per chunk and MERGED with the
+   * static `yieldSnapshotAddresses` env list, so a token onboarded AFTER boot
+   * has its `YieldClaimed` events auto-watched on the next poll without a manual
+   * `YIELD_SNAPSHOT_ADDRESSES_JSON` rotation. Same drift class as the
+   * MuHavenToken transfer leg: any token whose YieldSnapshot proxy was missing
+   * from the env list had its claimed yield produce ZERO `IncomeAccrual` rows →
+   * nothing in `/activity`. Returns each token's `yieldSnapshotAddress` (null
+   * for legacy tokens on the singleton snapshot → filtered out, the singleton
+   * stays in the env list). Leave undefined to keep the env-only behaviour.
+   */
+  getYieldSnapshotAddresses?: () => Promise<(string | null | undefined)[]>;
+  /**
    * Phase 9.A · Option Z follow-up — protocol contracts whose Transfer
    * participation should NOT surface as a /activity row. Mint / burn
    * filters (`from == 0` / `to == 0`) catch Subscription's mint+burn
@@ -141,6 +154,7 @@ export class TaxEventIndexer {
   private readonly muHavenStableAddress?: Address;
   private readonly muHavenTokenAddresses: Address[];
   private readonly getMuHavenTokenAddresses?: () => Promise<string[]>;
+  private readonly getYieldSnapshotAddresses?: () => Promise<(string | null | undefined)[]>;
   /** Lower-cased filter set for fast `has()` lookup during Transfer triage. */
   private readonly protocolFilterAddresses: Set<string>;
   private readonly oracleAddress?: Address;
@@ -171,6 +185,7 @@ export class TaxEventIndexer {
     this.muHavenStableAddress = config.muHavenStableAddress;
     this.muHavenTokenAddresses = config.muHavenTokenAddresses ?? [];
     this.getMuHavenTokenAddresses = config.getMuHavenTokenAddresses;
+    this.getYieldSnapshotAddresses = config.getYieldSnapshotAddresses;
     this.protocolFilterAddresses = new Set(
       (config.protocolFilterAddresses ?? []).map((a) => a.toLowerCase()),
     );
@@ -378,6 +393,35 @@ export class TaxEventIndexer {
     return [...merged.values()];
   }
 
+  /**
+   * Yield-claim activity fix (2026-05-31) — same merge/dedupe/fail-soft posture
+   * as `resolveTokenAddresses`, for the per-RWA YieldSnapshot watch set. Merges
+   * the static env `yieldSnapshotAddresses` (incl. the legacy singleton) with
+   * the DB resolver (each token's `yieldSnapshotAddress`, null-filtered). Without
+   * this, a token whose YieldSnapshot proxy was missing from the env list had
+   * its `YieldClaimed` events unwatched → claimed yield never reached /activity.
+   */
+  private async resolveYieldSnapshotAddresses(): Promise<Address[]> {
+    const merged = new Map<string, Address>();
+    for (const a of this.yieldSnapshotAddresses) merged.set(a.toLowerCase(), a);
+    if (this.getYieldSnapshotAddresses) {
+      try {
+        const dynamic = await this.getYieldSnapshotAddresses();
+        for (const a of dynamic) {
+          if (typeof a !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(a)) continue;
+          const key = a.toLowerCase();
+          if (!merged.has(key)) merged.set(key, a as Address);
+        }
+      } catch (err) {
+        this.logger.warn(
+          { err },
+          'getYieldSnapshotAddresses failed — using the static env snapshot list this chunk',
+        );
+      }
+    }
+    return [...merged.values()];
+  }
+
   private async fetchChunk(fromBlock: bigint, toBlock: bigint): Promise<TaxEvent[]> {
     const tasks: Promise<Log[]>[] = [];
 
@@ -407,14 +451,28 @@ export class TaxEventIndexer {
       tasks.push(Promise.resolve([] as Log[]));
     }
 
-    if (this.yieldSnapshotAddresses.length > 0) {
+    // Yield-claim activity fix (2026-05-31) — watch set = static env snapshot
+    // list ∪ DB token registry's per-token YieldSnapshot proxies, resolved per
+    // chunk. `.catch(() => [])` isolates this leg (the address array grows with
+    // onboarded tokens) so an RPC/address-limit error can't propagate into the
+    // bare Promise.all → frozen cursor → whole-indexer stall.
+    const snapshotAddrsForChunk = await this.resolveYieldSnapshotAddresses();
+    if (snapshotAddrsForChunk.length > 0) {
       tasks.push(
-        this.client.getLogs({
-          address: this.yieldSnapshotAddresses,
-          events: yieldSnapshotTaxAbi,
-          fromBlock,
-          toBlock,
-        }) as Promise<Log[]>,
+        (
+          this.client.getLogs({
+            address: snapshotAddrsForChunk,
+            events: yieldSnapshotTaxAbi,
+            fromBlock,
+            toBlock,
+          }) as Promise<Log[]>
+        ).catch((err: unknown) => {
+          this.logger.warn(
+            { err, snapshots: snapshotAddrsForChunk.length },
+            'YieldSnapshot getLogs failed (address-list limit? RPC error?) — skipping yield leg this chunk',
+          );
+          return [] as Log[];
+        }),
       );
     } else {
       tasks.push(Promise.resolve([] as Log[]));

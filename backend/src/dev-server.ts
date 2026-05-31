@@ -510,6 +510,17 @@ async function main() {
               container.rwaTokenRepo
                 .findAll()
                 .then((tokens) => tokens.map((t) => t.address)),
+            // Yield-claim activity fix (2026-05-31) — same DB-dynamic source for
+            // the per-RWA YieldSnapshot proxies (merged with
+            // YIELD_SNAPSHOT_ADDRESSES_JSON inside the indexer), so a token
+            // onboarded after boot has its YieldClaimed events auto-watched and
+            // claimed yield reaches /activity without an env rotation. Legacy
+            // tokens on the singleton snapshot have a null yieldSnapshotAddress
+            // (the indexer null-filters them; the singleton stays in the env).
+            getYieldSnapshotAddresses: () =>
+              container.rwaTokenRepo
+                .findAll()
+                .then((tokens) => tokens.map((t) => t.yieldSnapshotAddress)),
             tokenRegistryAddress: registryAddr,
             intervalMs: env.TAX_EVENT_POLLER_INTERVAL_MS,
           },
