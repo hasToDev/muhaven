@@ -554,68 +554,55 @@ kbd {
     background-color: transparent !important;
   }
 
-  /* The painted band lives on `.nav` (the scrolling CONTENT element),
-   * NOT on `.VPSidebar` (the fixed scroll CONTAINER). A `::before` on
-   * the fixed container is sized to the visible box and SCROLLS with
-   * the content, so a menu taller than the viewport loses its
-   * background past the fold (the bug the operator saw: paint stopped
-   * at "A4 Autonomous execution"). `.nav` is full-content-height, so
-   * its `::before` covers EVERY item; `min-height: 100%` makes it also
-   * fill the viewport when the menu is SHORTER than the screen.
+  /* The painted band is a `position: fixed` pseudo-element on
+   * `.VPSidebar` — NOT an `absolute`/`relative` pseudo inside the
+   * scrolling content. This is the round-5 CORRECT fix.
    *
-   * Horizontal bounds are MATCHED to the logo strip band
-   * (`.VPNavBar.has-sidebar .title::before`, which spans
-   * [8px-from-left, sidebar-right]) so the logo strip + the menu read
-   * as ONE column with no step at the top-right (the operator saw the
-   * logo background ending ~10px short of the menu band):
-   *   left:  -24px → 8px from the sidebar's left edge (= the logo band's
-   *          `left: 8px`). `.nav` sits at padding-left (32px), so -24 = 8.
-   *   right: -64px → a deliberate OVERSHOOT (32px padding + scrollbar
-   *          margin). `.VPSidebar` is `overflow-x: hidden`, so the band
-   *          is CLIPPED to the sidebar's true right edge — exactly where
-   *          the logo strip band ends. Arithmetic insets (-32px) didn't
-   *          line up in-browser once the scrollbar claimed space;
-   *          clipping pins the right edge to the real column edge,
-   *          scrollbar or not.
-   *   bottom: -96px → down through the sidebar's bottom padding.
-   * No right box-shadow divider: it would render at the overshot,
-   * clipped-away edge and never show — and the logo strip band has no
-   * right divider either, so dropping it keeps the two consistent. */
-  .VPSidebar .nav {
-    position: relative;
-    min-height: 100%;
-  }
-  .VPSidebar .nav::before {
+   * Why fixed: `.VPSidebar` is itself `position: fixed` (top/bottom/
+   * left:0), and the menu SCROLLS inside it via `overflow-y: auto` on
+   * its `.nav` content. Round 4 painted the band on `.nav::before`
+   * (`position: absolute`), so it lived in the scroll region and moved
+   * UP with the menu — past the fold the logo strip lost its background
+   * (operator screenshot `no_logo_background.png`). A `position: fixed`
+   * pseudo is anchored to the VIEWPORT, so it never scrolls and always
+   * covers the full visible column — logo strip + every menu item, at
+   * any scroll position and any menu length. This also kills the old
+   * "paint stops at A4" short-menu/long-menu bug for the same reason.
+   *
+   * Why a single fixed band aligns: the round-3 left-edge step came
+   * from TWO bands with DIFFERENT references — a `.title::before` logo
+   * band computed from `100vw` (includes the root scrollbar) vs a menu
+   * band tracking VitePress's `100%`-based padding-left (excludes it),
+   * off by ~scrollbar/2. Here there is ONE band, and its geometry uses
+   * the SAME `100%`/`var(--vp-sidebar-width)` calc VitePress uses on
+   * `.VPSidebar` itself. Both are `position: fixed`, so `100%` resolves
+   * against the SAME initial containing block — no scrollbar mismatch
+   * is possible. Logo strip and menu are one element → no step.
+   *
+   * Base (≥960, <1440): `.VPSidebar` is left:0, width:var(--vp-sidebar-
+   * width), padding:32px, with NO gutter — so the band fills the whole
+   * sidebar box [0, sidebar-width]. The ≥1440 block below insets it to
+   * the content column so the wide-screen gutter never paints (the
+   * original "bleed"). `top` matches `.VPSidebar`'s own top so the band
+   * starts at the viewport top, behind the transparent navbar/title
+   * (both transparent at ≥960 — VPNavBar.vue:93 + :156), painting the
+   * logo strip. `z-index:-1` keeps it behind `.nav` content but inside
+   * the sidebar's own stacking context (so it never falls behind the
+   * page). */
+  .VPSidebar::before {
     content: '';
-    position: absolute;
-    /* Extend UP behind the navbar by one nav-height so this SINGLE band
-     * also paints the logo strip. At ≥960px the navbar + its title are
-     * transparent (VitePress `.VPNavBar:not(.home)` + `.title`), so the
-     * sidebar shows through — meaning one band covers BOTH the logo
-     * strip and the menu with ONE geometry. That kills the old
-     * two-band alignment bug for good (a separate `.title::before` band
-     * computed its left edge from `100vw` while this band tracks
-     * VitePress's `100%`-based padding-left — they differed by the root
-     * scrollbar width, so the logo strip sat ~scrollbar/2 to the right).
-     * The band scrolls with `.nav` but is taller than the viewport, so
-     * the logo-strip region stays covered at every scroll position. */
-    top: calc(var(--vp-nav-height) * -1);
-    right: -64px;
-    bottom: -96px;
-    left: -24px;
+    position: fixed;
+    top: var(--vp-layout-top-height, 0px);
+    bottom: 0;
+    left: 0;
+    width: var(--vp-sidebar-width);
     background-color: var(--vp-sidebar-bg-color);
-    z-index: 0;
+    z-index: -1;
     pointer-events: none;
   }
 
-  /* Menu items + headings sit on top of the band. */
-  .VPSidebar .nav > * {
-    position: relative;
-    z-index: 1;
-  }
-
   /* Dark-mode ambient amber bloom inside the painted band. */
-  html.dark .VPSidebar .nav::before {
+  html.dark .VPSidebar::before {
     background-image: radial-gradient(
       ellipse 60% 40% at 50% -10%,
       rgba(255, 220, 161, 0.05),
@@ -624,15 +611,35 @@ kbd {
   }
 }
 
-/* (The old ≥1440px `.VPSidebar::before { left: max(…100vw…) }` block AND
- * the entire separate `.VPNavBar.has-sidebar .title::before` logo-strip
- * band were removed. The sidebar's `.nav::before` now extends UP behind
- * the transparent navbar to paint the logo strip itself, so there's a
- * single band with a single geometry — no cross-element scrollbar-math
- * mismatch to misalign the left edge. The only thing still needed from
- * the old logo-strip block is killing VitePress's full-width title
- * border-bottom, which otherwise draws a divider line spanning the
- * gutter. */
+/* ≥1440px: VitePress grows `.VPSidebar` to span the centered gutter
+ * (padding-left = the gutter, width = gutter + sidebar-width - 32) so
+ * its own background bleeds across the empty gutter strip. Inset the
+ * fixed band to the CONTENT column so the gutter stays page-coloured:
+ *   left  = gutter - 32px   → 32px of band left of the menu text (same
+ *           breathing room the base case gets from its 32px padding).
+ *   width = var(--vp-sidebar-width) → band right edge lands at
+ *           (gutter - 32) + sidebar-width = gutter + sidebar-width - 32
+ *           = EXACTLY `.VPSidebar`'s right edge. No step, no overshoot,
+ *           no overflow-clip trick needed (the band is fixed, not
+ *           clipped by the sidebar's `overflow-x`).
+ * Uses the same `max(32px, calc((100% - (max-width - 64px)) / 2))`
+ * gutter expression as VitePress's `.VPSidebar` padding-left, against
+ * the same ICB — so the inset tracks the real content edge at every
+ * wide viewport (1440 → 4K). */
+@media (min-width: 1440px) {
+  .VPSidebar::before {
+    left: calc(
+      max(32px, calc((100% - (var(--vp-layout-max-width) - 64px)) / 2)) - 32px
+    );
+    width: var(--vp-sidebar-width);
+  }
+}
+
+/* The single `.VPSidebar::before` fixed band (above) paints both the
+ * logo strip and the menu, so there's no separate `.title::before`
+ * logo band to align. We still kill VitePress's full-width title
+ * border-bottom, which would otherwise draw a divider line spanning
+ * the gutter above the band. */
 @media (min-width: 960px) {
   .VPNavBar.has-sidebar .title {
     border-bottom: none !important;
