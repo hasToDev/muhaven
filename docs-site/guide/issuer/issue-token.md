@@ -29,7 +29,14 @@ description: Deploy a new confidential RWA token from the issuer wizard.
 3. Review your entries, then click **Deploy issuer stack**.
 4. Watch the deploy rail stream its on-chain steps from **pending** to **mined** (~30–60s each).
 5. When the success card shows **{SYMBOL} is live**, open the **Arbiscan** link to confirm the deployment.
-6. Publish the first NAV and unpause the token so investors can buy — via HavenBot or the [Tokens dashboard](/guide/issuer/tokens-dashboard).
+6. **Activate the token** so investors can buy. Open **HavenBot** (`/agent`) and ask:
+   > **"Unpause my &lt;SYMBOL&gt; token"** — e.g. *"Unpause my POLAR token."*
+
+   HavenBot proposes **one** action that **publishes the first NAV** *and* **unpauses** the token; authorize it with your passkey. (You can also do this from the [Tokens dashboard](/guide/issuer/tokens-dashboard).)
+
+::: warning A freshly-deployed token stays PAUSED until you activate it
+Deploy stops at "live" with the token **paused and no NAV published yet** — investors can't buy, and the oracle reports it as stale (you may get a "NAV stale" Telegram alert). The **"Unpause my &lt;SYMBOL&gt; token"** command above is what publishes the first NAV and opens it for business. Once that first NAV lands, the platform keeps the NAV fresh automatically — the stale alert won't recur.
+:::
 
 ::: warning NAV is in base units
 **Initial NAV** is base units, not dollars. `1000000` means 1.00 mhUSDC — entering `1` would set a NAV of 0.000001 mhUSDC.

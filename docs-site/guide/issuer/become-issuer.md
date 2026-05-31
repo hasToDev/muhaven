@@ -33,7 +33,7 @@ Signing in lands you on `/tokens`, and the **Apply** item disappears from the si
 4. Click **Next** through the token-basics and economics steps. These collect your token's details — they're covered in full in [Issue a token](/guide/issuer/issue-token).
 5. On the review step, click **Deploy issuer stack** to start deployment.
 6. Watch the live deploy rail. It streams ~10 on-chain steps — deploy token, deploy redemption queue, deploy treasury, deploy yield snapshot, wire pointers, authorize registries, configure oracle, and register the token — each moving from **pending** to **mined** (~30–60s each).
-7. When the success card appears, follow its final prompt to publish your first NAV and unpause the token, via HavenBot or the [Tokens dashboard](/guide/issuer/tokens-dashboard).
+7. **Activate the token.** It deploys **paused with no NAV** — open **HavenBot** (`/agent`) and ask **"Unpause my &lt;SYMBOL&gt; token"** (e.g. *"Unpause my POLAR token"*). HavenBot proposes one action that publishes the first NAV **and** unpauses it; authorize with your passkey. (Or do it from the [Tokens dashboard](/guide/issuer/tokens-dashboard).) Until you do this, investors can't buy and the oracle reports the token as stale.
 
 ::: tip The wizard resumes on refresh
 If you reload mid-flow, the wizard picks up where you left off — your progress isn't lost.
