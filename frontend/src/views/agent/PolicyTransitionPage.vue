@@ -670,8 +670,27 @@ function onSelectSurface(next: Surface): void {
   transitionError.value = null
 }
 
+/**
+ * Scoped autonomy is hard-locked to the MCP/Broker surface (the mint POST
+ * always sends `surface: 'mcp'` and the backend mint precondition requires
+ * the mcp surface to be at tier `scoped`). Picking Scoped while a non-mcp
+ * surface is selected committed THAT surface → scoped, then the mint asked
+ * for mcp@scoped → HTTP 412 + an orphaned tier the user had to step down
+ * from. Disable the Scoped tier on non-mcp surfaces so the impossible state
+ * can't be reached; HavenBot reuses the mcp-surface session (per-surface
+ * Scoped is a future slice). `paused` disables every tier as before.
+ */
+function isTierDisabled(value: Tier): boolean {
+  if (currentTier.value === 'paused') return true
+  if (value === 'scoped' && selectedSurface.value !== 'mcp') return true
+  return false
+}
+
 function onPickTier(next: Tier): void {
   if (currentTier.value === 'paused') return
+  // Defense-in-depth against the disabled-button being activated anyway
+  // (keyboard / programmatic): Scoped is only valid on the mcp surface.
+  if (next === 'scoped' && selectedSurface.value !== 'mcp') return
   targetTier.value = next
   // Picking a different tier invalidates any in-flight confirmation
   // token — the actionHash would no longer match the new payload.
@@ -1678,9 +1697,11 @@ function humaniseError(e: unknown, fallback: string): string {
             v-for="opt in TIER_OPTIONS"
             :key="opt.value"
             type="button"
-            :disabled="currentTier === 'paused'"
+            :disabled="isTierDisabled(opt.value)"
             :aria-pressed="targetTier === opt.value"
-            :aria-label="opt.title + (currentTier === opt.value ? ' (current tier)' : '')"
+            :aria-label="opt.title
+              + (currentTier === opt.value ? ' (current tier)' : '')
+              + (opt.value === 'scoped' && selectedSurface !== 'mcp' ? ' — set on the MCP / Broker surface' : '')"
             :data-testid="`policy-tier-${opt.value}`"
             :class="[
               'text-left rounded-xl border px-4 py-4 transition-all duration-150',
@@ -1688,7 +1709,7 @@ function humaniseError(e: unknown, fallback: string): string {
               targetTier === opt.value
                 ? 'border-gold/50 dark:border-signal/50 bg-gold/10 dark:bg-signal/8 ring-2 ring-gold/30 dark:ring-signal/30'
                 : 'border-haze dark:border-white/10 hover:bg-mist/60 dark:hover:bg-white/5',
-              currentTier === 'paused' ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer',
+              isTierDisabled(opt.value) ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer',
               currentTier === opt.value ? 'shadow-[inset_0_0_0_1px_rgba(184,134,11,0.18)]' : '',
             ]"
             @click="onPickTier(opt.value)"
@@ -1707,6 +1728,15 @@ function humaniseError(e: unknown, fallback: string): string {
             </div>
             <p class="font-sans text-sm font-semibold text-midnight dark:text-white">{{ opt.title }}</p>
             <p class="font-sans text-[12px] text-cool leading-relaxed">{{ opt.blurb }}</p>
+            <!-- Scoped is mcp-only — tell the user where to set it instead of
+                 letting them commit a HavenBot→scoped transition that 412s. -->
+            <p
+              v-if="opt.value === 'scoped' && selectedSurface !== 'mcp'"
+              class="font-sans text-[11px] text-gold dark:text-signal/90 leading-relaxed mt-0.5"
+            >
+              Switch the surface above to <span class="font-mono">MCP / Broker</span> to arm
+              Scoped autonomy — HavenBot uses that same session.
+            </p>
           </button>
         </div>
       </section>
