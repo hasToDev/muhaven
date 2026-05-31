@@ -15,10 +15,10 @@ Be signed in with your passkey. You decide how much rope the agent gets, and you
 :::
 
 This is **the enabling step** for autonomous trading. With a Scoped session live, the
-[MCP broker](/guide/mcp/arm-scoped) trades **with no prompt at all**, and HavenBot can run
-**auto-reinvest** and **rebalance** hands-off. (HavenBot's *individual* buy/sell still shows
-a one-tap confirmation card — see [H4](/guide/agent/autonomous) — but only asks your device
-passkey once per session.)
+[MCP broker](/guide/mcp/arm-scoped) trades **with no prompt at all**, and **HavenBot
+auto-executes your buys and sells** ([H4](/guide/agent/autonomous)) — the confirmation card
+flashes and self-submits, no click, no passkey (device passkey only the first time per
+browser session) — plus hands-off **auto-reinvest** and **rebalance**.
 
 ## How much rope you can give the agent
 
@@ -27,7 +27,7 @@ You pick one of four tiers:
 - **Advisory** — read-only. Every write needs a fresh passkey signature.
 - **Confirm per action** — the agent proposes; you confirm each write.
 - **Policy-bound** — the agent writes within an allowlist plus spend caps.
-- **Scoped autonomy** — grants capped, time-bounded signing within a **per-trade cap** and **TTL**. The **MCP broker** then trades with **no prompt**; HavenBot uses it for hands-off auto-reinvest + rebalance (and signs your confirmed buys/sells without re-asking your passkey each time).
+- **Scoped autonomy** — grants capped, time-bounded signing within a **per-trade cap** and **TTL**. The **MCP broker** then trades with **no prompt**, and **HavenBot auto-executes your buys/sells** (card flashes, no click/passkey) plus hands-off auto-reinvest + rebalance.
 
 ## Steps
 1. Go to `/agent/policy/transition` (you can also ask HavenBot to *"open my agent settings"*).
@@ -48,9 +48,9 @@ The same page shows a **Revoke** zone once a session is live, and you can lock t
 ## Expected result
 <ExpectedResult>
 After your passkey confirms, a <strong>live Scoped session</strong> exists — shown by the
-session banner and the revoke zone on the policy page. The MCP broker can now trade
-prompt-free up to your per-trade cap until the TTL expires, and HavenBot's auto-reinvest +
-rebalance run hands-off.
+session banner and the revoke zone on the policy page. Now <strong>HavenBot auto-executes
+your buys/sells</strong> (card flashes, no click/passkey) and the MCP broker trades
+prompt-free — both up to your per-trade cap until the TTL expires.
 </ExpectedResult>
 
 ## If something goes wrong

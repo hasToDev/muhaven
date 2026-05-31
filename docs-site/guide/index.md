@@ -79,7 +79,7 @@ LLM via the `@muhaven/mcp` terminal server).
   <a class="mh-card" href="/guide/agent/chat"><h3>H1 · Chat</h3><p>Talk to HavenBot.</p></a>
   <a class="mh-card" href="/guide/agent/reads"><h3>H2 · Reads</h3><p>Portfolio / yields / activity.</p></a>
   <a class="mh-card" href="/guide/agent/set-tier"><h3>H3 · Arm Scoped</h3><p>Mint a Scoped session.</p></a>
-  <a class="mh-card" href="/guide/agent/autonomous"><h3>H4 · Buy & sell</h3><p>One-tap confirm; reinvest/rebalance hands-off.</p></a>
+  <a class="mh-card" href="/guide/agent/autonomous"><h3>H4 · Buy & sell</h3><p>Auto-executes on Scoped; reinvest/rebalance too.</p></a>
 </div>
 
 #### AI agent · MCP — your own LLM (M1–M5)
