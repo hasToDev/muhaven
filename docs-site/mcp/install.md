@@ -19,9 +19,17 @@ Three steps from a fresh machine to a working MCP install:
 
 ## Step 1 — Install globally
 
+Pin the current release so you get a known-good build:
+
 ```bash
-npm install -g @muhaven/mcp
+npm install -g @muhaven/mcp@0.6.1
 ```
+
+::: tip Latest version
+The current published release is **`@muhaven/mcp@0.6.1`**. To always grab the newest,
+drop the version tag (`npm install -g @muhaven/mcp`) — but pinning is recommended so an
+upstream change can't surprise a live demo.
+:::
 
 This installs two binaries:
 
@@ -195,9 +203,36 @@ npm uninstall -g @muhaven/mcp        # removes the binaries
 
 Your MuHaven wallet itself is on-chain and unaffected by uninstalling MCP — sign in to the dashboard with your passkey and your account is fully intact.
 
+## Hands-off auto-reinvest: the `muhaven-reinvest` runner
+
+`@muhaven/mcp@0.6.1` ships a second, optional binary — **`muhaven-reinvest`** — a keyless
+runner that automatically **claims matured yield and reinvests it** into a token you choose,
+all within the bounds of a Scoped session you've granted (it never holds your passkey).
+
+It's opt-in and budget-capped. Typical setup, after the broker is logged in (Step 2):
+
+```bash
+# Set a per-cycle budget (in mhUSDC). A non-zero budget IS the opt-in;
+# leave it at 0 (or unset to the $1 default) to control how much it may deploy.
+export MUHAVEN_REINVEST_BUDGET_USD=1        # per-cycle ceiling; 0 disables the runner
+muhaven-reinvest
+```
+
+The runner reuses the broker's scoped session (same security split — it signs only
+placeholder-intent hashes, never a raw key) and logs every action to your
+[audit log](/policy/audit-log). To stop it, end the process; to revoke its authority
+instantly, [pause](/policy/pause) or step the tier down to **Advisory**.
+
+::: tip This is the autonomous path
+Auto-reinvest is part of MuHaven's **Scoped (Path D)** autonomy. See the
+[autonomous-execution walkthrough](/guide/agent/autonomous) for the end-to-end flow and how
+to grant the Scoped session it depends on.
+:::
+
 ## Where next
 
 - [First chat](/mcp/first-chat) — walk through your first portfolio query.
-- [Tool catalog](/mcp/tools) — the 22 tools you have access to.
+- [Tool catalog](/mcp/tools) — the tools you have access to.
 - [Broker daemon](/mcp/broker) — what the broker actually does.
+- [Autonomous execution](/guide/agent/autonomous) — grant a Scoped session and let the agent act.
 - [Troubleshooting](/mcp/troubleshooting) — common install issues.

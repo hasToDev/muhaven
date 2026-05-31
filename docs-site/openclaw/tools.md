@@ -3,6 +3,10 @@ title: OpenClaw — available tools
 description: The 11-tool investor subset bundled with the skill, with command examples.
 ---
 
+::: warning 🚧 In development — not in the Testing Guide
+This surface is still being hardened and isn't part of the judge/user [Testing Guide](/guide/). The page below describes the intended design. To evaluate MuHaven today, use [HavenBot](/havenbot/overview) or the [MCP server](/mcp/overview).
+:::
+
 # Available tools
 
 The OpenClaw skill bundles a **deliberate subset** of `@muhaven/mcp` — 11 tools out of 22. The subset is locked at the type level: a `verify-subset.ts` build gate enforces a three-way consistency check between the skill's `TOOLSET_SUBSET` constant, `manifest.json#mcp.tool_subset`, and `SKILL.md` frontmatter.

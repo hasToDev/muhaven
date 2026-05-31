@@ -16,7 +16,7 @@ This flow only runs when you've granted a **Scoped** session — see [Set the ag
 
 ## What the agent can do autonomously
 - **Buy / Sell / Claim** — via MCP `muhaven.position.buy`, `muhaven.position.sell`, `muhaven.position.claim` (claim needs a concrete epoch/escrow id). With a live Scoped session these submit autonomously and return a tx hash; without one they fall back to a Path-C deep-link.
-- **Auto-reinvest** — the agent can automatically claim matured yield and buy more of a token (Wave 5 Slice 2; opt-in).
+- **Auto-reinvest** — the agent can automatically claim matured yield and buy more of a token (opt-in).
 - **Rebalance to targets** — ask **HavenBot** to "rebalance my portfolio to these targets". It opens the **Rebalance to targets** panel on `/portfolio`, then executes **one atomic transaction** (sells before buys) via your in-tab scoped session.
 
 ::: warning Two carve-outs to remember

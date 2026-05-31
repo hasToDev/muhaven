@@ -271,7 +271,7 @@ function scaleIn(delay = 0) {
             class="font-body text-xl text-slate dark:text-[#d5c4ab] max-w-xl leading-relaxed mb-10"
           >
             Encrypted RWA portfolios on Fhenix CoFHE. Buy, hold, and earn yield without exposing
-            a single balance — with an AI copilot landing in Wave 4.
+            a single balance — with an AI copilot landing soon.
           </p>
 
           <div
@@ -675,7 +675,7 @@ function scaleIn(delay = 0) {
                 'Wrap USDC into mhUSDC (confidential settlement)',
                 'Buy fhERC-20 RWA tokens — atomic single-tx, encrypted balances',
                 'Pull yield per epoch — only you can decrypt',
-                'AI copilot for advice and policy-bound execution (Wave 4)',
+                'AI copilot for advice and policy-bound execution',
               ]" :key="i" class="flex items-start gap-3">
                 <div class="w-7 h-7 rounded-full bg-compute/10 dark:bg-signal/10 text-compute dark:text-signal flex items-center justify-center text-sm font-bold shrink-0 mt-0.5">
                   {{ i + 1 }}
@@ -753,7 +753,7 @@ function scaleIn(delay = 0) {
               Start Managing Your Portfolio <span class="text-transparent bg-clip-text bg-gradient-to-r from-signal to-gold">Privately</span>
             </h2>
             <p class="font-body text-xl text-[#d5c4ab] max-w-xl mx-auto mb-8">
-              Encrypted balances, private yields, atomic encrypted purchase. AI copilot landing in Wave 4 — when it ships, even the agent can't see your strategy.
+              Encrypted balances, private yields, atomic encrypted purchase. AI copilot landing soon — when it ships, even the agent can't see your strategy.
             </p>
             <div class="flex flex-wrap items-center justify-center gap-4 mb-6">
               <MButton size="lg" class="btn-shimmer rounded-xl" @click="router.push('/portfolio')">

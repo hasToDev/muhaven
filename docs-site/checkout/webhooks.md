@@ -3,6 +3,10 @@ title: Checkout — webhooks & receipts
 description: Stripe-style HMAC-signed webhooks with replay-window and SSRF guards.
 ---
 
+::: warning 🚧 In development — not in the Testing Guide
+This surface is still being hardened and isn't part of the judge/user [Testing Guide](/guide/). The page below describes the intended design. To evaluate MuHaven today, use [HavenBot](/havenbot/overview) or the [MCP server](/mcp/overview).
+:::
+
 # Webhooks & receipts
 
 Checkout sessions can register a webhook URL at creation. When the buyer pays (or the session expires / is cancelled), MuHaven POSTs a signed JSON payload to your URL.

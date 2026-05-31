@@ -12,7 +12,7 @@ hero:
     alt: MuHaven
   actions:
     - theme: brand
-      text: ⭐ Testing Guide (judges start here)
+      text: ⭐ How to use MuHaven — start here
       link: /guide/
     - theme: alt
       text: Get started
@@ -37,14 +37,14 @@ features:
     linkText: Install MCP
   - icon: 📨
     title: "OpenClaw + Telegram"
-    details: "Phone-first UX. Three confirmation tiers — inline button, Mini App + OTP, passkey deep-link."
+    details: "🚧 In development. Phone-first UX — inline button, Mini App + OTP, passkey deep-link. Not yet in the Testing Guide."
     link: /openclaw/overview
-    linkText: Use Telegram
+    linkText: Preview the design
   - icon: 💳
     title: "Hosted Checkout"
-    details: "One-click pay links for issuers. Buyers pay with a passkey on muhaven.app/pay — fragment-key URL keeps the operator blind."
+    details: "🚧 In development. One-click pay links for issuers; buyers pay with a passkey. Not yet in the Testing Guide."
     link: /checkout/overview
-    linkText: Create a checkout link
+    linkText: Preview the design
 ---
 
 <div style="padding: 0 24px 80px;">

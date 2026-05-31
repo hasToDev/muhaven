@@ -3,6 +3,10 @@ title: Checkout — for issuers
 description: Mint a checkout link, share it, monitor it.
 ---
 
+::: warning 🚧 In development — not in the Testing Guide
+This surface is still being hardened and isn't part of the judge/user [Testing Guide](/guide/). The page below describes the intended design. To evaluate MuHaven today, use [HavenBot](/havenbot/overview) or the [MCP server](/mcp/overview).
+:::
+
 # Hosted Checkout — for issuers
 
 You're an approved issuer and you want to sell some of your RWA token to a specific buyer (or batch of buyers) without onboarding each one into your KYC whitelist. Hosted Checkout is the surface for that.

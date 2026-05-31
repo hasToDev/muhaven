@@ -3,6 +3,10 @@ title: Checkout — URL fragment key
 description: Why the AES-256-GCM key lives in the URL fragment and what it protects.
 ---
 
+::: warning 🚧 In development — not in the Testing Guide
+This surface is still being hardened and isn't part of the judge/user [Testing Guide](/guide/). The page below describes the intended design. To evaluate MuHaven today, use [HavenBot](/havenbot/overview) or the [MCP server](/mcp/overview).
+:::
+
 # URL fragment key (privacy)
 
 The MuHaven hosted checkout URL splits into two parts:

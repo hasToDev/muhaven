@@ -3,6 +3,10 @@ title: OpenClaw — phone-first playbook
 description: Real scenarios for driving MuHaven from Telegram while you're on the move.
 ---
 
+::: warning 🚧 In development — not in the Testing Guide
+This surface is still being hardened and isn't part of the judge/user [Testing Guide](/guide/). The page below describes the intended design. To evaluate MuHaven today, use [HavenBot](/havenbot/overview) or the [MCP server](/mcp/overview).
+:::
+
 # OpenClaw + Telegram playbook
 
 A library of **phone-first scenarios** — each one shows the actual Telegram chat from start to settled, so you know what to expect before you're standing on a train platform trying to remember the command name.

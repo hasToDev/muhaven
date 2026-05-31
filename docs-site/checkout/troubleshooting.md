@@ -3,6 +3,10 @@ title: Checkout — troubleshooting
 description: Symptom → fix for the most common hosted-checkout issues.
 ---
 
+::: warning 🚧 In development — not in the Testing Guide
+This surface is still being hardened and isn't part of the judge/user [Testing Guide](/guide/). The page below describes the intended design. To evaluate MuHaven today, use [HavenBot](/havenbot/overview) or the [MCP server](/mcp/overview).
+:::
+
 # Hosted Checkout troubleshooting
 
 ## Issuer side

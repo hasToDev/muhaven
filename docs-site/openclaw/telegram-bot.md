@@ -3,6 +3,10 @@ title: OpenClaw — Telegram bot
 description: Link your Telegram, send your first command.
 ---
 
+::: warning 🚧 In development — not in the Testing Guide
+This surface is still being hardened and isn't part of the judge/user [Testing Guide](/guide/). The page below describes the intended design. To evaluate MuHaven today, use [HavenBot](/havenbot/overview) or the [MCP server](/mcp/overview).
+:::
+
 # The MuHaven Telegram bot
 
 `@muhaven_bot` is MuHaven's phone-first surface. You link it to your MuHaven wallet once, and from then on you can drive read tools and tier-1 (≤$200) buys with a single tap.

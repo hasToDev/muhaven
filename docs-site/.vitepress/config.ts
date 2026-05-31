@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitepress'
+import pkg from '../package.json'
 
 // MuHaven user-facing documentation site.
 // Run locally with `pnpm dev` (or `npm run dev`); served on http://127.0.0.1:5174.
@@ -55,7 +56,6 @@ export default defineConfig({
         text: 'App',
         items: [
           { text: 'Dashboard (muhaven.app)', link: 'https://muhaven.app' },
-          { text: 'Buyer checkout (muhaven.app/pay)', link: 'https://muhaven.app/pay' },
         ],
       },
     ],
@@ -222,7 +222,7 @@ export default defineConfig({
     ],
     footer: {
       message:
-        'MuHaven docs — agentic-first. Run locally with <code>pnpm dev</code>; production at <code>docs.muhaven.app</code>.',
+        `MuHaven docs <code>v${pkg.version}</code> — agentic-first. Production at <code>docs.muhaven.app</code>.`,
       copyright: 'Built on Fhenix CoFHE · Arbitrum · ZeroDev passkey-bound MuHaven wallet.',
     },
     search: {

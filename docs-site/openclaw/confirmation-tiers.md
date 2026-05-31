@@ -3,6 +3,10 @@ title: OpenClaw — three confirmation tiers
 description: The USD-amount classifier and per-tier confirmation flow.
 ---
 
+::: warning 🚧 In development — not in the Testing Guide
+This surface is still being hardened and isn't part of the judge/user [Testing Guide](/guide/). The page below describes the intended design. To evaluate MuHaven today, use [HavenBot](/havenbot/overview) or the [MCP server](/mcp/overview).
+:::
+
 # Three confirmation tiers
 
 The OpenClaw + Telegram surface uses a **three-tier classifier** based on the USD amount of the proposed action. The classifier is pure, deterministic, and locked at the type level — investors cannot raise the boundaries above the hardcoded ceilings.

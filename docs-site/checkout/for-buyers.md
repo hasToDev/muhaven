@@ -3,6 +3,10 @@ title: Checkout — for buyers
 description: What the buyer sees when they click a MuHaven pay link.
 ---
 
+::: warning 🚧 In development — not in the Testing Guide
+This surface is still being hardened and isn't part of the judge/user [Testing Guide](/guide/). The page below describes the intended design. To evaluate MuHaven today, use [HavenBot](/havenbot/overview) or the [MCP server](/mcp/overview).
+:::
+
 # Hosted Checkout — for buyers
 
 You received a pay link from someone you trust (an issuer, a partner, a friend), and it looks like:
