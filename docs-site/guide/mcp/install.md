@@ -24,7 +24,7 @@ HavenBot copilot. For the deep reference, see [/mcp/install](/mcp/install) and
 ## Step 1 — Install globally and verify the binaries
 
 ```bash
-npm install -g @muhaven/mcp@0.6.1
+npm install -g @muhaven/mcp@0.6.2
 ```
 
 This installs two binaries — `muhaven-broker` (the long-lived per-user daemon) and

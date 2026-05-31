@@ -16,11 +16,11 @@ Three commands. That's the whole happy path.
 ## Step 1 — Install globally
 
 ```bash
-npm install -g @muhaven/mcp@0.6.1
+npm install -g @muhaven/mcp@0.6.2
 ```
 
 ::: tip Latest version
-The current published release is **`@muhaven/mcp@0.6.1`**. To always grab the newest, drop the version tag — but pinning is recommended so an upstream change can't surprise a live demo.
+The current published release is **`@muhaven/mcp@0.6.2`**. To always grab the newest, drop the version tag — but pinning is recommended so an upstream change can't surprise a live demo.
 :::
 
 ## Step 2 — One-shot setup
@@ -195,7 +195,7 @@ See [Read-only mode](/mcp/read-only-mode) for the full reference.
 
 ## Hands-off auto-reinvest: the `muhaven-reinvest` runner
 
-`@muhaven/mcp@0.6.1` ships a second, optional binary — **`muhaven-reinvest`** — a keyless
+`@muhaven/mcp@0.6.2` ships a second, optional binary — **`muhaven-reinvest`** — a keyless
 runner that automatically **claims matured yield and reinvests it** into a token you choose,
 all within the bounds of a Scoped session you've granted (it never holds your passkey).
 
