@@ -1096,3 +1096,69 @@ describe('TaxEventIndexer · UsdcSend dispatch (Wave 5)', () => {
     expect(indexer.getStatus().lastProcessedBlock).toBe('105');
   });
 });
+
+// W3 Phase 9 cash-rail fix — the single-step direct USDC→mhUSDC deposit
+// (CashPage "Convert to mhUSDC") emits `WrapUsdc`, NOT `Wrap`. It must be
+// indexed as a cash-rail `Wrap` row, otherwise `hasCashRailActivity` is false
+// and the agent buy path falsely tells the user "you have no mhUSDC".
+describe('TaxEventIndexer · WrapUsdc dispatch (W3 Phase 9 cash-rail)', () => {
+  const STABLE: Address = '0xF9bc25b67238C870255c33EC75fA37A09C00edE7';
+  const KERNEL: Address = '0xAaaaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAa';
+  const EPH: Address = '0xBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBb';
+  const HANDLE =
+    '0x000000000000000000000000000000000000000000000000000000000000002a' as `0x${string}`;
+  let taxEventRepo: ITaxEventRepository;
+
+  beforeEach(() => {
+    taxEventRepo = emptyTaxEventRepo();
+  });
+
+  function clientWithStableLogs(logs: any[]) {
+    let n = 0;
+    return createMockClient({
+      getBlockNumber: vi.fn().mockImplementation(() => {
+        n++;
+        return Promise.resolve(n === 1 ? 100n : 105n);
+      }),
+      getLogs: vi.fn().mockImplementation((p: any) => {
+        const addrs = Array.isArray(p.address) ? p.address : [p.address];
+        if (addrs.some((a: string) => a?.toLowerCase() === STABLE.toLowerCase())) {
+          return Promise.resolve(logs);
+        }
+        return Promise.resolve([]);
+      }),
+    });
+  }
+
+  it('indexes WrapUsdc as a cash-rail Wrap row keyed by `from`', async () => {
+    const log = {
+      eventName: 'WrapUsdc',
+      args: { from: KERNEL, ephemeralEOA: EPH, amount: 14_000_000n, amountHandle: HANDLE },
+      transactionHash: '0xWrapUsdcTx',
+      blockNumber: 102n,
+      logIndex: 0,
+      address: STABLE,
+    } as any;
+    const indexer = new TaxEventIndexer(
+      taxEventRepo,
+      defaultIndexerConfig({ muHavenStableAddress: STABLE }),
+      clientWithStableLogs([log]),
+    );
+    await indexer.tick();
+    await indexer.tick();
+
+    expect(taxEventRepo.saveMany).toHaveBeenCalledOnce();
+    const events = (taxEventRepo.saveMany as any).mock.calls[0][0];
+    expect(events).toHaveLength(1);
+    const row = events[0];
+    expect(row.eventType).toBe('Wrap'); // counts toward CASH_RAIL_EVENT_TYPES
+    expect(row.holderAddress).toBe(KERNEL);
+    expect(row.tokenAddress).toBeNull();
+    expect(row.metadata).toMatchObject({
+      kind: 'wrap',
+      encrypted_amount_handle: HANDLE,
+      cleartext_amount: '14000000',
+      ephemeral_eoa: EPH,
+    });
+  });
+});

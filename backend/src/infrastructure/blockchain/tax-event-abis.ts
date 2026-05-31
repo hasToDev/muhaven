@@ -109,6 +109,24 @@ export const muHavenStableWrapAbi = [
       { name: 'amount', type: 'bytes32', indexed: false },
     ],
   },
+  // Wave 5 W3 Phase 9 — the single-step direct USDC→mhUSDC deposit
+  // (`MuHavenStable.wrapUsdc`, which the CashPage "Convert to mhUSDC" now
+  // uses) emits `WrapUsdc`, NOT `Wrap`. Without this ABI the deposit is
+  // unindexed → no cash-rail `tax_events` row → the agent's
+  // `hasCashRailActivity` gate falsely reports "you have no mhUSDC" on buy.
+  // `from`/`ephemeralEOA` mirror Wrap's indexed addresses; `amount` is the
+  // CLEARTEXT USDC (uint256, base-6) and `amountHandle` the encrypted mhUSDC
+  // handle (euint64 → bytes32).
+  {
+    type: 'event',
+    name: 'WrapUsdc',
+    inputs: [
+      { name: 'from', type: 'address', indexed: true },
+      { name: 'ephemeralEOA', type: 'address', indexed: true },
+      { name: 'amount', type: 'uint256', indexed: false },
+      { name: 'amountHandle', type: 'bytes32', indexed: false },
+    ],
+  },
 ] as const;
 
 /**

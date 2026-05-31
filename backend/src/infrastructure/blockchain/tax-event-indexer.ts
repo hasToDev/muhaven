@@ -884,12 +884,45 @@ export class TaxEventIndexer {
     if (!log.transactionHash || log.blockNumber === null || log.logIndex === null) return null;
     const eventName = (log as Log & { eventName?: string }).eventName;
     const args = (log as Log & { args?: Record<string, unknown> }).args;
-    if (!args || (eventName !== 'Wrap' && eventName !== 'Unwrap')) return null;
+    if (!args || (eventName !== 'Wrap' && eventName !== 'Unwrap' && eventName !== 'WrapUsdc')) {
+      return null;
+    }
+    const ts = await fetchBlockTs(log.blockNumber);
+
+    // Wave 5 W3 Phase 9 — `WrapUsdc` (the single-step direct USDC→mhUSDC
+    // deposit) keys its holder on `from` (not `account`) and carries BOTH a
+    // CLEARTEXT USDC `amount` and the encrypted mhUSDC `amountHandle`. We index
+    // it as a cash-rail `Wrap` row so it (a) shows on /activity like any other
+    // deposit and (b) satisfies `hasCashRailActivity` for the agent buy gate.
+    if (eventName === 'WrapUsdc') {
+      const from = args.from as Address;
+      const ephemeralEOA = (args.ephemeralEOA as Address) ?? null;
+      const amountHandle = args.amountHandle as `0x${string}` | undefined;
+      const cleartextAmount = args.amount as bigint | undefined;
+      return new TaxEvent({
+        txHash: log.transactionHash,
+        logIndex: log.logIndex,
+        eventType: 'Wrap',
+        holderAddress: from,
+        tokenAddress: null,
+        blockNumber: log.blockNumber.toString(),
+        blockTimestamp: ts,
+        navAtTime: null,
+        referenceId: null,
+        metadata: {
+          kind: 'wrap',
+          encrypted_amount_handle: amountHandle ?? null,
+          // Base-6 USDC, public. Stringified so the JSON metadata never carries
+          // a BigInt (matches the UsdcSend leg's cleartext_amount convention).
+          cleartext_amount: cleartextAmount != null ? cleartextAmount.toString() : null,
+          ephemeral_eoa: ephemeralEOA,
+        },
+      });
+    }
 
     const account = args.account as Address;
     const ephemeralEOA = (args.ephemeralEOA as Address) ?? null;
     const amountHandle = args.amount as `0x${string}` | undefined;
-    const ts = await fetchBlockTs(log.blockNumber);
 
     return new TaxEvent({
       txHash: log.transactionHash,
