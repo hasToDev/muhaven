@@ -9,6 +9,8 @@ import { renderMarkdownSafe, renderMarkdownStreaming } from '@/lib/markdown'
 import ActionCard from '@/components/agent/ActionCard.vue'
 import ConfirmModal from '@/components/agent/ConfirmModal.vue'
 import { runAgentAction } from '@/composables/useAgentActionRunner'
+import { useScopedSession } from '@/composables/useScopedSession'
+import { shouldAutoConfirmScopedTrade } from '@/composables/agent-autoconfirm.helpers'
 import { useRebalanceLauncher } from '@/composables/useRebalanceLauncher'
 import { useOpenClawIntentEvents } from '@/composables/useOpenClawIntentEvents'
 import type { ActionDescriptor } from '@/services/api'
@@ -27,6 +29,12 @@ const inputFocused = ref(false)
 const confirmModalRef = ref<InstanceType<typeof ConfirmModal> | null>(null)
 const activeAction = ref<ActionDescriptor | null>(null)
 
+// Scoped zero-prompt trading — shared live-session state (same singleton the
+// global ScopedSessionBanner reads). When a live Scoped session exists we
+// auto-authorize trade actions so HavenBot matches the MCP broker's hands-free
+// posture (the consent was given at mint: cap + TTL).
+const { session: scopedSession, refresh: refreshScopedSession } = useScopedSession()
+
 // Q4 Part B — the muhaven_link_telegram tool result is handled at
 // App-level (App.vue mounts LinkTelegramModal globally) so it works
 // from both the /agent route AND the side panel. AgentPage owns
@@ -39,7 +47,16 @@ watch(
   () => agentStore.pendingActions.length,
   (n) => {
     if (n > 0 && !activeAction.value) {
-      activeAction.value = agentStore.pendingActions[0] ?? null
+      const next = agentStore.pendingActions[0] ?? null
+      activeAction.value = next
+      if (next && shouldAutoConfirmScopedTrade(next, scopedSession.value, Date.now())) {
+        // Scoped + live session → mount the modal then auto-authorize it, so
+        // the user gets zero-prompt trading (no click, no passkey). nextTick
+        // waits for the modal to mount so its ref is set and the EXACT manual
+        // path runs — the `isExpired` guard, the runner, and the
+        // `reportResult` audit-commit. Only the click is skipped, no control.
+        void nextTick(() => confirmModalRef.value?.authorize())
+      }
     }
   },
 )
@@ -575,6 +592,10 @@ onMounted(() => {
     input.value = prompt
   }
   scrollToBottom()
+  // Load the live Scoped session so `shouldAutoConfirmScopedTrade` can gate zero-prompt
+  // trading on the first action (best-effort; the global banner also refreshes
+  // it, but AgentPage may mount first on a direct /agent load).
+  void refreshScopedSession()
   // Subscribe to OpenClaw intent events so a Telegram-confirmed mid-tier
   // intent can auto-fire the on-chain leg without the operator coming
   // back here and re-clicking Authorize. composable's onUnmounted hook

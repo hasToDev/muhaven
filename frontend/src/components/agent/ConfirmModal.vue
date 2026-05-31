@@ -535,7 +535,11 @@ async function reportResult(
   }
 }
 
-defineExpose({ reportResult, setSubmitting: () => (status.value = 'submitting') })
+// `authorize` is exposed so the parent can AUTO-confirm on the Scoped tier
+// (zero-prompt trading): mounting the modal then calling `authorize()` reuses
+// the exact manual path — the `isExpired` guard, the `confirm` emit → runner →
+// `reportResult` audit-commit — so no control is bypassed; only the click is.
+defineExpose({ authorize, reportResult, setSubmitting: () => (status.value = 'submitting') })
 
 function actionKind(a: ActionDescriptor): 'permit_grant' | 'tier_transition' {
   return a.kind === 'set_policy' ? 'tier_transition' : 'permit_grant'
