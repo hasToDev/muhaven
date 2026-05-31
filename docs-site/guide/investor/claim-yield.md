@@ -11,7 +11,7 @@ description: Claim confidential yield payouts from funded epochs on the Yields p
 
 ## Before you begin
 
-::: important
+::: info Yield must be distributed first
 A claimable epoch only exists **after an issuer distributes yield** for a token you hold — see [S3 · Distribute yield](/guide/issuer/distribute-yield). If you have no claimable epochs yet, that's expected, not an error.
 :::
 

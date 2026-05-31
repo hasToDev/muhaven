@@ -95,19 +95,19 @@ export default defineConfig({
           items: [
             { text: 'H1 · Chat with HavenBot', link: '/guide/agent/chat' },
             { text: 'H2 · Agent reads your portfolio', link: '/guide/agent/reads' },
-            { text: 'H3 · Set the autonomy tier', link: '/guide/agent/set-tier' },
-            { text: 'H4 · Autonomous execution', link: '/guide/agent/autonomous' },
+            { text: 'H3 · Arm Scoped autonomy', link: '/guide/agent/set-tier' },
+            { text: 'H4 · Buy & sell autonomously', link: '/guide/agent/autonomous' },
           ],
         },
         {
           text: 'AI agent · MCP (your own LLM)',
           collapsed: false,
           items: [
-            { text: 'M1 · Install & verify the MCP server', link: '/guide/mcp/install' },
-            { text: 'M2 · Read your portfolio via MCP', link: '/guide/mcp/reads' },
-            { text: 'M3 · Buy a position via MCP', link: '/guide/mcp/buy' },
-            { text: 'M4 · Sell a position via MCP', link: '/guide/mcp/sell' },
-            { text: 'M5 · Autonomous execution via MCP', link: '/guide/mcp/autonomous' },
+            { text: 'M1 · Arm Scoped autonomy', link: '/guide/mcp/arm-scoped' },
+            { text: 'M2 · Install & set up the MCP server', link: '/guide/mcp/install' },
+            { text: 'M3 · Read your portfolio via MCP', link: '/guide/mcp/reads' },
+            { text: 'M4 · Buy autonomously via MCP', link: '/guide/mcp/buy' },
+            { text: 'M5 · Sell autonomously via MCP', link: '/guide/mcp/sell' },
           ],
         },
         {

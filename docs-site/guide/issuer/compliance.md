@@ -15,7 +15,7 @@ description: Review aggregate compliance posture — jurisdictions, eligibility,
 - You're an **approved issuer**.
 :::
 
-::: important Everything here is aggregate-only
+::: info Everything here is aggregate-only
 The compliance dashboard shows aggregates — **individual balances stay encrypted**. There's nothing per-investor to reveal here.
 :::
 

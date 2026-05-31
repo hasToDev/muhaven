@@ -11,7 +11,7 @@ description: Buy an encrypted RWA position, using the one-tap reveal-gate when y
 
 ## Before you begin
 
-::: important
+::: info How the reveal-gate works
 Because `mhUSDC` is encrypted, MuHaven can't read your balance to decide if you can afford a buy. That's why there's a **reveal-gate**: you reveal your own balance locally (no transaction) so the app can enable the **Buy** button. The reveal is a one-tap local decrypt — it never leaks anything on-chain.
 :::
 

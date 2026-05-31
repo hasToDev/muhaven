@@ -78,18 +78,18 @@ LLM via the `@muhaven/mcp` terminal server).
 <div class="mh-card-grid">
   <a class="mh-card" href="/guide/agent/chat"><h3>H1 · Chat</h3><p>Talk to HavenBot.</p></a>
   <a class="mh-card" href="/guide/agent/reads"><h3>H2 · Reads</h3><p>Portfolio / yields / activity.</p></a>
-  <a class="mh-card" href="/guide/agent/set-tier"><h3>H3 · Set tier</h3><p>Advisory → Scoped.</p></a>
-  <a class="mh-card" href="/guide/agent/autonomous"><h3>H4 · Autonomous</h3><p>Buy/sell/reinvest/rebalance.</p></a>
+  <a class="mh-card" href="/guide/agent/set-tier"><h3>H3 · Arm Scoped</h3><p>Mint a Scoped session.</p></a>
+  <a class="mh-card" href="/guide/agent/autonomous"><h3>H4 · Buy & sell</h3><p>Autonomous, no confirmation.</p></a>
 </div>
 
 #### AI agent · MCP — your own LLM (M1–M5)
 
 <div class="mh-card-grid">
-  <a class="mh-card" href="/guide/mcp/install"><h3>M1 · Install</h3><p>Install & verify the MCP server.</p></a>
-  <a class="mh-card" href="/guide/mcp/reads"><h3>M2 · Reads</h3><p>Portfolio / yields / activity.</p></a>
-  <a class="mh-card" href="/guide/mcp/buy"><h3>M3 · Buy</h3><p>Buy a position via MCP.</p></a>
-  <a class="mh-card" href="/guide/mcp/sell"><h3>M4 · Sell</h3><p>Sell a position via MCP.</p></a>
-  <a class="mh-card" href="/guide/mcp/autonomous"><h3>M5 · Autonomous</h3><p>Scoped tx via MCP.</p></a>
+  <a class="mh-card" href="/guide/mcp/arm-scoped"><h3>M1 · Arm Scoped</h3><p>Mint a Scoped session first.</p></a>
+  <a class="mh-card" href="/guide/mcp/install"><h3>M2 · Install</h3><p>Install & paste the key.</p></a>
+  <a class="mh-card" href="/guide/mcp/reads"><h3>M3 · Reads</h3><p>Portfolio / yields / activity.</p></a>
+  <a class="mh-card" href="/guide/mcp/buy"><h3>M4 · Buy</h3><p>Autonomous buy, no deep-link.</p></a>
+  <a class="mh-card" href="/guide/mcp/sell"><h3>M5 · Sell</h3><p>Autonomous sell, no deep-link.</p></a>
 </div>
 
 ### Issuer tasks (S1–S6)

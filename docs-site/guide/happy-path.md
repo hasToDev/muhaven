@@ -100,10 +100,10 @@ encrypted handle. That's the whole point: <strong>provably yours, publicly unrea
    without seeing your cleartext amounts (it works on encrypted aggregates and the numbers
    you've revealed).
 
-> **Go further:** to let the agent *act* — autonomously reinvest yield or rebalance to
-> targets — grant it a Scoped session in [H3 · Set the tier](/guide/agent/set-tier) and
-> watch it execute in [H4 · Autonomous execution](/guide/agent/autonomous). Prefer your own
-> LLM? Run the same flows over the [MCP track](/guide/mcp/install).
+> **Go further:** to let the agent *act* — buy and sell with no per-trade confirmation —
+> arm a Scoped session in [H3 · Arm Scoped autonomy](/guide/agent/set-tier) and watch it
+> trade in [H4 · Buy & sell autonomously](/guide/agent/autonomous). Prefer your own LLM? Run
+> the same flows over the [MCP track](/guide/mcp/arm-scoped).
 
 ## 7 · Verify on-chain · ~1 min
 
@@ -124,6 +124,6 @@ block explorer. That's MuHaven.
 ## Where to next
 
 - The full [**Investor track**](/guide/investor/sell) — sell, claim yield, transfer, withdraw.
-- The [**AI agent track**](/guide/agent/set-tier) — grant autonomy and watch it trade.
+- The [**AI agent track**](/guide/agent/set-tier) — arm autonomy and watch it trade.
 - The [**Issuer track**](/guide/issuer/become-issuer) — issue your own token and distribute yield.
 - Stuck? [**Troubleshooting & FAQ**](/guide/troubleshooting).

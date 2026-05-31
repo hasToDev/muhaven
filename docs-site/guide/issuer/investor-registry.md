@@ -15,7 +15,7 @@ description: View the holders of your tokens with compliance data — never per-
 - You're an **approved issuer**.
 :::
 
-::: important Issuers never see individual balances
+::: info Issuers never see individual balances
 The registry's **balance column always shows "FHE Encrypted"**. There is no decryption here — an issuer never sees any individual investor's balance.
 :::
 

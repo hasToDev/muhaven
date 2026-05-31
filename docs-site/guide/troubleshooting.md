@@ -89,8 +89,8 @@ Autonomous execution requires a **scoped session** at the right tier. If the age
 
 - you're in **Advisory / Confirm-per-action** — approve the action the agent surfaces
   (a confirmation modal in the dashboard, or a deep-link you sign with your passkey), or
-- you haven't granted a **Scoped** session yet — do that in
-  [H3 · Set the tier](/guide/agent/set-tier).
+- you haven't armed a **Scoped** session yet — do that in
+  [H3 · Arm Scoped autonomy](/guide/agent/set-tier).
 
 To stop the agent at any time, just ask it — e.g. *"pause my agent"* — which blocks every
 write instantly. You can also revoke the session from the dashboard or via Telegram.
@@ -100,7 +100,7 @@ write instantly. You can also revoke the session from the dashboard or via Teleg
 Multi-leg **rebalance runs through HavenBot in the dashboard** (and the Portfolio
 "Rebalance to targets" panel), not the standalone external `position.rebalance` MCP tool,
 which intentionally returns `not_implemented`. Use HavenBot — see
-[H4 · Autonomous execution](/guide/agent/autonomous).
+[H4 · Buy & sell autonomously](/guide/agent/autonomous).
 
 ## A feature returns "not deployed"
 

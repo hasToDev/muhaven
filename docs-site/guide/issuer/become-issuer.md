@@ -24,7 +24,7 @@ If your account is already an approved issuer, `/apply-issuer` redirects you str
 
 1. Go to `/apply-issuer` to open the multi-step wizard.
 2. On **Step 1 — Welcome + KYB**, enter your **Legal entity name**, **jurisdiction**, and **contact email**, then click **Submit application**.
-   ::: important Testnet KYB is auto-approved
+   ::: tip Testnet KYB is auto-approved
    On testnet your KYB application is **auto-approved the moment you submit** — there's no waiting on a reviewer.
    :::
 3. Click **Next** through the token-basics and economics steps. These collect your token's details — they're covered in full in [Issue a token](/guide/issuer/issue-token).

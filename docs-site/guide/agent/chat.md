@@ -21,10 +21,10 @@ You must be signed in with your passkey. No tokens, balances, or session keys ar
 4. Try a follow-up like **"What are my best yields?"** to see it pull live yield data.
 
 ::: tip HavenBot is not just advisory
-HavenBot actually *calls tools*. For answers it uses read tools (portfolio, yields, tokens, activity, audit). When you ask it to act, it uses `propose_*` tools (buy, sell, claim, rebalance) that surface a **confirmation card** rather than executing silently.
+HavenBot actually *acts* on your words. For questions it reads your portfolio, yields, tokens, activity, and audit log. When you ask it to do something — buy, sell, claim, rebalance — it either surfaces a **confirmation card** or, once you've armed a Scoped session, executes it for you. You'll arm that in [H3 · Arm Scoped autonomy](/guide/agent/set-tier).
 :::
 
-::: important Your key stays yours
+::: info Your key stays yours
 HavenBot works on encrypted aggregates plus the numbers you've explicitly revealed. It **never holds your passkey or private key** — it can only read, propose, or act through flows you authorize.
 :::
 
