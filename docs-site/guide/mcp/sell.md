@@ -25,7 +25,7 @@ If you ask to sell more than you hold, the contract clamps to your actual balanc
 :::
 
 ::: tip Two carve-outs to remember
-- **Portfolio rebalance** isn't an autonomous MCP tool — ask **HavenBot** to rebalance to targets, or use the **Auto-rebalance** panel on `/portfolio` ([H4 · Buy & sell autonomously](/guide/agent/autonomous)).
+- **Portfolio rebalance** isn't an autonomous MCP tool — ask **HavenBot** to rebalance to targets, or use the **Auto-rebalance** panel on `/portfolio` ([H4 · Buy & sell with HavenBot](/guide/agent/autonomous)).
 - **Converting USDC ↔ mhUSDC** (deposit/withdraw) always uses a passkey **dashboard deep-link** — never autonomous submission.
 :::
 

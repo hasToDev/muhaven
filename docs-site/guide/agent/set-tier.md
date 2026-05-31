@@ -1,22 +1,24 @@
 ---
 title: Arm Scoped autonomy
-description: Mint a Scoped session on the dashboard so HavenBot can buy and sell for you without a per-trade prompt.
+description: Mint a Scoped session on the dashboard to power prompt-free trading via the MCP broker and HavenBot's hands-off flows.
 ---
 
 # Arm Scoped autonomy
 
 <TaskMeta time="~3 min" role="Any signed-in user" needs="Signed in with your passkey" />
 
-> **What you'll do:** mint a **Scoped session** on the dashboard — the one step that lets HavenBot buy and sell on your behalf without asking you to confirm each trade.
+> **What you'll do:** mint a **Scoped session** on the dashboard — the signing grant that powers the **MCP broker's** prompt-free trading and HavenBot's hands-off flows (auto-reinvest, rebalance), within a cap and time limit you set.
 
 ## Before you begin
 ::: info Prerequisites
 Be signed in with your passkey. You decide how much rope the agent gets, and you can change or revoke it anytime.
 :::
 
-This is **the enabling step** for autonomous trading. Once a Scoped session is live, the
-next page ([H4 · Buy & sell autonomously](/guide/agent/autonomous)) shows HavenBot executing
-real trades from plain-language requests — no confirmation modal per trade.
+This is **the enabling step** for autonomous trading. With a Scoped session live, the
+[MCP broker](/guide/mcp/arm-scoped) trades **with no prompt at all**, and HavenBot can run
+**auto-reinvest** and **rebalance** hands-off. (HavenBot's *individual* buy/sell still shows
+a one-tap confirmation card — see [H4](/guide/agent/autonomous) — but only asks your device
+passkey once per session.)
 
 ## How much rope you can give the agent
 
@@ -25,7 +27,7 @@ You pick one of four tiers:
 - **Advisory** — read-only. Every write needs a fresh passkey signature.
 - **Confirm per action** — the agent proposes; you confirm each write.
 - **Policy-bound** — the agent writes within an allowlist plus spend caps.
-- **Scoped autonomy** — autonomous buys & sells within a **per-trade cap** and a **time limit (TTL)**, with **no per-trade prompt**. This is the one that unlocks hands-off trading.
+- **Scoped autonomy** — grants capped, time-bounded signing within a **per-trade cap** and **TTL**. The **MCP broker** then trades with **no prompt**; HavenBot uses it for hands-off auto-reinvest + rebalance (and signs your confirmed buys/sells without re-asking your passkey each time).
 
 ## Steps
 1. Go to `/agent/policy/transition` (you can also ask HavenBot to *"open my agent settings"*).
@@ -46,8 +48,9 @@ The same page shows a **Revoke** zone once a session is live, and you can lock t
 ## Expected result
 <ExpectedResult>
 After your passkey confirms, a <strong>live Scoped session</strong> exists — shown by the
-session banner and the revoke zone on the policy page. HavenBot can now buy and sell up to
-your per-trade cap, until the TTL expires, without prompting you each time.
+session banner and the revoke zone on the policy page. The MCP broker can now trade
+prompt-free up to your per-trade cap until the TTL expires, and HavenBot's auto-reinvest +
+rebalance run hands-off.
 </ExpectedResult>
 
 ## If something goes wrong
@@ -58,4 +61,4 @@ your per-trade cap, until the TTL expires, without prompting you each time.
 | Want to resume after pausing | Pick a tier again on the dashboard; your passkey installs a fresh session. |
 | The cap or TTL won't accept your value | The per-trade cap must be at least **$1 mhUSDC** and the TTL must be one of the offered options. |
 
-→ Next: [Buy & sell autonomously](/guide/agent/autonomous)
+→ Next: [Buy & sell with HavenBot](/guide/agent/autonomous)

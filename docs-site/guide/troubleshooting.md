@@ -100,7 +100,7 @@ write instantly. You can also revoke the session from the dashboard or via Teleg
 Multi-leg **rebalance runs through HavenBot in the dashboard** (and the Portfolio
 "Rebalance to targets" panel), not the standalone external `position.rebalance` MCP tool,
 which intentionally returns `not_implemented`. Use HavenBot — see
-[H4 · Buy & sell autonomously](/guide/agent/autonomous).
+[H4 · Buy & sell with HavenBot](/guide/agent/autonomous).
 
 ## A feature returns "not deployed"
 

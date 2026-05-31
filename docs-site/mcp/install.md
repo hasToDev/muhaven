@@ -234,5 +234,5 @@ Your MuHaven wallet itself is on-chain and unaffected by uninstalling MCP — si
 - [First chat](/mcp/first-chat) — walk through your first portfolio query.
 - [Tool catalog](/mcp/tools) — the tools you have access to.
 - [Broker daemon](/mcp/broker) — what the broker actually does.
-- [Autonomous execution](/guide/agent/autonomous) — grant a Scoped session and let the agent act.
+- [Buy & sell with HavenBot](/guide/agent/autonomous) — the in-dashboard agent's trade flow.
 - [Troubleshooting](/mcp/troubleshooting) — common install issues.

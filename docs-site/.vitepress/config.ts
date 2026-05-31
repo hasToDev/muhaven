@@ -96,7 +96,7 @@ export default defineConfig({
             { text: 'H1 · Chat with HavenBot', link: '/guide/agent/chat' },
             { text: 'H2 · Agent reads your portfolio', link: '/guide/agent/reads' },
             { text: 'H3 · Arm Scoped autonomy', link: '/guide/agent/set-tier' },
-            { text: 'H4 · Buy & sell autonomously', link: '/guide/agent/autonomous' },
+            { text: 'H4 · Buy & sell with HavenBot', link: '/guide/agent/autonomous' },
           ],
         },
         {

@@ -102,7 +102,7 @@ encrypted handle. That's the whole point: <strong>provably yours, publicly unrea
 
 > **Go further:** to let the agent *act* — buy and sell with no per-trade confirmation —
 > arm a Scoped session in [H3 · Arm Scoped autonomy](/guide/agent/set-tier) and watch it
-> trade in [H4 · Buy & sell autonomously](/guide/agent/autonomous). Prefer your own LLM? Run
+> trade in [H4 · Buy & sell with HavenBot](/guide/agent/autonomous). Prefer your own LLM? Run
 > the same flows over the [MCP track](/guide/mcp/arm-scoped).
 
 ## 7 · Verify on-chain · ~1 min
