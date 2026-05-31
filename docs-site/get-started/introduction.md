@@ -55,7 +55,7 @@ MuHaven runs live on Arbitrum Sepolia (testnet); Arbitrum One (mainnet) is on th
 
 **Live:**
 
-- HavenBot at `muhaven.app/agent` — streaming chat, per-action ConfirmModal, 17 tools.
+- HavenBot at `muhaven.app/agent` — streaming chat, per-action ConfirmModal, a focused subset of the MCP toolset.
 - `@muhaven/mcp` published on npm — install in any MCP host, 25 tools (8 read-only with the read-only flag).
 - Telegram bot — live, phone-first investor flow.
 - Tiered autonomy engine + audit log + `/pause` kill-switch.

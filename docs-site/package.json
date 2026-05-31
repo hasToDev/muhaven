@@ -1,6 +1,6 @@
 {
   "name": "@muhaven/docs-site",
-  "version": "1.0.13",
+  "version": "1.0.14",
   "private": true,
   "type": "module",
   "description": "User-facing documentation for MuHaven's confidential RWA portfolio platform — focused on the four agentic surfaces (HavenBot, MCP, OpenClaw, Hosted Checkout).",

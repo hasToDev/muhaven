@@ -148,7 +148,7 @@ Pre-flight for $20K of <TOKEN>:
   Session key cap:    $5K per call · $50K per epoch
 
 ⚠️ Your session key value cap is $5K/call. A $20K buy would need
-4 chunked UserOps OR a tier-3 passkey deeplink. Recommend
+4 chunked UserOps OR the dashboard passkey confirm path. Recommend
 opening /agent on dashboard and using the passkey confirm path
 for the full $20K in one tx.
 ```
