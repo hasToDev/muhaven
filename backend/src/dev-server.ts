@@ -416,6 +416,15 @@ async function main() {
       // indexer has something to do" too, so an instance configured ONLY for
       // USDC-send indexing still boots the indexer (BE-Arch review MEDIUM).
       const hasUsdc = !!env.CIRCLE_USDC_ADDRESS;
+      // NOTE: this boot gate counts ONLY the env-configured address sources. It
+      // deliberately does NOT consult the DB-sourced MuHavenToken set (the
+      // `getMuHavenTokenAddresses` resolver wired below) — that would need an
+      // async DB round-trip at boot. Safe in practice: every real deployment
+      // sets at least SUBSCRIPTION_ADDRESS / STABLE_ADDRESS / CIRCLE_USDC_ADDRESS,
+      // so the gate passes and the indexer boots regardless of the token env
+      // list; the resolver then supplies DB tokens on the first tick. The only
+      // skipped case is a fully env-empty instance that has DB tokens — not a
+      // shape any prod/stage config takes.
       if (
         !env.SUBSCRIPTION_ADDRESS &&
         queueAddrs.length === 0 &&
@@ -488,6 +497,19 @@ async function main() {
             usdcAddress: env.CIRCLE_USDC_ADDRESS as Address | undefined,
             getKernelAddresses: () =>
               container.userRepo.listWalletAddresses?.() ?? Promise.resolve([]),
+            // RWA-transfer activity fix (2026-05-31) — source the per-RWA
+            // MuHavenToken proxy set DYNAMICALLY from the DB token registry
+            // (merged with the static MUHAVEN_TOKEN_ADDRESSES_JSON list inside
+            // the indexer). The env list was hand-maintained (onboard-token.sh
+            // only prints a reminder), so a token missing from it had its
+            // Transfer events silently unwatched → P2P transfers produced no
+            // /activity row for sender OR recipient. Sourcing from the DB —
+            // which onboarding already populates — means every onboarded token
+            // is auto-watched on the next poll, no env rotation + restart.
+            getMuHavenTokenAddresses: () =>
+              container.rwaTokenRepo
+                .findAll()
+                .then((tokens) => tokens.map((t) => t.address)),
             tokenRegistryAddress: registryAddr,
             intervalMs: env.TAX_EVENT_POLLER_INTERVAL_MS,
           },

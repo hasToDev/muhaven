@@ -647,6 +647,103 @@ describe('TaxEventIndexer · Transfer dispatch (Option Z follow-up)', () => {
     expect(sender.logIndex).toBe(recipient.logIndex);
   });
 
+  // RWA-transfer activity fix (2026-05-31) — the watch-set is (env list) ∪
+  // (DB resolver). A token supplied ONLY by the dynamic resolver (e.g. onboarded
+  // after boot, never added to MUHAVEN_TOKEN_ADDRESSES_JSON) must still be
+  // watched, or its P2P transfers produce zero /activity rows — the reported bug.
+  it('indexes a transfer on a token supplied ONLY by the dynamic resolver (empty env list)', async () => {
+    // Lower-cased like a DB row (vs the checksummed env addresses).
+    const DYNAMIC_TOKEN = '0xdddddddddddddddddddddddddddddddddddddddd' as Address;
+    let blockCallCount = 0;
+    const client = createMockClient({
+      getBlockNumber: vi.fn().mockImplementation(() => {
+        blockCallCount++;
+        return Promise.resolve(blockCallCount === 1 ? 100n : 105n);
+      }),
+      getLogs: vi.fn().mockImplementation((params: any) => {
+        const addrs = Array.isArray(params.address) ? params.address : [params.address];
+        if (addrs.some((a: string) => a?.toLowerCase() === DYNAMIC_TOKEN.toLowerCase())) {
+          return Promise.resolve([
+            transferLog({ from: KERNEL_A, to: KERNEL_B, address: DYNAMIC_TOKEN }),
+          ]);
+        }
+        return Promise.resolve([]);
+      }),
+    });
+
+    const indexer = new TaxEventIndexer(
+      taxEventRepo,
+      transferIndexerConfig({
+        muHavenTokenAddresses: [],
+        getMuHavenTokenAddresses: async () => [DYNAMIC_TOKEN],
+      }),
+      client,
+    );
+    await indexer.tick();
+    await indexer.tick();
+
+    expect(taxEventRepo.saveMany).toHaveBeenCalledOnce();
+    const events = (taxEventRepo.saveMany as any).mock.calls[0][0];
+    expect(events).toHaveLength(2);
+    expect(events.map((e: any) => e.holderAddress).sort()).toEqual(
+      [KERNEL_A, KERNEL_B].sort(),
+    );
+    expect(events.every((e: any) => e.tokenAddress === DYNAMIC_TOKEN)).toBe(true);
+  });
+
+  it('falls back to the static env token list when the dynamic resolver throws', async () => {
+    const client = clientWithTransferLogs([
+      transferLog({ from: KERNEL_A, to: KERNEL_B }),
+    ]);
+
+    const indexer = new TaxEventIndexer(
+      taxEventRepo,
+      transferIndexerConfig({
+        getMuHavenTokenAddresses: async () => {
+          throw new Error('DB unreachable');
+        },
+      }),
+      client,
+    );
+    await indexer.tick();
+    await indexer.tick();
+
+    // The env list still carries TOKEN_PROXY → the transfer is indexed despite
+    // the resolver failure (never regress below env-only behaviour).
+    expect(taxEventRepo.saveMany).toHaveBeenCalledOnce();
+    expect((taxEventRepo.saveMany as any).mock.calls[0][0]).toHaveLength(2);
+  });
+
+  // Leg-isolation: a Transfer getLogs rejection (e.g. the DB-driven address
+  // array exceeds the RPC limit) must NOT propagate into Promise.all and stall
+  // the WHOLE indexer — it degrades to "no transfer rows this chunk" and the
+  // cursor still advances on the other legs.
+  it('does NOT stall the indexer when the Transfer getLogs rejects', async () => {
+    let blockCallCount = 0;
+    const client = createMockClient({
+      getBlockNumber: vi.fn().mockImplementation(() => {
+        blockCallCount++;
+        return Promise.resolve(blockCallCount === 1 ? 100n : 105n);
+      }),
+      getLogs: vi.fn().mockImplementation((params: any) => {
+        const addrs = Array.isArray(params.address) ? params.address : [params.address];
+        if (addrs.some((a: string) => a?.toLowerCase() === TOKEN_PROXY.toLowerCase())) {
+          return Promise.reject(new Error('eth_getLogs: too many addresses'));
+        }
+        return Promise.resolve([]);
+      }),
+    });
+
+    const indexer = new TaxEventIndexer(taxEventRepo, transferIndexerConfig(), client);
+    await indexer.tick();
+    // Second tick must resolve (not reject) despite the transfer-leg rejection.
+    await expect(indexer.tick()).resolves.toBeUndefined();
+    // Cursor advanced past the rejected leg's blocks (other legs succeeded).
+    expect(indexer.getStatus().lastProcessedBlock).toBe('105');
+    // The transfer leg degraded to [] → no rows written.
+    expect(taxEventRepo.saveMany).not.toHaveBeenCalled();
+  });
+
   it('skips mints (from == 0) — covered by Subscription.Purchased', async () => {
     const client = clientWithTransferLogs([
       transferLog({ from: ZERO_ADDR, to: KERNEL_B }),

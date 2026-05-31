@@ -79,6 +79,19 @@ export interface TaxEventIndexerConfig {
    */
   muHavenTokenAddresses?: Address[];
   /**
+   * RWA-transfer activity fix (2026-05-31) — DB-backed dynamic resolver for
+   * the per-RWA MuHavenToken proxy set. Called once per chunk and MERGED with
+   * the static `muHavenTokenAddresses` env list, so a token onboarded AFTER
+   * boot is auto-watched on the next poll without a manual
+   * `MUHAVEN_TOKEN_ADDRESSES_JSON` rotation + indexer restart. The static env
+   * list was hand-maintained (`scripts/onboard-token.sh` only prints a
+   * reminder), so any token missing from it had its `Transfer` events silently
+   * unwatched → P2P transfers produced ZERO `/activity` rows for sender AND
+   * recipient. Mirrors `getKernelAddresses` (the USDC-send leg's dynamic
+   * kernel set). Leave undefined to keep the env-only behaviour.
+   */
+  getMuHavenTokenAddresses?: () => Promise<string[]>;
+  /**
    * Phase 9.A · Option Z follow-up — protocol contracts whose Transfer
    * participation should NOT surface as a /activity row. Mint / burn
    * filters (`from == 0` / `to == 0`) catch Subscription's mint+burn
@@ -127,6 +140,7 @@ export class TaxEventIndexer {
   private readonly yieldSnapshotAddresses: Address[];
   private readonly muHavenStableAddress?: Address;
   private readonly muHavenTokenAddresses: Address[];
+  private readonly getMuHavenTokenAddresses?: () => Promise<string[]>;
   /** Lower-cased filter set for fast `has()` lookup during Transfer triage. */
   private readonly protocolFilterAddresses: Set<string>;
   private readonly oracleAddress?: Address;
@@ -156,6 +170,7 @@ export class TaxEventIndexer {
     this.yieldSnapshotAddresses = config.yieldSnapshotAddresses;
     this.muHavenStableAddress = config.muHavenStableAddress;
     this.muHavenTokenAddresses = config.muHavenTokenAddresses ?? [];
+    this.getMuHavenTokenAddresses = config.getMuHavenTokenAddresses;
     this.protocolFilterAddresses = new Set(
       (config.protocolFilterAddresses ?? []).map((a) => a.toLowerCase()),
     );
@@ -331,6 +346,38 @@ export class TaxEventIndexer {
     return all;
   }
 
+  /**
+   * RWA-transfer activity fix (2026-05-31) — merge the static env token list
+   * with the DB-backed dynamic resolver into the per-chunk MuHavenToken watch
+   * set. Deduped case-insensitively (env addresses are checksummed; DB rows may
+   * be checksummed OR lowercase depending on the writer — so the same proxy from
+   * both sources must not double-query) and hex-validated (a malformed DB row
+   * can't poison the getLogs address filter).
+   * Fail-soft: a resolver error falls back to the static env list so we never
+   * regress BELOW the prior env-only behaviour (matches the getKernelAddresses
+   * degradation contract for the USDC-send leg).
+   */
+  private async resolveTokenAddresses(): Promise<Address[]> {
+    const merged = new Map<string, Address>();
+    for (const a of this.muHavenTokenAddresses) merged.set(a.toLowerCase(), a);
+    if (this.getMuHavenTokenAddresses) {
+      try {
+        const dynamic = await this.getMuHavenTokenAddresses();
+        for (const a of dynamic) {
+          if (!/^0x[0-9a-fA-F]{40}$/.test(a)) continue;
+          const key = a.toLowerCase();
+          if (!merged.has(key)) merged.set(key, a as Address);
+        }
+      } catch (err) {
+        this.logger.warn(
+          { err },
+          'getMuHavenTokenAddresses failed — using the static env token list this chunk',
+        );
+      }
+    }
+    return [...merged.values()];
+  }
+
   private async fetchChunk(fromBlock: bigint, toBlock: bigint): Promise<TaxEvent[]> {
     const tasks: Promise<Log[]>[] = [];
 
@@ -386,14 +433,41 @@ export class TaxEventIndexer {
       tasks.push(Promise.resolve([] as Log[]));
     }
 
-    if (this.muHavenTokenAddresses.length > 0) {
+    // RWA-transfer activity fix (2026-05-31) — resolve the watch-set as
+    // (static env list) ∪ (DB token registry) so onboarded tokens are
+    // auto-watched without an env rotation. Resolved per chunk to mirror the
+    // USDC-send leg's `getKernelAddresses`; fail-soft to the env list.
+    const tokenAddrsForChunk = await this.resolveTokenAddresses();
+    if (tokenAddrsForChunk.length > 0) {
       tasks.push(
-        this.client.getLogs({
-          address: this.muHavenTokenAddresses,
-          events: muHavenTokenTransferAbi,
-          fromBlock,
-          toBlock,
-        }) as Promise<Log[]>,
+        // Isolate THIS leg's failure with `.catch(() => [])`, mirroring the
+        // USDC-send leg below. The `address` array is now DB-driven (grows as
+        // issuers onboard tokens), so an address-list-too-large rejection or a
+        // transient RPC error on this leg must NOT propagate into the bare
+        // `Promise.all(tasks)` → `tick()` catch → cursor NOT advanced → EVERY
+        // tick fails → the WHOLE indexer freezes (Acquisition / Disposition /
+        // yield / Wrap / USDC included) — the "silent total stall" class this
+        // repo has already been bitten by. Degrade to "no transfer rows this
+        // chunk": the cursor still advances on the other legs and the next tick
+        // retries (same availability tradeoff the USDC leg + getKernelAddresses
+        // already accept — a permanent miss of those blocks' transfers is the
+        // accepted cost vs. halting all indexing). The pre-fix static leg was
+        // bare, but it was bounded by the hand-maintained env list; a DB-driven
+        // set needs the guard.
+        (
+          this.client.getLogs({
+            address: tokenAddrsForChunk,
+            events: muHavenTokenTransferAbi,
+            fromBlock,
+            toBlock,
+          }) as Promise<Log[]>
+        ).catch((err: unknown) => {
+          this.logger.warn(
+            { err, tokens: tokenAddrsForChunk.length },
+            'MuHavenToken Transfer getLogs failed (address-list limit? RPC error?) — skipping transfer leg this chunk',
+          );
+          return [] as Log[];
+        }),
       );
     } else {
       tasks.push(Promise.resolve([] as Log[]));
