@@ -65,10 +65,10 @@ balance appears.
 
 1. Go to **Trade** (or open a token from **Marketplace** and click its buy CTA, which routes
    you to `/trade`).
-2. Choose a token (e.g. **TBILL1**) and enter a quantity.
+2. Choose a token (e.g. **CETES**) and enter a quantity.
 3. If your mhUSDC balance shows as locked, click **Reveal mhUSDC to continue** — one tap, no
    transaction. This is the encrypted-balance gate doing its job.
-4. Click **Buy TBILL1** (the CTA reads `Buy <SYMBOL>`) and approve.
+4. Click **Buy CETES** (the CTA reads `Buy <SYMBOL>`) and approve.
 
 ::: tip This is the core privacy claim
 The exact amount you spend is **encrypted before it ever touches the chain**. The

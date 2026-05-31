@@ -588,7 +588,18 @@ kbd {
   .VPSidebar .nav::before {
     content: '';
     position: absolute;
-    top: 0;
+    /* Extend UP behind the navbar by one nav-height so this SINGLE band
+     * also paints the logo strip. At ≥960px the navbar + its title are
+     * transparent (VitePress `.VPNavBar:not(.home)` + `.title`), so the
+     * sidebar shows through — meaning one band covers BOTH the logo
+     * strip and the menu with ONE geometry. That kills the old
+     * two-band alignment bug for good (a separate `.title::before` band
+     * computed its left edge from `100vw` while this band tracks
+     * VitePress's `100%`-based padding-left — they differed by the root
+     * scrollbar width, so the logo strip sat ~scrollbar/2 to the right).
+     * The band scrolls with `.nav` but is taller than the viewport, so
+     * the logo-strip region stays covered at every scroll position. */
+    top: calc(var(--vp-nav-height) * -1);
     right: -64px;
     bottom: -96px;
     left: -24px;
@@ -613,97 +624,17 @@ kbd {
   }
 }
 
-/* (The old ≥1440px `.VPSidebar::before { left: max(…100vw…) }` block was
- * removed — the band now lives on `.nav` with automatic negative-inset
- * bounds, so the centered-gutter `100vw` math is no longer needed.) */
-
-/* ── Logo strip (.VPNavBarTitle) — align with sidebar painted band.
- *
- * Issue: VitePress's `.VPNavBar.has-sidebar .title` is `position:
- * absolute; left: 0; width: chrome_gutter + sidebar_width - 32` —
- * spans the full title-element width from window edge. Its visible
- * artefact is `border-bottom: 1px solid var(--vp-c-divider)` (a
- * horizontal line under the logo). On wide / 4K screens that line
- * runs ~1072px past the sidebar's painted band on the left, making
- * the logo strip read as "wider than the sidebar below it."
- *
- * Fix:
- *   1. Kill VP's title border-bottom (so the line doesn't span the
- *      gutter).
- *   2. Paint a `::before` on the title that matches the sidebar's
- *      painted band — same `left` expression (matches VP's padding-
- *      left at every breakpoint), same `--vp-sidebar-bg-color`, and
- *      a 1px bottom-border that runs only within the painted region.
- *   3. Logo + site-title sit on z-index 1 so they ride on top of the
- *      painted band.
- *
- * Result: the entire left column — logo strip on top of sidebar
- * menu — reads as one unified painted block aligned with the
- * centered chrome. Works at every viewport from 960 to 4K+.
- */
+/* (The old ≥1440px `.VPSidebar::before { left: max(…100vw…) }` block AND
+ * the entire separate `.VPNavBar.has-sidebar .title::before` logo-strip
+ * band were removed. The sidebar's `.nav::before` now extends UP behind
+ * the transparent navbar to paint the logo strip itself, so there's a
+ * single band with a single geometry — no cross-element scrollbar-math
+ * mismatch to misalign the left edge. The only thing still needed from
+ * the old logo-strip block is killing VitePress's full-width title
+ * border-bottom, which otherwise draws a divider line spanning the
+ * gutter. */
 @media (min-width: 960px) {
-  /* Kill VP's full-width border-bottom on the title. We replace it
-   * with a constrained one inside our ::before. */
   .VPNavBar.has-sidebar .title {
     border-bottom: none !important;
-  }
-
-  /* The painted strip under the logo. Mirrors the sidebar's ::before
-   * (same `left` offset, same bg color) so the two paints align
-   * pixel-perfectly AND flow seamlessly into one another. No bottom
-   * border — that would create a visible "shelf" cutting the logo
-   * off from the sidebar; the design is one unified painted column,
-   * not two stacked boxes.
-   *
-   * NO right-edge box-shadow here (unlike .VPSidebar::before). The
-   * .title element's containing block (.VPNavBar, position: relative)
-   * has a width that EXCLUDES the vertical scrollbar, while
-   * .VPSidebar (position: fixed) is sized off `100vw` which INCLUDES
-   * the scrollbar. Net effect: the .title's right edge sits ~17px
-   * left of .VPSidebar's right edge. A right-edge shadow on
-   * .title::before would render that ~17px to the LEFT of where the
-   * sidebar's shadow renders below it, producing a visible stray
-   * grey vertical line in the gap. The sidebar's own ::before shadow
-   * is the single column-boundary; the logo strip flows into it
-   * without its own right shadow. */
-  .VPNavBar.has-sidebar .title::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    left: 8px; /* mirrors .VPSidebar::before — 24px breathing room past VP padding-left */
-    background-color: var(--vp-sidebar-bg-color);
-    z-index: 0;
-    pointer-events: none;
-  }
-
-  /* Logo + wordmark + any title content sits on z-index 1. */
-  .VPNavBar.has-sidebar .title > * {
-    position: relative;
-    z-index: 1;
-  }
-
-  /* Dark-mode amber bloom — mirrors the sidebar's bloom so the
-   * top-of-page glow continues seamlessly into the column. */
-  html.dark .VPNavBar.has-sidebar .title::before {
-    background-image: radial-gradient(
-      ellipse 60% 40% at 50% -10%,
-      rgba(255, 220, 161, 0.05),
-      transparent 60%
-    );
-  }
-}
-
-@media (min-width: 1440px) {
-  /* Match the sidebar's wide-screen left expression exactly so the
-   * two painted bands stay pixel-aligned. Same `100vw` reasoning as
-   * the sidebar block above, with the same -16px offset for visual
-   * left-padding inside the band. */
-  .VPNavBar.has-sidebar .title::before {
-    left: max(
-      8px,
-      calc((100vw - (var(--vp-layout-max-width) - 64px)) / 2 - 24px)
-    );
   }
 }

@@ -34,14 +34,7 @@ The dial runs **Advisory → Confirm per action → Policy-bound → Scoped auto
 
 ## How you set your tier
 
-Set your tier yourself on the dashboard at **`/agent/policy/transition`** (the tier picker), or call `muhaven.policy.set_tier` (`muhaven_set_policy` on HavenBot). The change is signed by your passkey.
-
-- **Stepping up** (toward more autonomy) needs one confirmation tap — the dashboard issues a short-lived confirm token and you click **Confirm transition**.
-- **Stepping down** (toward less autonomy) applies immediately, no confirmation needed.
-
-::: tip Two surfaces, two tier sets
-The **dashboard picker** exposes **Advisory · Confirm per action · Policy-bound · Scoped autonomy**. The **MCP** `set_tier` tool accepts **advisory · confirm-per-action · policy-bound · paused** — it can't mint a Scoped session, because Scoped needs an in-browser passkey ceremony to set the cap + expiry. So: arm **Scoped** from the dashboard; manage the lower tiers from anywhere.
-:::
+Set your tier yourself on the dashboard at **`/agent/policy/transition`** (the tier picker). You can **pick any tier directly** — there is no ladder to climb and no step-up/step-down sequence to follow. Select the tier you want, and your **passkey confirms the change**. Resuming from **Paused** likewise just needs your passkey (it reinstalls a fresh session key).
 
 ## Advisory — the default
 
@@ -126,15 +119,16 @@ See [The /pause kill-switch](/policy/pause).
 
 ## Changing tier
 
-| Direction | What's required |
-|---|---|
-| Any non-paused tier → any higher non-paused tier | One passkey-bound confirm tap (**Confirm transition**) |
-| Any tier → a lower tier | Applies immediately, no confirmation |
-| Arm **Scoped autonomy** | Dashboard passkey ceremony (sets the per-trade cap + TTL) |
-| Any → **Paused** | Idempotent — no signature needed |
-| **Paused** → any | Passkey signature (session-key reinstall — **Resume to Advisory**) |
+You **pick any tier directly** from the dashboard tier picker — there is no step-up/step-down ladder and no required sequence. Whatever tier you choose, your **passkey confirms the change**.
 
-There is **no forced climb**: any non-paused tier can jump directly to any other non-paused tier — you don't have to step through the tiers in order. Every tier change is recorded as a `tier_transition` row in your [audit log](/policy/audit-log).
+| Tier you pick | What's required |
+|---|---|
+| Any non-paused tier (Advisory · Confirm per action · Policy-bound) | Choose it directly; your passkey confirms the change |
+| **Scoped autonomy** | Choose it directly; a dashboard passkey ceremony sets the per-trade cap + TTL |
+| **Paused** | Idempotent — no signature needed (the kill-switch) |
+| Resume from **Paused** | Your passkey (session-key reinstall — **Resume to Advisory**) |
+
+Every tier change is recorded as a `tier_transition` row in your [audit log](/policy/audit-log).
 
 ## What's bypassed during development
 

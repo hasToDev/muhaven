@@ -19,7 +19,7 @@ Browsing is read-only and needs no sign-in. KYC is only enforced when you actual
 
 1. Go to `/marketplace`. The page header reads **Confidential RWA marketplace**.
 2. Filter the list: type in the **Search tokens…** box, tap an asset-class filter pill, or use the yield-bearing toggle.
-3. Click any token card to open its detail page at `/marketplace/:ticker` (for example `/marketplace/TBILL1`).
+3. Click any token card to open its detail page at `/marketplace/:ticker` (for example `/marketplace/CETES`).
 4. On the detail page, review the APY, NAV, supply, jurisdiction, and the NAV trend chart.
 5. Use **Back to marketplace** to return, or the buy CTA to route to `/trade?token=<ticker>`.
 

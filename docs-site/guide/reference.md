@@ -74,16 +74,16 @@ proxies.
 |---|---|
 | **USDC (Circle, Arb Sepolia)** | `0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d` |
 
-### Example RWA token (TBILL1)
+### Example RWA token (CETES)
 
 | Contract | Address |
 |---|---|
-| **MuHavenToken (TBILL1)** | `0x8D77cCf0a3a56c976a7DEAe59aF1D27f27407b0D` |
-| MuHavenTreasury (TBILL1) | `0xf423CE2d1fD856F89Ca75ec47c2791CeD91D62a3` |
-| RedemptionQueue (TBILL1) | `0x435aF5AF238aBe80DD4dc571C38C167F407c4E9c` |
+| **MuHavenToken (CETES)** | `0xF3945c52DB79eBc6BFEA1dc460Ead77D70858B43` |
+| MuHavenTreasury (CETES) | `0xEd596e61A22f3099a21dFD2C07BEEDbcbd3a7c74` |
+| RedemptionQueue (CETES) | `0x3f8D8350EEE036f6FbEA64B68886cEd11cF28ddC` |
 
 ::: info The marketplace lists many more tokens.
-TBILL1 is one example. The live [marketplace](/guide/investor/marketplace) carries a
+CETES is one example. The live [marketplace](/guide/investor/marketplace) carries a
 rotating set of tokenized treasuries, gold, money-market funds, and tokenized equities.
 Each token's detail page links its on-chain address.
 :::

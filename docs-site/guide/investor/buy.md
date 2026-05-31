@@ -23,7 +23,7 @@ Because `mhUSDC` is encrypted, MuHaven can't read your balance to decide if you 
 4. After revealing:
    - If you have enough, **Buy** enables.
    - If you're short, you'll see a **Need $Y · short $Z** hint and a **Top up cash** link to `/cash`.
-5. Click **Buy {SYMBOL}** (for example **Buy TBILL1**). The label changes to **Purchasing TBILL1…**. Internally the app runs **Encrypt** (client-side) then **Purchase** (on-chain).
+5. Click **Buy {SYMBOL}** (for example **Buy CETES**). The label changes to **Purchasing CETES…**. Internally the app runs **Encrypt** (client-side) then **Purchase** (on-chain).
 6. On your first buy, you'll also approve a one-time `mhUSDC` allowance for the Subscription contract.
 
 ## Expected result

@@ -11,11 +11,11 @@ description: Ask your own LLM to sell a position — instant or queued — and v
 
 ## Before you begin
 ::: info Prerequisites
-The `@muhaven/mcp` server logged in ([M1](/guide/mcp/install)) and an open position to sell ([I5 · Buy](/guide/investor/buy)). Without a Scoped session, sells are proposed for your approval — for the autonomous path see [M6](/guide/mcp/autonomous).
+The `@muhaven/mcp` server logged in ([M1](/guide/mcp/install)) and an open position to sell ([I5 · Buy](/guide/investor/buy)). Without a Scoped session, sells are proposed for your approval — for the autonomous path see [M5](/guide/mcp/autonomous).
 :::
 
 ## Steps
-1. In your host, type **"Sell 2 shares of TBILL1."**
+1. In your host, type **"Sell 2 shares of CETES."**
 2. Your LLM calls **`muhaven.position.sell`** and returns a **dashboard deep-link**.
 3. Open it, review the cleartext preview, tap **Authorize**, and approve with your **passkey**.
 4. The sell settles **instantly** when it's within the token's per-epoch instant cap; an over-cap sell is **queued** and settles in a later epoch — claim it later ([I9 · Redemption-queue claim](/guide/investor/redemption-queue)).
@@ -35,8 +35,8 @@ the <strong>redemption queue</strong>, visible via <code>muhaven.read.activity</
 ## If something goes wrong
 | Symptom | Fix |
 |---|---|
-| Sell returns a deep-link instead of running | Expected without a Scoped session — approve it, or grant a Scoped session ([M5](/guide/mcp/set-tier)). |
+| Sell returns a deep-link instead of running | Expected without a Scoped session — approve it, or grant a Scoped session on the dashboard ([H3 · Set the autonomy tier](/guide/agent/set-tier)). |
 | Sale was queued, not instant | The amount exceeded the per-epoch instant cap — settle the queued portion later ([I9](/guide/investor/redemption-queue)). |
 | You asked to sell more than you hold | The sell clamps to your full balance — not an error. See [I7](/guide/investor/sell). |
 
-→ Next: [Set the autonomy tier via MCP](/guide/mcp/set-tier)
+→ Next: [Autonomous execution via MCP](/guide/mcp/autonomous)

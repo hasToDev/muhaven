@@ -97,9 +97,6 @@ export default defineConfig({
             { text: 'H2 · Agent reads your portfolio', link: '/guide/agent/reads' },
             { text: 'H3 · Set the autonomy tier', link: '/guide/agent/set-tier' },
             { text: 'H4 · Autonomous execution', link: '/guide/agent/autonomous' },
-            { text: 'H5 · Advisory + deep-link confirm', link: '/guide/agent/deep-link-confirm' },
-            { text: 'H6 · Pause / kill-switch', link: '/guide/agent/pause' },
-            { text: 'H7 · Session status + audit', link: '/guide/agent/session-audit' },
           ],
         },
         {
@@ -110,9 +107,7 @@ export default defineConfig({
             { text: 'M2 · Read your portfolio via MCP', link: '/guide/mcp/reads' },
             { text: 'M3 · Buy a position via MCP', link: '/guide/mcp/buy' },
             { text: 'M4 · Sell a position via MCP', link: '/guide/mcp/sell' },
-            { text: 'M5 · Set the autonomy tier via MCP', link: '/guide/mcp/set-tier' },
-            { text: 'M6 · Autonomous execution via MCP', link: '/guide/mcp/autonomous' },
-            { text: 'M7 · Pause / kill-switch via MCP', link: '/guide/mcp/pause' },
+            { text: 'M5 · Autonomous execution via MCP', link: '/guide/mcp/autonomous' },
           ],
         },
         {

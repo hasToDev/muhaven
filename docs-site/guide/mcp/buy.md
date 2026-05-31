@@ -11,11 +11,11 @@ description: Ask your own LLM to buy an RWA position; approve the returned dashb
 
 ## Before you begin
 ::: info Prerequisites
-The `@muhaven/mcp` server logged in ([M1](/guide/mcp/install)) and some **mhUSDC** to spend ([I3 · Deposit](/guide/investor/deposit)). Without a Scoped session, buys are proposed for your approval — for the autonomous path see [M6](/guide/mcp/autonomous).
+The `@muhaven/mcp` server logged in ([M1](/guide/mcp/install)) and some **mhUSDC** to spend ([I3 · Deposit](/guide/investor/deposit)). Without a Scoped session, buys are proposed for your approval — for the autonomous path see [M5](/guide/mcp/autonomous).
 :::
 
 ## Steps
-1. In your host, type something like **"Buy 5 mhUSDC of TBILL1."**
+1. In your host, type something like **"Buy 5 mhUSDC of CETES."**
 2. Your LLM calls **`muhaven.position.buy`**.
 3. The tool returns a **dashboard deep-link** (e.g. `muhaven.app/trade?mode=buy&…`). Open it.
 4. A **ConfirmModal** mounts showing a cleartext preview. Review it, tap **Authorize**, and approve with your **passkey**.
@@ -36,7 +36,7 @@ shows up via <code>muhaven.read.activity</code>.
 ## If something goes wrong
 | Symptom | Fix |
 |---|---|
-| Buy returns a deep-link instead of running | Expected without a Scoped session — approve the link with your passkey, or grant a Scoped session ([M5](/guide/mcp/set-tier)). |
+| Buy returns a deep-link instead of running | Expected without a Scoped session — approve the link with your passkey, or grant a Scoped session on the dashboard ([H3 · Set the autonomy tier](/guide/agent/set-tier)). |
 | The deep-link preview doesn't match your request | Don't authorize — close it and re-ask for the correct amount/token. |
 | Insufficient mhUSDC | Deposit more first ([I3](/guide/investor/deposit)); reveal your mhUSDC balance if the trade screen shows it locked ([I6](/guide/investor/reveal-balance)). |
 

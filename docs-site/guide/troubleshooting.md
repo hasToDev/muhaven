@@ -87,12 +87,13 @@ shortly or pick another token — it's a freshness gate, not a problem with your
 Autonomous execution requires a **scoped session** at the right tier. If the agent only
 *proposes* (gives you a confirm link), either:
 
-- you're in **Advisory / Confirm-per-action** — approve via the deep-link
-  ([H5](/guide/agent/deep-link-confirm)), or
+- you're in **Advisory / Confirm-per-action** — approve the action the agent surfaces
+  (a confirmation modal in the dashboard, or a deep-link you sign with your passkey), or
 - you haven't granted a **Scoped** session yet — do that in
   [H3 · Set the tier](/guide/agent/set-tier).
 
-To stop the agent at any time, use the [pause / kill-switch](/guide/agent/pause).
+To stop the agent at any time, just ask it — e.g. *"pause my agent"* — which blocks every
+write instantly. You can also revoke the session from the dashboard or via Telegram.
 
 ## Asking the agent to "rebalance" via an external MCP tool returns "not implemented"
 

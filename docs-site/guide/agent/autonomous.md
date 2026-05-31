@@ -30,6 +30,10 @@ This flow only runs when you've granted a **Scoped** session — see [Set the ag
 3. Watch it execute — transactions take ~30–60s and gas is sponsored.
 4. Verify the result in [Activity](/guide/investor/activity) and via `muhaven.read.activity`.
 
+::: tip Stop it anytime — just ask
+To halt autonomous execution, simply tell the agent something like *"pause my agent"*. That blocks every write instantly (the kill-switch). You can also revoke the session from the dashboard or via Telegram. To resume, pick a tier again on the dashboard and confirm with your passkey.
+:::
+
 ## Expected result
 <ExpectedResult>
 The agent executes <strong>without a per-action prompt</strong> and returns a <strong>tx hash</strong>. After ~30–60s the action appears in <a href="/guide/investor/activity">Activity</a> and in <code>muhaven.read.activity</code>.
@@ -41,6 +45,6 @@ The agent executes <strong>without a per-action prompt</strong> and returns a <s
 | Action returns a deep-link instead of running | No live Scoped session — grant one in [H3](/guide/agent/set-tier). |
 | `muhaven.position.rebalance` returns `not_implemented` | Expected — rebalance via HavenBot / the Portfolio panel instead. |
 | `muhaven.cash.wrap` / `muhaven.cash.unwrap` asks for your passkey | Expected — those always use a dashboard deep-link, never autonomous submission. |
-| You want to stop everything now | Use the [pause kill-switch](/guide/agent/pause). |
+| You want to stop everything now | Just ask the agent — e.g. *"pause my agent"* — which blocks every write instantly. You can also revoke the session from the dashboard or via Telegram. |
 
-→ Next: [Approve an action via deep-link](/guide/agent/deep-link-confirm)
+→ Next: [Install & verify the MCP server](/guide/mcp/install)
