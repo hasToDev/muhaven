@@ -23,7 +23,7 @@ If your account is already an approved issuer, `/apply-issuer` redirects you str
 ## Steps
 
 1. Go to `/apply-issuer` to open the multi-step wizard.
-2. On **Step 1 — Welcome + KYB**, enter your **display name**, **jurisdiction**, and **contact email**, then click **Submit application**.
+2. On **Step 1 — Welcome + KYB**, enter your **Legal entity name**, **jurisdiction**, and **contact email**, then click **Submit application**.
    ::: important Testnet KYB is auto-approved
    On testnet your KYB application is **auto-approved the moment you submit** — there's no waiting on a reviewer.
    :::
@@ -39,7 +39,7 @@ If you reload mid-flow, the wizard picks up where you left off — your progress
 ## Expected result
 
 <ExpectedResult>
-You see the <strong>Issuer stack deployed</strong> card reading <strong>{SYMBOL} is live</strong>, with an <em>Arbiscan</em> link to the deployed token.
+You see the <strong>Issuer stack deployed</strong> success card with an <em>Arbiscan</em> link to the deployed token.
 </ExpectedResult>
 
 ## If something goes wrong

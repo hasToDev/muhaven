@@ -34,7 +34,7 @@ On-chain phases take **~30–60s each**, and the snapshot is paginated at **50 h
 ### Stage 2 — Fund epoch
 
 4. Enter the yield **amount** in human-readable `mhUSDC`.
-5. Enter the **outstanding supply** — or click **Decrypt from chain** to fill it from the finalized epoch.
+5. Enter the **Outstanding token supply** — or click **Decrypt from chain** to fill it from the finalized epoch.
 6. Click **Reveal mhUSDC** to see your available balance. If it's short, the app auto-wraps USDC → mhUSDC for you.
 7. Click **Fund · $X** to fund the epoch.
 
@@ -53,7 +53,7 @@ A fund receipt shows the <strong>epoch id</strong>, <strong>total amount</strong
 | Symptom | Fix |
 |---|---|
 | **Prepare epoch** is disabled | Select a token that actually has holders. |
-| **Outstanding supply** is empty | Click **Decrypt from chain** to pull it from the finalized epoch. |
+| **Outstanding token supply** is empty | Click **Decrypt from chain** to pull it from the finalized epoch. |
 | Fund seems stuck | Phases take ~30–60s and snapshots batch 50 holders at a time. See [async waits](/guide/troubleshooting#async-waits). |
 
 → Next: [Tokens dashboard](/guide/issuer/tokens-dashboard) · Investors can now [claim yield](/guide/investor/claim-yield).

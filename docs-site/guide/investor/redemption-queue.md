@@ -17,23 +17,21 @@ You only have a queued request if a prior [Sell](/guide/investor/sell) exceeded 
 
 ## Steps
 
-1. Go to `/redemptions`. The header reads **Redemption queue**.
-2. Find your request in the list. Each shows a state: **Queued**, **Claimed**, or **Cancelled**.
-3. Wait for the epoch to process — the state moves from **Queued** to ready.
-4. Optionally tap **Reveal** (Eye icon) to decrypt the payout.
-5. Click **Claim** (enabled once the request is ready).
+1. Go to `/redemptions`. The page header reads **Redemptions**.
+2. Find your request in the list. Each shows a state: **Queued**, **Settled**, or **Cancelled**.
+3. Wait for the issuer to run `processEpoch` — the state moves from **Queued** to **Settled** and the mhUSDC payout lands in your balance automatically.
+4. Optionally click **Decrypt payout** to reveal the settled amount.
 
 ## Expected result
 
 <ExpectedResult>
-The request's state flips to <strong>Claimed</strong> and the `mhUSDC` payout lands in your balance.
+The request's state flips to <strong>Settled</strong> and the `mhUSDC` payout lands in your balance automatically when the issuer processes the epoch.
 </ExpectedResult>
 
 ## If something goes wrong
 
 | Symptom | Fix |
 |---|---|
-| The request is still **Queued** | Settlement waits for the next epoch to process — see [async waits](/guide/troubleshooting#async-waits). |
-| **Claim** is disabled | The request isn't ready yet; wait for the state to change before claiming. |
+| The request is still **Queued** | Settlement waits for the issuer to run `processEpoch` — see [async waits](/guide/troubleshooting#async-waits). |
 
 → Next: [Transfer to a peer](/guide/investor/transfer)

@@ -54,7 +54,7 @@ See [Choosing a surface](/get-started/choosing-a-surface) for a decision tree.
 The four surfaces are live on Arbitrum Sepolia (testnet) and rolling out on Arbitrum One (production):
 
 - HavenBot at `muhaven.app/agent` — streaming chat, per-action ConfirmModal, 17 tools.
-- `@muhaven/mcp` published on npm — install in any MCP host, 22 tools (7 read-only with the read-only flag).
+- `@muhaven/mcp` published on npm — install in any MCP host, 25 tools (8 read-only with the read-only flag).
 - OpenClaw skill `muhaven-rwa-skill` on ClawHub + Telegram bot live.
 - Hosted checkout at `muhaven.app/pay` — fragment-key URL scheme, AES-256-GCM payload, Stripe-pattern webhooks.
 - Tiered autonomy engine + audit log + `/pause` kill-switch.

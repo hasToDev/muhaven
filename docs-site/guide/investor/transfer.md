@@ -22,14 +22,14 @@ On testnet, **dev-mode** bypasses recipient KYC, so you can transfer to any addr
 3. Enter the number of shares — **whole shares** only.
 4. Check the live recipient validation:
    - **Recipient is KYC-verified** (green)
-   - **Recipient is not KYC-verified — transfer would revert** (red)
-   - **Dev-mode active — KYC bypassed** (yellow — the testnet default)
-5. Click **Transfer {SYMBOL}**.
+   - **Recipient is not KYC-verified — transfer would revert with RecipientNotKYC** (red)
+   - **Dev-mode active — KYC bypassed (recipient is NOT actually verified)** (yellow — the testnet default)
+5. Click **Encrypt & Send**.
 
 ## Expected result
 
 <ExpectedResult>
-You see the <strong>"Transfer confirmed"</strong> card. The recipient's new balance is encrypted to them, and you'll see a transfer-out in your Activity feed (a transfer-in in theirs).
+You see the <strong>"Transfer sent"</strong> card. The recipient's new balance is encrypted to them, and you'll see a transfer-out in your Activity feed (a transfer-in in theirs).
 </ExpectedResult>
 
 ## If something goes wrong

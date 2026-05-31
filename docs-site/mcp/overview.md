@@ -16,7 +16,7 @@ You install it once, complete a one-time passkey-bound device authorization, and
 | **Package** | `@muhaven/mcp` on npm (published with OIDC + Sigstore provenance) |
 | **Format** | MCPB (Model Context Protocol Bundle) — official MCP package format |
 | **Binaries** | `muhaven-mcp` (STDIO subprocess) + `muhaven-broker` (long-lived per-user daemon) |
-| **Tools** | 22 across 5 groups: read · position · policy · issuer · governance |
+| **Tools** | 25 across 6 groups: read · position · cash · policy · issuer · governance |
 | **Auth** | OAuth 2.0 Device Authorization Grant (RFC 8628) → scoped JWT in OS keychain |
 | **Hosts** | Claude Code (verified end-to-end), Claude Desktop and Cursor (same `.mcp.json` shape) |
 
@@ -99,7 +99,7 @@ The LLM sees only the **aggregate** the backend chose to return. No encrypted ha
   </a>
   <a class="mh-card" href="/mcp/tools">
     <h3>Tool catalog</h3>
-    <p>The 22 tools across read / position / policy / issuer / governance.</p>
+    <p>The 25 tools across read / position / cash / policy / issuer / governance.</p>
   </a>
   <a class="mh-card" href="/mcp/broker">
     <h3>Broker daemon</h3>

@@ -20,7 +20,7 @@ This is your single source of truth for "did it actually happen?". Every buy, se
 1. Go to `/activity`.
 2. Narrow the feed with the filter pills: **All / Buy / Sell / Yield / Cash / Transfer**.
 3. Read the rows, newest first — each shows an icon, type, token, timestamp, and amount.
-4. For an encrypted amount, tap the per-row **Reveal** to decrypt it locally.
+4. For an encrypted amount, tap the per-row Eye icon (the blurred placeholder) to decrypt it locally.
 5. Click the transaction-hash link to open the transaction on `https://sepolia.arbiscan.io`.
 
 ## Expected result
@@ -34,6 +34,6 @@ You find the row for your action and open its transaction on Arbiscan — confir
 | Symptom | Fix |
 |---|---|
 | A recent action isn't listed yet | On-chain settlement takes ~30–60s — see [async waits](/guide/troubleshooting#async-waits). |
-| A row's amount is hidden | That amount is encrypted by design — tap **Reveal** to decrypt it locally (see [encrypted balance](/guide/troubleshooting#encrypted-balance)). |
+| A row's amount is hidden | That amount is encrypted by design — tap the Eye icon on the row to decrypt it locally (see [encrypted balance](/guide/troubleshooting#encrypted-balance)). |
 
 → Next: [Read your portfolio](/guide/investor/portfolio)

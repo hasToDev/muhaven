@@ -4,7 +4,7 @@ description: Stripe-style HMAC-signed webhooks with replay-window and SSRF guard
 ---
 
 ::: warning 🚧 In development — not in the Testing Guide
-This surface is still being hardened and isn't part of the judge/user [Testing Guide](/guide/). The page below describes the intended design. To evaluate MuHaven today, use [HavenBot](/havenbot/overview) or the [MCP server](/mcp/overview).
+This surface is still being hardened and isn't part of the [Testing Guide](/guide/). The page below describes the intended design. To evaluate MuHaven today, use [HavenBot](/havenbot/overview) or the [MCP server](/mcp/overview).
 :::
 
 # Webhooks & receipts

@@ -19,10 +19,10 @@ Because `mhUSDC` is encrypted, MuHaven can't read your balance to decide if you 
 
 1. Go to `/trade`. Keep the toggle on **Buy** (the toggle is **Buy | Sell**).
 2. Choose a token and enter a quantity, or tap a quick chip: **100 / 1,000 / 5,000**. The NAV is shown in plaintext.
-3. **The reveal-gate:** if your `mhUSDC` balance is unknown, the **Buy** button is disabled and you'll see an inline **Reveal mhUSDC balance** button (Eye icon) with a note that your balance is encrypted. Tap it — this is a one-tap local decrypt with **no transaction** and no on-chain leak.
+3. **The reveal-gate:** if your `mhUSDC` balance is unknown, the **Buy** button is disabled and you'll see an inline **Reveal mhUSDC to continue** button (Eye icon) with a note that your balance is encrypted. Tap it — this is a one-tap local decrypt with **no transaction** and no on-chain leak.
 4. After revealing:
    - If you have enough, **Buy** enables.
-   - If you're short, you'll see a **Short $X** hint and a **Top up cash** link to `/cash`.
+   - If you're short, you'll see a **Need $Y · short $Z** hint and a **Top up cash** link to `/cash`.
 5. Click **Buy {SYMBOL}** (for example **Buy TBILL1**). The label changes to **Purchasing TBILL1…**. Internally the app runs **Encrypt** (client-side) then **Purchase** (on-chain).
 6. On your first buy, you'll also approve a one-time `mhUSDC` allowance for the Subscription contract.
 
@@ -36,7 +36,7 @@ You see the <strong>"Purchase confirmed"</strong> card with an Arbiscan transact
 
 | Symptom | Fix |
 |---|---|
-| **Buy** stays disabled even though you have funds | You haven't revealed your balance yet — tap **Reveal mhUSDC balance**. See [the buy-gate](/guide/troubleshooting#buy-gate). |
+| **Buy** stays disabled even though you have funds | You haven't revealed your balance yet — tap **Reveal mhUSDC to continue**. See [the buy-gate](/guide/troubleshooting#buy-gate). |
 | You see **Short $X** | You don't have enough `mhUSDC` — use **Top up cash** to add more on `/cash`. |
 | Trade actions are blocked entirely | You may not be KYC-verified — enable demo access first (see [Sign in](/guide/investor/sign-in)). |
 

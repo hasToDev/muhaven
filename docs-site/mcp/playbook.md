@@ -164,12 +164,13 @@ If you're at a shared workstation or running a demo, start the broker in read-on
 
 [muhaven] (reads tool catalog)
 
-I have 7 read tools:
+I have 8 read tools:
   muhaven.read.portfolio
   muhaven.read.yields
   muhaven.read.distribution
   muhaven.read.tokens
   muhaven.read.audit
+  muhaven.read.activity
   muhaven.read.protection_coverage
   muhaven.read.kyc_attestation
 
@@ -241,5 +242,5 @@ with your issuer passkey from the dashboard.
 
 - [First chat](/mcp/first-chat) — the basics if you haven't done the walkthrough yet.
 - [Tool catalog](/mcp/tools) — the strict schemas behind every tool the LLM picks.
-- [Read-only mode](/mcp/read-only-mode) — lock the install to the 7 read tools.
+- [Read-only mode](/mcp/read-only-mode) — lock the install to the 8 read tools.
 - [Broker daemon](/mcp/broker) — how the broker keeps your keys out of the LLM context.

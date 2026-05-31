@@ -7,7 +7,7 @@ description: Phone-first MuHaven via OpenClaw skill and the MuHaven Telegram bot
 
 ::: warning 🚧 In development — not in the Testing Guide
 The OpenClaw Telegram bot, device-link (`/link`), and intent-confirm
-(`/agent/confirm`) surfaces aren't judge-ready yet, so they're excluded from the
+(`/agent/confirm`) surfaces aren't ready for general testing yet, so they're excluded from the
 [Testing Guide](/guide/). These pages describe the intended design. The same
 agentic capabilities are testable today via [HavenBot](/havenbot/overview) and
 the [MCP server](/mcp/overview).
@@ -15,7 +15,7 @@ the [MCP server](/mcp/overview).
 
 The OpenClaw surface is MuHaven's **phone-first** interface. It bundles three things:
 
-1. **`muhaven-rwa-skill`** — an [OpenClaw](https://openclaw.dev) skill published to [ClawHub](https://clawhub.com). Install it once into your OpenClaw runtime; the skill bundles `@muhaven/mcp` with an investor-only subset (11 of 22 tools).
+1. **`muhaven-rwa-skill`** — an [OpenClaw](https://openclaw.dev) skill published to [ClawHub](https://clawhub.com). Install it once into your OpenClaw runtime; the skill bundles `@muhaven/mcp` with an investor-only subset (11 of 25 tools).
 2. **`@muhaven_bot`** — the official MuHaven Telegram bot. Conversational interface for the same 11 tools.
 3. **Telegram Mini App** — the in-Telegram web view that handles mid-tier confirmations (the $200-$5K window).
 

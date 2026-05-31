@@ -12,7 +12,7 @@ them out, rather than letting you hit a dead end mid-evaluation.
 
 ::: info These are intentionally out of scope — not bugs.
 If you find one of these surfaces in the app, it works to the extent described below.
-We just haven't written judge-facing test steps for it yet.
+We just haven't written task-by-task test steps for it yet.
 :::
 
 ## Hosted Checkout
@@ -21,14 +21,14 @@ We just haven't written judge-facing test steps for it yet.
 purchase a position without a full dashboard tour.
 
 **Why it's excluded:** the checkout link / session flow is still in active development and
-isn't judge-ready. Architecture docs live under [Hosted Checkout](/checkout/overview).
+isn't ready for general testing. Architecture docs live under [Hosted Checkout](/checkout/overview).
 
 ## OpenClaw — Telegram bot & phone-first surfaces
 
 **What it is:** a phone-first way to drive your portfolio — a Telegram bot, a device-link
 flow (`/link`), and a high-value intent-confirmation deep-link (`/agent/confirm`).
 
-**Why it's excluded:** these surfaces aren't judge-ready yet. The in-dashboard
+**Why it's excluded:** these surfaces aren't ready for general testing yet. The in-dashboard
 [HavenBot](/guide/agent/chat) and the [MCP server](/mcp/overview) cover the same agentic
 capabilities for testing. Architecture docs live under [OpenClaw](/openclaw/overview).
 

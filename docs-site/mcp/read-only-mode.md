@@ -1,11 +1,11 @@
 ---
 title: '@muhaven/mcp — read-only mode'
-description: Restrict your MCP install to 7 read-only tools for shared or curated deployments.
+description: Restrict your MCP install to 8 read-only tools for shared or curated deployments.
 ---
 
 # Read-only mode
 
-When `MUHAVEN_READ_ONLY=true` is set in the broker env at startup, only the **seven `muhaven.read.*` tools** are registered. The position, policy, issuer, and governance groups are not even surfaced to the host LLM — the tool catalog the LLM sees doesn't mention them.
+When `MUHAVEN_READ_ONLY=true` is set in the broker env at startup, only the **eight `muhaven.read.*` tools** are registered. The position, cash, policy, issuer, and governance groups are not even surfaced to the host LLM — the tool catalog the LLM sees doesn't mention them.
 
 This is defense in depth for deployments where you want to allow LLM visibility but never LLM-driven mutation.
 
@@ -39,7 +39,7 @@ The broker prints the read-only flag on startup:
 [12:01] broker: READ-ONLY MODE (only muhaven.read.* tools registered)
 ```
 
-The MCP server queries the broker on startup to learn the read-only flag, then filters its tool registry accordingly. The host LLM's tool catalog will list the 7 read tools and nothing else.
+The MCP server queries the broker on startup to learn the read-only flag, then filters its tool registry accordingly. The host LLM's tool catalog will list the 8 read tools and nothing else.
 
 ## What the LLM sees
 
@@ -52,11 +52,12 @@ I have these MuHaven tools available:
 - muhaven.read.distribution
 - muhaven.read.tokens
 - muhaven.read.audit
+- muhaven.read.activity
 - muhaven.read.protection_coverage
 - muhaven.read.kyc_attestation
 
 These are all read-only. I can show you portfolio state, yield
-history, distribution status, and protection coverage, but I
+history, distribution status, activity feed, and protection coverage, but I
 can't propose any trades or policy changes from here.
 ```
 
@@ -64,13 +65,14 @@ A jailbroken LLM can't ask for a tool that isn't registered. There's no "force t
 
 ## What still works
 
-All seven read tools function normally:
+All eight read tools function normally:
 
 - `muhaven.read.portfolio` — aggregate token list + `ebool` flags.
 - `muhaven.read.yields` — per-token yield history.
 - `muhaven.read.distribution` — epoch status.
 - `muhaven.read.tokens` — RWA tokens you hold.
 - `muhaven.read.audit` — your tiered-autonomy audit log.
+- `muhaven.read.activity` — on-chain activity feed (buys / sells / wraps / unwraps / yield claims / transfers). Useful for verifying that a Path C action settled.
 - `muhaven.read.protection_coverage` — DefaultProtection state for a token.
 - `muhaven.read.kyc_attestation` — KYC attestation registry status.
 
@@ -112,6 +114,6 @@ Now in your host you have two MuHaven tool catalogs — one full, one read-only.
 
 ## Where next
 
-- [Tool catalog](/mcp/tools) — full schema for the 7 read tools.
+- [Tool catalog](/mcp/tools) — full schema for the 8 read tools.
 - [Broker daemon](/mcp/broker) — how the broker stores state.
 - [Playbook](/mcp/playbook) — read-mostly scenarios that work great in read-only mode.

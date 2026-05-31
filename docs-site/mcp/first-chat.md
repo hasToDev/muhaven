@@ -145,5 +145,5 @@ The resume path involves a WebAuthn passkey ceremony that the MCP server can't d
 
 - [Playbook — scenarios](/mcp/playbook) — multi-MCP workflows, scheduled checks, cross-tool prompts.
 - [Tool catalog](/mcp/tools) — the full schema for every tool.
-- [Read-only mode](/mcp/read-only-mode) — restrict your MCP install to the 7 read tools.
+- [Read-only mode](/mcp/read-only-mode) — restrict your MCP install to the 8 read tools.
 - [Troubleshooting](/mcp/troubleshooting) — auth, transport, lifecycle issues.

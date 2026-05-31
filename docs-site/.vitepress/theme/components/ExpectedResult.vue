@@ -2,7 +2,7 @@
 /**
  * ExpectedResult — the gold-bordered "this is what success looks like" block.
  *
- * Used at the end of every Testing-Guide task page so a judge has an
+ * Used at the end of every Testing-Guide task page so a reader has an
  * unambiguous pass/fail signal. Renders a labelled region (the slot content)
  * with an amber accent that maps to the Golden Hour palette.
  *

@@ -72,7 +72,7 @@ MuHaven hides the chain. You sign in with a passkey, your balances are encrypted
   </a>
   <a class="mh-card" href="/reference/tool-catalog">
     <h3>Tool catalog</h3>
-    <p>The 22 tools your agent can call, scoped by surface and tier.</p>
+    <p>The 25 tools your agent can call, scoped by surface and tier.</p>
   </a>
 </div>
 

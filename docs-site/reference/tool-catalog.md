@@ -23,9 +23,17 @@ Column abbreviations below: **HB** = HavenBot · **MCP** = MuHaven MCP server ·
 | Per-epoch distribution status | (via chat answer) | `muhaven.read.distribution` | ✅ | ❌ |
 | Tokens you hold | (rolled into portfolio_summary) | `muhaven.read.tokens` | ✅ | ❌ |
 | Audit log | `muhaven_audit_query` (issuer-self) | `muhaven.read.audit` / `muhaven.issuer.audit_query` | ✅ | ❌ |
+| On-chain activity feed (buys / sells / wraps / unwraps / yield claims / transfers) | (via chat answer) | `muhaven.read.activity` | ❌ | ❌ |
 | Protection coverage (DefaultProtection) | `muhaven_check_protection_coverage` | `muhaven.read.protection_coverage` | ✅ | ❌ |
 | KYC attestation registry status | `muhaven_explain_kyc_attestation` | `muhaven.read.kyc_attestation` | ✅ | ❌ |
 | Unseal a specific encrypted handle (client-side) | `muhaven_unseal_position` | (n/a — dashboard-only ceremony) | n/a | n/a |
+
+## Cash tools (confidential cash, propose-only)
+
+| Capability | HB | MCP | OC | Pay |
+|---|---|---|---|---|
+| USDC → mhUSDC wrap | (via cash flow) | `muhaven.cash.wrap` | ❌ | ❌ |
+| mhUSDC → USDC unwrap (two-phase async) | (via cash flow) | `muhaven.cash.unwrap` | ❌ | ❌ |
 
 ## Position tools (state-mutating, propose-only)
 
@@ -76,12 +84,13 @@ demo deployment. See [Not in this guide](/guide/not-in-this-guide).
 
 | Group | HB (`muhaven_*`) | MCP (`muhaven.*`) | OC subset |
 |---|---|---|---|
-| Read | 7 | 7 | 7 |
+| Read | 7 | 8 | 7 |
+| Cash | 0 | 2 | 0 |
 | Position | 4 | 4 | 2 (buy + claim) |
 | Policy | 3 | 4 | 2 (pause + session_key_status) |
 | Issuer | 5 | 5 | 0 |
 | Governance | 2 | 2 | 0 |
-| **Total** | **17** | **22** | **11** |
+| **Total** | **17** | **25** | **11** |
 
 ## Tool-name regex (CI-enforced)
 

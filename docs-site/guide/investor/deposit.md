@@ -19,7 +19,7 @@ description: Convert your testnet USDC into confidential mhUSDC, 1:1.
 
 1. Go to `/cash`. The page has a 3-way toggle: **Deposit | Withdraw | Send**. Keep it on **Deposit**.
 2. Enter a USD amount, or tap a quick chip: **$100**, **$1,000**, or **$5,000**.
-3. Click **Convert USDC to mhUSDC**.
+3. Click **Convert to mhUSDC**.
 4. Two steps run automatically: **Approve USDC**, then **Mint mhUSDC**. This takes about 60–120 seconds total.
 
 ## Expected result

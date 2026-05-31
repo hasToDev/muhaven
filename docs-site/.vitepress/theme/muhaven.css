@@ -71,7 +71,12 @@
 
   --vp-c-text-1: #2a221a;
   --vp-c-text-2: var(--mh-slate);
-  --vp-c-text-3: var(--mh-cool);
+  /* Muted text (captions, TaskMeta, .mh-card--hero em). `--mh-cool`
+   * (#9E8F78) on the cream bg-alt is only ~2.9:1 — below WCAG AA for
+   * text. Darken to #6f6353 (≈5.4:1 on #FAF5E8, ≈5.7:1 on #FFFDF7) so
+   * muted captions still meet AA. Dark mode (#998a72 on charcoal) is
+   * already AA-compliant and stays as-is. */
+  --vp-c-text-3: #6f6353;
 
   --vp-font-family-base: var(--mh-font-sans);
   --vp-font-family-mono: var(--mh-font-mono);

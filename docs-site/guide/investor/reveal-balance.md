@@ -18,7 +18,7 @@ Your balance is the core privacy guarantee: it is provably yours but publicly un
 ## Steps
 
 1. Open any of `/portfolio`, `/trade`, or `/cash`. A glance bar shows your `mhUSDC` balance as a **lock** icon.
-2. Click **Reveal mhUSDC balance** / **Reveal balance** (Eye icon).
+2. Click **Reveal** (Eye icon) on the mhUSDC tile or glance bar.
 3. The value decrypts **locally in your browser** using a permit — instantly, with no transaction.
 
 ## Expected result

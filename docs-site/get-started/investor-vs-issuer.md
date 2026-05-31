@@ -32,7 +32,7 @@ Issuers see aggregate KYC whitelist state and can write to it; investors see enc
 
 ## What an issuer can do
 
-- Create RWA tokens (today: wrapped via `MuHavenVault`; native issuance post-hackathon).
+- Create RWA tokens (today: wrapped via `MuHavenVault`; native issuance planned for a later release).
 - Schedule yield epochs (`SDK.distributeYield → startDistribution → batchCreate → fundFrom`).
 - Add / remove investor wallets from the ERC-3643 KYC whitelist.
 - Unpause a freshly-deployed token (set NAV + flip `paused=false`).

@@ -18,8 +18,8 @@ This withdrawal is a **two-phase async flow** — a necessity of FHE, not a dela
 ## Steps
 
 1. Go to `/cash` and set the toggle to **Withdraw** (or open `/cash?mode=unwrap`).
-2. Enter a USD amount, or use **Set max**.
-3. Click **Withdraw mhUSDC** / **Request withdrawal**.
+2. Enter a USD amount, or use **Max**.
+3. Click **Withdraw to USDC**.
 4. **Phase 1** burns `mhUSDC` and requests a decrypt, returning a claim.
 5. **Phase 2** settles real USDC from the reserve:
    - If the **same browser session** signed the burn, it **auto-claims immediately**.

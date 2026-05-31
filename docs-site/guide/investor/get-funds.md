@@ -19,7 +19,7 @@ You do **not** need ETH. Gas is sponsored — you never pay transaction fees on 
 
 1. Open the **Cash** page (or **Portfolio**, which shows a faucet banner whenever your USDC balance is 0).
 2. Copy your wallet address using the **Copy** button (or scan the QR code).
-3. Click **Get test USDC** / **Open faucet** to open `https://faucet.circle.com/`.
+3. Click **Get test USDC** to open `https://faucet.circle.com/`.
 4. On the Circle faucet, select the **Arbitrum Sepolia** network.
 5. Paste your wallet address and request **USDC**.
 6. Return to MuHaven and watch the USDC tile.

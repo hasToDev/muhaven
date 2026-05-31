@@ -20,7 +20,7 @@ Be signed in, with an active agent session you want to stop.
    - **Pass a surface** to pause just that one.
 2. The surface is immediately marked **Paused**, and the tool returns an **unsigned UserOp** that uninstalls the agent's on-chain validator.
 3. Submit that UserOp with your **passkey**. The agent's signing rights are gone in **≤1 Arbitrum block**.
-4. To resume later, call `muhaven.policy.resume`, or pick the **Advisory** tier on `/agent/policy/transition` (it has a resume control).
+4. To resume later, pick the **Advisory** tier on `/agent/policy/transition` (it has a **Resume to Advisory** control — there is no MCP `resume` tool).
 
 ::: important The panic button
 One call stops everything. Marking **Paused** is immediate; submitting the returned UserOp with your passkey is what actually revokes the agent's signing rights on-chain.
@@ -36,6 +36,6 @@ The targeted surface (or all surfaces) shows <strong>Paused</strong> right away.
 |---|---|
 | Surface shows Paused but agent still seems active | Submit the returned **unsigned UserOp** with your passkey to actually revoke signing rights. |
 | Want to pause only one tool surface | Pass that surface to `muhaven.policy.pause` instead of omitting it. |
-| Need to bring the agent back | Call `muhaven.policy.resume`, or select **Advisory** on `/agent/policy/transition`. |
+| Need to bring the agent back | Select **Advisory** on `/agent/policy/transition` (click **Resume to Advisory**) — there is no MCP `resume` tool. |
 
 → Next: [Inspect the agent's session & audit log](/guide/agent/session-audit)

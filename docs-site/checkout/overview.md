@@ -6,7 +6,7 @@ description: One-click pay links for issuers to sell to non-customer buyers.
 # Hosted Checkout
 
 ::: warning 🚧 In development — not in the Testing Guide
-Hosted Checkout is still being hardened and isn't part of the judge/user
+Hosted Checkout is still being hardened and isn't part of the
 [Testing Guide](/guide/). These pages describe the intended design. To evaluate
 MuHaven's agentic flows today, use [HavenBot](/havenbot/overview) or the
 [MCP server](/mcp/overview) instead.

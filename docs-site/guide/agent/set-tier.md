@@ -16,9 +16,9 @@ Be signed in with your passkey. You decide how much rope the agent gets, and you
 
 ## The four tiers
 - **Advisory** — read-only. Every write needs a fresh passkey signature.
-- **Confirm-per-action** — the agent proposes; you confirm each write.
+- **Confirm per action** — the agent proposes; you confirm each write.
 - **Policy-bound** — the agent writes within an allowlist plus spend caps.
-- **Scoped** — autonomous (Path D): buys/sells within a per-action ceiling and a time limit, with no per-trade prompt.
+- **Scoped autonomy** — autonomous (Path D): buys/sells within a per-action ceiling and a time limit, with no per-trade prompt.
 
 ## Steps
 1. Go to `/agent/policy/transition` (also reachable from a HavenBot deep-link).

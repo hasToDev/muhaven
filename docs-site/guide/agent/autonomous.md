@@ -17,11 +17,11 @@ This flow only runs when you've granted a **Scoped** session — see [Set the ag
 ## What the agent can do autonomously
 - **Buy / Sell / Claim** — via MCP `muhaven.position.buy`, `muhaven.position.sell`, `muhaven.position.claim` (claim needs a concrete epoch/escrow id). With a live Scoped session these submit autonomously and return a tx hash; without one they fall back to a Path-C deep-link.
 - **Auto-reinvest** — the agent can automatically claim matured yield and buy more of a token (opt-in).
-- **Rebalance to targets** — ask **HavenBot** to "rebalance my portfolio to these targets". It opens the **Rebalance to targets** panel on `/portfolio`, then executes **one atomic transaction** (sells before buys) via your in-tab scoped session.
+- **Rebalance to targets** — ask **HavenBot** to "rebalance my portfolio to these targets". It uses the **Auto-rebalance** panel on `/portfolio`, then executes **one atomic transaction** (sells before buys) via your in-tab scoped session.
 
 ::: warning Two carve-outs to remember
 - The standalone external MCP tool `muhaven.position.rebalance` is intentionally **not implemented** and returns **`not_implemented`**. Do rebalances through **HavenBot / the Portfolio panel**, not that tool.
-- **cash.wrap / cash.unwrap** always go through a passkey **deep-link (Path C)** — never silent autonomous submission.
+- **`muhaven.cash.wrap` / `muhaven.cash.unwrap`** always go through a passkey **deep-link (Path C)** — never silent autonomous submission.
 :::
 
 ## Steps
@@ -40,7 +40,7 @@ The agent executes <strong>without a per-action prompt</strong> and returns a <s
 |---|---|
 | Action returns a deep-link instead of running | No live Scoped session — grant one in [A3](/guide/agent/set-tier). |
 | `muhaven.position.rebalance` returns `not_implemented` | Expected — rebalance via HavenBot / the Portfolio panel instead. |
-| `cash.wrap` / `cash.unwrap` asks for your passkey | Expected — those always use Path C, never autonomous submission. |
+| `muhaven.cash.wrap` / `muhaven.cash.unwrap` asks for your passkey | Expected — those always use Path C, never autonomous submission. |
 | You want to stop everything now | Use the [pause kill-switch](/guide/agent/pause). |
 
 → Next: [Approve an action via deep-link](/guide/agent/deep-link-confirm)

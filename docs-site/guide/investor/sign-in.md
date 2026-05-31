@@ -18,7 +18,7 @@ MuHaven uses passkeys — there is no password and no seed phrase to copy. You j
 ## Steps
 
 1. Go to `/login`.
-2. If you already have an account, the form is on **Sign In**. To make a new one, use the link at the bottom to switch to **Create Account**.
+2. If you already have an account, the form is on **Sign In**. To make a new one, use the link at the bottom to switch to **Create account**.
 3. Pick the **Investor** role.
 4. Give your passkey a name (anything that helps you recognize it later).
 5. Click **Create Account** (the button with the Fingerprint icon).

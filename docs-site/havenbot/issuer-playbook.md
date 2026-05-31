@@ -55,7 +55,7 @@ Tier 1 = retail KYC (one `addToWhitelist` UserOp). Tier 2 = accredited (two sequ
 Removal **auto-clears** the tier-2 accredited flag — see `ERC3643KYCAdapter.sol:103-110`.
 
 ::: warning KYC bypass in dev mode
-For the hackathon, MuHavenIdentityRegistry runs in dev mode (`devMode=true` → `isVerified` always returns true, no whitelist enforcement). KYC tools work but the on-chain compliance check is bypassed until production KYC partners are wired.
+During development, MuHavenIdentityRegistry runs in dev mode (`devMode=true` → `isVerified` always returns true, no whitelist enforcement). KYC tools work but the on-chain compliance check is bypassed until production KYC partners are wired.
 :::
 
 ## Unpause a freshly-deployed token

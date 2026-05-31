@@ -271,7 +271,7 @@ function scaleIn(delay = 0) {
             class="font-body text-xl text-slate dark:text-[#d5c4ab] max-w-xl leading-relaxed mb-10"
           >
             Encrypted RWA portfolios on Fhenix CoFHE. Buy, hold, and earn yield without exposing
-            a single balance — with an AI copilot landing soon.
+            a single balance — with an AI copilot that keeps your strategy private.
           </p>
 
           <div
@@ -585,7 +585,7 @@ function scaleIn(delay = 0) {
           </div>
         </div>
 
-        <!-- Wave 4 preview teaser — agentic layer in active development -->
+        <!-- Agentic layer — HavenBot + MCP live; OpenClaw + Checkout in development -->
         <div
           v-motion
           :initial="{ opacity: 0, y: 16 }"
@@ -596,6 +596,49 @@ function scaleIn(delay = 0) {
           <p class="font-body text-sm text-slate dark:text-[#d5c4ab] max-w-3xl">
             {{ LANDING_AI_PREVIEW.text }}
           </p>
+        </div>
+
+        <!-- Live agentic surfaces: in-dashboard copilot + bring-your-own AI assistant -->
+        <div
+          v-motion
+          :initial="{ opacity: 0, y: 24 }"
+          :visible-once="{ opacity: 1, y: 0, transition: { delay: 250, duration: 600 } }"
+          class="mt-8 grid md:grid-cols-2 gap-6"
+        >
+          <div class="bg-white dark:bg-midnight-mid ghost-border rounded-xl p-6 shadow-lg shadow-compute/5 dark:shadow-signal/5">
+            <div class="flex items-center gap-3 mb-3">
+              <div class="w-10 h-10 rounded-xl bg-compute/10 dark:bg-signal/10 flex items-center justify-center">
+                <Bot :size="20" class="text-compute dark:text-signal" />
+              </div>
+              <h3 class="font-sans font-bold text-lg text-midnight dark:text-[#e3e2e5]">HavenBot copilot</h3>
+            </div>
+            <p class="font-body text-base text-slate dark:text-[#d5c4ab] leading-relaxed">
+              Ask in plain language, confirm with a tap. HavenBot proposes buys, yield claims, and
+              rebalances — every action runs on your encrypted balances inside the dashboard.
+            </p>
+          </div>
+
+          <a
+            href="https://docs.muhaven.app/mcp/overview"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="block bg-white dark:bg-midnight-mid ghost-border rounded-xl p-6 shadow-lg shadow-compute/5 dark:shadow-signal/5 transition-all duration-300 hover:-translate-y-1 hover:border-compute/30 dark:hover:border-signal/30 group"
+          >
+            <div class="flex items-center gap-3 mb-3">
+              <div class="w-10 h-10 rounded-xl bg-gold/10 flex items-center justify-center">
+                <FileCode :size="20" class="text-gold" />
+              </div>
+              <h3 class="font-sans font-bold text-lg text-midnight dark:text-[#e3e2e5]">Drive it from your AI assistant</h3>
+            </div>
+            <p class="font-body text-base text-slate dark:text-[#d5c4ab] leading-relaxed">
+              Install <code class="font-mono text-sm text-compute dark:text-signal">@muhaven/mcp</code>
+              and manage your confidential portfolio from Claude Desktop, Cursor, or Claude Code —
+              25 tools, tiered autonomy, optional read-only mode.
+            </p>
+            <span class="inline-flex items-center gap-1.5 mt-4 label-text text-xs text-compute dark:text-signal group-hover:gap-2.5 transition-all">
+              Read the MCP guide <ArrowRight :size="13" />
+            </span>
+          </a>
         </div>
       </div>
     </section>
@@ -753,7 +796,7 @@ function scaleIn(delay = 0) {
               Start Managing Your Portfolio <span class="text-transparent bg-clip-text bg-gradient-to-r from-signal to-gold">Privately</span>
             </h2>
             <p class="font-body text-xl text-[#d5c4ab] max-w-xl mx-auto mb-8">
-              Encrypted balances, private yields, atomic encrypted purchase. AI copilot landing soon — when it ships, even the agent can't see your strategy.
+              Encrypted balances, private yields, atomic encrypted purchase. An AI copilot manages your portfolio — and still can't see your strategy.
             </p>
             <div class="flex flex-wrap items-center justify-center gap-4 mb-6">
               <MButton size="lg" class="btn-shimmer rounded-xl" @click="router.push('/portfolio')">

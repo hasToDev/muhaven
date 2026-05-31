@@ -114,7 +114,7 @@ The CLI writes the entry into `~/.claude.json`. `--scope project` writes `.mcp.j
 The `claude mcp add-json` command shipped in 2025-Q4 alongside MCP Elicitation support and is the supported way to register a server. Hand-edited `.mcp.json` files still work, but the CLI handles scope semantics + idempotency + the future migration to URL-elicitation flows cleanly.
 :::
 
-Restart Claude Code. The next time you start a chat, `muhaven` appears in the MCP server list and the 23 tools are available.
+Restart Claude Code. The next time you start a chat, `muhaven` appears in the MCP server list and the 25 tools are available.
 
 ### Claude Desktop
 
@@ -165,7 +165,7 @@ export MUHAVEN_READ_ONLY=true
 muhaven-broker
 ```
 
-Only the **seven `muhaven.read.*` tools** will be registered. Position / policy / issuer / governance groups are not even surfaced to the host LLM — defense in depth. See [Read-only mode](/mcp/read-only-mode).
+Only the **eight `muhaven.read.*` tools** will be registered. Position / cash / policy / issuer / governance groups are not even surfaced to the host LLM — defense in depth. See [Read-only mode](/mcp/read-only-mode).
 
 ## Multiple installs (e.g., a staging install for testing)
 

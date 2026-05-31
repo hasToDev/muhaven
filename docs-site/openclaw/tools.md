@@ -4,12 +4,12 @@ description: The 11-tool investor subset bundled with the skill, with command ex
 ---
 
 ::: warning 🚧 In development — not in the Testing Guide
-This surface is still being hardened and isn't part of the judge/user [Testing Guide](/guide/). The page below describes the intended design. To evaluate MuHaven today, use [HavenBot](/havenbot/overview) or the [MCP server](/mcp/overview).
+This surface is still being hardened and isn't part of the [Testing Guide](/guide/). The page below describes the intended design. To evaluate MuHaven today, use [HavenBot](/havenbot/overview) or the [MCP server](/mcp/overview).
 :::
 
 # Available tools
 
-The OpenClaw skill bundles a **deliberate subset** of `@muhaven/mcp` — 11 tools out of 22. The subset is locked at the type level: a `verify-subset.ts` build gate enforces a three-way consistency check between the skill's `TOOLSET_SUBSET` constant, `manifest.json#mcp.tool_subset`, and `SKILL.md` frontmatter.
+The OpenClaw skill bundles a **deliberate subset** of `@muhaven/mcp` — 11 tools out of 25. The subset is locked at the type level: a `verify-subset.ts` build gate enforces a three-way consistency check between the skill's `TOOLSET_SUBSET` constant, `manifest.json#mcp.tool_subset`, and `SKILL.md` frontmatter.
 
 Every section below shows the bot command you type **and** a representative bot reply, so you can see what to expect before you try it.
 
@@ -189,7 +189,7 @@ Three reasons:
 
 The skill's `src/index.ts` calls `runMcpStdioCli({ filterRegistry })` from `@muhaven/mcp/server.ts`. The filter is a synchronous callback that:
 
-1. Receives the full 22-tool registry from the bundled MCP server.
+1. Receives the full 25-tool registry from the bundled MCP server.
 2. Returns only the 11 tools in the `TOOLSET_SUBSET` set.
 3. Refuses to start if the filtered registry is empty (sanity check against a typo'd subset).
 

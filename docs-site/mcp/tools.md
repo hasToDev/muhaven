@@ -1,16 +1,16 @@
 ---
 title: '@muhaven/mcp — tool catalog'
-description: The 22 tools across read · position · policy · issuer · governance.
+description: The 25 tools across read · position · cash · policy · issuer · governance.
 ---
 
 # MCP tool catalog
 
-`@muhaven/mcp` exposes **22 tools** organized into five groups. Each tool ships with a strict-Zod input schema, an output schema, and a SHA-256 description hash pinned at build time (re-verified on every server startup; drift exits with `EX_CONFIG`).
+`@muhaven/mcp` exposes **25 tools** organized into six groups. Each tool ships with a strict-Zod input schema, an output schema, and a SHA-256 description hash pinned at build time (re-verified on every server startup; drift exits with `EX_CONFIG`).
 
 **Scope** tells you which JWT claim is required (set when you authorized the device).
 **Tier-gate** tells you whether the action is blocked when your tiered-autonomy state is `Paused`.
 
-## `muhaven.read.*` — read-only (7 tools)
+## `muhaven.read.*` — read-only (8 tools)
 
 Always available. No signing required.
 
@@ -21,8 +21,9 @@ Always available. No signing required.
 | `muhaven.read.distribution` | Distribution status for a (tokenAddress, epochId) tuple — funded / settled / claim-window. | `mcp.read.*` | none |
 | `muhaven.read.tokens` | RWA tokens you currently hold (address, symbol, decimals, asset class, status). | `mcp.read.*` | none |
 | `muhaven.read.audit` | Your tiered-autonomy audit log (cursor-paginated). User-self only. | `mcp.read.*` | none |
-| `muhaven.read.protection_coverage` | DefaultProtection coverage state for a token (on-chain proxy state). | `mcp.read.*` | none |
-| `muhaven.read.kyc_attestation` | KYC attestation registry status (informational). | `mcp.read.*` | none |
+| `muhaven.read.activity` | On-chain activity feed (buys / sells / wraps / unwraps / yield claims / transfers). Each row carries token address, tx hash, block timestamp, and event type — amounts are encrypted handles only. Use to verify a Path C action settled after position.buy / position.sell / cash.wrap. | `mcp.read.*` | none |
+| `muhaven.read.protection_coverage` | DefaultProtection coverage state for a token (on-chain proxy state). Returns `not_deployed` when the P11.A contract is not yet on-chain. | `mcp.read.*` | none |
+| `muhaven.read.kyc_attestation` | KYC attestation registry status (informational). Returns `not_deployed` when the P11.C registry is not yet on-chain. | `mcp.read.*` | none |
 
 ::: tip Read tools are intentionally non-auditing by design
 We do **not** log every "user looked at portfolio" call. Only `position.*` / `policy.*` / `issuer.*` / `governance.*` propose+commit events emit audit rows. This is a privacy choice; the trade-off is forensic — see [Audit log](/policy/audit-log).
@@ -38,6 +39,13 @@ All position tools return an **unsigned UserOp envelope plus a broker signature*
 | `muhaven.position.sell` | Propose a redemption-queue sell. | `mcp.propose.*` | yes |
 | `muhaven.position.claim` | Propose a yield claim for one or more (token, epoch) tuples. | `mcp.propose.*` | yes |
 | `muhaven.position.rebalance` | Propose a multi-leg atomic rebalance. Returns the descriptor; ceremony completes from a browser surface. | `mcp.propose.*` | yes |
+
+## `muhaven.cash.*` — confidential cash (2 tools)
+
+| Tool | What it does | Scope | Tier-gate |
+|---|---|---|---|
+| `muhaven.cash.wrap` | Prepare a USDC → mhUSDC wrap. Returns a dashboard deep-link (muhaven.app/cash?amount=...&from=mcp) with the amount pre-filled. Input `amountUsdc` is human-readable ("100" = $100). Verify settlement via muhaven.read.activity (a new "wrap" row). | `mcp.propose.*` | yes |
+| `muhaven.cash.unwrap` | Prepare an mhUSDC → USDC withdrawal (inverse of cash.wrap). Returns a dashboard deep-link that lands on the Withdraw form. Two-phase async: burn mhUSDC + request decrypt (~30–60s), then claim USDC from the on-chain reserve. The dashboard drives both phases; this tool never submits either. | `mcp.propose.*` | yes |
 
 ## `muhaven.policy.*` — tiered-autonomy state (4 tools)
 
@@ -69,7 +77,7 @@ Backend routes guard these with `withRole('issuer') && issuerStatus === 'approve
 
 ## Read-only mode
 
-Set `MUHAVEN_READ_ONLY=true` in the broker env to register **only the seven `muhaven.read.*` tools**. The position / policy / issuer / governance groups are not even surfaced to the host LLM — defense in depth for a "give my LLM read-only visibility" deployment.
+Set `MUHAVEN_READ_ONLY=true` in the broker env to register **only the eight `muhaven.read.*` tools**. The position / cash / policy / issuer / governance groups are not even surfaced to the host LLM — defense in depth for a "give my LLM read-only visibility" deployment.
 
 See [Read-only mode](/mcp/read-only-mode).
 

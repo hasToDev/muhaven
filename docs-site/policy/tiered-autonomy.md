@@ -1,156 +1,155 @@
 ---
 title: Tiered autonomy
-description: The four-tier state machine that controls what the agent can do without asking.
+description: One dial that controls how much the agent can do without asking you — from "sign everything yourself" to "a bounded session key acts for you."
 ---
 
 # Tiered autonomy
 
-Tiered autonomy is the **substrate** every agentic surface shares. It controls **how much the agent can do without asking you each time** — from "ask me every action" to "act within my encrypted bounds and notify on breach."
+## The one idea
 
-You set your tier with `muhaven_set_policy(tier, params)` on HavenBot, or `muhaven.policy.set_tier` on MCP / OpenClaw. The tier choice is signed by your passkey. See the [Tool catalog](/reference/tool-catalog) for the cross-surface name mapping.
+Tiered autonomy is a single dial with one question on it: **when the agent wants to send a transaction, who signs it?**
 
-## The four tiers
+At one end, *you* sign every action with your passkey — the agent can only advise. At the other end, a **session key** with a spending ceiling signs for you, so the agent can act without interrupting you. The tiers in between are the steps along that dial.
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                                                                  │
-│   Advisory  ──►  Confirm-per-action  ──►  Policy-bound  ──►      │
-│       ▲                  ▲                     ▲            │    │
-│       └──── /pause ──────┴───── /pause ────────┴── /pause ──┘    │
-│                                                            │     │
-│                                                            ▼     │
-│                                                        Paused    │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
-```
+Two things are true at every tier:
 
-| Tier | What happens on every action |
-|---|---|
-| **Advisory** | LLM proposes; you sign **each** action with your passkey. |
-| **Confirm-per-action** | LLM proposes; **session key** signs without re-prompting passkey, within the 1-hour TTL. Each action still opens ConfirmModal. |
-| **Policy-bound** | LLM proposes; if within your encrypted thresholds (max drawdown, daily spend, etc.), **cron policy engine** signs without confirmation. Breaches auto-pause and notify. |
-| **Paused** | All `propose` tools return 423 PAUSED. Read tools still work. Only `pause` is idempotent (always allowed). |
+- **The agent never sees your balances.** Tier choice is about *signing*, not *privacy* — your amounts stay encrypted regardless of tier.
+- **You choose your own tier.** There is no automatic promotion; you pick the tier and confirm the change yourself.
 
-## Default tier ladder
+::: warning Development status — read this first
+Parts of the design on this page are not yet fully wired. The **live, working autonomous path is Scoped autonomy** (a bounded session key + the broker daemon). **Policy-bound**'s encrypted-threshold auto-signing engine is *built but disabled in every deployment*, the "tier ladder" is *not enforced* (you choose your tier freely), and on-chain KYC runs in **dev mode**. The exact list is in [What's bypassed during development](#what-s-bypassed-during-development).
+:::
 
-| Investor stage | Default tier |
-|---|---|
-| Onboarding (<30 days, <$5K deposits) | Advisory |
-| Returning user (≥5 confirmed actions, no breach in 30d) | Confirm-per-action |
-| Power user / accredited | Policy-bound (opt-in) |
-| After a breach | Paused (auto-flipped) |
+## The tiers at a glance
 
-The progression mirrors **SEC IM-2017-02** + **FINRA Reg BI Care Obligation** framing — small / new investors get the most friction; experienced / accredited investors get the least.
+| Tier | Who signs each write | What you do per action | Status today |
+|---|---|---|---|
+| **Advisory** | You — a fresh passkey signature every time | Approve every action with WebAuthn | ✅ Live |
+| **Confirm per action** | A session key, *after* you confirm | Tap "confirm" on each proposed action | ✅ Live |
+| **Policy-bound** | *Designed:* a risk engine, within your caps | Configure your call-allowlist + spend caps | ⚠️ Partially wired — see below |
+| **Scoped autonomy** | A bounded session key — no prompt | Set a per-trade cap + expiry **once** | ✅ Live — the real autonomous tier |
+| **Paused** | Nobody — all writes blocked | Nothing (this is the kill-switch) | ✅ Live |
+
+The dial runs **Advisory → Confirm per action → Policy-bound → Scoped autonomy**, with **Paused** reachable from anywhere via [`/pause`](/policy/pause).
+
+## How you set your tier
+
+Set your tier yourself on the dashboard at **`/agent/policy/transition`** (the tier picker), or call `muhaven.policy.set_tier` (`muhaven_set_policy` on HavenBot). The change is signed by your passkey.
+
+- **Stepping up** (toward more autonomy) needs one confirmation tap — the dashboard issues a short-lived confirm token and you click **Confirm transition**.
+- **Stepping down** (toward less autonomy) applies immediately, no confirmation needed.
+
+::: tip Two surfaces, two tier sets
+The **dashboard picker** exposes **Advisory · Confirm per action · Policy-bound · Scoped autonomy**. The **MCP** `set_tier` tool accepts **advisory · confirm-per-action · policy-bound · paused** — it can't mint a Scoped session, because Scoped needs an in-browser passkey ceremony to set the cap + expiry. So: arm **Scoped** from the dashboard; manage the lower tiers from anywhere.
+:::
 
 ## Advisory — the default
 
-Every action prompts your passkey. ConfirmModal opens, you confirm with WebAuthn (Touch ID / Windows Hello / hardware key), the UserOp signs.
+> Agent can read your portfolio and propose actions. Every write requires a fresh passkey signature.
 
-**When to use:** during onboarding, after a long break, when you're not sure what the agent will do.
+The agent reads and advises. When it proposes a write, a ConfirmModal opens with a cleartext preview and you sign with WebAuthn (Touch ID / Windows Hello / hardware key). Nothing moves without that signature.
 
-**Trade-off:** highest friction, highest assurance. Every action is single-signed by you.
+**When to use:** getting started, after a long break, or any time you want to approve every action yourself.
+**Trade-off:** highest friction, highest assurance — every action is single-signed by you.
 
-## Confirm-per-action — the daily-driver tier
+## Confirm per action — the daily-driver tier
 
-Your MuHaven wallet installs a **session key** at sign-in. The session key has narrow scope:
+> Agent proposes; a dashboard / Telegram prompt asks you to confirm each write before it submits.
 
-- Target: only MuHaven contracts.
-- Selector allowlist: only MuHaven SDK functions.
-- Value cap per call.
-- Total cap per epoch (your daily-spend ceiling, if set).
-- `validUntil`: 1 hour from install.
+Your MuHaven wallet installs a narrowly-scoped **session key**:
 
-For the next hour, the session key signs without re-prompting your passkey. ConfirmModal still opens per-action (cleartext preview), but the **signing** is automatic via the session key.
+- **Target:** only MuHaven contracts.
+- **Selector allowlist:** only MuHaven SDK functions.
+- **Value cap** per call, and an optional total cap per session.
+- **Expiry (TTL):** the session key is valid until it expires (default ~1 hour), then your passkey installs a fresh one.
 
-After 1 hour, the session key expires. The next action prompts your passkey to install a fresh one.
+While the session key is valid, *you still confirm each action* (the cleartext preview still appears) — but the **signing** is done by the session key, so you don't re-prove your identity with the passkey every time.
 
-**When to use:** active trading sessions (1-2 hours of HavenBot conversation), repeated claims, working through a batch of actions.
+**When to use:** an active session — a run of HavenBot conversation, a batch of claims.
+**Trade-off:** medium friction, medium assurance. You confirm *what*; you don't re-prove *who*.
 
-**Trade-off:** medium friction, medium assurance. You confirm what; you don't re-prove who.
+## Policy-bound — the automation tier (design)
 
-## Policy-bound — the automation tier
+> Agent can write within the call-allowlist + spend caps you configured. Subject to risk-engine pauses.
 
-Your MuHaven wallet installs the session key as in Confirm-per-action, **and** you set encrypted thresholds on what counts as "within bounds":
+Policy-bound is the **intended** "set-and-forget within encrypted bounds" tier. As designed, you set encrypted thresholds and a background engine signs actions that stay inside them:
 
-- **Max drawdown per position** — e.g., 10% of cost basis.
-- **Max daily spend** — e.g., $500 per 24-hour window.
-- **Min yield to accept** — e.g., 1% APR floor.
-- **Drift tolerance** — e.g., trigger a rebalance when allocation drifts >5% from target.
+- **Max drawdown per position** — e.g. 10% of cost basis.
+- **Max daily spend** — e.g. $500 per 24-hour window.
+- **Min yield to accept** — e.g. a 1% APR floor.
+- **Drift tolerance** — e.g. rebalance when allocation drifts >5% from target.
 
-A backend **cron policy engine** ticks every 60 seconds. For each pending action, it checks the proposed amount against your encrypted thresholds. If the check passes, the session key signs without prompting you. If it fails (a breach), the engine auto-pauses you to Advisory and notifies you.
-
-::: details Under the hood — for the curious
+::: details The design — for the curious
 - Thresholds live encrypted on-chain (`RiskParams.sol`, `euint64` slots).
-- The check uses a **branchless `FHE.select`** so the gas cost is identical whether the threshold passes or fails — no decrypt-event timing leakage.
-- On breach: async-decrypt on Fhenix Threshold Network + on-chain `settleBreachDecrypt` on Arbitrum.
-- A `RiskBreach` event fires on-chain; the engine then calls `PauseAgentUseCase` to uninstall the session-key validator.
+- The check uses a **branchless `FHE.select`** so gas cost is identical whether it passes or fails — no decrypt-timing leakage.
+- On a breach: async-decrypt on the Fhenix Threshold Network, then an on-chain `settleBreachDecrypt` + `RiskBreach` event on Arbitrum, which pauses the agent and notifies you.
 :::
 
-**When to use:** auto-claim cron jobs, rebalancing on drift, set-and-forget yield management.
-
-**Trade-off:** lowest friction, highest pre-configured assurance. You define the bounds; the agent acts within them.
-
-### What a breach does
-
-If any of your thresholds is exceeded (max drawdown / daily spend / min yield / drift tolerance), the cron engine:
-
-1. Async-decrypts the breach event.
-2. Emits an on-chain `RiskBreach` event.
-3. Calls the same pause cascade as `/pause` — uninstalls your session-key validator across every surface.
-4. Notifies you (Telegram if linked, dashboard banner on next visit).
-5. Writes `breach_detected` + `pause_triggered` rows to your audit log.
-
-Resume requires a manual passkey ceremony — there is no "auto-resume after N minutes" path. The investor must affirmatively re-engage.
-
-::: warning Policy-bound is opt-in
-Policy-bound never engages by default, even after the ≥5-confirmed-actions ladder graduation. You have to explicitly request it via `muhaven_set_policy(tier: 'policy_bound', params: {...})` and sign with your passkey.
+::: warning Not yet wired
+The encrypted-threshold engine above is **not running** in any current deployment (see the next section). Today, selecting Policy-bound gives you an allowlist-scoped tier **without** a live risk engine auto-signing or auto-pausing. If you want autonomous execution today, use **Scoped autonomy**.
 :::
+
+## Scoped autonomy — the live autonomous tier
+
+> Autonomous buys & sells within a per-op ceiling, time-bounded by TTL. The agent signs without prompting up to the ceiling.
+
+This is the autonomy that actually runs today. You mint a **Scoped session key** from the dashboard in a passkey ceremony, setting two bounds:
+
+- **A per-trade ceiling** — the maximum mhUSDC any single autonomous trade may spend.
+- **An expiry (TTL)** — how long the session stays armed before it auto-expires.
+
+A **broker daemon** holds that scoped key and signs the agent's buys, sells, and claims **without prompting you**, up to the ceiling, until the TTL expires or you revoke it. This is what powers the autonomous reinvest runner and the "active Scoped autonomy session" paths in the MCP tools.
+
+The standing rails are the real boundary: a purchase/claim-only call policy (with `transfer` excluded), the per-trade cap, the TTL, and the [`/pause`](/policy/pause) kill-switch — all enforced on-chain by the session-key validator.
+
+**When to use:** hands-off auto-claim and reinvest, or letting the agent trade within a budget while you're away.
+**Trade-off:** lowest friction. Your safety comes from the cap + TTL + kill-switch, not from a per-action tap.
 
 ## Paused — the kill-switch state
 
-Anyone (in any surface) can call `pause` at any time:
+Anyone, on any surface, can call `pause` at any time:
 
 ```
 > Pause my agent.
 ```
 
-The on-chain effect: `uninstallPlugin(sessionKeyValidator)` — a single tx that removes the session key from your MuHaven wallet's permission system. ≤1 Arb block.
+On-chain effect: `uninstallPlugin(sessionKeyValidator)` — a single transaction that removes the session key from your wallet's permission system (≤ 1 Arb block). Once paused:
 
-Once paused:
-
-- All `propose` tools return `423 PAUSED`.
+- All `propose`/write tools return **`423 PAUSED`**.
 - Read tools still work.
-- `pause` itself is idempotent (calling again is a no-op).
-- `resume` requires your **passkey** to install a fresh session-key validator (the session key was uninstalled, so you can't use it to re-authorize).
+- `pause` is idempotent (calling it again is a no-op).
+- **Resuming requires your passkey** to install a fresh session key — the old one was uninstalled, so it can't re-authorize itself. On the dashboard this is the **Resume to Advisory** control on the tier picker.
 
-The kill-switch is **global** — pausing on HavenBot pauses MCP, OpenClaw, and the hosted-checkout buyer-side tier-1 flow.
+The kill-switch is **global** — pausing on one surface pauses every surface.
 
 See [The /pause kill-switch](/policy/pause).
 
 ## Changing tier
 
-| Direction | Required |
+| Direction | What's required |
 |---|---|
-| Advisory ↔ Confirm-per-action | Passkey signature (signs the new session-key validator install) |
-| Confirm-per-action → Policy-bound | Passkey signature + encrypted thresholds via `set_policy` payload |
-| Policy-bound → Confirm-per-action | Passkey signature (clears encrypted thresholds) |
-| Any → Paused | Idempotent — no signature needed |
-| Paused → Any | Passkey signature (session-key reinstall ceremony) |
+| Any non-paused tier → any higher non-paused tier | One passkey-bound confirm tap (**Confirm transition**) |
+| Any tier → a lower tier | Applies immediately, no confirmation |
+| Arm **Scoped autonomy** | Dashboard passkey ceremony (sets the per-trade cap + TTL) |
+| Any → **Paused** | Idempotent — no signature needed |
+| **Paused** → any | Passkey signature (session-key reinstall — **Resume to Advisory**) |
 
-The tier transition itself is recorded as a `tier_transition` audit row.
+There is **no forced climb**: any non-paused tier can jump directly to any other non-paused tier — you don't have to step through the tiers in order. Every tier change is recorded as a `tier_transition` row in your [audit log](/policy/audit-log).
 
-## Why no fifth tier?
+## What's bypassed during development
 
-We considered:
+In the spirit of honest docs, here is exactly where the shipped system is simpler than the design above:
 
-- **"Bounded auto-claim only"** — too narrow; Policy-bound already includes claim if you set `auto_claim: true`.
-- **"Read-only"** — that's `Paused` plus the read tools, no additional tier needed.
-- **"Per-tool tier"** — too complex; ladder simplicity is a feature.
+1. **No automatic tier ladder.** Tier is **purely user-chosen**. There is no promotion by account age, deposit size, or number of confirmed actions — those signals are tracked but gate nothing. The "graduation ladder" (onboarding → returning → power-user) is a design goal, **not enforced** today.
+2. **Policy-bound auto-signing is not running.** The 60-second "policy engine" cron exists in code but is **disabled in every deployment** (`AGENT_POLICY_CRON_ENABLED=false`, set in no environment). Even when enabled it only *sweeps for breaches to pause*; it never auto-signs trades. So Policy-bound does **not** currently execute actions for you — **Scoped autonomy** is the live autonomous path.
+3. **Encrypted-threshold gating isn't driven.** `RiskParams.sol` is deployed, but no live engine reads it to gate autonomous trades; the default risk adapter is a no-op stub that always reports "no breach."
+4. **Breach auto-pause is contract-present but undriven.** `settleBreachDecrypt` / `RiskBreach` exist on-chain, but nothing runs the cron that would trigger them, so there is no automatic breach → pause today. The manual [`/pause`](/policy/pause) kill-switch is fully live.
+5. **KYC runs in dev mode.** `MuHavenIdentityRegistry` ships with `devMode = true`, so `isVerified` returns true for every address — the ERC-3643 whitelist check is bypassed until production KYC partners are wired. (This is compliance, not autonomy, but it's a development bypass worth knowing.)
 
-The four-tier ladder is the simplest model that covers the four meaningful confirmation-friction levels.
+What *is* fully live and enforced: **Advisory**, **Confirm per action**, **Scoped autonomy** (cap + TTL + on-chain validator), and the **Paused** kill-switch.
 
 ## Where next
 
-- [Session keys](/policy/session-keys) — what the session key actually authorizes.
+- [Session keys](/policy/session-keys) — what a session key actually authorizes.
 - [The /pause kill-switch](/policy/pause) — the kill-switch in depth.
 - [Audit log](/policy/audit-log) — what's recorded across tier transitions.

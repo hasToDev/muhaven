@@ -1,12 +1,12 @@
 ---
 title: Testing Guide
-description: A step-by-step guide for users and judges to exercise every shipped MuHaven feature — investor, AI agent, and issuer.
+description: A step-by-step guide to exercise every shipped MuHaven feature — investor, AI agent, and issuer.
 ---
 
 # Testing Guide
 
 This is a hands-on, task-by-task guide for **trying MuHaven yourself** — written for
-hackathon judges and first-time users. Every task is one short page: what you'll do,
+first-time users. Every task is one short page: what you'll do,
 what you need, the exact steps, and **what success looks like**.
 
 Everything runs on **Arbitrum Sepolia testnet**. No real money, no installs — a browser

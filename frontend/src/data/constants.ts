@@ -6,7 +6,7 @@
 export const LANDING_STATS = [
   { label: 'Platform Contracts', value: 11, prefix: '', suffix: '' },
   { label: 'Balance Privacy', value: 100, prefix: '', suffix: '%' },
-  { label: 'Agentic Surfaces', value: 4, prefix: '', suffix: '' },
+  { label: 'MCP Tools', value: 25, prefix: '', suffix: '' },
   { label: 'Balances Exposed', value: 0, prefix: '', suffix: '' },
 ]
 
@@ -31,11 +31,12 @@ export const LANDING_FEATURES = [
   },
 ]
 
-// Wave 4 preview — surfaces in active development on a parallel branch.
-// Rendered below the three-card grid as a "Coming next" teaser.
+// Agentic layer — the in-dashboard copilot + MCP server are live; the
+// Telegram skill and hosted checkout are still in development.
+// Rendered below the three-card grid as a status teaser.
 export const LANDING_AI_PREVIEW = {
-  badge: 'Coming next',
-  text: 'HavenBot in-dashboard copilot · @muhaven/mcp server · OpenClaw skill · hosted checkout at muhaven.app/pay — agentic layer in active development.',
+  badge: 'Live',
+  text: 'HavenBot in-dashboard copilot · @muhaven/mcp 0.6.1 (25 tools) · tiered autonomy — live now. OpenClaw Telegram skill · hosted checkout — in development.',
 }
 
 export const LANDING_FAQ = [
@@ -44,8 +45,8 @@ export const LANDING_FAQ = [
     content: 'Yes. Balances are stored as FHE-encrypted euint128 values on-chain. Only you can decrypt them using an EIP-712 permit signed by your wallet. Not even the smart contract owner, the AI agent, or Fhenix validators can see your balance.',
   },
   {
-    title: 'How will the AI agent work with encrypted data?',
-    content: 'The agent layer is in active development. It will use function calling against smart contracts that operate on encrypted state, triggering deposits, rebalances, and yield claims without decrypting the underlying values. The FHE.select() pattern keeps gas cost identical across success and failure paths.',
+    title: 'How does the AI agent work with encrypted data?',
+    content: 'The agent operates on encrypted state throughout — it never decrypts your balances. HavenBot and the @muhaven/mcp server use function calling to trigger buys, rebalances, and yield claims against smart contracts running FHE operations, and the FHE.select() pattern keeps gas cost identical across success and failure paths. Autonomous actions are bounded by a per-trade cap, a session-key TTL, and a single-tx kill-switch that revokes the session key instantly.',
   },
   {
     title: 'What tokens are supported?',
@@ -56,8 +57,8 @@ export const LANDING_FAQ = [
     content: 'No. Issuers can only see aggregate metrics: total supply (if they enable public total supply), number of investors, and total yield distributed. Individual balances remain encrypted.',
   },
   {
-    title: 'How will the AI agent stay within bounds?',
-    content: 'Tiered autonomy — investors choose Advisory, Confirm-per-action, or Policy-bound mode. Risk guardrails are stored as encrypted parameters (euint64) on-chain: max drawdown, min yield threshold, drift tolerance, max daily spend. The FHE.select() pattern silently nullifies any operation that violates them, and a single-tx /pause uninstalls the agent\'s session keys instantly.',
+    title: 'How does the AI agent stay within bounds?',
+    content: 'Tiered autonomy is live. You choose your tier: Advisory (advice only — you sign every action), Confirm-per-action (a session key signs within a short TTL while you still confirm each action), or Scoped autonomy (a session key bounded by an explicit per-trade cap and TTL executes without prompting). Encrypted risk guardrails (euint64 max drawdown, min yield, drift tolerance, max daily spend) live on-chain, and a single-tx /pause — or a Telegram kill-switch — uninstalls the agent\'s session keys instantly.',
   },
 ]
 
