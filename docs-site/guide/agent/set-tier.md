@@ -29,10 +29,11 @@ You pick one of four tiers:
 
 ## Steps
 1. Go to `/agent/policy/transition` (you can also ask HavenBot to *"open my agent settings"*).
-2. **Pick the `Scoped autonomy` tier** directly — there's no ladder to climb; any tier is one confirming tap away.
-3. Set your **per-trade cap** (the maximum mhUSDC the agent can spend on a single trade — defaults to $100) and a **TTL** (how long the session stays valid).
-4. Click **Confirm transition**, then **approve with your passkey**.
-5. A **session-key reveal modal** opens. It mints a short-lived signing key **on your device** and surfaces it. For HavenBot in this same browser, you're done — the session is already active. (If you also run the MCP server, this is the key you'll hand to the broker — see [M1 · Arm Scoped autonomy on the dashboard](/guide/mcp/arm-scoped).)
+2. Leave the **surface** on **MCP / Broker** (the default). Scoped autonomy is minted on that surface, and **HavenBot reuses the same session** — so this one Scoped session powers both. If you switch the surface to HavenBot, the Scoped tier is intentionally disabled (with a hint to switch back).
+3. **Pick the `Scoped autonomy` tier** directly — there's no ladder to climb; any tier is one confirming tap away.
+4. Set your **per-trade cap** (the maximum mhUSDC the agent can spend on a single trade — defaults to $100) and a **TTL** (how long the session stays valid).
+5. Click **Confirm transition**, then **approve with your passkey**.
+6. A **session-key reveal modal** opens. It mints a short-lived signing key **on your device** and surfaces it. For HavenBot in this same browser, you're done — the session is already active. (If you also run the MCP server, this is the key you'll hand to the broker — see [M1 · Arm Scoped autonomy on the dashboard](/guide/mcp/arm-scoped).)
 
 ::: info The Scoped key is minted on your device
 The session key is generated **client-side** and is **never sent over the wire**. HavenBot gets time-boxed, capped signing rights — not your passkey.
