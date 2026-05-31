@@ -19,7 +19,7 @@ MuHaven provides **balance, yield, and risk parameter privacy** for RWA investor
 |----------|----------------|-----------|
 | **MuHavenToken** | Balances, transfer amounts, allowances, total supply (default) | `euint128` storage, `InEuint128` encrypted inputs, `FHE.select` silent failure |
 | **YieldDistributor** | Total yield deposited, per-investor yield share, aggregate yield history | `euint128` storage, `FHE.div` for encrypted division, `FHE.allow` per investor |
-| **RiskParams** | Max drawdown, min yield, drift tolerance, daily spend cap | `euint64` storage, `FHE.allowSender` for investor self-decrypt |
+| **RiskParams** (staging/preview) | Max drawdown, min yield, drift tolerance, daily spend cap | `euint64` storage, `FHE.allowSender` for investor self-decrypt. Deployed on staging/preview, not prod. |
 | **MuHavenVault** | Encrypted token balances (via MuHavenToken) | Delegates to MuHavenToken for all FHE operations |
 | **YieldGate** | Eligibility check result (via `Common.isInitialized`) | Binary check — no amounts revealed |
 
@@ -49,17 +49,17 @@ MuHaven uses three distinct FHE access patterns:
 
 **What leaks:** When an issuer calls `startDistribution(token, totalYield)`, the `safeTransferFrom` is a standard ERC-20 transfer with the amount visible on-chain.
 
-**Why it's acceptable:** This is a transitional limitation. The ERC-20 transfer happens at the system boundary where PUSDC (ReineiraOS confidential stablecoin) will replace cleartext transfers. MuHaven encrypts the yield amount in contract state immediately after the transfer — our internal accounting is private even though the deposit event is not.
+**Why it's acceptable:** This is a transitional limitation. The ERC-20 transfer happens at the system boundary where a confidential stablecoin deposit replaces cleartext transfers. MuHaven encrypts the yield amount in contract state immediately after the transfer — our internal accounting is private even though the deposit event is not.
 
-**Mitigation path:** Replace `safeTransferFrom` with PUSDC deposit via ReineiraOS — PUSDC wraps USDC with FHE encryption, making the transfer confidential.
+**Mitigation path:** Replace `safeTransferFrom` with a confidential mhUSDC deposit — mhUSDC wraps USDC with FHE encryption, making the held balance confidential (the deposit edge itself stays public — see 2.2.1).
 
-### 2.2.1 Direct mhUSDC wrap deposit amount (`wrapUsdc`, Wave 5 W3 Phase 9)
+### 2.2.1 Direct mhUSDC wrap deposit amount (`wrapUsdc`)
 
 **What leaks:** `MuHavenStable.wrapUsdc(amount, eph)` pulls cleartext USDC via `SafeERC20.safeTransferFrom`, so the deposit `amount` is visible in the USDC ERC-20 `Transfer` log (and is also emitted in cleartext in the `WrapUsdc` event). The minted mhUSDC handle is a *trivial* encryption of that public value.
 
-**Why it's acceptable:** This is the **deposit edge**, and it is the *same* boundary the legacy 2-step wrap already exposed — its step 1 (USDC → PUSDC) also revealed the amount on-chain. `wrapUsdc` collapses the two steps into one but does not change the privacy posture. Crucially, everything *after* the deposit edge stays confidential: mhUSDC balances, P2P transfers, purchases, and the mhUSDC→USDC withdrawal burn amount are all encrypted `euint64`. An observer learns "address X deposited $N at time T" — the same metadata a bank deposit slip carries — but not the holder's running balance, their trades, or their exit sizing.
+**Why it's acceptable:** This is the **deposit edge**, and it is the *same* boundary the legacy 2-step wrap already exposed — its first step (USDC → confidential stablecoin) also revealed the amount on-chain. `wrapUsdc` collapses the two steps into one but does not change the privacy posture. Crucially, everything *after* the deposit edge stays confidential: mhUSDC balances, P2P transfers, purchases, and the mhUSDC→USDC withdrawal burn amount are all encrypted `euint64`. An observer learns "address X deposited $N at time T" — the same metadata a bank deposit slip carries — but not the holder's running balance, their trades, or their exit sizing.
 
-**Mitigation path:** A confidential-input wrap (client-encrypted `InEuint64` USDC deposit) would hide the deposit amount, but requires a confidential USDC source at the system boundary (same dependency as 2.2). Deferred with 2.2; the demo/testnet scope (ADR_W3_RESERVE_MODEL.md) accepts the public deposit edge.
+**Mitigation path:** A confidential-input wrap (client-encrypted `InEuint64` USDC deposit) would hide the deposit amount, but requires a confidential USDC source at the system boundary (same dependency as 2.2). Deferred with 2.2; the current testnet scope (ADR_W3_RESERVE_MODEL.md) accepts the public deposit edge.
 
 ### 2.3 KYC eligibility boolean
 
@@ -87,13 +87,13 @@ MuHaven uses three distinct FHE access patterns:
 
 **Why it's acceptable:** Reveals existence of configuration, not the configuration itself. We deliberately chose a boolean over a cleartext timestamp to minimize metadata leakage (a timestamp would reveal *when* params were set, enabling behavioral profiling).
 
-### 2.7 Per-share yield rate (`Epoch.ratePerShare`) — Phase 9.B trade-off
+### 2.7 Per-share yield rate (`Epoch.ratePerShare`)
 
 **What leaks:** The issuer-supplied `ratePerShare` cleartext field on `YieldSnapshot.Epoch` is publicly readable on-chain. For each funded epoch, observers can compute `ratePerShare = floor(totalYield / totalSupply × RATE_SCALE)` and infer the per-share yield rate (e.g. TBILL APY).
 
-**Why it's currently acceptable:** Phase 9.B / Option A (commit `bfbdac3`, 2026-05-04) replaced the on-chain encrypted `encRatio = FHE.div(encTotalYield, encTotalSupply)` with the cleartext `ratePerShare` because the encrypted-ratio computation 204'd indefinitely on cofhe TN's testnet — the deep aggregate-fan-in ancestry stalled the threshold network's resolution path. For RWAs (TBILLs, dividend-paying equities, gold leases) the per-share yield rate is conventionally published off-chain anyway, so the privacy compromise is bounded. **Per-investor balances and per-claim shares stay encrypted end-to-end.**
+**Why it's currently acceptable:** The current model replaced the on-chain encrypted `encRatio = FHE.div(encTotalYield, encTotalSupply)` with the cleartext `ratePerShare` because the encrypted-ratio computation 204'd indefinitely on the cofhe threshold network — the deep aggregate-fan-in ancestry stalled the threshold network's resolution path. For RWAs (TBILLs, dividend-paying equities, gold leases) the per-share yield rate is conventionally published off-chain anyway, so the privacy compromise is bounded. **Per-investor balances and per-claim shares stay encrypted end-to-end.**
 
-**Mitigation path (Wave 4.5, attempted + empirically refuted 2026-05-07):** Restored the encrypted-ratio computation at `euint64` width per Fhenix team's 2026-05-07 bit-width hypothesis. The probe-first plan in `development/DEV_WAVE_4_5/PLAN.md` validated that an isolated `FHE.div` on aggregate-fan-in denominators resolves cleanly at 64-bit (probe-A 3/3 resolved in 7-10s for N=2/5/10), but the composed `claimYield → trustedPayout → MuHavenStable._balances[investor]` reveal handle still 204-stalled indefinitely under the same symptom — bit-width fixed the isolated divide but didn't propagate to the composed reveal. The discriminator empirically observed is the **multiplicand's ancestry shape** in `mul(encBalance, *)` (depth-1 trivial leaf works; deep aggregate-fan-in encrypted handle doesn't), not single-op bit-width. **Status: REFUTED**. Full report at `docs/COFHE_TN_COMPOSED_REVEAL_REPORT.md`; GitHub issue body draft at `development/DEV_WAVE_4_5/GITHUB_ISSUE.md` filed with Fhenix for guidance. Wave 4.5 archived on branch `wave4-5-narrow-div` (local, NOT pushed) as forward-compat reference; cleartext-rate workaround stays in production indefinitely until Fhenix's response unlocks a viable composed-reveal path (`FHE.allowPublic` short-circuit, fresh `InEuint64` re-input pattern, mainnet behavior, etc).
+**Mitigation path (attempted + empirically refuted):** Restored the encrypted-ratio computation at `euint64` width per Fhenix's bit-width hypothesis. The probe validated that an isolated `FHE.div` on aggregate-fan-in denominators resolves cleanly at 64-bit (probe-A 3/3 resolved in 7-10s for N=2/5/10), but the composed `claimYield → trustedPayout → MuHavenStable._balances[investor]` reveal handle still 204-stalled indefinitely under the same symptom — bit-width fixed the isolated divide but didn't propagate to the composed reveal. The discriminator empirically observed is the **multiplicand's ancestry shape** in `mul(encBalance, *)` (depth-1 trivial leaf works; deep aggregate-fan-in encrypted handle doesn't), not single-op bit-width. **Status: REFUTED**. Full report at `docs/COFHE_TN_COMPOSED_REVEAL_REPORT.md`; the cleartext-rate workaround stays in production until a Fhenix fix unlocks a viable composed-reveal path (`FHE.allowPublic` short-circuit, fresh `InEuint64` re-input pattern, mainnet behavior, etc).
 
 ---
 
@@ -171,12 +171,12 @@ Permissioned chains (Canton Network, JP Morgan's Onyx) provide privacy through a
 | **Fhenix CoFHE coprocessor** | Threshold network operates honestly (2/3 majority) | Ciphertexts could be decrypted without authorization. Mitigated by threshold requirement. |
 | **Arbitrum Sepolia** | L2 sequencer is live and processes transactions | Liveness failure only — no privacy impact. Encrypted state remains encrypted. |
 | **ERC3643KYCAdapter** | Admin manages whitelist honestly | Only affects access control, not encryption. Rogue admin can whitelist ineligible addresses but cannot decrypt any balances. |
-| **AI agent wallet** | Agent wallet is funded with capped USDC | Agent can only spend what's in the wallet. Session keys (EIP-7702) planned for production. |
+| **Agent session key** | The agent never holds a private key; it acts through a ZeroDev kernel + scoped session key bounded by an on-chain `@zerodev/permissions` envelope (selector allowlist + per-op cap + TTL). | A compromised session key can only act within its on-chain envelope; the `pause` / `/revoke_session` kill-switch uninstalls it in ~1 block. |
 | **Client-side encryption** | Investor's browser/device is not compromised | If compromised, attacker sees plaintext before encryption. Standard client security assumption. |
 | **muhaven-broker daemon** | Holds the session-key private half; near-zero-egress (only a `currentNonce` RPC + a backend validator-enabled callback). Signs a userOpHash over a local socket; no bundler egress. | A compromised broker could sign UserOps within the on-chain Scoped envelope (no transfer, per-op cap, TTL). It cannot exfiltrate funds beyond that envelope, and the revoke kill-switch + 8h TTL bound the window. |
-| **muhaven-reinvest runner (Wave 5 Slice 2c)** | KEYLESS sidecar with backend + bundler egress; the broker auto-spawns it. Asks the broker to sign; holds no key. Reads creds live from the broker every cycle. | Neither half alone moves funds (Option-D separation of duties): the runner can build/submit but not sign; the broker can sign but not submit. A compromised runner is bounded by the same on-chain envelope + per-op cap the broker enforces per inner call. |
+| **muhaven-reinvest runner** | KEYLESS sidecar with backend + bundler egress; the broker auto-spawns it. Asks the broker to sign; holds no key. Reads creds live from the broker every cycle. | Neither half alone moves funds (separation of duties): the runner can build/submit but not sign; the broker can sign but not submit. A compromised runner is bounded by the same on-chain envelope + per-op cap the broker enforces per inner call. |
 
-### 5.1 Autonomous-spend boundary (Wave 5 Slice 2c — first no-LLM-in-loop spend)
+### 5.1 Autonomous-spend boundary (auto-reinvest runner — first no-LLM-in-loop spend)
 
 The auto-reinvest runner is the first headless (no LLM, no browser) autonomous
 spend. It is bounded by, in layers: (1) the on-chain Scoped **CallPolicy** — the
@@ -184,9 +184,9 @@ no-transfer envelope + per-target allowlist enforced on the ACTUAL calldata at
 execution; (2) the broker's per-op **cap** re-checked on EVERY inner call of the
 atomic batch; (3) an 8h session **TTL**; (4) the **revoke kill-switch** (the
 runner re-reads the mirror each cycle and purges its broker snapshot on revoke,
-before any sign); (5) the **`reinvest_enabled` opt-in** (default off); and (6)
+before any sign); (5) the **reinvest opt-in** (default off); and (6)
 **amount-blindness** — the reinvest buy is a fixed cleartext budget, the claimed
-yield never decrypts. **Known boundary (inherited from Path D `attemptPathD`):**
+yield never decrypts. **Known boundary (inherited from the autonomous-buy path):**
 the broker signs an opaque `userOpHash` and does NOT recompute it from the
 policy-checked inner calls, so a malicious *runner* could in principle present
 benign inner calls for the policy check while signing a hash for different
@@ -197,7 +197,7 @@ the kernel calldata (not just the hash) to re-derive + bind, a protocol change
 deferred. The `reinvest_cycle_executed` audit row is **broker-asserted**
 provenance (not platform-verified); the on-chain tx is the authoritative record.
 
-### 5.2 In-app rebalance (Wave 5 Slice 3 — user-in-the-loop, in-browser)
+### 5.2 In-app rebalance (user-in-the-loop, in-browser)
 
 Unlike the headless reinvest runner (§5.1), the in-app rebalance is **user-
 initiated and runs entirely in the browser** under the user's decrypt permit, so
@@ -240,11 +240,11 @@ its trust posture is closer to a manual buy/sell than to an autonomous spend:
 
 | Enhancement | Impact | Dependency |
 |------------|--------|------------|
-| PUSDC confidential deposits | Eliminates ERC-20 transfer leakage in YieldDistributor | Replace cleartext USDC with PUSDC (ReineiraOS confidential stablecoin) in depositYield flow |
+| Confidential-input deposits | Eliminates ERC-20 transfer leakage at the deposit edge | Client-encrypted `InEuint64` USDC deposit at the system boundary |
 | Stealth addresses for investors | Hides investor identity from on-chain observer | Wallet-layer integration (e.g., ERC-5564/6538) |
 | Encrypted KYC claims (ONCHAINID) | Replaces cleartext whitelist with encrypted credential verification | ERC-3643 ONCHAINID integration |
 | Proportional yield with unique ciphertexts | Prevents correlation of equal-split yield shares | FHE proportional math (already possible with `FHE.mul`/`FHE.div`) |
-| Randomized transaction batching | Reduces timing correlation for AI agent operations | Agent implementation (Wave 4) |
+| Randomized transaction batching | Reduces timing correlation for AI agent operations | Agent implementation |
 
 ---
 

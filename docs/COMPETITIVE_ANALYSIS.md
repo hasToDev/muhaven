@@ -45,7 +45,7 @@ MuHaven sits at the intersection of three markets. No existing project occupies 
 
 **Inco / Zama** are building the right primitive (confidential ERC-20 via FHE) but are infrastructure-only. They provide the encrypted token standard — they don't build the RWA-specific layer (yield distribution, compliance gating, portfolio management) on top.
 
-**MuHaven** combines FHE-encrypted balances (like Inco/Zama) with RWA-specific infrastructure (yield escrow + confidential stablecoin via ReineiraOS, compliance gating via ERC-3643) and adds an AI portfolio management layer. Nobody else does this.
+**MuHaven** combines FHE-encrypted balances (like Inco/Zama) with RWA-specific infrastructure (per-epoch yield distribution + its own confidential stablecoin `mhUSDC`, compliance gating via ERC-3643) and adds an AI portfolio management layer. Nobody else does this.
 
 ---
 
@@ -93,7 +93,7 @@ This makes MuHaven the first **Confidential DeFAI** product — a category that 
 MuHaven doesn't compete with compliance providers — it integrates them via the modular `IKYCGate` interface. The design decision is deliberate:
 
 - **Now**: ERC-3643 ONCHAINID (most battle-tested, SEC-recognized)
-- **Future**: Add zkMe for ZK-native KYC, add ReineiraOS compliance when their features ship
+- **Future**: Add zkMe for ZK-native KYC; cross-chain KYC attestations (EIP-712) are designed and source-complete
 - **Architecture**: Any provider can be hot-swapped by deploying a new adapter contract
 
 This makes MuHaven compliance-agnostic — it works with whatever KYC standard the market converges on.
@@ -113,7 +113,7 @@ This makes MuHaven compliance-agnostic — it works with whatever KYC standard t
 | KYC/AML compliance | Custom | Custom | ZK proofs | No | No | **Modular (ERC-3643 + ZK)** |
 | MEV protection | Via permissioning | Via TEE | No | Structural | No | **Structural (FHE)** |
 | Cross-chain | No | Ethereum only | Multi-chain | EVM | Varies | **CCTP V2 (multi-EVM)** |
-| Insurance | No | No | No | No | No | **ReineiraOS pools** |
+| Insurance | No | No | No | No | No | **Encrypted default-protection reserves** |
 | Natural language UX | No | No | No | No | Yes | **Yes** |
 | Non-custodial | N/A | Non-custodial | N/A | Non-custodial | Varies | **Non-custodial** |
 
@@ -145,9 +145,9 @@ Competitors add privacy as a feature (permissioned access, TEE enclaves). MuHave
 
 The DeFAI market is projected at $47B by 2034. Every current player operates on transparent state. MuHaven is the first to operate on encrypted state — a structural advantage that can't be replicated without rebuilding on FHE.
 
-### 3. Three ecosystem integrations amplify each other
+### 3. One coherent encrypted compute layer
 
-Fhenix (encryption) + ReineiraOS (confidential stablecoin + escrow settlement) share the same CoFHE coprocessor. This isn't two separate integrations duct-taped together — it's one coherent encrypted compute layer where MuHaven's RWA tokens and ReineiraOS's payment infrastructure operate on the same encrypted state.
+MuHaven's RWA tokens, its confidential stablecoin (`mhUSDC`), and its yield/settlement contracts all run on the same Fhenix CoFHE coprocessor. This isn't a stack of integrations duct-taped together — it's one coherent encrypted compute layer where balances, payments, and yield distribution all operate on the same encrypted state.
 
 ### 4. Compliance-forward, not compliance-avoiding
 

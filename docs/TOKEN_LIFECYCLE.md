@@ -1,6 +1,6 @@
 # Token Lifecycle Management
 
-> Post-hackathon feature spec. Architecture hooks are in place (Wave 3); full implementation is deferred.
+> Design spec. The contract + backend hooks are in place; full implementation of wind-down/archival is planned. Tokens can currently be paused and unpaused — issuers unpause via HavenBot / `muhaven.issuer.unpause_token`, which does `setNAV` + `setPaused(false)`. NAV-publish + unpause is currently a manual issuer step; the nav-publisher cron auto-renews after the first NAV.
 
 ---
 
@@ -211,13 +211,13 @@ archive/
     portfolios.parquet      — investor position snapshots
 ```
 
-> **Hackathon scope:** Cold storage export is post-hackathon. For MVP, archived tokens stay in the active database indefinitely with status-based filtering. The `archive_summary` JSON field on `rwa_tokens` is the only archival-specific addition needed during Wave 3 hooks.
+> **Scope:** Cold storage export is planned, not yet implemented. For now, archived tokens stay in the active database indefinitely with status-based filtering. The `archive_summary` JSON field on `rwa_tokens` is the only archival-specific addition needed for the current hooks.
 
 ---
 
-## Architecture Hooks (In Place — Wave 3)
+## Architecture Hooks (In Place)
 
-These structural elements are implemented during Wave 3 to ensure future compatibility:
+These structural elements are implemented today to ensure future compatibility:
 
 ### Contract Layer
 - `MuHavenToken.sol` inherits `PausableUpgradeable` with `pause()` / `unpause()` (onlyOwner)
@@ -237,7 +237,7 @@ These structural elements are implemented during Wave 3 to ensure future compati
 
 ---
 
-## API Endpoints (Post-Hackathon)
+## API Endpoints (Planned)
 
 | Method | Path | Description | Auth |
 |--------|------|-------------|------|
@@ -254,10 +254,10 @@ These structural elements are implemented during Wave 3 to ensure future compati
 ## Database Schema
 
 ```sql
--- tokenStatusEnum defined in Wave 3 (four states)
+-- tokenStatusEnum (four states) — in place today
 CREATE TYPE token_status AS ENUM ('active', 'paused', 'winding_down', 'archived');
 
--- Columns added to rwa_tokens in Wave 3
+-- Columns on rwa_tokens — in place today
 ALTER TABLE rwa_tokens
   ADD COLUMN status token_status NOT NULL DEFAULT 'active',
   ADD COLUMN updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -265,7 +265,7 @@ ALTER TABLE rwa_tokens
   ADD COLUMN winding_down_at TIMESTAMP,
   ADD COLUMN archived_at TIMESTAMP;
 
--- Post-hackathon additions for archival
+-- Planned additions for archival
 ALTER TABLE rwa_tokens ADD COLUMN archive_summary JSONB;
 ALTER TABLE yield_records ADD COLUMN archived_at TIMESTAMP;
 ALTER TABLE portfolios ADD COLUMN archived_at TIMESTAMP;
@@ -291,20 +291,20 @@ The current `ERC3643KYCAdapter` uses a simplified whitelist. When full ONCHAINID
 
 ## Implementation Priority
 
-| Component | Priority | Depends On |
-|-----------|----------|------------|
-| Contract `pause()`/`unpause()` | Wave 3 (hook) | — |
-| Backend status column (4 states) + domain entity | Wave 3 (hook) | — |
-| Frontend status badges | Wave 3 (hook) | — |
-| Issuer pause/unpause API + UI | Post-hackathon | Wave 3 hooks |
-| Issuer wind-down API + UI | Post-hackathon | Pause API |
-| Grace period + notifications | Post-hackathon | Wind-down API |
-| Forced redemption (`forceUnwrap`) | Post-hackathon | ERC-3643 full integration |
-| Archive API + final summary | Post-hackathon | Wind-down complete |
-| Archive summary JSON field | Post-hackathon | Archive API |
-| Cold storage export pipeline | Post-hackathon (low priority) | Archive API + object storage |
-| Investor notification system | Post-hackathon | Backend webhook integration |
+| Component | Status | Depends On |
+|-----------|--------|------------|
+| Contract `pause()`/`unpause()` | In place | — |
+| Backend status column (4 states) + domain entity | In place | — |
+| Frontend status badges | In place | — |
+| Issuer pause/unpause (HavenBot `unpause_token` = setNAV + unpause) | In place | Contract hooks |
+| Issuer wind-down API + UI | Planned | Pause API |
+| Grace period + notifications | Planned | Wind-down API |
+| Forced redemption (`forceUnwrap`) | Planned | ERC-3643 full integration |
+| Archive API + final summary | Planned | Wind-down complete |
+| Archive summary JSON field | Planned | Archive API |
+| Cold storage export pipeline | Planned (low priority) | Archive API + object storage |
+| Investor notification system | Planned | Backend webhook integration |
 
 ---
 
-*This document will be updated as the feature is implemented. Architecture hooks are tracked in `development/DEV_WAVE_3/PROGRESS.md`.*
+*This document will be updated as the feature is implemented.*

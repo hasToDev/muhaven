@@ -12,7 +12,7 @@
 - **Pluggable sender pattern** — same API for EOA wallets (viem `WalletClient`) and ZeroDev kernel smart accounts (UserOps via `@zerodev/permissions` session keys).
 - **Batch FHE encryption** via `@cofhe/sdk` — one ZK proof per call where the underlying contract accepts batched encrypted inputs.
 - **Progress callbacks** for UI wiring.
-- **Wave 3 legacy classes** preserved for the read-only Wave 3 deploy (`deployments/arb-sepolia.json`) — `MuHavenClient`, `DistributionStatus`, `fetchAllInvestors`. New code should target the per-contract clients above.
+- **Legacy escrow classes** preserved for the original read-only escrow deploy (`deployments/arb-sepolia.json`) — `MuHavenClient`, `DistributionStatus`, `fetchAllInvestors`. New code should target the per-contract clients above.
 
 The SDK is consumed by:
 - `frontend/src/services/v35/` — investor + issuer flows in the Vue 3 dashboard.
@@ -147,7 +147,7 @@ Silent-fail by design — observers cannot tell from gas / events whether the bu
 
 ### Pull-based per-epoch yield
 
-Replaces Wave 3's push-model O(N) escrow creation with an O(1) issuer-side pipeline + investor-pull payout. Per-investor share is computed once at fund time via cleartext fixed-point `ratePerShare`, sidestepping the cofhe TN chain-length cap that bit the original `FHE.div(encYield, encTotalSupply)` model (see `docs/COFHE_TN_INDEXER_CHAIN_LENGTH_REPORT.md`).
+Replaces the original push-model O(N) escrow creation with an O(1) issuer-side pipeline + investor-pull payout. Per-investor share is computed once at fund time via cleartext fixed-point `ratePerShare`, sidestepping the cofhe TN chain-length cap that bit the original `FHE.div(encYield, encTotalSupply)` model (see `docs/COFHE_TN_INDEXER_CHAIN_LENGTH_REPORT.md`).
 
 ```
 Issuer
@@ -273,22 +273,30 @@ ERC-3643 identity registry surface for off-chain checks (the Subscription contra
 
 ### `StableClient`
 
-mhUSDC wrapper.
+`MuHavenStable` — the confidential USDC wrapper (ticker **mhUSDC**). Encrypted `euint64` balances, transfers, and an ephemeral-EOA-aware ACL grant on every mutation. All amount args are bounded by `type(uint64).max`.
 
 | Method | Purpose |
 |---|---|
-| `wrap({ amount })` | USDC → mhUSDC (cleartext in, encrypted out). |
-| `unwrap({ encAmount, ephemeralEOA })` | mhUSDC → USDC. |
-| `confidentialTransferFrom({ from, to, encAmount, fromEph, toEph })` | 5-arg overload (ADR-044). Pass `address(0)` for the leg that should NOT receive the counterparty `FHE.allow` grant. |
-| `getBalanceHandle({ account })` | Returns ciphertext handle for `decryptForView`. |
+| `wrapUsdc(amount, ephemeralEOA, opts?)` | **USDC → mhUSDC.** Pulls cleartext USDC via `safeTransferFrom`, mints 1:1. No client-side encrypt (the deposit amount is public — see THREAT_MODEL §2.2.1). Pre-flight: `usdc.approve(muHavenStable, amount)`. |
+| `withdrawToUsdc(amount, ephemeralEOA, opts?)` | **mhUSDC → USDC, phase 1.** Burns `min(balance, amount)` (clamp-to-balance; a deliberately-large amount = "withdraw all") and requests async coprocessor decryption. Returns `{ hash, claimId }`. |
+| `claimUsdc(claimId, opts?)` | **mhUSDC → USDC, phase 2.** Once `withdrawDecryptResult(claimId).ready`, settles the claim, paying 1:1 USDC from the reserve to the recorded recipient. Permissionless (a backend poller can settle for the user). |
+| `withdrawDecryptResult(claimId)` | Poll the coprocessor decrypt result — `{ amount, ready }`. `ready` flips true once decryption completes. |
+| `getUserWithdrawClaims(account)` / `getWithdrawClaim(claimId)` | Re-discover an account's pending claim ids / read a single claim. |
+| `transfer(to, amount, ephemeralEOA, opts?)` | Confidential P2P mhUSDC transfer. Silent-fails on insufficient balance. |
+| `transferFrom(from, to, amount, ephemeralEOA, opts?)` | Operator-authorized transfer. Caller must hold operator rights on `from` (see `setOperator`). |
+| `setOperator(operator, until)` | Grant `operator` transfer rights on the caller's balance until `until` (uint48 unix). Required before `transferFrom(caller, ...)`. |
+| `refreshDecryptGrant(ephemeralEOA)` | Re-grant FHE ACL on the caller's current balance handle to a freshly-rotated `ephemeralEOA` (mirrors `MuHavenToken.refreshDecryptGrant`). |
+| `confidentialBalanceOf(account)` | Returns the `euint64` ciphertext handle for `decryptForView` — only the holder's kernel + the active session's ephemeralEOA have ACL grants. |
+| `wrap(amount, ephemeralEOA, opts?)` / `unwrap(amount, ephemeralEOA, opts?)` | Legacy 2-step path — wrap/unwrap against the legacy confidential stablecoin. Rare in current code; most flows go through `wrapUsdc` / `withdrawToUsdc`. |
+| `usdcReserveBalance()` / `usdcReserveToken()` / `claimsPaused()` | Reserve views + settlement kill-switch state. |
 
 ### Constants
 
 | Constant | Value | Notes |
 |---|---|---|
 | `RATE_SCALE` | `1_000_000n` | Fixed-point scale on `Epoch.ratePerShare` (ADR-048 sub-1:1 yield support). |
-| `DEFAULT_BATCH_SIZE` | `50` | Wave 3 legacy `MuHavenClient` default batch size. |
-| `MAX_BATCH_SIZE` | `200` | Hard cap on Wave 3 legacy batches; practical Arb Sepolia ceiling is lower (gas). |
+| `DEFAULT_BATCH_SIZE` | `50` | Legacy escrow `MuHavenClient` default batch size. |
+| `MAX_BATCH_SIZE` | `200` | Hard cap on legacy escrow batches; practical Arb Sepolia ceiling is lower (gas). |
 
 ### Errors
 
@@ -299,7 +307,7 @@ All SDK errors extend `MuHavenError`:
 | `ConfigError` | Missing or invalid constructor config |
 | `NetworkError` | Chain-id mismatch — call `client.getChainId()` after construction |
 | `EncryptionError` | `@cofhe/sdk` returns unexpected shape from `encryptInputs` |
-| `BatchSizeExceededError` | Caller exceeds `MAX_BATCH_SIZE` (Wave 3 legacy) |
+| `BatchSizeExceededError` | Caller exceeds `MAX_BATCH_SIZE` (legacy escrow path) |
 | `TxFailedError` | Receipt status `reverted` |
 | `InvariantError` | Internal invariant broken — file an issue |
 
@@ -388,9 +396,9 @@ Investors then pull `claimYield(epochId, eph)` on their own schedule.
 
 5. **Ephemeral-EOA permit lifecycle.** Every mutation that produces investor-decryptable state needs `FHE.allow(handle, ephEOA)`. Re-running `claimYield` for an already-claimed epoch reverts `AlreadyClaimed` — but if the investor's session ephEOA rotated mid-flight, the old snapshot's `encTotalSupply` ACL grants stale. `YieldSnapshotClient.refreshSnapshotSupplyGrant` (ADR-050) is the recovery path; the frontend already wires this in the issuer's `/distribute` decrypt button.
 
-6. **PUSDC selector shim.** `MuHavenStable` shims the legacy ReineiraOS PUSDC `confidentialTransferFrom(address,address,uint256)` selector for any path that touches PUSDC directly (rare in current code — most flows go through mhUSDC). Documented at `development/DEV_WAVE_3/PUSDC_TRANSFER_ISSUE.md`.
+6. **Legacy stablecoin selector shim.** `MuHavenStable` shims the legacy confidential-stablecoin `confidentialTransferFrom(address,address,uint256)` selector for any path that touches the legacy token directly (rare in current code — most flows go through mhUSDC). Documented at `development/DEV_WAVE_3/PUSDC_TRANSFER_ISSUE.md`.
 
-7. **`MuHavenStable._trustedPayer` mapping.** `YieldSnapshot.claimYield` calls `MuHavenStable.trustedPayout(...)` (ADR-046 fast-path). The snapshot proxy must be in the wrapper's `_trustedPayer` mapping or every claim reverts `NotTrustedPayer` (`0x3e9d3e1e`). `scripts/deploy-v2.ts` folds this grant into the platform deploy as of Phase 10 (DEV_LOG 2026-05-04). Recovery: `scripts/grant-trusted-payer.ts` (idempotent).
+7. **`MuHavenStable._trustedPayer` mapping.** `YieldSnapshot.claimYield` calls `MuHavenStable.trustedPayout(...)` (ADR-046 fast-path). The snapshot proxy must be in the wrapper's `_trustedPayer` mapping or every claim reverts `NotTrustedPayer` (`0x3e9d3e1e`). `scripts/deploy-v2.ts` folds this grant into the platform deploy. Recovery: `scripts/grant-trusted-payer.ts` (idempotent).
 
 ---
 
@@ -399,8 +407,8 @@ Investors then pull `claimYield(epochId, eph)` on their own schedule.
 The SDK integration suite lives at the repo root and shares Hardhat fixtures with the contract tests:
 
 ```bash
-pnpm test test/MuHavenSdk.integration.test.ts          # 25 cases — Wave 3 legacy pipeline
-pnpm test test/MuHavenSdkV2.integration.test.ts        # Wave 3.5 atomic Subscription + pull yield
+pnpm test test/MuHavenSdk.integration.test.ts          # ~25 cases — legacy escrow pipeline
+pnpm test test/MuHavenSdkV2.integration.test.ts        # atomic Subscription + pull yield
 pnpm test test/MuHavenStable.integration.test.ts       # mhUSDC wrap / unwrap / trustedPayout
 ```
 

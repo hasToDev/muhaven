@@ -6,13 +6,10 @@
 > **Fhenix-team reply received 2026-05-07** — bit-width hypothesis
 > (~10s per 128-bit FHE.div) consistent with our `scripts/probe-trivial-div.ts`
 > measurement (~23s for euint128 mul + div). Probe-first validation +
-> privacy-restoration patch tracked as **Wave 4.5** in
-> `development/DEV_WAVE_4_5/PLAN.md` (gated on Wave 4 P9 closure).
-> A §"Update" subsection will be appended at the bottom of this
-> document on Wave 4.5 completion with the Option A / B verdict.
-> **Filed by:** MuHaven (Wave 3.5 / Phase 8 staging cutover, then
-> Wave 3.5 / Phase 9.A audit-handle slate, then Wave 3.5 / Phase 9.B
-> Option A architectural change).
+> privacy-restoration follow-up tracked in `development/DEV_WAVE_4_5/PLAN.md`.
+> **Filed by:** MuHaven across three rounds of investigation — the
+> staging cutover, the audit-handle slate, and the Option A
+> architectural change (cleartext-rate workaround).
 >
 > **Purpose:** Reproducible report for the Fhenix / cofhe team. Across
 > three rounds of investigation we confirmed that on Arbitrum Sepolia
@@ -33,7 +30,7 @@
 > **TaskManager:** `0xea30c4b8B44078Bbf8a6Ef5b9F1eC1626c7848D9`.
 > **Verifier signer:** `0x013a…e71` (matches per
 > `scripts/probe-cofhe-encrypt.ts` output `[OK]`).
-> **MuHaven repo:** muhaven (Wave 3.5).
+> **MuHaven repo:** muhaven.
 > **Affected contracts:** `MuHavenStable` (mhUSDC wrapper),
 > `YieldSnapshot`, `MuHavenSubscription`, `MuHavenToken`.
 > **Affected user (recent reproducer):**
@@ -77,7 +74,7 @@ visibility** because:
 
 ## Reproduction history
 
-### Round 1 — Phase 8 (2026-04-29): "trustedPayout bypass"
+### Round 1 (2026-04-29): "trustedPayout bypass"
 
 **Initial trigger:** investor's post-claim mhUSDC reveal returned
 indefinite HTTP 204 polls. Tx receipt showed an 8-op FHE chain in
@@ -94,7 +91,7 @@ check on the wrapper's transfer-from-snapshot leg.
 **Hypothesis:** TN has a per-tx FHE op-chain length threshold of
 ~5-7. The 8-op chain crosses it.
 
-**Fix (ADR-046):** introduced `MuHavenStable.trustedPayout(to,
+**Fix (trustedPayout):** introduced `MuHavenStable.trustedPayout(to,
 encAmount, ephemeralEOA)` — a privileged surface that bypasses
 `_silentFailBound` (relies on per-epoch conservation in
 `YieldSnapshot` to guarantee the snapshot's float covers every
@@ -103,32 +100,31 @@ mapping. Cuts the wrapper-side FHE op count from 5 → 2 and the
 total claim-tx chain from 8 → 5.
 
 **Result:** post-claim mhUSDC reveal worked again. Hypothesis
-appeared confirmed. Memory entry written:
-`project_cofhe_tn_chain_length_cap` — "5 works, 8 doesn't."
+appeared confirmed. Working hypothesis at this point: "5 works, 8 doesn't."
 
-### Round 2 — Phase 9.A (2026-05-04 session 1): "5 ops also fails on fresh kernels"
+### Round 2 (2026-05-04 session 1): "5 ops also fails on fresh kernels"
 
 **Re-trigger:** user reported the same symptom on a fresh-kernel
 investor. Tx receipt showed exactly 5 TaskManager events in
-`claimYield` (matching ADR-046's expected reduced chain). Yet the
+`claimYield` (matching the trustedPayout fix's expected reduced chain). Yet the
 post-claim mhUSDC handle still 204s.
 
-**Round 1 audit-handle (`encShare64`):** added `FHE.allow(encShare64,
+**First audit-handle (`encShare64`):** added `FHE.allow(encShare64,
 msg.sender) + ephemeralEOA` so the investor could decrypt the per-
 claim amount via the `YieldClaimed` event. encShare64 = `cast(mul(
 balance, encRatio))` ≈ 2-3 op local chain. **Failed.** Hypothesis:
 encShare64 inherits encRatio's deep ancestry through mul.
 
-**Round 2 audit-handle (`encRatio`):** added grants on `e.encRatio`
+**Second audit-handle (`encRatio`):** added grants on `e.encRatio`
 and rewrote the frontend `/activity` Decrypt path to fetch encRatio
 + snapshotBalance separately and multiply locally. **Also failed.**
 
 **Hypothesis at end of Round 2 (still wrong):** "encRatio's chain
 depth (max(encYCanonical, encTotalSupply) + 1) crosses TN's
 threshold even though it's structurally short within fundEpoch's
-tx." Memory updated with Round 2 evidence.
+tx."
 
-### Round 3 — Phase 9.A (2026-05-04 session 2): "encTotalYield + encTotalSupply ACL"
+### Round 3 (2026-05-04 session 2): "encTotalYield + encTotalSupply ACL"
 
 **Approach:** add ACL grants on `e.encTotalYield` (depth ~3 from
 issuer's `InEuint128` input — wrapper-free, no aggregate fan-in)
@@ -142,7 +138,7 @@ on `/cash` + `/portfolio` — that handle's ancestry is fixed by
 the wrapper's `add` op and unavoidably traces through
 `encShare64 → mul(balance, encRatio)`.
 
-### Round 4 — Phase 9.A (2026-05-04 session 3): empirical correction
+### Round 4 (2026-05-04 session 3): empirical correction
 
 **User-provided evidence:**
 [user `0x522a04d74d61cab004a6ac8efb4abdc87d46b0fa`](https://sepolia.arbiscan.io/token/0x6b6e6479b8b3237933c3ab9d8be969862d4ed89f?a=0x522a04d74d61cab004a6ac8efb4abdc87d46b0fa)
@@ -244,7 +240,7 @@ non-div handle in the receipts decrypts cleanly.
 
 ---
 
-## What MuHaven shipped as a workaround (Phase 9.B / Option A)
+## What MuHaven shipped as a workaround (Option A)
 
 We accepted a privacy trade-off and re-architected `YieldSnapshot`
 to never need `encRatio` decryption:
@@ -279,13 +275,13 @@ trustedPayout(investor, encShare64, eph);
 
 The `FHE.mul(encBalance, trivialRate)` produces a handle whose
 ancestry is `max(encBalance, trivialRate) + 1`. encBalance has its
-own multi-tx history but resolves fine on its own (TBILL1 share
+own multi-tx history but resolves fine on its own (a token's share
 balance is empirically decryptable). The trivial is a depth-1 leaf.
 **No `encRatio`, no `encTotalSupply`, no aggregate fan-in.**
 
 **Privacy cost:** per-share yield rate (`ratePerShare = floor(
 totalYield / totalSupply)`) is now publicly readable on-chain. For
-RWAs this is conventionally OK — TBILL APY, dividend rates, gold
+RWAs this is conventionally OK — T-bill APY, dividend rates, gold
 lease rates are published off-chain anyway. **Per-investor
 balances and per-claim shares stay encrypted.**
 
@@ -298,7 +294,7 @@ honest issuer satisfies this trivially since it's their own money).
 
 ## Update 2026-05-07 — bit-width hypothesis empirically refuted at the composed reveal
 
-Following Alex's 2026-05-07 reply on this report — *"a 128-bit div could take up to 10s … if possible try to move to 64-bits like we use on fherc20 token, that should improve it a lot"* — we shipped Wave 4.5 (`docs/COFHE_TN_COMPOSED_REVEAL_REPORT.md` for the full empirical record; archived on branch `wave4-5-narrow-div`). Two empirical findings:
+Following Alex's 2026-05-07 reply on this report — *"a 128-bit div could take up to 10s … if possible try to move to 64-bits like we use on fherc20 token, that should improve it a lot"* — we ran the narrow-div validation (archived on branch `wave4-5-narrow-div`; full empirical record in `development/DEV_WAVE_4_5/`). Two empirical findings:
 
 1. **Isolated divide narrows cleanly at `euint64`.** A standalone `FHE.div(asEuint64(big_sum), asEuint64(small))` (the shape `scripts/probe-wave45-div.ts:probeA` produces) resolves in 7-10s for N=2/5/10 add-chain depths. **Bit-width hypothesis confirmed at the divide layer.**
 
@@ -306,9 +302,9 @@ Following Alex's 2026-05-07 reply on this report — *"a 128-bit div could take 
 
 **The discriminator we observe:** the **multiplicand's ancestry shape** in `mul(encBalance, *)`, not bit-width or single-op chain depth. Working pattern uses a depth-1 trivial-encrypted leaf (cleartext `ratePerShare`); failing pattern uses a stored handle whose ancestry transitively pulls in an N-wide `FHE.add` accumulator over investor balances + per-investor wrapper history.
 
-**Filed as a follow-up issue** with five testable hypotheses (allowPublic short-circuit, fresh `InEuint64` re-input, internal ancestry bound, mainnet vs testnet behavior, fherc20 fixture comparison) — see `docs/COFHE_TN_COMPOSED_REVEAL_REPORT.md` and the GitHub issue body draft at `development/DEV_WAVE_4_5/GITHUB_ISSUE.md`.
+**Filed as a follow-up issue** with five testable hypotheses (allowPublic short-circuit, fresh `InEuint64` re-input, internal ancestry bound, mainnet vs testnet behavior, fherc20 fixture comparison) — see the GitHub issue body draft at `development/DEV_WAVE_4_5/GITHUB_ISSUE.md`.
 
-**Status**: cleartext-rate workaround stays in production indefinitely. Staging rolled back to the Phase 9.C / L2 impl. Wave 4.5 archived as forward-compat reference until Fhenix's response unlocks a viable composed-reveal path.
+**Status**: the cleartext-rate workaround stays in production indefinitely. The narrow-div branch is archived as a forward-compat reference until Fhenix's response unlocks a viable composed-reveal path.
 
 ---
 
@@ -343,14 +339,14 @@ Following Alex's 2026-05-07 reply on this report — *"a 128-bit div could take 
 
 ## How to reproduce
 
-1. **Deploy MuHaven Wave 3.5 contracts on Arb Sepolia.** Repo
-   includes `scripts/deploy-v2.ts` for end-to-end deploy.
+1. **Deploy the MuHaven platform contracts on Arb Sepolia.** Repo
+   includes `scripts/deploy-v2.ts` for the end-to-end deploy.
 2. **Onboard a token** via `scripts/onboard-token.ts`.
 3. **Snapshot + fund an epoch** with the pre-Round-1 contract code
-   (commit before `ADR-046`'s `trustedPayout`):
+   (commit before the `trustedPayout` change):
    ```
    MUHAVEN_ENV=staging \
-   MUHAVEN_TOKEN_SYMBOL=TBILL1 \
+   MUHAVEN_TOKEN_SYMBOL=CETES \
    MUHAVEN_TOTAL_YIELD=1000000000 \
    pnpm hardhat run scripts/run-yield-epoch.ts --network arb-sepolia
    ```
@@ -384,7 +380,7 @@ math (yield distributions, ratio computations, vote-weight
 aggregations) likely hit the same wall. Documenting it publicly
 would save weeks.
 
-**For us:** Option A unblocks Wave 3.5 ship. If cofhe TN's
+**For us:** Option A unblocked the platform ship. If cofhe TN's
 behavior changes (mainnet, testnet improvements), we'd revert to
 encrypted `encRatio` to restore the privacy boundary. Owner-toggle
 or epoch-config flag could let us run both paths side-by-side.
@@ -397,11 +393,11 @@ Repo: muhaven (private at time of filing; happy to grant cofhe
 team read access on request).
 Author: hasto (`miloshaku@gmail.com`).
 Commits referenced:
-- `5ec8317` — Phase 8 / ADR-046 trustedPayout
+- `5ec8317` — trustedPayout bypass
 - `e3d748e` — Round 1 audit handle (encShare64)
 - `5436196` — Round 2 audit handle (encRatio decoupled-decrypt)
 - `b83b820` — Round 3 audit handle (encTotalYield + encTotalSupply)
-- TBD (Phase 9.B) — Option A architectural change.
+- Option A architectural change (cleartext per-share rate).
 
 For TN-side correlation we can provide:
 - Specific ctHashes that are stuck.

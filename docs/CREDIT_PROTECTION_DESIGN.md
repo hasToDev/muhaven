@@ -1,12 +1,14 @@
 # Credit Default Protection, Encrypted Governance & Cross-Chain KYC Design
 
-This document specifies three new feature modules for MuHaven, designed to be fully compatible with the existing contract architecture, FHE patterns, and storage layouts.
+This document specifies three feature modules for MuHaven, designed to be fully compatible with the existing contract architecture, FHE patterns, and storage layouts.
+
+> **Deployment scope:** The DefaultProtection and EncryptedGovernance contracts are source-complete (full contracts + tests) and deployed on **staging/preview**. They are **not yet promoted to the production deploy**; production promotion is planned. The Cross-Chain KYC Attestation module is design + contract stubs.
 
 | Feature | Priority | Scope | Status |
 |---|---|---|---|
-| Credit Default Protection | P0 | Full contracts + tests | Implement |
-| Encrypted Governance | P0 | Full contracts + tests | Implement |
-| Cross-Chain KYC Attestation | P1 | Design + contract stubs | Stub |
+| Credit Default Protection | P0 | Full contracts + tests | Source-complete · on staging/preview · prod promotion planned |
+| Encrypted Governance | P0 | Full contracts + tests | Source-complete · on staging/preview · prod promotion planned |
+| Cross-Chain KYC Attestation | P1 | Design + contract stubs | Designed (stubs) |
 
 ---
 
@@ -16,19 +18,19 @@ This document specifies three new feature modules for MuHaven, designed to be fu
 
 On-chain insurance for RWA defaults is critically underdeveloped. Fitch data shows a **9.2% default rate** among private credit borrowers, while ~$700M in leveraged RWA positions sit across DeFi protocols with **no hedging instrument**. When issuers default, investors have no on-chain recourse — no protection pool, no automatic payout, no encrypted governance mechanism to force action.
 
-MuHaven's FHE infrastructure and ReineiraOS escrow integration uniquely position it to offer **privacy-preserving default protection** — coverage amounts, payouts, and governance votes are all encrypted, consistent with the platform's core privacy guarantee.
+MuHaven's FHE infrastructure and confidential settlement layer uniquely position it to offer **privacy-preserving default protection** — coverage amounts, payouts, and governance votes are all encrypted, consistent with the platform's core privacy guarantee.
 
 ### Design Principles
 
 1. **Zero investor friction** — Protection is structural (issuer-funded first-loss reserve), not a product investors buy
 2. **Privacy-preserving** — Reserve balances encrypted, payout amounts encrypted, governance votes encrypted
-3. **Compatible** — Same Solidity version, upgrade patterns, FHE patterns, ReineiraOS integration
+3. **Compatible** — Same Solidity version, upgrade patterns, FHE patterns, settlement integration
 4. **Modular** — Each contract is independently deployable and testable
-5. **Reuses existing infrastructure** — InvestorRegistry for investor enumeration, ReineiraOS escrow for payouts, YieldGate for claim conditions, PUSDC for settlement
+5. **Reuses existing infrastructure** — InvestorRegistry for investor enumeration, MuHavenEscrow for payouts, YieldGate for claim conditions, mhUSDC for settlement
 
 ### Feature Summary
 
-**Credit Default Protection:** Issuers deposit a mandatory PUSDC first-loss reserve when listing tokens. The reserve rate (percentage) is public as a trust signal; the reserve balance is FHE-encrypted. If the issuer defaults, the reserve automatically distributes to all investors via ReineiraOS escrows — same batched pattern as YieldDistributor.
+**Credit Default Protection:** Issuers deposit a mandatory mhUSDC first-loss reserve when listing tokens. The reserve rate (percentage) is public as a trust signal; the reserve balance is FHE-encrypted. If the issuer defaults, the reserve automatically distributes to all investors via MuHavenEscrow — same batched pattern as YieldDistributor.
 
 **Encrypted Governance:** FHE-encrypted ballot voting for force-triggering protection when issuers are uncooperative (won't call `windDown`). Vote weight equals the voter's encrypted token balance — `FHE.select` and `FHE.add` accumulate weighted votes without revealing individual choices. Threshold comparison uses FHE operations so the result is only revealed via async decrypt.
 
@@ -48,14 +50,14 @@ MuHaven's FHE infrastructure and ReineiraOS escrow integration uniquely position
 │       │                    │                                          │
 │       ├──── InvestorRegistry ◄────────────────────┐                   │
 │       │         │                                  │                  │
-│  MuHavenVault   YieldDistributor ──── YieldGate ──── ReineiraOS      │
+│  MuHavenVault   YieldDistributor ──── YieldGate ──── MuHavenEscrow   │
 │                      │                    ▲                           │
 │                      │                    │ (reused for payouts)      │
 │  ─── NEW CONTRACTS ──┼────────────────────┤                          │
 │                      │                    │                          │
 │  DefaultProtection ──┤── reads InvestorRegistry                      │
-│       │              │── uses PUSDC (same transfer pattern)          │
-│       │              │── creates ReineiraOS escrows                  │
+│       │              │── uses mhUSDC (same transfer pattern)         │
+│       │              │── creates MuHavenEscrow escrows               │
 │       │              └── uses YieldGate for claim conditions         │
 │       │                                                              │
 │       ├── triggered by EncryptedGovernance (fallback)                │
@@ -77,14 +79,14 @@ MuHaven's FHE infrastructure and ReineiraOS escrow integration uniquely position
 
 | New Contract | Reads From | Writes To | Called By |
 |---|---|---|---|
-| DefaultProtection | InvestorRegistry, PUSDC | ReineiraOS Escrow | Issuers (deposit reserve), Governance/Admin (trigger), Anyone (processBatch) |
+| DefaultProtection | InvestorRegistry, mhUSDC | MuHavenEscrow | Issuers (deposit reserve), Governance/Admin (trigger), Anyone (processBatch) |
 | EncryptedGovernance | MuHavenToken (balances + totalSupply), InvestorRegistry | DefaultProtection | Investors (vote), Anyone (tally/execute) |
 | KYCAttestationRegistry | ERC3643KYCAdapter | — | Backend (prepare attestation data) |
 | MuHavenKYCVerifier | — | internal cache | Anyone (submit attestation), Protocols (isEligible) |
 
 ### Deployment Order
 
-1. Deploy DefaultProtection proxy (depends on: InvestorRegistry, ReineiraEscrow, YieldGate, PUSDC)
+1. Deploy DefaultProtection proxy (depends on: InvestorRegistry, MuHavenEscrow, YieldGate, mhUSDC)
 2. Deploy EncryptedGovernance proxy (depends on: MuHavenToken, InvestorRegistry, DefaultProtection)
 3. Wire: `DefaultProtection.setAuthorizedTrigger(governanceAddress, true)`
 4. Wire: `MuHavenToken.setAuthorizedReader(governanceAddress, true)`
@@ -105,7 +107,7 @@ import {euint128, InEuint64} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
 
 /// @title IDefaultProtection
 /// @notice Interface for the credit default protection module.
-///         Issuers deposit PUSDC first-loss reserves; payouts trigger
+///         Issuers deposit mhUSDC first-loss reserves; payouts trigger
 ///         automatically or via encrypted governance vote.
 interface IDefaultProtection {
 
@@ -177,14 +179,14 @@ interface IDefaultProtection {
         uint256 reserveRateBps
     ) external returns (uint256 protectionId);
 
-    /// @notice Deposit PUSDC into the reserve for an existing protection.
-    ///         Caller must have granted operator status to this contract on PUSDC.
+    /// @notice Deposit mhUSDC into the reserve for an existing protection.
+    ///         Caller must have granted operator status to this contract on mhUSDC.
     function depositReserve(
         uint256 protectionId,
         InEuint64 memory encryptedAmount
     ) external;
 
-    /// @notice Top up an existing reserve with additional PUSDC.
+    /// @notice Top up an existing reserve with additional mhUSDC.
     function topUpReserve(
         uint256 protectionId,
         InEuint64 memory encryptedAmount
@@ -240,7 +242,7 @@ struct ProtectionConfig {
     address token;              // MuHavenToken address
     address issuer;             // Issuer who created this protection
     uint256 reserveRateBps;     // Public: reserve rate in basis points (e.g., 500 = 5%)
-    euint128 encReserveBalance; // Encrypted: PUSDC reserve balance (widened from euint64)
+    euint128 encReserveBalance; // Encrypted: mhUSDC reserve balance (widened from euint64)
     ProtectionStatus status;    // Lifecycle state
     uint256 createdAt;          // Block timestamp of creation
     uint256 triggeredAt;        // Block timestamp when triggered (0 if not triggered)
@@ -271,9 +273,9 @@ mapping(uint256 => PayoutDistribution) public payoutDistributions; // Payout sta
 euint128 private _encTotalReservesHeld;                      // Encrypted aggregate reserves
 
 IInvestorRegistry public registry;          // Investor enumeration
-IReineiraEscrow public reineiraEscrow;      // ReineiraOS escrow for payouts
+IMuHavenEscrow public escrow;               // MuHavenEscrow for payouts
 address public yieldGate;                   // YieldGate (reused for payout escrow conditions)
-IFHERC20 public pusdc;                      // PUSDC token (ConfidentialUSDC)
+IFHERC20 public pusdc;                      // Settlement stablecoin (field name `pusdc` is legacy; rotates to MuHavenStable / mhUSDC at runtime)
 
 address public owner;
 mapping(address => bool) public authorizedTriggers;  // Governance contract, admin addresses
@@ -289,7 +291,7 @@ uint256[50] private __gap;
 uint256 public constant MAX_RESERVE_RATE_BPS = 5000;
 
 /// @dev Selector for confidentialTransferFrom(address,address,uint256).
-///      Matches deployed ConfidentialUSDC (pre-v0.1.0 cofhe-contracts).
+///      Matches the deployed settlement stablecoin's transfer selector.
 ///      Same constant as YieldDistributor._TRANSFER_FROM_UINT256.
 bytes4 private constant _TRANSFER_FROM_UINT256 =
     bytes4(keccak256("confidentialTransferFrom(address,address,uint256)"));
@@ -306,7 +308,7 @@ event PayoutBatchProcessed(uint256 indexed protectionId, uint256 processedCount,
 event PayoutCompleted(uint256 indexed protectionId);
 event MinimumReserveRateUpdated(uint256 newMinBps);
 event AuthorizedTriggerUpdated(address indexed trigger, bool authorized);
-event ReineiraEscrowUpdated(address indexed newEscrow);
+event EscrowUpdated(address indexed newEscrow);
 event YieldGateUpdated(address indexed newGate);
 event PusdcUpdated(address indexed newPusdc);
 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
@@ -337,14 +339,14 @@ error PusdcTransferFailed();
 
 /// @notice Initialize the proxy. Called once by the deploy script.
 /// @param _registry          InvestorRegistry address
-/// @param _reineiraEscrow    ReineiraOS escrow contract (or mock)
+/// @param _escrow            MuHavenEscrow contract (or mock)
 /// @param _yieldGate         YieldGate address (reused for payout escrow conditions)
-/// @param _pusdc             PUSDC (ConfidentialUSDC) address
+/// @param _pusdc             Settlement stablecoin address (mhUSDC; param name `_pusdc` is legacy)
 /// @param _owner             Initial owner
 /// @param _minimumRateBps    Initial minimum reserve rate (e.g., 300 = 3%)
 function initialize(
     address _registry,
-    address _reineiraEscrow,
+    address _escrow,
     address _yieldGate,
     address _pusdc,
     address _owner,
@@ -369,12 +371,12 @@ function createProtection(
     uint256 reserveRateBps
 ) external returns (uint256 protectionId);
 
-/// @notice Deposit PUSDC into the reserve, activating the protection.
-///         Caller must have granted this contract operator status on PUSDC
+/// @notice Deposit mhUSDC into the reserve, activating the protection.
+///         Caller must have granted this contract operator status on mhUSDC
 ///         via pusdc.setOperator(address(this), expiry).
 ///
-///         PUSDC transfer uses the uint256 selector for ConfidentialUSDC
-///         compatibility (same pattern as YieldDistributor).
+///         The transfer uses the uint256 confidentialTransferFrom selector
+///         (same pattern as YieldDistributor).
 ///
 ///         Access: only the protection's issuer.
 ///         Status transition: INACTIVE → ACTIVE on first deposit.
@@ -386,19 +388,19 @@ function createProtection(
 ///         - FHE.allow(reserve, issuer) grants issuer decrypt access
 ///
 /// @param protectionId     Protection to fund
-/// @param encryptedAmount  Client-encrypted PUSDC amount (InEuint64)
+/// @param encryptedAmount  Client-encrypted mhUSDC amount (InEuint64)
 function depositReserve(
     uint256 protectionId,
     InEuint64 memory encryptedAmount
 ) external;
 
-/// @notice Top up an existing active reserve with additional PUSDC.
+/// @notice Top up an existing active reserve with additional mhUSDC.
 ///         Same transfer mechanics as depositReserve().
 ///         Access: only the protection's issuer.
 ///         Status: must be ACTIVE.
 ///
 /// @param protectionId     Protection to top up
-/// @param encryptedAmount  Client-encrypted additional PUSDC (InEuint64)
+/// @param encryptedAmount  Client-encrypted additional mhUSDC (InEuint64)
 function topUpReserve(
     uint256 protectionId,
     InEuint64 memory encryptedAmount
@@ -421,7 +423,7 @@ function topUpReserve(
 function triggerPayout(uint256 protectionId) external;
 
 /// @notice Process a batch of investors for a triggered payout.
-///         Creates ReineiraOS escrows with encrypted per-investor shares.
+///         Creates MuHavenEscrow escrows with encrypted per-investor shares.
 ///         Permissionless — anyone (issuer, agent, relayer) can call.
 ///
 ///         Mirrors YieldDistributor.processBatch() exactly:
@@ -478,7 +480,7 @@ function isPayoutComplete(uint256 protectionId) external view returns (bool);
 
 function setMinimumReserveRate(uint256 newMinBps) external;  // onlyOwner
 function setAuthorizedTrigger(address trigger, bool authorized) external;  // onlyOwner
-function setReineiraEscrow(address newEscrow) external;  // onlyOwner
+function setEscrow(address newEscrow) external;  // onlyOwner
 function setYieldGate(address newGate) external;  // onlyOwner
 function setPusdc(address newPusdc) external;  // onlyOwner
 function transferOwnership(address newOwner) external;  // onlyOwner
@@ -499,7 +501,7 @@ function transferOwnership(address newOwner) external;  // onlyOwner
 #### Reserve Deposit Flow
 
 ```
-Issuer (EOA)                    DefaultProtection               PUSDC
+Issuer (EOA)                    DefaultProtection               mhUSDC
     │                                  │                          │
     │ pusdc.setOperator(protection, ∞) │                          │
     │──────────────────────────────────┼─────────────────────────►│
@@ -524,7 +526,7 @@ Issuer (EOA)                    DefaultProtection               PUSDC
 #### Payout Trigger + Distribution Flow
 
 ```
-Governance/Admin                DefaultProtection          InvestorRegistry   ReineiraOS Escrow
+Governance/Admin                DefaultProtection          InvestorRegistry   MuHavenEscrow
     │                                  │                         │                   │
     │ triggerPayout(protectionId)       │                         │                   │
     │─────────────────────────────────►│                         │                   │
@@ -1355,7 +1357,7 @@ function authorizedReaders(address reader) external view returns (bool);
 | **Replay across chains** — same attestation used on multiple chains | By design: attestations ARE valid across chains (that's the feature). Each chain independently caches and can invalidate. |
 | **Jurisdiction privacy** — destination chain learns investor jurisdiction | jurisdictionHash uses keccak256 — preimage not revealed unless the verifier knows the hash-to-jurisdiction mapping. |
 
-### Known Limitations (v1 / Hackathon)
+### Known Limitations (v1)
 
 1. **No balance snapshots for governance** — voter balance is read at vote time, not proposal creation time. Production upgrade: FHE-encrypted ERC-20 checkpoints.
 2. **No reserve withdrawal** — issuer cannot reclaim reserve even after normal token lifecycle completion. Production upgrade: withdrawable after normal wind-down + grace period.
@@ -1376,7 +1378,7 @@ function authorizedReaders(address reader) external view returns (bool);
 | 2 | Reject rate below minimum | Reverts with RateBelowMinimum |
 | 3 | Reject rate above maximum | Reverts with RateAboveMaximum |
 | 4 | Reject duplicate protection for same token | Reverts with ProtectionAlreadyExists |
-| 5 | Deposit reserve (PUSDC) | Status → ACTIVE, encrypted balance stored, FHE.allow(issuer) |
+| 5 | Deposit reserve (mhUSDC) | Status → ACTIVE, encrypted balance stored, FHE.allow(issuer) |
 | 6 | Only issuer can deposit | Reverts with OnlyIssuer for other callers |
 | 7 | Top up reserve | Encrypted balance increases (FHE.add), event emitted |
 | 8 | Trigger payout (owner) | Status → TRIGGERED, payout distribution created, investor count snapshot |
@@ -1438,4 +1440,4 @@ function authorizedReaders(address reader) external view returns (bool);
 
 ---
 
-*Designed for MuHaven Wave 3. Compatible with cofhe-contracts v0.1.3, @cofhe/sdk v0.4.0, Solidity ^0.8.28.*
+*Designed for MuHaven. Compatible with cofhe-contracts v0.1.3, @cofhe/sdk v0.4.0, Solidity ^0.8.28.*

@@ -1,6 +1,8 @@
 # Testnet Deployment Guide
 
-Step-by-step guide for deploying MuHaven contracts to Arbitrum Sepolia and verifying the deployment.
+Step-by-step guide for deploying the MuHaven platform contracts to Arbitrum Sepolia, onboarding RWA tokens, and verifying the deployment.
+
+> **Deploy targets:** `MUHAVEN_ENV=prod` writes `deployments/arb-sepolia-v2.json` and `MUHAVEN_ENV=staging` writes `deployments/arb-sepolia-v2.staging.json` — those are the authoritative address files. The legacy `pnpm run deploy:testnet` (single-token core) writes the read-only `deployments/arb-sepolia.json` artifact and is not part of the current platform flow.
 
 ---
 
@@ -48,14 +50,12 @@ ARB_SEPOLIA_RPC_URL=https://...    # Arbitrum Sepolia RPC URL
 ETHERSCAN_API_KEY=...              # For contract verification (optional)
 ```
 
-**Pre-filled variables (ReineiraOS on Arb Sepolia):**
+**Pre-filled variables (live on Arb Sepolia):**
 
 These are already set in `.env.example` with live addresses:
 
 ```bash
-USDC_ADDRESS=0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d
-REINEIRA_ESCROW_ADDRESS=0xC4333F84F5034D8691CB95f068def2e3B6DC60Fa
-PUSDC_ADDRESS=0x6b6e6479b8b3237933c3ab9d8be969862d4ed89f
+USDC_ADDRESS=0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d   # Circle USDC on Arb Sepolia
 ```
 
 **Optional variables:**
@@ -66,75 +66,59 @@ ISSUER_ADDRESS=                    # Defaults to deployer if empty
 
 ---
 
-## Step 2: Deploy TestTreasury (Mock ERC-20)
+## Step 2: Deploy the Platform Contracts
 
-MuHavenVault wraps an existing ERC-20 into fhERC-20. On testnet, we deploy a mock ERC-20 for this purpose.
-
-```bash
-pnpm run deploy:mocks:testnet
-```
-
-**Expected output:**
-
-```
-Deploying mock contracts to [arb-sepolia]
-Deployer: 0x...
-
-Deploying TestTreasury...
-   TestTreasury: 0x...
-
-Set in .env for testnet vault deploy:
-  UNDERLYING_TOKEN_ADDRESS=0x...
-```
-
-**After running:** Copy the printed address into your `.env`:
+The platform deploy stands up the shared singletons: the confidential USDC wrapper
+(`MuHavenStable`, ticker **mhUSDC**), the ERC-3643 compliance stack, the token registry, the
+subscription engine, the yield-snapshot state machine, and the NAV oracle.
 
 ```bash
-UNDERLYING_TOKEN_ADDRESS=0x...     # The address from the output above
+pnpm run deploy:v2:testnet         # prod  → deployments/arb-sepolia-v2.json
+pnpm run deploy:v2:testnet:stage   # stage → deployments/arb-sepolia-v2.staging.json
 ```
 
-**Output file:** `deployments/arb-sepolia.mocks.json`
+This deploys and wires (among others):
+
+1. **MuHavenStable** (proxy) -- confidential USDC wrapper (mhUSDC)
+2. **ERC-3643 stack** -- `ClaimTopicsRegistry`, `TrustedIssuersRegistry`, `MuHavenIdentityRegistry`, `ModularCompliance` (KYC whitelist for testnet)
+3. **TokenRegistry** (proxy) -- per-token config (issuer, oracle, paused state)
+4. **InvestorRegistry** (proxy) -- holder enumeration
+5. **MuHavenSubscription** (proxy) -- buy/sell primary-market engine
+6. **YieldSnapshot** (proxy) -- two-phase yield snapshot + claim
+7. **IssuerControlledOracle** (proxy) -- on-chain NAV oracle (written by `nav-publisher`)
+8. **ChainlinkFunctionsOracle** -- off-chain NAV source adapter
+
+**Output file:** `deployments/arb-sepolia-v2[.staging].json`.
+
+> If a previous deployment exists, it is automatically archived to `deployments/history/` before overwriting.
 
 ---
 
-## Step 3: Deploy All Contracts
+## Step 3: Onboard RWA Tokens
+
+Each tradable RWA token gets its own per-token stack — `MuHavenToken` (fhERC-20), `MuHavenTreasury`
+(ERC-20 ↔ fhERC-20 wrapper), and `RedemptionQueue` — registered against the platform singletons.
+Onboard one token at a time with the wrapper script, which sources the matching preset from
+`scripts/env/<symbol>.env`:
 
 ```bash
-pnpm run deploy:testnet
+bash scripts/onboard-token.sh <symbol> [prod|stage]
+
+# Examples:
+bash scripts/onboard-token.sh cetes          # prod  (default env)
+bash scripts/onboard-token.sh usyc  stage    # staging
 ```
 
-This deploys 7 contracts in order and wires their dependencies:
+Presets exist in `scripts/env/` for the currently onboarded set. **11 tokens are active in prod**
+(`USYC`, `BUIDL`, `CETES`, `EUTBL`, `syrupUSDC`, `USDY`, `ONyc`, `MUon`, `NVDAon`, `STRCx`, `TSLAx`).
+`TBILL1` and `GOLD1` were the original two tokens and are retired (their `scripts/env/` presets and
+deploy-file entries remain for history).
 
-1. **ERC3643KYCAdapter** (standalone) -- KYC whitelist
-2. **InvestorRegistry** (proxy) -- investor tracking
-3. **MuHavenToken** (proxy) -- fhERC-20 RWA token
-4. **RiskParams** (proxy) -- encrypted risk guardrails
-5. **YieldGate** (standalone) -- ReineiraOS condition resolver
-6. **YieldDistributor** (proxy) -- proportional yield distribution
-7. **MuHavenVault** (proxy) -- ERC-20 wrapping
+Each successful onboard appends a `tokens.<SYMBOL>` block to the matching deploy file. After
+onboarding, propagate the addresses to the service env files:
 
-**Post-deploy wiring (automatic):**
-
-- `registry.setAuthorizedCaller(token)` -- token can register investors
-- `token.grantMinter(vault)` -- vault can mint fhERC-20 when wrapping
-- `distributor.setAuthorizedCaller(issuer)` -- issuer can start distributions
-
-**Expected output:**
-
-```
-=== MuHaven Deployment Summary ===
-ERC3643KYCAdapter      0x...
-InvestorRegistry       0x...
-MuHavenToken           0x...
-RiskParams             0x...
-YieldGate              0x...
-YieldDistributor       0x...
-MuHavenVault           0x...
-```
-
-**Output file:** `deployments/arb-sepolia.json`
-
-> If a previous deployment exists, it is automatically archived to `deployments/history/` before overwriting.
+- `backend/.env`: per-token JSON arrays/maps — `MUHAVEN_TOKEN_ADDRESSES_JSON`, `YIELD_SNAPSHOT_*`, `REDEMPTION_QUEUE_*`, `TREASURY_*`.
+- `frontend/.env`: per-token JSON maps — `VITE_TREASURIES_JSON`, `VITE_QUEUES_JSON`, `VITE_YIELD_SNAPSHOTS_JSON` (map keys MUST be lowercase, per `frontend/src/contracts/addresses.ts`).
 
 ---
 
@@ -142,30 +126,35 @@ MuHavenVault           0x...
 
 Requires `ETHERSCAN_API_KEY` in `.env`. Uses Etherscan API V2 (single key works for all chains).
 
-### Non-proxied contracts (with constructor args)
-
-```bash
-# ERC3643KYCAdapter (arg: admin address = deployer)
-npx hardhat verify --network arb-sepolia <KYC_ADDRESS> <DEPLOYER_ADDRESS>
-
-# YieldGate (args: token address, kyc address)
-npx hardhat verify --network arb-sepolia <YIELDGATE_ADDRESS> <TOKEN_PROXY_ADDRESS> <KYC_ADDRESS>
-
-# TestTreasury (args: name, symbol, initialSupply)
-npx hardhat verify --network arb-sepolia <TREASURY_ADDRESS> "Test Treasury Token" "tRWA" 10000000000000000000000000
-```
-
 ### Proxied contracts (verify implementations, no constructor args)
 
+Pull the `implementation` address for each proxy from the deploy file and verify it:
+
 ```bash
+npx hardhat verify --network arb-sepolia <MUHAVEN_STABLE_IMPL>
+npx hardhat verify --network arb-sepolia <TOKEN_REGISTRY_IMPL>
+npx hardhat verify --network arb-sepolia <MUHAVEN_SUBSCRIPTION_IMPL>
+npx hardhat verify --network arb-sepolia <YIELD_SNAPSHOT_IMPL>
+npx hardhat verify --network arb-sepolia <ISSUER_CONTROLLED_ORACLE_IMPL>
 npx hardhat verify --network arb-sepolia <INVESTOR_REGISTRY_IMPL>
+# Per token:
 npx hardhat verify --network arb-sepolia <MUHAVEN_TOKEN_IMPL>
-npx hardhat verify --network arb-sepolia <RISK_PARAMS_IMPL>
-npx hardhat verify --network arb-sepolia <YIELD_DISTRIBUTOR_IMPL>
-npx hardhat verify --network arb-sepolia <MUHAVEN_VAULT_IMPL>
+npx hardhat verify --network arb-sepolia <MUHAVEN_TREASURY_IMPL>
+npx hardhat verify --network arb-sepolia <REDEMPTION_QUEUE_IMPL>
 ```
 
-Implementation addresses are in `deployments/arb-sepolia.json` under each contract's `implementation` field.
+Implementation addresses are in `deployments/arb-sepolia-v2.json` under each contract's
+`implementation` field (`contracts.<NAME>.implementation` for singletons,
+`tokens.<SYMBOL>.contracts.<NAME>.implementation` for per-token stacks).
+
+### Standalone contracts (with constructor args)
+
+ERC-3643 components and the KYC adapter take constructor args — read them from the deploy file and
+pass them positionally, e.g.:
+
+```bash
+npx hardhat verify --network arb-sepolia <KYC_ADAPTER_ADDRESS> <ADMIN_ADDRESS>
+```
 
 ---
 
@@ -175,26 +164,9 @@ Implementation addresses are in `deployments/arb-sepolia.json` under each contra
 pnpm run test:testnet
 ```
 
-This runs 6 tests against the deployed contracts:
-
-1. **Contract metadata** -- reads name, symbol, decimals
-2. **KYC whitelist** -- whitelists the deployer address
-3. **Encrypted mint** -- mints 1000 mhRWA tokens (FHE-encrypted)
-4. **Investor registry** -- verifies investor was registered
-5. **Async balance decrypt** -- requests CoFHE decryption (may take >15s)
-6. **Encrypted transfer** -- transfers 100 mhRWA to a random address
-
-**Expected output:**
-
-```
-=== All Tests Passed ===
-  ✓ Test 1: Contract metadata reads
-  ✓ Test 2: KYC whitelist
-  ✓ Test 3: Encrypted mint (1000.0 tokens)
-  ✓ Test 4: Investor registry
-  ✓ Test 5: Async balance decrypt
-  ✓ Test 6: Encrypted transfer (100.0 tokens)
-```
+This runs a set of read/write checks against the deployed contracts (contract metadata, KYC
+whitelist, encrypted mint, investor registry, async balance decrypt, encrypted transfer). The async
+balance decrypt may take >15s on the live CoFHE coprocessor — see Troubleshooting.
 
 ---
 
@@ -202,7 +174,7 @@ This runs 6 tests against the deployed contracts:
 
 ### 6a. Get testnet USDC
 
-Go to **https://faucet.circle.com/**, select **Arbitrum Sepolia**, and send USDC to your deployer wallet. The test needs 10 USDC.
+Go to **https://faucet.circle.com/**, select **Arbitrum Sepolia**, and send USDC to your deployer wallet. The test needs ~10 USDC.
 
 ### 6b. Run the yield test
 
@@ -210,26 +182,19 @@ Go to **https://faucet.circle.com/**, select **Arbitrum Sepolia**, and send USDC
 pnpm run test:yield:testnet
 ```
 
-This tests the full PUSDC yield pipeline:
-
-1. **USDC balance check** -- verifies you have enough USDC
-2. **Wrap USDC to PUSDC** -- approve + wrap via ConfidentialUSDC
-3. **PUSDC operator setup** -- sets YieldDistributor as operator
-4. **Start distribution** -- encrypts yield amount, calls `startDistribution`
-5. **Process batch** -- processes investor batch, creates escrows
-6. **Distribution state** -- verifies investor count, processed count, status
-7. **Yield decrypt** -- requests async decryption of yield amounts
+This exercises the mhUSDC yield pipeline end-to-end: wrap USDC → mhUSDC, snapshot holders, fund an
+epoch on `YieldSnapshot`, and claim. Per-share yield rate is supplied as a cleartext rate
+(`ratePerShare`) — see `docs/COFHE_TN_INDEXER_CHAIN_LENGTH_REPORT.md` for the architectural reason.
 
 ---
 
 ## Redeployment
 
-To redeploy (e.g., after contract changes):
+To redeploy (e.g., after platform contract changes):
 
-1. The previous deployment is automatically archived to `deployments/history/`
-2. Run steps 2-5 again
-3. Update `UNDERLYING_TOKEN_ADDRESS` in `.env` if you redeploy TestTreasury
-4. Update the contract addresses in `README.md`
+1. The previous deployment is automatically archived to `deployments/history/`.
+2. Re-run `pnpm run deploy:v2:testnet[:stage]` for platform singletons, or `bash scripts/onboard-token.sh <symbol> [env]` for a single token's stack.
+3. Most contracts are UUPS proxies — for an implementation-only change, prefer an upgrade script over a full redeploy (see `scripts/` for the per-contract `deploy-*-impl` / `manual-upgrade-*` helpers).
 
 ---
 
@@ -257,8 +222,10 @@ Make sure `hardhat.config.ts` uses the `customChains` config with `https://api.e
 
 | Command | What it does |
 |---------|-------------|
-| `pnpm run deploy:mocks:testnet` | Deploy TestTreasury to Arb Sepolia |
-| `pnpm run deploy:testnet` | Deploy all 7 core contracts |
+| `pnpm run deploy:v2:testnet` | Deploy platform singletons (prod → `arb-sepolia-v2.json`) |
+| `pnpm run deploy:v2:testnet:stage` | Deploy platform singletons (stage → `arb-sepolia-v2.staging.json`) |
+| `bash scripts/onboard-token.sh <symbol> [prod\|stage]` | Onboard one RWA token's per-token stack |
+| `pnpm run deploy:testnet` | Legacy single-token core deploy → read-only `arb-sepolia.json` artifact |
 | `pnpm run test:testnet` | Test basic operations (whitelist, mint, transfer) |
 | `pnpm run test:yield:testnet` | Test yield distribution (needs USDC) |
-| `pnpm run validate:reineira` | Verify ReineiraOS contract addresses are live |
+| `pnpm run validate:reineira` | Verify legacy/external contract addresses are live |

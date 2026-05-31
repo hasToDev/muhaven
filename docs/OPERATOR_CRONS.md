@@ -7,17 +7,17 @@ mechanism owns it, how it alerts, and where the per-cron notes live.
 
 | Cron | Mechanism | Schedule | Failure detector | Escalation | Runbook |
 |---|---|---|---|---|---|
-| YieldDistributionCron | Backend docker container (node-cron) | Daily at `00:00 UTC` | Per-tick try/catch + `notifyYieldCronFailure` → Telegram | Immediate Telegram on phase failure; daily heartbeat (`YIELD_CRON_HEARTBEAT`, severity=info) at end of every tick with per-token sweep summary (2026-05-22 — replaced the pre-existing dry-run-gated boot-alert) | `backend/src/infrastructure/blockchain/yield-cron.ts` header; `development/DEV_WAVE_5/Q3_PLAN.md` |
+| YieldDistributionCron | Backend docker container (node-cron) | Daily at `00:00 UTC` | Per-tick try/catch + `notifyYieldCronFailure` → Telegram | Immediate Telegram on phase failure; daily heartbeat (`YIELD_CRON_HEARTBEAT`, severity=info) at end of every tick with per-token sweep summary | `backend/src/infrastructure/blockchain/yield-cron.ts` header |
 | oracle-staleness-check.sh | Homelab host crontab (`*/30 * * * *`) | Every 30 min | Per-token `getNAV().updatedAt` age vs `THRESHOLD_HR` (default 28h) | Telegram alert per stale token; backstop for ALL upstream NAV pipelines | `scripts/oracle-staleness-check.sh` header; `development/DEV_WAVE_3/HOMELAB_DEPLOY.md` "Oracle staleness monitor" |
 | nav-publisher | Dedicated docker service | Per-token internal scheduler; refreshes a token when its on-chain NAV age ≥ ½ of contract max-staleness | Container restart loop + structured logs | Surfaces as stale NAV at the 28h backstop above | `nav-publisher/src/publisher.ts`; `project_design_a_navwriter_pattern` memory |
-| refresh-and-ingest (Wave 5 Q2) | systemd `--user` timer in autologin desktop session | `00:00 / 08:00 / 16:00 UTC` daily | Per-phase exit code + partial-scrape detection (`refresh-history.log` `failed=...` match) + `notify=fail` history flag when alert delivery itself broke + daily heartbeat ping (absence-of-heartbeat for >24h IS the "cron never fired" signal — operator-monitored today; an automated absence-detector is filed as a future enhancement) | Telegram via `/api/v1/operator/alert-test` (failures AND daily liveness); 28h backstop above | `scripts/refresh-and-ingest.sh` header; `scripts/oracle-mine/README.md` |
+| refresh-and-ingest (rwa.xyz oracle scrape) | systemd `--user` timer in autologin desktop session | `00:00 / 08:00 / 16:00 UTC` daily | Per-phase exit code + partial-scrape detection (`refresh-history.log` `failed=...` match) + `notify=fail` history flag when alert delivery itself broke + daily heartbeat ping (absence-of-heartbeat for >24h IS the "cron never fired" signal — operator-monitored today; an automated absence-detector is filed as a future enhancement) | Telegram via `/api/v1/operator/alert-test` (failures AND daily liveness); 28h backstop above | `scripts/refresh-and-ingest.sh` header; `scripts/oracle-mine/README.md` |
 
 ## Failure-detection topology
 
 The four crons are layered, not independent:
 
 ```
-fresh rwa.xyz data ──► (Q2 refresh-and-ingest, 8h, homelab)
+fresh rwa.xyz data ──► (refresh-and-ingest, 8h, homelab)
                               │ writes oracle_snapshots
                               ▼
 on-chain NAV  ──► (nav-publisher, per-token cadence, homelab)
@@ -31,19 +31,19 @@ on-chain NAV  ──► (nav-publisher, per-token cadence, homelab)
 distributable yield ──► (YieldDistributionCron, daily 00 UTC, backend container)
 ```
 
-If Q2 breaks → fresh data stops flowing in → nav-publisher re-stamps the
+If the oracle scrape breaks → fresh data stops flowing in → nav-publisher re-stamps the
 last-known NAV (synthetic-token fallback, see `project_design_a_navwriter_pattern`)
 → on-chain NAV stays fresh-looking for a while → staleness-check eventually
-alerts at 28h IF nav-publisher ALSO drifts. Q2's own Telegram alert is the
+alerts at 28h IF nav-publisher ALSO drifts. The scrape's own Telegram alert is the
 8h-granularity signal on individual run failures; the daily heartbeat
 catches "cron never even fired" within ~24h (absence-of-ping = signal);
 the 28h staleness backstop is the final safety net.
 
 ## Operator install rituals
 
-### Q2 refresh-and-ingest (homelab, one-time)
+### refresh-and-ingest (homelab, one-time)
 
-The Q2 cron runs in the operator's autologin desktop session on the
+The oracle-refresh cron runs in the operator's autologin desktop session on the
 homelab. Headed Chromium needs `$DISPLAY` and a real session — running
 it in a docker container or under SYSTEM would either deadlock or render
 to an invisible session 0.
@@ -58,10 +58,10 @@ read-only mount so the wrapper's `docker compose exec backend tsx
 scripts/ingest-oracle.ts` flow can see the freshly scraped JSON).
 
 > **Note:** `scripts/deploy-homelab.sh` is gitignored (operator-specific
-> hostnames + SSH key paths). The step 5e block must include the Q2
-> entries manually; reference the canonical block in the commit that
-> landed Q2b (search `git log --all --diff-filter=A scripts/oracle-mine/`)
-> if rebuilding from scratch.
+> hostnames + SSH key paths). The step 5e block must include the
+> oracle-refresh entries manually; reference the canonical block in the
+> commit that landed the oracle-mine pipeline (search
+> `git log --all --diff-filter=A scripts/oracle-mine/`) if rebuilding from scratch.
 
 ```bash
 ssh muhaven@192.168.1.52        # or open a terminal on the homelab GUI
@@ -103,7 +103,7 @@ bash scripts/linux/uninstall-oracle-refresh.sh                 # remove
 
 ### "No heartbeat for >24h" — investigation checklist
 
-When the operator notices the daily `Q2 daily heartbeat OK date=...` ping
+When the operator notices the daily `daily heartbeat OK date=...` ping
 hasn't landed in Telegram for >24h, walk these in order:
 
 1. `systemctl --user list-timers muhaven-oracle-refresh.timer` —
@@ -142,7 +142,7 @@ user manager runs across logout:
 sudo loginctl enable-linger "$USER"
 ```
 
-### Q2 refresh-and-ingest (Windows dev box, FALLBACK only)
+### refresh-and-ingest (Windows dev box, FALLBACK only)
 
 If for some reason the homelab is unavailable, a Windows Task Scheduler
 installer at `scripts/windows/install-oracle-refresh-task.ps1` registers
@@ -175,13 +175,13 @@ In-process, starts with the backend container. Toggled by env:
 YIELD_CRON_ENABLED=true
 YIELD_CRON_PRIVATE_KEY=<signer>
 YIELD_CRON_DRY_RUN=true|false
-YIELD_CRON_SNAPSHOT_FUNDING=true   # FU-1 (Wave 5 W2); default true
+YIELD_CRON_SNAPSHOT_FUNDING=true   # default true; sizes each epoch to snapshotted supply
 YIELD_CRON_MAX_SUPPLY_CAP=10000    # safety ceiling under snapshot funding
 ```
 
 No registration step — `pnpm run deploy:homelab` brings it up with the backend.
 
-**Shared issuer EOA / nonce collisions (FU-4):** the yield issuer EOA
+**Shared issuer EOA / nonce collisions:** the yield issuer EOA
 (`YIELD_CRON_PRIVATE_KEY`) is shared with the nav crons on prod, so a
 concurrent NAV tx can advance the account nonce and reject a yield tx with
 `NONCE_EXPIRED` ("nonce too low"). The runner now absorbs this: it logs
@@ -193,7 +193,7 @@ resume. If collisions become frequent, the deeper fix is a dedicated yield EOA
 (it must remain the on-chain `tokenRegistry.getConfig(token).issuer`) or
 schedule separation from the nav cadence.
 
-**Funding model (FU-1, Wave 5 W2):** with `YIELD_CRON_SNAPSHOT_FUNDING=true`
+**Funding model:** with `YIELD_CRON_SNAPSHOT_FUNDING=true`
 (default) the cron sizes each epoch to the ACTUAL snapshotted supply —
 `min(decryptedSupply, YIELD_CRON_MAX_SUPPLY_CAP) × ratePerShare /
 RATE_SCALE` — by decrypting the on-chain `YieldSnapshot.encTotalSupply`
@@ -207,7 +207,7 @@ post-finalize. The cap is now a SAFETY CEILING, not the funded amount. Set
 | `SnapshotSupplyDecryptError` (message: *"PERSISTENT … STALLED"*) | error | The epoch finalized on a PRIOR tick and STILL can't be decrypted → the ACL has had ≥1 full tick to propagate, so this is **structural** (un-indexable handle at that token's holder scale / coprocessor / RPC), NOT lag. Yield for the token is stalled. **Halt + roll back** (`YIELD_CRON_SNAPSHOT_FUNDING=false`) and investigate; do not wait it out. |
 | `SnapshotSupplyExceedsCapError` | warn | Snapshot supply exceeded the cap → funded the ceiling, BELOW the claimable total, so late claimants silent-fail. **Raise `YIELD_CRON_MAX_SUPPLY_CAP`.** If it fires every tick, the on-chain supply is in a larger decimal scale than the cap envelope — verify before raising. |
 
-**⚠️ Enable FU-1 safely — smoke ONE token BEFORE the first unattended midnight tick.**
+**⚠️ Enable snapshot funding safely — smoke ONE token BEFORE the first unattended midnight tick.**
 The same-tick `encTotalSupply` decrypt is sound by construction but had no live
 proof at implementation time, and the funded amount depends on the on-chain
 supply's (unverified) decimal scale. Because the cron is **default-on**, the
@@ -226,10 +226,10 @@ matches the proven cap-based epoch magnitude (~$0.093 for CETES). A
 scale is off or the decrypt doesn't resolve. (`--cap-funding` forces the legacy
 path. Avoid pairing the smoke with `--dry-run` against prod Postgres — it
 historically stranded an `epoch_id=0` poison row that wedged the next live tick.
-As of **FU-3** (2026-05-25) this is code-fixed two ways: dry-run swaps in a NoOp
+This is now code-fixed two ways: dry-run swaps in a NoOp
 audit writer so it never writes to prod Postgres, and the runner auto-resolves
 any pre-existing stranded `epoch_id=0` row to `failure` on the next live tick —
-look for the `FU-3: audit row references a non-existent on-chain epoch` log line.
+look for the `audit row references a non-existent on-chain epoch` log line.
 Still prefer a live one-token smoke to a dry-run for funding validation.) If
 you'd rather gate it, deploy with `YIELD_CRON_SNAPSHOT_FUNDING=false` first,
 smoke, then flip to `true` and restart.
@@ -249,15 +249,15 @@ Three locations hold operator secrets:
 | `TELEGRAM_BOT_TOKEN` | canonical (for prod backend's notifier) | mirror (for staleness alerts) | — |
 | `TELEGRAM_OPERATOR_CHAT_ID` | canonical | mirror | — |
 
-All three secret files live on the homelab now (Q2 moved off the dev box
-2026-05-21). On rotation: update `backend/.env` first, restart backend
+All three secret files live on the homelab now (the oracle scrape moved off
+the dev box 2026-05-21). On rotation: update `backend/.env` first, restart backend
 (`pnpm run deploy:homelab`), then propagate to the other two files by
 hand. A `scripts/verify-secrets-sync.sh` probe is filed as a future
 enhancement.
 
-## Q2 deferred follow-ups (non-blocking, priority order)
+## Deferred follow-ups (non-blocking, priority order)
 
-These were filed across the Q2 → Q2b → Q2c → Q2d review rounds; none
+These were filed across the oracle-refresh build/review rounds; none
 block the live cron. Pick in order of payoff:
 
 1. **~~`/api/v1/operator/cron-failure` route rename + Telegram template fix~~ — PARTIALLY CLOSED 2026-05-22.**
@@ -316,22 +316,21 @@ block the live cron. Pick in order of payoff:
    bootstrap to `npm ci --ignore-scripts` + commit `package-lock.json`
    + extend `scripts/refresh-and-ingest.sh`'s preflight to verify the
    lockfile checksum hasn't changed since install. Round-1 Security H-4.
-5. **Automated absence-of-heartbeat detector** (~1h). Today the Q2d
+5. **Automated absence-of-heartbeat detector** (~1h). Today the
    daily heartbeat is OPERATOR-monitored (operator notices missing
    daily Telegram ping). Options for automation:
    - External Healthchecks.io probe (adds third-party dep + a new
      secret).
    - In-backend `cron_state` table tracks `last-heartbeat-at` per
      cron; a separate poller alerts if the gap exceeds a threshold.
-     Bigger lift but aligns with Q3's existing `cron_state` pattern.
-   Round-2 DevOps INFO + Round-3 DevOps L-2.
+     Bigger lift but aligns with the existing yield-cron `cron_state` pattern.
 6. **`scripts/deploy-homelab.sh` ungitignore** (~1h). Currently
    gitignored (operator-specific hostnames + SSH key paths). Local
    edits don't propagate; future operators rebuilding from scratch
-   lose the step 5e Q2-sync block. Either parameterise the
+   lose the step 5e oracle-mine-sync block. Either parameterise the
    operator-specific bits via env vars and ungitignore, or commit the
    canonical step 5e block to a tracked sibling script that gets
-   sourced by the gitignored wrapper. Surfaced when Q2b landed.
+   sourced by the gitignored wrapper.
 7. **RPC provider redundancy via viem `fallback` transport** (~2h).
    Single-RPC-provider topology surfaced 2026-05-21 02:23 UTC: a
    transient `getaddrinfo EAI_AGAIN
@@ -354,9 +353,9 @@ block the live cron. Pick in order of payoff:
 
 ## When the operator outgrows this layout
 
-Migration triggers (from the Wave 5 Q2 architecture review):
+Migration triggers (from the oracle-refresh architecture review):
 
-- **Multi-person team** → Q2 wrapper moves to a CI runner (GitHub Actions cron);
+- **Multi-person team** → the scrape wrapper moves to a CI runner (GitHub Actions cron);
   headless scrape replaces persistent Chromium profile; secrets become
   per-runner credentials.
 - **Cloud-scrape lands** (Browserbase / Cloudflare Browser Rendering /

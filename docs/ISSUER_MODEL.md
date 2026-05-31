@@ -21,9 +21,9 @@ This document covers the **supply side** — everything the investor-facing docs
 
 MuHaven supports two token models. Both produce the same fhERC-20 encrypted tokens for investors.
 
-### Model 1: Wrapped tokens (hackathon)
+### Model 1: Wrapped tokens (live)
 
-Existing RWA tokens from external protocols are deposited into MuHaven and wrapped into fhERC-20 encrypted versions.
+Existing RWA tokens from external protocols are deposited into MuHaven and wrapped into fhERC-20 encrypted versions. This is the model behind the 11 active tokens currently onboarded on Arbitrum Sepolia (TBILL1/GOLD1 retired): CETES, USYC, BUIDL, EUTBL, syrupUSDC, USDY, ONyc, MUon, NVDAon, STRCx, TSLAx.
 
 ```
 External RWA token              MuHaven
@@ -51,7 +51,7 @@ External RWA token              MuHaven
 
 **Who decides the yield:** The underlying protocol (e.g., BlackRock for BUIDL). MuHaven harvests the yield accrual and distributes it privately.
 
-**Hackathon implementation:** For the demo, we create a mock ERC-20 "TestBUILD" token that simulates a treasury fund. The wrapping flow demonstrates the concept without needing real BUIDL tokens on testnet.
+**Testnet implementation:** On Arbitrum Sepolia, each token is backed by a mock ERC-20 (e.g., a "TestTreasury" token simulating a treasury fund). The wrapping flow demonstrates the concept without needing the real underlying tokens on testnet.
 
 ### Model 2: Native issuance (production)
 
@@ -119,23 +119,23 @@ This is the most common question. The answer: **MuHaven never decides yield. It 
    │
    │  "This month's yield: $50,000 across all holders"
    ▼
-3. Issuer deposits into MuHaven
+3. Issuer opens a yield epoch
    │
-   │  Calls depositYield() with PUSDC (ReineiraOS confidential stablecoin)
+   │  Funds a per-epoch YieldSnapshot in mhUSDC (MuHaven's confidential
+   │  USDC wrapper). Flow: openEpoch → snapshotBatch → finalizeSnapshot → fundEpoch
    ▼
-4. MuHaven creates ReineiraOS escrows
+4. MuHaven records a cleartext ratePerShare for the epoch
    │
-   │  Platform agent creates one escrow per eligible investor
-   │  Amount = proportional to their encrypted balance
-   │  All amounts encrypted — issuer can't see individual positions
+   │  Per-epoch fixed-point ratePerShare (cleartext); per-investor shares
+   │  stay encrypted. The issuer sees aggregates only — never individual positions.
    ▼
-5. YieldGate verifies eligibility
+5. Eligibility gate
    │
    │  Checks: investor holds tokens? KYC valid?
    ▼
-6. Yield released to investors
+6. Yield claimed by investors (pull-based)
    │
-   │  Investor's AI agent auto-claims
+   │  Investor (or their AI agent) calls claimYield against the epoch
    │  Amount added to encrypted balance
    │  Nobody sees individual yield amounts
 ```
@@ -148,12 +148,14 @@ This is the most common question. The answer: **MuHaven never decides yield. It 
 
 ### Issuer onboarding flow
 
-1. **Connect wallet** — Issuer connects their organizational wallet
+1. **Connect wallet** — Issuer connects their organizational wallet (issuer role is chosen at account creation and fixed per passkey)
 2. **KYC/KYB verification** — Issuer passes business verification (via ERC-3643 claim issuer)
 3. **Choose model** — Wrap existing tokens or create native tokens
-4. **Configure token** — Set parameters (see below)
+4. **Configure token** — Set parameters (see below) via the self-serve onboarding wizard (live)
 5. **Deploy** — MuHaven deploys contracts with issuer's configuration
 6. **Distribute** — Issuer mints tokens to eligible investor addresses
+
+The self-serve onboarding wizard is live; 11 RWA tokens have been onboarded through this pipeline on Arbitrum Sepolia.
 
 ### Token configuration parameters
 
@@ -170,7 +172,7 @@ This is the most common question. The answer: **MuHaven never decides yield. It 
 | Min investment | Minimum purchase amount | $1,000 USDC |
 | Lock-up period | Minimum holding period | 90 days, 1 year, none |
 
-### Issuer dashboard pages (hackathon scope)
+### Issuer dashboard pages
 
 The issuer dashboard is a separate section of the Vue 3 app, accessible via role-based routing:
 
@@ -183,7 +185,7 @@ The issuer dashboard is a separate section of the Vue 3 app, accessible via role
 - Input total yield amount for the period
 - Select which token the yield applies to
 - Preview distribution (shows investor count, not individual amounts)
-- Confirm → creates ReineiraOS escrows for all eligible investors
+- Confirm → opens and funds a per-epoch YieldSnapshot for all eligible investors
 - Track distribution status (pending, claimed, expired)
 
 **Page 3: Investor management**
@@ -207,8 +209,8 @@ The issuer dashboard is a separate section of the Vue 3 app, accessible via role
 function mint(address to, InEuint128 calldata amount) external onlyMinter;
 
 /// @notice Deposit yield for distribution (issuer only)
-/// @param totalYield Total USDC to distribute across all holders
-/// @dev Creates ReineiraOS escrows via YieldDistributor
+/// @param totalYield Total mhUSDC to distribute across all holders
+/// @dev Funds a per-epoch YieldSnapshot for proportional pull-based claims
 function depositYield(uint256 totalYield) external onlyIssuer;
 
 /// @notice Get aggregate statistics (cleartext, not per-investor)
@@ -221,51 +223,54 @@ function setYieldSchedule(uint256 intervalSeconds) external onlyIssuer;
 function setMinInvestment(uint256 minUsdc) external onlyIssuer;
 ```
 
-### Issuer-facing AI agent tools (future)
+### Issuer-facing AI agent tools
 
-For production, the platform operations agent gains issuer-facing tools:
+The platform agent (HavenBot / MCP) exposes issuer-facing tools. Some are live today (e.g.
+unpausing a token via `muhaven.issuer.unpause_token`, which does `setNAV` + `setPaused(false)`,
+plus yield distribution, KYC add/remove, and audit queries); others are planned:
 
-| Tool | What it does |
-|------|-------------|
-| `create_token` | Deploy a new fhERC-20 RWA token with configuration |
-| `mint_tokens` | Mint tokens to eligible investor addresses |
-| `deposit_yield` | Deposit yield and trigger distribution |
-| `get_issuer_stats` | View aggregate metrics (total supply, investor count) |
-| `update_whitelist` | Add/remove investors from eligibility |
+| Tool | What it does | Status |
+|------|-------------|--------|
+| `unpause_token` | Set NAV + unpause an existing token | Live |
+| `distribute_yield` | Open + fund a yield epoch | Live |
+| `kyc_add` / `kyc_remove` | Add/remove investors from the whitelist | Live |
+| `audit_query` | View aggregate metrics (total supply, investor count) | Live |
+| `create_token` | Deploy a new fhERC-20 RWA token with configuration | Planned (self-serve wizard is the live path) |
 
 ---
 
-## Hackathon implementation plan
+## Implementation status
 
-### What to build for the demo
+### The two-sided flow end-to-end (shipped)
 
-For the hackathon, we need to demonstrate the two-sided flow end-to-end:
+The full two-sided flow runs live on Arbitrum Sepolia:
 
-**Mock issuer setup:**
-1. Deploy a mock "TestTreasury" ERC-20 token (simulating an existing RWA)
-2. Deploy MuHavenToken as the fhERC-20 wrapper
-3. Create a test issuer wallet that can deposit yield
+**Issuer setup:**
+1. Each token is backed by a mock ERC-20 (e.g., "TestTreasury") simulating an existing RWA
+2. MuHavenToken acts as the fhERC-20 wrapper
+3. The issuer wallet opens and funds yield epochs
 
-**Demo flow:**
-1. **Issuer side:** Issuer creates a token on the dashboard → configures yield → deposits USDC as yield
-2. **Platform agent:** Automatically creates ReineiraOS escrows for each eligible investor
-3. **Investor side:** AI agent detects pending yield → claims it → portfolio updated (all encrypted)
+**Flow:**
+1. **Issuer side:** Issuer onboards a token via the self-serve wizard → configures yield → funds a yield epoch in mhUSDC
+2. **Platform:** A per-epoch YieldSnapshot records a cleartext ratePerShare; per-investor shares stay encrypted
+3. **Investor side:** Investor (or AI agent) detects claimable yield → claims it (pull-based) → portfolio updated (all encrypted)
 
-### Smart contract additions needed
+### Smart contract surface
 
-| Contract | Addition | Purpose |
+| Contract | Surface | Purpose |
 |----------|---------|---------|
 | `MuHavenToken.sol` | `mint()` (MINTER_ROLE), `depositYield()` | Role-based minting and yield deposit |
 | `MuHavenToken.sol` | `onlyIssuer` modifier, `onlyMinter` modifier | Role-based access control (issuer for yield config, minter for token issuance) |
 | `MuHavenToken.sol` | `investorCount()`, `totalYieldDistributed()` | Aggregate cleartext metrics for issuer |
-| `MuHavenVault.sol` (new) | `wrap()`, `unwrap()` | Lock ERC-20, mint fhERC-20 (wrapper model) |
-| `YieldDistributor.sol` (new) | `distributeYield()` | Read all holder balances, create proportional escrows |
+| `MuHavenVault.sol` | `wrap()`, `unwrap()` | Lock ERC-20, mint fhERC-20 (wrapper model) |
+| `YieldDistributor` / `YieldSnapshot` | `distributeYield()` / per-epoch snapshot | Proportional pull-based yield distribution |
 
 ---
 
-## Revenue model (for judges)
+## Revenue model (planned)
 
-The two-sided model creates three revenue streams:
+The two-sided model is designed to support three revenue streams. These fees are not yet active —
+they are on the roadmap:
 
 | Revenue stream | Rate | Who pays | When |
 |---------------|------|----------|------|
@@ -296,12 +301,12 @@ All fees are encrypted — competitors can't reverse-engineer MuHaven's revenue 
 │  │                                                          │  │
 │  │  MuHavenToken (fhERC-20)  ←──── shared ────→  IKYCGate   │  │
 │  │  MuHavenVault (wrap/unwrap)                    YieldGate │  │
-│  │  YieldDistributor (proportional escrow creation)         │  │
+│  │  YieldDistributor (proportional per-epoch yield snapshot) │  │
 │  └──────────────────────────────────────────────────────────┘  │
 │                              │                                 │
 │                              ▼                                 │
 │  ┌──────────────────────────────────────────────────────────┐  │
-│  │  ReineiraOS (PUSDC + escrow) + CoFHE (FHE)               │  │
+│  │  MuHavenStable (mhUSDC) + YieldSnapshot + CoFHE (FHE)    │  │
 │  └──────────────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────────────┘
 ```
