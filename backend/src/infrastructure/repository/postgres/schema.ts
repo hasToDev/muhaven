@@ -486,6 +486,19 @@ export const taxEvents = pgTable(
     index('tax_events_holder_address_idx').on(t.holderAddress),
     index('tax_events_token_address_idx').on(t.tokenAddress),
     index('tax_events_block_timestamp_idx').on(t.blockTimestamp),
+    // Perf: the /activity feed (findByHolder) + the agent's hasCashRailActivity
+    // gate both filter on `lower(holder_address)` (addresses are stored
+    // checksummed but matched case-insensitively). The plain `holder_address`
+    // index above can't serve a `lower()` predicate, so those queries
+    // seq-scanned the WHOLE table and sorted by block_timestamp — multi-second
+    // on a busy account (the "/activity takes seconds to open" report). This
+    // FUNCTIONAL COMPOSITE index matches `WHERE lower(holder_address)=? ORDER BY
+    // block_timestamp DESC` exactly: an index range-scan that walks the holder's
+    // rows newest-first and stops at the page limit, independent of table size.
+    index('tax_events_holder_lower_ts_idx').on(
+      sql`lower(${t.holderAddress})`,
+      t.blockTimestamp.desc(),
+    ),
   ],
 );
 
