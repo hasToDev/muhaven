@@ -18,6 +18,12 @@ You can test all of MuHaven from a browser. There is nothing to install.
 | **Testnet USDC** | Free from a faucet — see [Get testnet funds](/guide/investor/get-funds). |
 | **~10–15 minutes** | The [happy path](/guide/happy-path) takes about 10. |
 
+::: tip Easiest passkey option on Chrome/Android
+When your device prompts you to save the passkey, choose **Google Password Manager** — it
+stores the passkey in your Google account and syncs it across devices, so you don't need a
+hardware key or a specific OS. It's the smoothest option for testing.
+:::
+
 ::: tip You do NOT need ETH or any gas token.
 MuHaven uses an [ERC-4337 smart account](/get-started/passkey-accounts) with **sponsored
 gas**. Your transactions are paid for by the platform's paymaster, so you never buy or

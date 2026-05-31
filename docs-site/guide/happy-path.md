@@ -24,21 +24,27 @@ heading. Otherwise just keep going down this page.
 
 [Full task → I1](/guide/investor/sign-in)
 
-1. Open [**muhaven.app**](https://muhaven.app) and go to **Sign in**.
-2. Choose **Create account**, pick the **Investor** role, name your passkey, and click
-   **Create Account**.
+1. Open [**muhaven.app**](https://muhaven.app) and click **Launch App** — you'll be taken
+   to the login page.
+2. Use the link at the bottom to switch to **Create account**, pick the **Investor** role,
+   name your passkey, and click **Create Account**.
 3. Approve with your device (Touch ID / Windows Hello / security key).
 
-You land on the **Cash** page.
+::: tip Easiest passkey option on Chrome/Android
+When prompted, choose **Google Password Manager** — it saves your passkey to your Google
+account and syncs it across devices, so you don't need a hardware key or a specific OS.
+It's the smoothest option for testing.
+:::
+
+You land on your **Portfolio**. To fund, open **Cash** from the sidebar.
 
 ## 2 · Get testnet USDC · ~1–2 min
 
 [Full task → I2](/guide/investor/get-funds)
 
-1. On the **Cash** page (or **Portfolio**), copy your wallet address with **Copy**.
-2. Click **Get test USDC** / **Open faucet** to open
-   [faucet.circle.com](https://faucet.circle.com/).
-3. In the faucet, pick **Arbitrum Sepolia**, paste your address, and request **USDC**.
+1. Open the **Cash** page from the sidebar and copy your wallet address with **Copy**.
+2. Click **Get test USDC** to open [faucet.circle.com](https://faucet.circle.com/).
+3. In the faucet, pick **Arbitrum Sepolia**, paste your address, and click **Send 20 USDC**.
 4. Back in MuHaven, your USDC tile lights up with a gold bloom when the funds land
    (usually under a minute).
 
@@ -47,8 +53,8 @@ You land on the **Cash** page.
 [Full task → I3](/guide/investor/deposit)
 
 1. On **Cash**, keep the toggle on **Deposit**.
-2. Type an amount (e.g. **100**) or tap a quick-amount chip.
-3. Click **Convert USDC to mhUSDC** and approve.
+2. Type an amount (e.g. **100**) or tap a quick-amount chip (**$100 / $1,000 / $5,000**).
+3. Click **Convert to mhUSDC** and approve.
 
 Two quick steps run — **Approve USDC**, then **Mint mhUSDC** — and your encrypted mhUSDC
 balance appears.
@@ -57,11 +63,12 @@ balance appears.
 
 [Full task → I5](/guide/investor/buy)
 
-1. Go to **Trade** (or open a token from **Marketplace** and click its buy CTA).
+1. Go to **Trade** (or open a token from **Marketplace** and click its buy CTA, which routes
+   you to `/trade`).
 2. Choose a token (e.g. **TBILL1**) and enter a quantity.
-3. If your mhUSDC balance shows as locked, click **Reveal mhUSDC balance** — one tap, no
+3. If your mhUSDC balance shows as locked, click **Reveal mhUSDC to continue** — one tap, no
    transaction. This is the encrypted-balance gate doing its job.
-4. Click **Buy** and approve.
+4. Click **Buy TBILL1** (the CTA reads `Buy <SYMBOL>`) and approve.
 
 ::: tip This is the core privacy claim
 The exact amount you spend is **encrypted before it ever touches the chain**. The
@@ -74,8 +81,9 @@ purchase mints your shares atomically without your cleartext amount appearing on
 
 1. Open **Portfolio**.
 2. Your new holding shows a **lock** icon instead of a number.
-3. Click **Reveal balance**. The number decrypts **locally in your browser** with a
-   permit — no transaction, and no one else can do this for your balance.
+3. Click **Decrypt** on the holding card (or **Reveal All** at the top of the Holdings
+   section). The number decrypts **locally in your browser** with a permit — no transaction,
+   and no one else can do this for your balance.
 
 <ExpectedResult>
 Your position is visible to <em>you</em> as a real number, but on-chain it's still an
@@ -102,10 +110,10 @@ encrypted handle. That's the whole point: <strong>provably yours, publicly unrea
 [Full task → I12](/guide/investor/activity)
 
 1. Open **Activity**.
-2. Find your **buy** row and click its transaction-hash link to open
-   [sepolia.arbiscan.io](https://sepolia.arbiscan.io).
-3. On Arbiscan you'll see the transaction succeeded — and that the **amount is not in
-   cleartext** anywhere in the calldata.
+2. Find your **buy** row and click its **Proof** toggle to expand the privacy-proof panel.
+3. Click **View on Arbiscan** to open the transaction on
+   [sepolia.arbiscan.io](https://sepolia.arbiscan.io). You'll see the transaction succeeded —
+   and that the **amount is not in cleartext** anywhere in the calldata.
 
 <ExpectedResult>
 You signed in with a passkey, funded a wallet, and now hold a <strong>confidential RWA

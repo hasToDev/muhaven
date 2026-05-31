@@ -25,7 +25,7 @@ description: Convert your testnet USDC into confidential mhUSDC, 1:1.
 ## Expected result
 
 <ExpectedResult>
-You see the <strong>"USDC converted 1:1 into mhUSDC"</strong> success card. Your `mhUSDC` balance is now encrypted on-chain.
+You see the <strong>"mhUSDC ready"</strong> success card — "USDC converted 1:1 into mhUSDC". Your `mhUSDC` balance is now encrypted on-chain.
 </ExpectedResult>
 
 ## If something goes wrong

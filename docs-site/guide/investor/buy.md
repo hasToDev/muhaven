@@ -5,7 +5,7 @@ description: Buy an encrypted RWA position, using the one-tap reveal-gate when y
 
 # Buy an RWA position
 
-<TaskMeta time="~2 min" role="Investor" needs="KYC (demo access) + enough mhUSDC" />
+<TaskMeta time="~2 min" role="Investor" needs="enough mhUSDC (KYC is auto-bypassed on testnet)" />
 
 > **What you'll do:** Buy a real-world-asset token with confidential `mhUSDC`, learning how the reveal-gate works along the way.
 
@@ -37,7 +37,7 @@ You see the <strong>"Purchase confirmed"</strong> card with an Arbiscan transact
 | Symptom | Fix |
 |---|---|
 | **Buy** stays disabled even though you have funds | You haven't revealed your balance yet — tap **Reveal mhUSDC to continue**. See [the buy-gate](/guide/troubleshooting#buy-gate). |
-| You see **Short $X** | You don't have enough `mhUSDC` — use **Top up cash** to add more on `/cash`. |
-| Trade actions are blocked entirely | You may not be KYC-verified — enable demo access first (see [Sign in](/guide/investor/sign-in)). |
+| You see **short $Z** | You don't have enough `mhUSDC` — use **Top up cash** to add more on `/cash`. |
+| The buy CTA is disabled with **Not yet listed on-chain** or **Winding down — view only** | That token isn't buyable — pick another from the [marketplace](/guide/investor/marketplace). |
 
 → Next: [Reveal your balance](/guide/investor/reveal-balance)

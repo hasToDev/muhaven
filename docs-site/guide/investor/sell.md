@@ -20,7 +20,7 @@ Sell amounts are **whole shares** (integers). Reveal your holding balance first 
 1. Go to `/trade` and set the toggle to **Sell** (or open `/trade?mode=sell` directly).
 2. Reveal your holding balance with **Reveal** / the Eye icon.
 3. Enter the number of shares, or use **Half** / **Max** to quick-fill.
-4. Check the **instant cap remaining** shown on the page. If your sell exceeds it, it escalates to the redemption queue.
+4. Check the **Instant cap left** shown on the page. If your sell exceeds it, it escalates to the redemption queue.
 5. Click **Sell {SYMBOL}** — or **Sell {SYMBOL} (queued)** when escalation is likely. Internally the app approves the RWA token (once), then runs **Encrypt** and **Redeem**.
 
 ## Expected result

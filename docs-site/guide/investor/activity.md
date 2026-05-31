@@ -21,12 +21,12 @@ This is your single source of truth for "did it actually happen?". Every buy, se
 2. Narrow the feed with the filter pills: **All / Buy / Sell / Yield / Cash / Transfer**.
 3. Read the rows, newest first — each shows an icon, type, token, timestamp, and amount.
 4. For an encrypted amount, tap the per-row Eye icon (the blurred placeholder) to decrypt it locally.
-5. Click the transaction-hash link to open the transaction on `https://sepolia.arbiscan.io`.
+5. Click the row's **Proof** toggle to expand the privacy-proof panel, then click **View on Arbiscan** to open the transaction on `https://sepolia.arbiscan.io`.
 
 ## Expected result
 
 <ExpectedResult>
-You find the row for your action and open its transaction on Arbiscan — confirming the settlement, and that the amount is <strong>not</strong> stored in cleartext on-chain.
+You find the row for your action, expand its <strong>Proof</strong> panel, and open its transaction on Arbiscan via <strong>View on Arbiscan</strong> — confirming the settlement, and that the amount is <strong>not</strong> stored in cleartext on-chain.
 </ExpectedResult>
 
 ## If something goes wrong
