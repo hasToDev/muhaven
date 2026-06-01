@@ -402,22 +402,30 @@ function scaleIn(delay = 0) {
           </div>
         </div>
 
-        <!-- Mobile hero cards (decorative — desktop viz already conveys the story to assistive tech) -->
-        <div class="lg:hidden flex flex-col items-center gap-4" aria-hidden="true">
-          <div class="w-[85%] bg-white dark:bg-midnight-mid ghost-border rounded-2xl p-5 shadow-2xl relative">
-            <div class="absolute -inset-8 bg-[radial-gradient(circle,var(--color-signal)_/_10%,transparent_60%)] pointer-events-none" />
-            <p class="label-text text-xs text-cool mb-1">Total Portfolio</p>
-            <p class="text-2xl font-sans font-bold text-midnight dark:text-[#e3e2e5] tabular-nums">$51,247.83</p>
-            <div class="flex items-center gap-2 mt-2">
-              <MBadge variant="positive">+2.3%</MBadge>
-            </div>
-            <div class="flex gap-1 mt-3">
-              <div class="h-1.5 rounded-full bg-compute dark:bg-signal" style="width: 70%" />
-              <div class="h-1.5 rounded-full bg-gold" style="width: 20%" />
-              <div class="h-1.5 rounded-full bg-cipher" style="width: 10%" />
+        <!-- Mobile hero cards (decorative — desktop viz conveys the story to AT).
+             Wave 6 Polish mobile round 6: rebuilt as a clean, aligned pair. The
+             old version had a `-inset-8` glow bleeding 32px past the card, a
+             `-mt-3` overlap fighting the container `gap-4`, and mismatched widths
+             (85% vs 75%) that read as broken. Now: one shared width, consistent
+             gap, and the glow is `inset-0` inside an `overflow-hidden` card so it
+             can't bleed. -->
+        <div class="lg:hidden w-full max-w-[340px] mx-auto flex flex-col gap-3" aria-hidden="true">
+          <div class="relative overflow-hidden bg-white dark:bg-midnight-mid ghost-border rounded-2xl p-5 shadow-xl">
+            <div class="absolute inset-0 bg-[radial-gradient(circle_at_top_right,var(--color-signal)_/_12%,transparent_65%)] pointer-events-none" />
+            <div class="relative">
+              <p class="label-text text-xs text-cool mb-1">Total Portfolio</p>
+              <p class="text-2xl font-sans font-bold text-midnight dark:text-[#e3e2e5] tabular-nums">$51,247.83</p>
+              <div class="flex items-center gap-2 mt-2">
+                <MBadge variant="positive">+2.3%</MBadge>
+              </div>
+              <div class="flex gap-1 mt-3">
+                <div class="h-1.5 rounded-full bg-compute dark:bg-signal" style="width: 70%" />
+                <div class="h-1.5 rounded-full bg-gold" style="width: 20%" />
+                <div class="h-1.5 rounded-full bg-cipher" style="width: 10%" />
+              </div>
             </div>
           </div>
-          <div class="w-[75%] -mt-3 bg-midnight dark:bg-midnight-deep ring-1 ring-gold/25 rounded-2xl p-4 shadow-lg shadow-gold/10 z-10">
+          <div class="bg-midnight dark:bg-midnight-deep ring-1 ring-gold/25 rounded-2xl p-4 shadow-lg shadow-gold/10">
             <div class="flex items-center gap-2 mb-2">
               <Lock :size="12" class="text-gold" />
               <span class="label-text text-[10px] text-gold">FHE Encrypted</span>
