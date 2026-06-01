@@ -237,7 +237,7 @@ onBeforeUnmount(() => {
 
       <div class="flex-1" />
 
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2 min-w-0">
         <!-- ADR-023 dev-mode pill — TopNav is mobile-only (`class="md:hidden"`
              on the App.vue mount), so this pill is the mobile counterpart
              of the desktop Sidebar bottom pill. -->
@@ -322,7 +322,7 @@ onBeforeUnmount(() => {
         </button>
 
         <!-- Mobile: compact wallet / sign-in -->
-        <div class="flex sm:hidden items-center gap-1.5">
+        <div class="flex sm:hidden items-center gap-1.5 min-w-0">
           <!-- Wallet known on mobile -->
           <template v-if="authStore.walletAddress">
             <button
@@ -331,7 +331,7 @@ onBeforeUnmount(() => {
               :data-full-address="authStore.walletAddress"
               :title="copied ? 'Copied!' : `Copy ${authStore.walletAddress}`"
               :aria-label="copied ? 'Address copied to clipboard' : `Copy smart account address ${authStore.walletAddress}`"
-              class="flex items-center gap-1.5 px-2.5 py-2 bg-mist dark:bg-midnight-mid rounded-lg border border-haze dark:border-white/8 cursor-pointer active:bg-haze/60 dark:active:bg-white/5 transition-colors"
+              class="flex items-center gap-1.5 px-2.5 py-2 min-w-0 bg-mist dark:bg-midnight-mid rounded-lg border border-haze dark:border-white/8 cursor-pointer active:bg-haze/60 dark:active:bg-white/5 transition-colors"
             >
               <!-- Status dot -->
               <span
@@ -351,10 +351,16 @@ onBeforeUnmount(() => {
                   ]"
                 />
               </span>
-              <span class="font-mono text-[10px] text-slate dark:text-cool">{{ displayAddress }}</span>
-              <Check v-if="copied" :size="10" class="text-positive" />
-              <Copy v-else :size="10" class="text-cool/60" />
-              <MSessionStatus size="sm" />
+              <span class="font-mono text-[10px] text-slate dark:text-cool truncate">{{ displayAddress }}</span>
+              <Check v-if="copied" :size="10" class="text-positive flex-shrink-0" />
+              <Copy v-else :size="10" class="text-cool/60 flex-shrink-0" />
+              <!-- Wave 6 Polish mobile round 7 — MSessionStatus is NOT shown in the
+                   mobile top bar. It renders nothing until a session key is active,
+                   then appears (~45px) after the first decrypt — which pushed the
+                   already-cramped 411px bar past the viewport (the recurring
+                   "address overflows after decrypt" / Portfolio h-scroll). The
+                   session countdown still shows on the desktop pill, the dashboard
+                   ScopedSessionBanner, and the Autonomy page. -->
             </button>
             <!-- Degraded: re-auth -->
             <button
