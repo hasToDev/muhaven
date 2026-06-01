@@ -1922,16 +1922,16 @@ const successCopy = computed(() =>
               @click="setDirection(opt.value)"
               :data-testid="`cash-direction-${opt.value}`"
               :class="[
-                'relative z-10 flex-1 sm:flex-initial inline-flex items-center justify-center gap-2 px-2 sm:px-4 py-2 min-w-0 sm:min-w-[112px] rounded-full',
-                'font-sans text-[11px] uppercase tracking-[0.18em] font-semibold cursor-pointer',
+                'relative z-10 flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 sm:gap-2 px-2 sm:px-4 py-2 min-w-0 sm:min-w-[112px] rounded-full',
+                'font-sans text-[11px] uppercase tracking-wide sm:tracking-[0.18em] font-semibold cursor-pointer',
                 'transition-all duration-200',
                 direction === opt.value
                   ? 'text-midnight bg-gradient-to-r from-compute to-gold dark:from-signal dark:to-signal/85 shadow-[0_2px_10px_-2px_rgba(255,186,32,0.45)] dark:shadow-[0_2px_14px_-2px_rgba(255,220,161,0.35)]'
                   : 'text-cool hover:text-midnight dark:hover:text-white',
               ]"
             >
-              <component :is="opt.icon" :size="13" :stroke-width="2" aria-hidden="true" />
-              {{ opt.label }}
+              <component :is="opt.icon" :size="13" :stroke-width="2" aria-hidden="true" class="shrink-0" />
+              <span class="truncate">{{ opt.label }}</span>
             </button>
           </div>
 

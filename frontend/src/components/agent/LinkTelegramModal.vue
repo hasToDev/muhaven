@@ -241,7 +241,8 @@ watch(isLinked, (linked, prev) => {
     @click.self="close"
   >
     <div
-      class="relative w-full max-w-[440px] rounded-2xl p-7
+      class="relative w-full max-w-[440px] rounded-2xl p-6 sm:p-7
+             max-h-[calc(100dvh-2rem)] overflow-y-auto
              border border-haze dark:border-white/10
              bg-frost dark:bg-midnight-mid
              shadow-2xl"

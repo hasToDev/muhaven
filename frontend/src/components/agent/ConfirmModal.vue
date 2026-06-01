@@ -805,7 +805,7 @@ const arbiscanUrl = computed(() =>
       class="relative w-full max-w-md rounded-2xl
              bg-white dark:bg-[#171717]
              border border-haze dark:border-white/10
-             shadow-2xl overflow-hidden"
+             shadow-2xl overflow-y-auto max-h-[calc(100dvh-2rem)]"
     >
       <!-- Top accent -->
       <div

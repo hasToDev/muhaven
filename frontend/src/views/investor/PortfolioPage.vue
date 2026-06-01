@@ -1087,7 +1087,7 @@ const showBlurredAllocation = computed(() =>
             class="relative overflow-hidden rounded-xl p-5 md:p-6 border border-haze dark:border-white/5
                    bg-white dark:bg-[#171717] hover:border-gold/40 dark:hover:border-signal/25
                    transition-colors duration-300
-                   flex items-center justify-between gap-2 md:gap-4"
+                   flex flex-col gap-3 md:flex-row md:items-center md:justify-between md:gap-4"
           >
             <!-- Inbound bloom — fires when MuHavenToken.Transfer with
                  `to: kernel` lands on this token. Pure visual cue;
@@ -1114,7 +1114,7 @@ const showBlurredAllocation = computed(() =>
                  can shrink on mobile — the 160px floor + the fixed APY/Decrypt
                  widths pushed the row past the card, overflowing the Decrypt
                  button and clipping content. Wave 6 Polish mobile round 3. -->
-            <div class="flex-1 min-w-0">
+            <div class="min-w-0 md:flex-1">
               <h4 class="font-accent italic text-lg md:text-2xl text-midnight dark:text-white tracking-tight mb-2 leading-tight">
                 {{ h.name }}
               </h4>
@@ -1184,8 +1184,15 @@ const showBlurredAllocation = computed(() =>
               </span>
             </div>
 
+            <!-- Mobile bottom row: APY + Decrypt sit on a second line (the card
+                 stacks flex-col on mobile). `md:contents` dissolves this wrapper
+                 at md+ so APY and Decrypt return to being inline columns of the
+                 desktop row. A vertical stack can't overflow horizontally, which
+                 is the definitive fix for the reveal-time horizontal scroll
+                 (Wave 6 Polish mobile round 4). -->
+            <div class="flex items-center justify-between gap-3 md:contents">
             <!-- APY -->
-            <div class="text-right flex flex-col items-end w-20 md:w-24">
+            <div class="flex flex-col items-start md:items-end md:text-right w-auto md:w-24">
               <span class="flex items-center gap-1 text-midnight dark:text-white font-sans text-lg md:text-xl tabular-nums font-medium">
                 {{ h.apy !== null ? `${h.apy}%` : '—' }}
                 <ArrowUp v-if="h.apy !== null" :size="13" :stroke-width="2.2" class="text-gold dark:text-signal" />
@@ -1196,7 +1203,7 @@ const showBlurredAllocation = computed(() =>
             <!-- Decrypt / Decrypted button. w-auto on mobile (sizes to content)
                  so it never forces the row wider than the card; fixed w-28 on
                  md+ keeps the desktop column alignment. -->
-            <div class="ml-2 md:ml-4 w-auto md:w-28 text-right flex-shrink-0">
+            <div class="md:ml-4 w-auto md:w-28 text-right flex-shrink-0">
               <button
                 v-if="h.decryptedBalance === null"
                 type="button"
@@ -1224,6 +1231,7 @@ const showBlurredAllocation = computed(() =>
                 <Unlock :size="10" :stroke-width="2.2" />
                 Revealed
               </span>
+            </div>
             </div>
           </div>
 

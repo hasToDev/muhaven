@@ -629,8 +629,7 @@ onMounted(() => {
          Inline style (not a Tailwind `h-[…]` class) so the `var(…, 0px)`
          fallback's comma isn't mangled by the arbitrary-value parser. ── -->
     <div
-      class="flex flex-col xl:mr-80"
-      style="height: calc(100vh - 2.75rem - var(--scoped-banner-h, 0px))"
+      class="agent-chat-col flex flex-col xl:mr-80"
     >
       <!-- Scrollable messages.
            Round-2 a11y review AA-HIGH-1: role="log" + aria-live="polite"
@@ -674,7 +673,7 @@ onMounted(() => {
             </span>
             <div
               class="relative overflow-hidden rounded-2xl rounded-tl-sm pl-5 pr-4 py-3.5
-                     font-sans text-base leading-relaxed
+                     font-sans text-sm md:text-base leading-relaxed
                      bg-mist/40 dark:bg-[#0d0e10] text-midnight dark:text-white
                      border border-haze dark:border-white/5 shadow-2xl"
             >
@@ -716,7 +715,7 @@ onMounted(() => {
             </span>
             <div
               :class="cn(
-                'relative font-sans text-base leading-relaxed w-full rounded-2xl',
+                'relative font-sans text-sm md:text-base leading-relaxed w-full rounded-2xl',
                 msg.role === 'user'
                   ? 'bg-midnight dark:bg-[#171717] text-white border border-transparent dark:border-white/5 rounded-tr-sm text-right shadow-xl px-4 py-3.5'
                   : 'overflow-hidden bg-mist/40 dark:bg-[#0d0e10] text-midnight dark:text-white border border-haze dark:border-white/5 rounded-tl-sm shadow-2xl pl-5 pr-4 py-3.5',
@@ -907,9 +906,9 @@ onMounted(() => {
          xl+: teleported to <body>, fixed-right, viewport-relative. ── -->
     <Teleport to="body" :disabled="!isXl">
       <aside
-        class="mt-10 xl:mt-0 flex flex-col gap-5 w-full
+        class="mt-10 pb-28 xl:mt-0 xl:pb-10 flex flex-col gap-5 w-full
                xl:fixed xl:right-0 xl:top-0 xl:bottom-0 xl:w-80 xl:z-30
-               xl:overflow-y-auto xl:px-7 xl:pt-10 xl:pb-10"
+               xl:overflow-y-auto xl:px-7 xl:pt-10"
       >
         <div class="flex items-center gap-2">
           <Lightbulb :size="14" :stroke-width="1.8" class="text-compute dark:text-signal flex-shrink-0" />
@@ -963,6 +962,25 @@ onMounted(() => {
 </template>
 
 <style scoped>
+/* Chat column height. Desktop (no mobile chrome): viewport minus the agent
+   wrapper's vertical padding (pt-8 pb-3 = 2.75rem). The `var(…, 0px)` fallback
+   lives in real CSS here (an inline `style=` mangled the comma — the prior
+   approach). Wave 6 Polish mobile round 4: on mobile the chat column ALSO has
+   to clear the sticky TopNav (~4rem) + the fixed bottom tab bar (~4.75rem incl
+   its own safe-area pad) — without this the input bar sat below the fold under
+   the tab bar. `100dvh` tracks the mobile URL-bar collapse. */
+.agent-chat-col {
+  height: calc(100vh - 2.75rem - var(--scoped-banner-h, 0px));
+}
+@media (max-width: 767px) {
+  .agent-chat-col {
+    height: calc(
+      100dvh - 2.75rem - 4rem - 4.75rem
+      - env(safe-area-inset-bottom) - var(--scoped-banner-h, 0px)
+    );
+  }
+}
+
 /* Agent-chat markdown styling. Targets `v-html`-mounted content via
    Vue 3's `:deep()` selector so scoped CSS still reaches the
    dynamically-inserted nodes. Keep the type scale matched to the
