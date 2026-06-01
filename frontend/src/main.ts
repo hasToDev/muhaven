@@ -74,6 +74,11 @@ if (hydrated) {
 
 app.mount('#app')
 
+// Temporary mobile overflow detector — inert unless the URL has `?ofx=1`.
+// Diagnosing the recurring Portfolio reveal-time horizontal scroll. Remove
+// once the culprit is found + fixed. See lib/overflowDebug.ts.
+import('./lib/overflowDebug').then((m) => m.installOverflowDebug())
+
 // Dev-only: expose stores for console testing
 if (import.meta.env.DEV) {
   import('./stores/fhe').then(({ useFheStore }) => {
