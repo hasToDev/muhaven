@@ -127,18 +127,22 @@ function scaleIn(delay = 0) {
   <div class="min-h-screen">
     <!-- ━━━ LANDING NAV (warm floating pill, static size) ━━━ -->
     <header class="fixed z-50 top-4 left-0 right-0 pointer-events-none">
+      <!-- Mobile: a full-width floating pill (mx-4, no max-w cap) so the logo
+           and hamburger sit at the edges instead of a tiny content-hugging pill
+           floating in the middle. Desktop: the original centered content-fit
+           pill. Wave 6 Polish mobile round 2 (operator: "too narrow + font too big"). -->
       <nav
-        class="pointer-events-auto mx-auto flex items-center justify-between glass-panel max-w-fit rounded-full h-14 px-6 shadow-[0_0_60px_-10px_rgba(255,186,32,0.12)]"
+        class="pointer-events-auto mx-4 md:mx-auto flex items-center justify-between glass-panel md:max-w-fit rounded-full h-14 px-5 md:px-6 shadow-[0_0_60px_-10px_rgba(255,186,32,0.12)]"
       >
         <!-- Logo (scroll to top) -->
         <button
           type="button"
           aria-label="Scroll to top"
-          class="flex items-center gap-2.5 mr-6 cursor-pointer group"
+          class="flex items-center gap-2.5 mr-2 md:mr-6 cursor-pointer group min-w-0"
           @click="scrollToTop"
         >
-          <img src="/logo.png" alt="MuHaven" class="w-7 h-7 rounded-lg mix-blend-multiply dark:mix-blend-normal dark:drop-shadow-[0_0_10px_rgba(255,186,32,0.45)] transition-transform duration-300 group-hover:scale-110" />
-          <span class="font-sans font-bold text-compute dark:text-signal tracking-tight text-xl transition-all duration-300 group-hover:scale-[1.02]">MuHaven</span>
+          <img src="/logo.png" alt="MuHaven" class="w-7 h-7 rounded-lg shrink-0 mix-blend-multiply dark:mix-blend-normal dark:drop-shadow-[0_0_10px_rgba(255,186,32,0.45)] transition-transform duration-300 group-hover:scale-110" />
+          <span class="font-sans font-bold text-compute dark:text-signal tracking-tight text-lg md:text-xl transition-all duration-300 group-hover:scale-[1.02]">MuHaven</span>
         </button>
 
         <!-- Desktop links -->
@@ -834,7 +838,11 @@ function scaleIn(delay = 0) {
     </div>
 
     <!-- ━━━ FOOTER ━━━ -->
-    <footer class="border-t border-haze/50 dark:border-[#514532]/20 py-10">
+    <!-- pb-32 on mobile clears the fixed bottom sticky "Launch App" CTA (it's
+         shown all the way to the bottom: scrollY > 0.9·innerHeight), which was
+         covering the footer. md:pb-10 restores the desktop footer (no sticky CTA
+         there — it's md:hidden). Wave 6 Polish mobile round 2. -->
+    <footer class="border-t border-haze/50 dark:border-[#514532]/20 pt-10 pb-32 md:py-10">
       <div class="max-w-6xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between gap-4">
         <div class="flex items-center gap-2.5">
           <img src="/logo.png" alt="MuHaven" class="w-6 h-6 rounded-md mix-blend-multiply dark:mix-blend-normal dark:drop-shadow-[0_0_8px_rgba(255,186,32,0.4)]" />
@@ -862,7 +870,7 @@ function scaleIn(delay = 0) {
     <Transition name="sticky-cta">
       <div
         v-if="showStickyCTA"
-        class="fixed bottom-0 left-0 right-0 p-4 bg-frost/90 dark:bg-midnight/90 backdrop-blur-xl border-t border-haze/40 dark:border-[#514532]/30 z-40 md:hidden"
+        class="fixed bottom-0 left-0 right-0 px-4 pt-4 pb-[calc(1rem+env(safe-area-inset-bottom))] bg-frost/90 dark:bg-midnight/90 backdrop-blur-xl border-t border-haze/40 dark:border-[#514532]/30 z-40 md:hidden"
       >
         <MButton size="lg" class="w-full btn-shimmer rounded-xl" @click="router.push('/portfolio')">
           Launch App

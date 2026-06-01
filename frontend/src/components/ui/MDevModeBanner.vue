@@ -90,8 +90,13 @@ onBeforeUnmount(() => {
     >
       Dev Mode
     </span>
+    <!-- Wave 6 Polish (mobile round 2): the "· KYC bypassed" suffix is hidden
+         below md so the mobile TopNav pill stays compact (it was a big chunk of
+         the right-group width that pushed the mobile nav past the viewport →
+         horizontal scroll). Desktop sidebar keeps the full text; the title
+         tooltip carries the full warning on every surface. -->
     <span
-      class="text-[9px] font-sans text-negative/65 dark:text-negative/55 truncate"
+      class="hidden md:inline text-[9px] font-sans text-negative/65 dark:text-negative/55 truncate"
     >
       · KYC bypassed
     </span>

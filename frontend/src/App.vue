@@ -144,8 +144,13 @@ onMounted(() => {
     <Sidebar v-if="showChrome" />
     <!-- Mobile top bar: only shows on <md; desktop nav lives in Sidebar -->
     <TopNav v-if="showChrome" class="md:hidden" />
+    <!-- `overflow-x-clip` is a mobile horizontal-scroll guard (Wave 6 Polish
+         round 2): clips any stray page-content overflow without creating a
+         scroll container, so it does NOT break the sticky TopNav (a sibling,
+         outside <main>) or the xl:fixed right-rail asides (viewport-relative).
+         `overflow-x: clip` keeps overflow-y visible (unlike `hidden`). -->
     <main
-      :class="showChrome ? 'md:pl-64' : ''"
+      :class="['overflow-x-clip', showChrome ? 'md:pl-64' : '']"
       :style="{ '--scoped-banner-h': `${bannerHeight}px` }"
     >
       <!-- Wave 5 Option D · Commit 4 — dashboard banner for an active

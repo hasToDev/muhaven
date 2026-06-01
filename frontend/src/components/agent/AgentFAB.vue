@@ -26,7 +26,11 @@ function openAgent() {
       @click="openAgent"
       aria-label="Open AI agent"
       :class="[
-        'fixed bottom-6 right-6 z-40 w-14 h-14 rounded-full flex items-center justify-center',
+        // Hidden on mobile (<md): the bottom MMobileTabBar already carries an
+        // 'Agent' tab, and a `fixed bottom-6` FAB sits behind the `z-50` tab bar
+        // (practically hidden) anyway. Desktop has no tab bar, so the FAB is the
+        // agent entry point there. Wave 6 Polish mobile round 2.
+        'hidden md:flex fixed bottom-6 right-6 z-40 w-14 h-14 rounded-full items-center justify-center',
         'bg-gradient-to-br from-signal via-gold to-compute text-midnight',
         'shadow-fab hover:shadow-elevated hover:scale-105 hover:brightness-110',
         'transition-all duration-200 cursor-pointer',

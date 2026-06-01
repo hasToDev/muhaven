@@ -160,14 +160,16 @@ onBeforeUnmount(() => {
   >
     <nav
       :class="cn(
-        'flex items-center h-16 px-4 md:px-8 transition-all duration-500',
+        'flex items-center h-16 px-4 md:px-8 transition-all duration-500 min-w-0',
         isScrolled
           ? 'glass-panel mx-auto rounded-xl'
           : 'bg-white dark:bg-midnight border-b border-haze dark:border-white/8',
       )"
     >
-      <!-- Logo -->
-      <router-link :to="homeTarget" data-testid="nav-logo-home" class="flex items-center gap-2.5 mr-6">
+      <!-- Logo. mr-3 on mobile (the desktop nav that the mr-6 spaced is hidden
+           below md, and a tighter margin keeps the mobile row within the
+           viewport — Wave 6 Polish mobile round 2). -->
+      <router-link :to="homeTarget" data-testid="nav-logo-home" class="flex items-center gap-2.5 mr-3 sm:mr-6 shrink-0">
         <img src="/logo.png" alt="MuHaven" class="w-8 h-8 rounded-lg" style="mix-blend-mode: multiply" />
         <span class="text-lg font-sans font-bold text-midnight dark:text-white hidden sm:inline tracking-tight">MuHaven</span>
       </router-link>
