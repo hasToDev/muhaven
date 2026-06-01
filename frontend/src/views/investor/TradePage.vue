@@ -1056,13 +1056,13 @@ const showColdLoader = computed(() => !marketplace.loaded && !marketplaceLoadFai
             <div
               aria-hidden="true"
               class="absolute top-1 bottom-1 w-[calc(50%-0.25rem)] rounded-full
-                     bg-gradient-to-r transition-all duration-300 ease-out
+                     gold-sweep-fill transition-all duration-300 ease-out
                      shadow-[0_2px_10px_-2px_rgba(255,186,32,0.45)]
                      dark:shadow-[0_2px_14px_-2px_rgba(255,220,161,0.35)]"
               :class="[
                 mode === 'buy'
-                  ? 'left-1 from-gold to-gold/90 dark:from-signal dark:to-signal/85'
-                  : 'left-[calc(50%+0.05rem)] from-compute to-gold dark:from-signal dark:to-signal/70',
+                  ? 'left-1'
+                  : 'left-[calc(50%+0.05rem)]',
               ]"
             />
             <button

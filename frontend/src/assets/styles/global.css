@@ -647,3 +647,21 @@ body {
 .btn-gold-sweep:disabled::after {
   display: none;
 }
+
+/* Gold-sweep FILL — the exact gradient from .btn-gold-sweep, as a plain
+ * background with none of the button chrome (no shine ::after, no box-shadow,
+ * no `transition` override). For non-button surfaces that should match the
+ * Claim CTA's gold gradient: the Cash direction tab (active state) and the
+ * Trade Buy/Sell sliding indicator — the latter owns a `left` transition for
+ * its slide, so it can't take the full .btn-gold-sweep (whose `transition`
+ * would clobber the slide). Same gradient in light + dark (matching the
+ * Claim button, which has no dark variant). */
+.gold-sweep-fill {
+  background: linear-gradient(
+    90deg,
+    #E8A011 0%,
+    #FFBA20 38%,
+    #FFCB4A 68%,
+    #FFE3B0 100%
+  );
+}

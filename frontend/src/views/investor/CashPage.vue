@@ -1926,7 +1926,7 @@ const successCopy = computed(() =>
                 'font-sans text-[11px] uppercase tracking-wide sm:tracking-[0.18em] font-semibold cursor-pointer',
                 'transition-all duration-200',
                 direction === opt.value
-                  ? 'text-midnight bg-gradient-to-r from-compute to-gold dark:from-signal dark:to-signal/85 shadow-[0_2px_10px_-2px_rgba(255,186,32,0.45)] dark:shadow-[0_2px_14px_-2px_rgba(255,220,161,0.35)]'
+                  ? 'text-midnight gold-sweep-fill shadow-[0_2px_10px_-2px_rgba(255,186,32,0.45)] dark:shadow-[0_2px_14px_-2px_rgba(255,220,161,0.35)]'
                   : 'text-cool hover:text-midnight dark:hover:text-white',
               ]"
             >
