@@ -205,7 +205,13 @@ function scaleIn(delay = 0) {
           {{ link.name }}
         </a>
         <div class="pt-4 w-full max-w-xs">
-          <MDarkToggle class="mx-auto mb-4" />
+          <!-- Wave 6 Polish mobile round 3 — present the theme toggle as a
+               labeled control (a lone centered icon above the CTA read as
+               orphaned/awkward). The bordered pill row reads as intentional. -->
+          <div class="flex items-center justify-center gap-2.5 mb-5">
+            <span class="font-sans text-sm font-medium text-slate dark:text-[#d5c4ab]">Appearance</span>
+            <MDarkToggle class="border border-haze/60 dark:border-[#514532]/40 rounded-lg" />
+          </div>
           <MButton
             size="lg"
             class="w-full btn-shimmer rounded-full h-14"
@@ -851,7 +857,7 @@ function scaleIn(delay = 0) {
             <span class="font-body text-xs text-cool">© 2026 MuHaven. Privacy as Architecture.</span>
           </div>
         </div>
-        <div class="flex items-center gap-6">
+        <div class="flex flex-wrap items-center justify-center gap-x-5 gap-y-2 max-w-full">
           <a class="label-text text-xs text-cool hover:text-compute dark:hover:text-signal transition-colors" href="https://docs.muhaven.app" target="_blank" rel="noopener noreferrer">Docs</a>
           <a class="label-text text-xs text-cool hover:text-compute dark:hover:text-signal transition-colors" href="#">Privacy</a>
           <a class="label-text text-xs text-cool hover:text-compute dark:hover:text-signal transition-colors" href="#">Terms</a>
@@ -866,10 +872,12 @@ function scaleIn(delay = 0) {
       </div>
     </footer>
 
-    <!-- Mobile sticky CTA -->
+    <!-- Mobile sticky CTA. Hidden while the hamburger menu is open — that
+         overlay has its own "Launch App" button, so showing both produced two
+         Launch App buttons at once (Wave 6 Polish mobile round 3). -->
     <Transition name="sticky-cta">
       <div
-        v-if="showStickyCTA"
+        v-if="showStickyCTA && !mobileMenuOpen"
         class="fixed bottom-0 left-0 right-0 px-4 pt-4 pb-[calc(1rem+env(safe-area-inset-bottom))] bg-frost/90 dark:bg-midnight/90 backdrop-blur-xl border-t border-haze/40 dark:border-[#514532]/30 z-40 md:hidden"
       >
         <MButton size="lg" class="w-full btn-shimmer rounded-xl" @click="router.push('/portfolio')">

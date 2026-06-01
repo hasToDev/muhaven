@@ -1908,7 +1908,7 @@ const successCopy = computed(() =>
             data-testid="cash-direction-toggle"
             role="group"
             aria-label="Cash direction: deposit, withdraw, or send"
-            class="relative inline-flex items-center gap-1 mb-6 flex-wrap
+            class="relative flex w-full sm:inline-flex sm:w-auto items-center gap-1 mb-6
                    rounded-full border border-haze dark:border-white/10
                    bg-mist/40 dark:bg-[#1c1b1b]/80 p-1
                    shadow-[inset_0_1px_2px_rgba(63,46,12,0.04)]
@@ -1922,7 +1922,7 @@ const successCopy = computed(() =>
               @click="setDirection(opt.value)"
               :data-testid="`cash-direction-${opt.value}`"
               :class="[
-                'relative z-10 inline-flex items-center justify-center gap-2 px-4 py-2 min-w-0 sm:min-w-[112px] rounded-full',
+                'relative z-10 flex-1 sm:flex-initial inline-flex items-center justify-center gap-2 px-2 sm:px-4 py-2 min-w-0 sm:min-w-[112px] rounded-full',
                 'font-sans text-[11px] uppercase tracking-[0.18em] font-semibold cursor-pointer',
                 'transition-all duration-200',
                 direction === opt.value

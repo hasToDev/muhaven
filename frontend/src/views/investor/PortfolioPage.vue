@@ -1087,7 +1087,7 @@ const showBlurredAllocation = computed(() =>
             class="relative overflow-hidden rounded-xl p-5 md:p-6 border border-haze dark:border-white/5
                    bg-white dark:bg-[#171717] hover:border-gold/40 dark:hover:border-signal/25
                    transition-colors duration-300
-                   flex items-center justify-between gap-4"
+                   flex items-center justify-between gap-2 md:gap-4"
           >
             <!-- Inbound bloom — fires when MuHavenToken.Transfer with
                  `to: kernel` lands on this token. Pure visual cue;
@@ -1110,9 +1110,12 @@ const showBlurredAllocation = computed(() =>
                        dark:shadow-[0_0_28px_-6px_rgba(255,220,161,0.35)]"
               />
             </transition>
-            <!-- Name + ticker -->
-            <div class="flex-1 min-w-[160px]">
-              <h4 class="font-accent italic text-xl md:text-2xl text-midnight dark:text-white tracking-tight mb-2 leading-tight">
+            <!-- Name + ticker. min-w-0 (was min-w-[160px]) so the name column
+                 can shrink on mobile — the 160px floor + the fixed APY/Decrypt
+                 widths pushed the row past the card, overflowing the Decrypt
+                 button and clipping content. Wave 6 Polish mobile round 3. -->
+            <div class="flex-1 min-w-0">
+              <h4 class="font-accent italic text-lg md:text-2xl text-midnight dark:text-white tracking-tight mb-2 leading-tight">
                 {{ h.name }}
               </h4>
               <div class="flex items-center gap-2.5 flex-wrap">
@@ -1190,15 +1193,17 @@ const showBlurredAllocation = computed(() =>
               <span class="font-sans text-[9px] text-cool uppercase tracking-[0.2em]">APY</span>
             </div>
 
-            <!-- Decrypt / Decrypted button -->
-            <div class="ml-2 md:ml-4 w-28 text-right flex-shrink-0">
+            <!-- Decrypt / Decrypted button. w-auto on mobile (sizes to content)
+                 so it never forces the row wider than the card; fixed w-28 on
+                 md+ keeps the desktop column alignment. -->
+            <div class="ml-2 md:ml-4 w-auto md:w-28 text-right flex-shrink-0">
               <button
                 v-if="h.decryptedBalance === null"
                 type="button"
                 @click="decryptOne(i)"
                 :disabled="h.decrypting"
                 data-testid="portfolio-decrypt-cta"
-                class="w-full font-sans text-[10px] uppercase tracking-[0.2em] font-semibold
+                class="w-auto md:w-full font-sans text-[10px] uppercase tracking-[0.2em] font-semibold
                        text-compute dark:text-signal
                        border border-compute/30 dark:border-signal/30
                        hover:text-white dark:hover:text-[#412d00]

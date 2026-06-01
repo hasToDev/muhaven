@@ -66,6 +66,22 @@ option {
   background: #514532;
 }
 
+/* Wave 6 Polish mobile round 3 — keep vue-sonner toasts inside the viewport on
+   phones. A toast is position:fixed (it escapes the <main> overflow-x-clip
+   guard), so a toast wider than the screen — e.g. one carrying a long unbroken
+   string after an action like Decrypt All — creates a document-level horizontal
+   scroll that pushes the fixed bottom nav off-screen. Cap the toaster to the
+   viewport and let long content wrap. */
+@media (max-width: 640px) {
+  [data-sonner-toaster] {
+    max-width: calc(100vw - 1.5rem);
+  }
+  [data-sonner-toast] {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+}
+
 /* Page transitions */
 .page-enter-active,
 .page-leave-active {
