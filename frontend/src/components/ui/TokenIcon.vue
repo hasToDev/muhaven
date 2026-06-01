@@ -13,6 +13,7 @@ import { resolveTokenIconUrl, tokenMonogram } from '@/lib/tokenIcon'
  * neutral circle/rounded chip — never a broken-image glyph.
  *
  * `variant`:
+ *  - `sm`   — 24px circle (inline field triggers / dense picker rows)
  *  - `card` — 40px circle (marketplace grid cards)
  *  - `hero` — 64px rounded square (token-detail hero)
  *
@@ -21,7 +22,7 @@ import { resolveTokenIconUrl, tokenMonogram } from '@/lib/tokenIcon'
  * `aria-hidden`).
  */
 const props = withDefaults(
-  defineProps<{ ticker: string; variant?: 'card' | 'hero' }>(),
+  defineProps<{ ticker: string; variant?: 'sm' | 'card' | 'hero' }>(),
   { variant: 'card' },
 )
 
@@ -37,7 +38,11 @@ const monogram = computed(() => tokenMonogram(props.ticker))
 const showImage = computed(() => !!src.value && failedTicker.value !== props.ticker)
 
 const shapeClass = computed(() =>
-  props.variant === 'hero' ? 'w-16 h-16 rounded-2xl' : 'w-10 h-10 rounded-full',
+  props.variant === 'hero'
+    ? 'w-16 h-16 rounded-2xl'
+    : props.variant === 'sm'
+      ? 'w-6 h-6 rounded-full'
+      : 'w-10 h-10 rounded-full',
 )
 </script>
 
@@ -62,7 +67,7 @@ const shapeClass = computed(() =>
       'flex items-center justify-center flex-shrink-0 select-none font-sans font-bold uppercase',
       'bg-mist/60 dark:bg-white/5 border border-haze dark:border-white/5 text-slate dark:text-body-dark/80',
       shapeClass,
-      variant === 'hero' ? 'text-2xl' : 'text-sm',
+      variant === 'hero' ? 'text-2xl' : variant === 'sm' ? 'text-[10px]' : 'text-sm',
     ]"
   >{{ monogram }}</div>
 </template>

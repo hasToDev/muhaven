@@ -17,8 +17,12 @@ test('buy via Subscription → success card', async ({ investorPage: page }, tes
 
   await page.goto('/trade')
 
-  // BuyPage renders <select data-testid="buy-token-select"> only when at
-  // least one Wave 3.5 token is registered. Absence = nothing to buy.
+  // BuyPage renders the token picker trigger (data-testid="buy-token-select")
+  // only when at least one Wave 3.5 token is registered. Absence = nothing to
+  // buy. NOTE: the picker is a custom component (MTokenSelect) — the native
+  // <select> was replaced in Wave 6 because its OS-rendered option dialog
+  // couldn't be restyled and read as broken on mobile. The trigger keeps the
+  // same data-testid; options render as [data-testid="token-option"].
   const tokenSelect = byTestId(page, SEL.buyTokenSelect)
   let hasTokens = false
   try {
@@ -32,13 +36,15 @@ test('buy via Subscription → success card', async ({ investorPage: page }, tes
     'No Wave 3.5 tokens onboarded in this env — buy spec is a no-op until Phase 8 onboards TBILL1/GOLD1',
   )
 
-  // Pick the first available token. Some envs ship TBILL1 + GOLD1; the spec
-  // doesn't care which one, only that at least one is buyable.
-  const values = await tokenSelect
-    .locator('option')
-    .evaluateAll((opts) => opts.map((o) => (o as HTMLOptionElement).value).filter(Boolean))
-  expect(values.length, 'buy-token-select rendered with no options — registry empty?').toBeGreaterThan(0)
-  await tokenSelect.selectOption(values[0])
+  // Open the picker and pick the first available token. Some envs ship
+  // TBILL1 + GOLD1; the spec doesn't care which one, only that at least one
+  // is buyable.
+  await tokenSelect.click()
+  const options = page.getByTestId('token-option')
+  await options.first().waitFor({ state: 'visible', timeout: 5_000 })
+  const optionCount = await options.count()
+  expect(optionCount, 'token picker opened with no options — registry empty?').toBeGreaterThan(0)
+  await options.first().click()
 
   // KYC blocked = the IdentityRegistry hasn't recognised this profile yet
   // (e.g. dev-mode off and no whitelist entry). Skip rather than fail —

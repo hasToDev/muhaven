@@ -27,9 +27,10 @@ import { isMhUsdcUnknown, isMhUsdcInsufficient } from '@/lib/tradeGate'
 import { resolveTokenIdentifier, sanitizePrefillAmount } from '@/lib/prefill'
 import MButton from '@/components/ui/MButton.vue'
 import MPageLoader from '@/components/ui/MPageLoader.vue'
+import MTokenSelect from '@/components/ui/MTokenSelect.vue'
 import { muHavenTokenAbi } from '@/contracts/abis'
 import {
-  CheckCircle2, Lock, ShieldCheck, EyeOff, TrendingUp, ChevronDown, ArrowRight,
+  CheckCircle2, Lock, ShieldCheck, EyeOff, TrendingUp, ArrowRight,
   Loader2, Copy, Check, RefreshCw, AlertTriangle, ShoppingCart, Undo2,
   Eye, Inbox, Zap,
 } from 'lucide-vue-next'
@@ -1251,29 +1252,14 @@ const showColdLoader = computed(() => !marketplace.loaded && !marketplaceLoadFai
 
             <!-- Token selector -->
             <div v-if="marketplace.filtered.length > 0" class="flex flex-col gap-3">
-              <label
-                :for="mode === 'buy' ? 'buy-token-select' : 'sell-token-select'"
-                class="font-sans text-[11px] uppercase tracking-[0.22em] text-cool font-medium"
-              >
-                {{ mode === 'buy' ? 'Select Asset' : 'Redeem From' }}
-              </label>
-              <div class="relative">
-                <select
-                  :id="mode === 'buy' ? 'buy-token-select' : 'sell-token-select'"
-                  v-model="selectedToken"
-                  :disabled="isProcessing"
-                  :data-testid="mode === 'buy' ? 'buy-token-select' : 'sell-token-select'"
-                  class="w-full bg-transparent border-0 border-b border-haze dark:border-white/10
-                         text-midnight dark:text-white font-sans text-sm md:text-base py-3 pl-1 pr-10
-                         focus:outline-none focus:border-gold dark:focus:border-signal
-                         transition-colors appearance-none cursor-pointer disabled:opacity-50"
-                >
-                  <option v-for="t in marketplace.filtered" :key="t.address" :value="t.address">
-                    {{ t.name }} ({{ t.symbol }}) — {{ t.apy ? `${t.apy}% APY` : 'N/A' }}
-                  </option>
-                </select>
-                <ChevronDown :size="16" :stroke-width="1.6" class="absolute right-2 top-1/2 -translate-y-1/2 text-cool pointer-events-none" />
-              </div>
+              <MTokenSelect
+                v-model="selectedToken"
+                :options="marketplace.filtered"
+                :label="mode === 'buy' ? 'Select Asset' : 'Redeem From'"
+                :disabled="isProcessing"
+                :testid="mode === 'buy' ? 'buy-token-select' : 'sell-token-select'"
+                :show-apy="true"
+              />
 
               <!-- NAV freshness banner -->
               <div
