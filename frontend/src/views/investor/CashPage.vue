@@ -405,6 +405,65 @@ const directionOptions: Array<{ value: Direction; label: string; icon: typeof Se
   { value: 'send', label: 'Send', icon: Send },
 ]
 
+// ── Direction-toggle sliding pill ──────────────────────────────────────
+// A single absolute `.gold-sweep-fill` pill slides + resizes to the active
+// segment, mirroring the Trade Buy/Sell toggle. Position is MEASURED from the
+// active button (offsetLeft/offsetWidth) rather than computed with % math,
+// because the toggle is responsive (equal `flex-1` thirds on mobile vs
+// content-width `min-w-[112px]` on desktop) and `gap-1`'d — measurement is the
+// only thing that stays aligned across both layouts + font-load reflow.
+const cashToggleEl = ref<HTMLElement | null>(null)
+const cashIndicatorStyle = ref<Record<string, string>>({ left: '0px', width: '0px', opacity: '0' })
+// Gates the CSS transition: the FIRST placement (mount / re-show) is instant so
+// the pill doesn't slide in from x=0; subsequent direction clicks animate.
+const cashIndicatorReady = ref(false)
+
+function updateCashIndicator() {
+  const container = cashToggleEl.value
+  if (!container) return
+  const active = container.querySelector<HTMLElement>(
+    `[data-testid="cash-direction-${direction.value}"]`,
+  )
+  if (!active) return
+  cashIndicatorStyle.value = {
+    left: `${active.offsetLeft}px`,
+    width: `${active.offsetWidth}px`,
+    opacity: '1',
+  }
+}
+
+let cashResizeObserver: ResizeObserver | null = null
+// Function ref on the toggle container: (re)observes on mount / v-if re-show,
+// stops + resets on unmount. The observer recomputes on any container resize
+// (responsive breakpoint, font load, show/hide), so no manual resize listener.
+function attachCashToggle(el: unknown) {
+  // `unknown` (not `Element | null`) so the signature is assignable to Vue's
+  // VNodeRef, which may pass a ComponentPublicInstance. The container is a plain
+  // <div>, so narrow to HTMLElement.
+  const node = el instanceof HTMLElement ? el : null
+  if (!cashResizeObserver && typeof ResizeObserver !== 'undefined') {
+    cashResizeObserver = new ResizeObserver(() => updateCashIndicator())
+  }
+  if (node) {
+    cashToggleEl.value = node
+    cashResizeObserver?.observe(node)
+    void nextTick(() => {
+      updateCashIndicator()
+      // Enable the slide transition only AFTER the first instant placement.
+      requestAnimationFrame(() => { cashIndicatorReady.value = true })
+    })
+  } else {
+    if (cashToggleEl.value) cashResizeObserver?.unobserve(cashToggleEl.value)
+    cashToggleEl.value = null
+    cashIndicatorReady.value = false
+  }
+}
+
+// Slide the pill when the active direction changes (click, URL/back-forward,
+// or MCP deep-link). ResizeObserver doesn't fire here (size is unchanged), so
+// this watch owns the move.
+watch(direction, () => void nextTick(updateCashIndicator))
+
 // ── Wallet aside readouts ──────────────────────────────────────────────
 
 const copied = ref(false)
@@ -703,6 +762,10 @@ function refetchCashThrottled() {
 
 onActivated(() => {
   isActive.value = true
+  // Re-measure the direction pill on re-entry — the viewport may have changed
+  // size while this kept-alive page was backgrounded (the ResizeObserver can
+  // miss resizes that land while detached).
+  void nextTick(updateCashIndicator)
   refetchCashThrottled()
   if (connected.value && address.value) armWatchersDebounced()
   // Re-arm the claim poll from CACHED pending claims even when the refetch
@@ -736,6 +799,8 @@ onBeforeUnmount(() => {
   clearArmTimer()
   teardownWatchers()
   stopPolling()
+  cashResizeObserver?.disconnect()
+  cashResizeObserver = null
 })
 
 // Account switch WHILE active → new kernel: bypass the load throttle + re-arm
@@ -1896,15 +1961,20 @@ const successCopy = computed(() =>
                semantics misled screen readers. aria-pressed announces the
                binary state correctly + each button stays in the natural
                Tab/Shift+Tab order without needing arrow-key handling. -->
-          <!-- Wave 5 — 3-way direction: Deposit / Withdraw / Send. Per-button
-               active gradient (no sliding pill — robust for 3 segments). Hidden
-               while ANY flow is in-flight / succeeded / errored, and while the
-               send flow is on its confirm sub-step (the user is reviewing). -->
+          <!-- Wave 5 — 3-way direction: Deposit / Withdraw / Send. A single
+               absolute pill (.gold-sweep-fill) slides + resizes to the active
+               segment, positioned from the active button's measured
+               offsetLeft/offsetWidth (handles the responsive equal-thirds
+               [mobile] vs content-width [desktop] layouts + the gap) —
+               mirroring the Trade Buy/Sell toggle's animation. Hidden while ANY
+               flow is in-flight / succeeded / errored, and while the send flow
+               is on its confirm sub-step (the user is reviewing). -->
           <div
             v-if="mode === 'cash' && !isProcessing && !showSuccess && !errMsg
               && !withdrawIsProcessing && !withdrawSuccess && !withdrawErrMsg
               && !sendIsProcessing && !sendSuccess && !sendErrMsg
               && !(direction === 'send' && sendStep === 'confirm')"
+            :ref="attachCashToggle"
             data-testid="cash-direction-toggle"
             role="group"
             aria-label="Cash direction: deposit, withdraw, or send"
@@ -1914,6 +1984,15 @@ const successCopy = computed(() =>
                    shadow-[inset_0_1px_2px_rgba(63,46,12,0.04)]
                    dark:shadow-[inset_0_1px_2px_rgba(0,0,0,0.4)]"
           >
+            <!-- Sliding active pill — left/width measured in JS (updateCashIndicator). -->
+            <div
+              aria-hidden="true"
+              class="absolute top-1 bottom-1 rounded-full gold-sweep-fill ease-out
+                     shadow-[0_2px_10px_-2px_rgba(255,186,32,0.45)]
+                     dark:shadow-[0_2px_14px_-2px_rgba(255,220,161,0.35)]"
+              :class="cashIndicatorReady ? 'transition-all duration-300' : ''"
+              :style="cashIndicatorStyle"
+            />
             <button
               v-for="opt in directionOptions"
               :key="opt.value"
@@ -1926,7 +2005,7 @@ const successCopy = computed(() =>
                 'font-sans text-[11px] uppercase tracking-wide sm:tracking-[0.18em] font-semibold cursor-pointer',
                 'transition-all duration-200',
                 direction === opt.value
-                  ? 'text-midnight gold-sweep-fill shadow-[0_2px_10px_-2px_rgba(255,186,32,0.45)] dark:shadow-[0_2px_14px_-2px_rgba(255,220,161,0.35)]'
+                  ? 'text-midnight'
                   : 'text-cool hover:text-midnight dark:hover:text-white',
               ]"
             >
