@@ -412,11 +412,18 @@ const directionOptions: Array<{ value: Direction; label: string; icon: typeof Se
 // because the toggle is responsive (equal `flex-1` thirds on mobile vs
 // content-width `min-w-[112px]` on desktop) and `gap-1`'d — measurement is the
 // only thing that stays aligned across both layouts + font-load reflow.
+// STATIC template ref (NOT a function ref). A function ref is re-invoked on
+// every component re-render; v0.3.127 used one whose body scheduled a
+// nextTick that wrote `cashIndicatorStyle` (a fresh object) → re-render →
+// function ref again → infinite render loop that FROZE /cash. A static ref is
+// assigned once per element identity, so the `watch` below fires only on
+// mount / v-if show-hide, never per render.
 const cashToggleEl = ref<HTMLElement | null>(null)
 const cashIndicatorStyle = ref<Record<string, string>>({ left: '0px', width: '0px', opacity: '0' })
 // Gates the CSS transition: the FIRST placement (mount / re-show) is instant so
 // the pill doesn't slide in from x=0; subsequent direction clicks animate.
 const cashIndicatorReady = ref(false)
+let cashResizeObserver: ResizeObserver | null = null
 
 function updateCashIndicator() {
   const container = cashToggleEl.value
@@ -425,43 +432,39 @@ function updateCashIndicator() {
     `[data-testid="cash-direction-${direction.value}"]`,
   )
   if (!active) return
-  cashIndicatorStyle.value = {
-    left: `${active.offsetLeft}px`,
-    width: `${active.offsetWidth}px`,
-    opacity: '1',
-  }
+  const left = `${active.offsetLeft}px`
+  const width = `${active.offsetWidth}px`
+  const cur = cashIndicatorStyle.value
+  // IDEMPOTENT — bail when nothing changed so a ResizeObserver/render re-entry
+  // can't ping-pong into an infinite update loop (the v0.3.127 freeze).
+  if (cur.left === left && cur.width === width && cur.opacity === '1') return
+  cashIndicatorStyle.value = { left, width, opacity: '1' }
 }
 
-let cashResizeObserver: ResizeObserver | null = null
-// Function ref on the toggle container: (re)observes on mount / v-if re-show,
-// stops + resets on unmount. The observer recomputes on any container resize
-// (responsive breakpoint, font load, show/hide), so no manual resize listener.
-function attachCashToggle(el: unknown) {
-  // `unknown` (not `Element | null`) so the signature is assignable to Vue's
-  // VNodeRef, which may pass a ComponentPublicInstance. The container is a plain
-  // <div>, so narrow to HTMLElement.
-  const node = el instanceof HTMLElement ? el : null
+// Observe the container only when its identity changes (mount / v-if re-show).
+// The ResizeObserver then handles resize / breakpoint / font-load reflow; the
+// idempotent guard above means a spurious fire is a no-op (no re-render).
+watch(cashToggleEl, (el, prev) => {
+  if (prev && cashResizeObserver) cashResizeObserver.unobserve(prev)
+  if (!el) {
+    cashIndicatorReady.value = false
+    return
+  }
   if (!cashResizeObserver && typeof ResizeObserver !== 'undefined') {
     cashResizeObserver = new ResizeObserver(() => updateCashIndicator())
   }
-  if (node) {
-    cashToggleEl.value = node
-    cashResizeObserver?.observe(node)
-    void nextTick(() => {
-      updateCashIndicator()
-      // Enable the slide transition only AFTER the first instant placement.
-      requestAnimationFrame(() => { cashIndicatorReady.value = true })
-    })
-  } else {
-    if (cashToggleEl.value) cashResizeObserver?.unobserve(cashToggleEl.value)
-    cashToggleEl.value = null
-    cashIndicatorReady.value = false
-  }
-}
+  cashResizeObserver?.observe(el)
+  cashIndicatorReady.value = false
+  void nextTick(() => {
+    updateCashIndicator()
+    // Enable the slide transition only AFTER the first instant placement.
+    requestAnimationFrame(() => { cashIndicatorReady.value = true })
+  })
+})
 
 // Slide the pill when the active direction changes (click, URL/back-forward,
-// or MCP deep-link). ResizeObserver doesn't fire here (size is unchanged), so
-// this watch owns the move.
+// or MCP deep-link). The ResizeObserver doesn't fire here (size is unchanged),
+// so this watch owns the move.
 watch(direction, () => void nextTick(updateCashIndicator))
 
 // ── Wallet aside readouts ──────────────────────────────────────────────
@@ -1974,7 +1977,7 @@ const successCopy = computed(() =>
               && !withdrawIsProcessing && !withdrawSuccess && !withdrawErrMsg
               && !sendIsProcessing && !sendSuccess && !sendErrMsg
               && !(direction === 'send' && sendStep === 'confirm')"
-            :ref="attachCashToggle"
+            ref="cashToggleEl"
             data-testid="cash-direction-toggle"
             role="group"
             aria-label="Cash direction: deposit, withdraw, or send"
