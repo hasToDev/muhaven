@@ -2032,14 +2032,14 @@ const successCopy = computed(() =>
           </div>
 
           <div v-else class="flex flex-col gap-8">
-            <div class="flex items-center gap-3">
-              <div class="w-10 h-10 rounded-lg bg-gold/15 dark:bg-signal/15 text-compute dark:text-signal flex items-center justify-center">
-                <Shield :size="18" :stroke-width="1.8" />
-              </div>
-              <div>
+            <div class="flex flex-col gap-2">
+              <div class="flex items-center gap-3">
+                <div class="w-10 h-10 shrink-0 aspect-square rounded-lg bg-gold/15 dark:bg-signal/15 text-compute dark:text-signal flex items-center justify-center">
+                  <Shield :size="18" :stroke-width="1.8" />
+                </div>
                 <p class="font-accent italic text-xl text-midnight dark:text-white leading-tight">{{ headerTitle }}</p>
-                <p class="font-sans text-[11px] text-cool mt-0.5 leading-relaxed">{{ headerSubtitle }}</p>
               </div>
+              <p class="font-sans text-[11px] text-cool leading-relaxed">{{ headerSubtitle }}</p>
             </div>
 
             <div class="flex flex-col gap-3">
@@ -2254,23 +2254,23 @@ const successCopy = computed(() =>
           </div>
 
           <div v-else class="flex flex-col gap-8">
-            <div class="flex items-center gap-3">
-              <div
-                class="w-10 h-10 rounded-lg bg-gold/15 dark:bg-signal/15 text-compute dark:text-signal flex items-center justify-center"
-                aria-hidden="true"
-              >
-                <ArrowUpFromLine :size="18" :stroke-width="1.8" />
-              </div>
-              <div>
+            <div class="flex flex-col gap-2">
+              <div class="flex items-center gap-3">
+                <div
+                  class="w-10 h-10 shrink-0 aspect-square rounded-lg bg-gold/15 dark:bg-signal/15 text-compute dark:text-signal flex items-center justify-center"
+                  aria-hidden="true"
+                >
+                  <ArrowUpFromLine :size="18" :stroke-width="1.8" />
+                </div>
                 <h2 class="font-accent italic text-xl text-midnight dark:text-white leading-tight">
                   Withdraw mhUSDC to USDC
                 </h2>
-                <p class="font-sans text-[11px] text-cool mt-0.5 leading-relaxed">
-                  Burn your encrypted mhUSDC and receive real USDC into your wallet. Two-phase
-                  for privacy: the burn fires now, the coprocessor decrypts the amount, then
-                  you claim the USDC from the list below (~30–60s end-to-end).
-                </p>
               </div>
+              <p class="font-sans text-[11px] text-cool leading-relaxed">
+                Burn your encrypted mhUSDC and receive real USDC into your wallet. Two-phase
+                for privacy: the burn fires now, the coprocessor decrypts the amount, then
+                you claim the USDC from the list below (~30–60s end-to-end).
+              </p>
             </div>
 
             <div class="flex flex-col gap-3">
@@ -2435,19 +2435,19 @@ const successCopy = computed(() =>
           <!-- Confirm sub-step — echoes the full recipient + amount + an
                explicit irreversibility notice before signing. -->
           <div v-else-if="sendStep === 'confirm'" data-testid="send-confirm-card" class="flex flex-col gap-6">
-            <div class="flex items-center gap-3">
-              <div
-                class="w-10 h-10 rounded-lg bg-gold/15 dark:bg-signal/15 text-compute dark:text-signal flex items-center justify-center"
-                aria-hidden="true"
-              >
-                <Send :size="18" :stroke-width="1.8" />
-              </div>
-              <div>
+            <div class="flex flex-col gap-2">
+              <div class="flex items-center gap-3">
+                <div
+                  class="w-10 h-10 shrink-0 aspect-square rounded-lg bg-gold/15 dark:bg-signal/15 text-compute dark:text-signal flex items-center justify-center"
+                  aria-hidden="true"
+                >
+                  <Send :size="18" :stroke-width="1.8" />
+                </div>
                 <h2 class="font-accent italic text-xl text-midnight dark:text-white leading-tight">Confirm your send</h2>
-                <p class="font-sans text-[11px] text-cool mt-0.5 leading-relaxed">
-                  Review the recipient and amount carefully — this can't be undone.
-                </p>
               </div>
+              <p class="font-sans text-[11px] text-cool leading-relaxed">
+                Review the recipient and amount carefully — this can't be undone.
+              </p>
             </div>
 
             <dl class="rounded-lg border border-haze dark:border-white/10 bg-mist/30 dark:bg-white/[0.02] divide-y divide-haze dark:divide-white/10">
@@ -2533,22 +2533,22 @@ const successCopy = computed(() =>
 
           <!-- Form -->
           <div v-else class="flex flex-col gap-8">
-            <div class="flex items-center gap-3">
-              <div
-                class="w-10 h-10 rounded-lg bg-gold/15 dark:bg-signal/15 text-compute dark:text-signal flex items-center justify-center"
-                aria-hidden="true"
-              >
-                <Send :size="18" :stroke-width="1.8" />
-              </div>
-              <div>
+            <div class="flex flex-col gap-2">
+              <div class="flex items-center gap-3">
+                <div
+                  class="w-10 h-10 shrink-0 aspect-square rounded-lg bg-gold/15 dark:bg-signal/15 text-compute dark:text-signal flex items-center justify-center"
+                  aria-hidden="true"
+                >
+                  <Send :size="18" :stroke-width="1.8" />
+                </div>
                 <h2 class="font-accent italic text-xl text-midnight dark:text-white leading-tight">
                   Send USDC
                 </h2>
-                <p class="font-sans text-[11px] text-cool mt-0.5 leading-relaxed">
-                  Send cleartext USDC from your wallet to any external Arbitrum address — an exchange,
-                  a hardware wallet, a friend. This is a public transfer, not a confidential one.
-                </p>
               </div>
+              <p class="font-sans text-[11px] text-cool leading-relaxed">
+                Send cleartext USDC from your wallet to any external Arbitrum address — an exchange,
+                a hardware wallet, a friend. This is a public transfer, not a confidential one.
+              </p>
             </div>
 
             <!-- Recipient -->
@@ -2722,7 +2722,7 @@ const successCopy = computed(() =>
           <div class="flex items-center justify-between mb-5">
             <div class="flex items-center gap-3">
               <div
-                class="w-8 h-8 rounded-lg bg-gold/15 dark:bg-signal/15 text-compute dark:text-signal flex items-center justify-center"
+                class="w-8 h-8 shrink-0 aspect-square rounded-lg bg-gold/15 dark:bg-signal/15 text-compute dark:text-signal flex items-center justify-center"
                 aria-hidden="true"
               >
                 <ArrowUpFromLine :size="14" :stroke-width="1.8" />
