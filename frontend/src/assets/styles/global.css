@@ -109,6 +109,14 @@ html {
      translate keyframe). Symptom on /login: card visibly slid right
      after the initial paint as the scrollbar dropped out. */
   scrollbar-gutter: stable;
+  /* Wave 6 Polish mobile round 5 — bulletproof horizontal-scroll guard at the
+     document root. The Portfolio reveal-time h-scroll survived an <main>
+     overflow-x-clip AND a flex-col card stack, which proves the source escapes
+     <main> (a position:fixed / teleported element). `overflow-x: clip` on the
+     root clips the viewport's horizontal overflow regardless of source, WITHOUT
+     creating a scroll container — so position:sticky (TopNav) keeps working and
+     vertical scroll is untouched (overflow-y stays visible). */
+  overflow-x: clip;
 }
 
 /* ── Glass panel (warm floating pill) ── */

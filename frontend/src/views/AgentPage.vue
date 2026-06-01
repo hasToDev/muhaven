@@ -925,7 +925,8 @@ onMounted(() => {
             :key="p.text"
             type="button"
             @click="sendMessage(p.text)"
-            class="group flex flex-col gap-3 p-5 rounded-2xl text-left
+            class="group flex flex-row items-center gap-3 p-3.5
+                   xl:flex-col xl:items-start xl:gap-3 xl:p-5 rounded-2xl text-left
                    border border-haze dark:border-white/5
                    bg-white dark:bg-[#171717]
                    shadow-[0_8px_24px_-12px_rgba(63,46,12,0.08)]
@@ -938,7 +939,7 @@ onMounted(() => {
           >
             <div
               :class="[
-                'w-10 h-10 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform shadow-inner',
+                'w-9 h-9 xl:w-10 xl:h-10 flex-shrink-0 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform shadow-inner',
                 p.accent === 'gold'
                   ? 'bg-gold/10 dark:bg-signal/10 text-compute dark:text-signal'
                   : 'bg-positive/10 text-positive',
@@ -946,11 +947,11 @@ onMounted(() => {
             >
               <component :is="p.icon" :size="18" :stroke-width="1.8" />
             </div>
-            <div>
+            <div class="min-w-0">
               <h3 class="font-sans font-semibold text-midnight dark:text-white text-sm leading-tight">
                 {{ p.text }}
               </h3>
-              <p class="font-sans text-[10px] text-cool mt-1.5 leading-tight">
+              <p class="font-sans text-[10px] text-cool mt-1 xl:mt-1.5 leading-tight">
                 {{ p.hint }}
               </p>
             </div>

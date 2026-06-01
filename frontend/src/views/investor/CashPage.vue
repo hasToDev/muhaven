@@ -1931,7 +1931,7 @@ const successCopy = computed(() =>
               ]"
             >
               <component :is="opt.icon" :size="13" :stroke-width="2" aria-hidden="true" class="shrink-0" />
-              <span class="truncate">{{ opt.label }}</span>
+              <span class="whitespace-nowrap">{{ opt.label }}</span>
             </button>
           </div>
 
