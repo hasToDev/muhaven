@@ -8,6 +8,7 @@ import { container } from '../../../../src/infrastructure/container.js';
 import { withAuth } from '../../../../src/interface/middleware/with-auth.js';
 import { withCors } from '../../../../src/interface/middleware/with-cors.js';
 import { withScope } from '../../../../src/interface/middleware/with-scope.js';
+import { withRateLimit } from '../../../../src/interface/middleware/with-rate-limit.js';
 import type { AuthenticatedRequest } from '../../../../src/interface/handler-factory.js';
 import type { VercelResponse } from '@vercel/node';
 import { getLogger } from '../../../../src/core/logger.js';
@@ -161,4 +162,30 @@ const handler = async (req: AuthenticatedRequest, res: VercelResponse): Promise<
 // pause). Scope-gate matches the proposal endpoints. Read-only-scoped
 // device-flow JWTs hitting this endpoint will get a 403 from withScope
 // before any prompt reaches the LLM.
-export default withCors(withAuth(withScope(['mcp.propose.*'])(handler)));
+//
+// Per-user rate limit (innermost, so it runs AFTER withAuth populates
+// `authPayload`): caps how many chat turns a single authenticated user can
+// fire per minute. Each turn can drive up to MAX_TOOL_TURNS Gemini round
+// trips, so this is the primary guard against a logged-in user abusing the
+// agent as a free general-purpose LLM (cost / quota abuse). Keyed by userId
+// (not IP) so it can't be sidestepped by rotating X-Forwarded-For, and so
+// shared-NAT users don't collide. 20/min is generous for a human operating
+// a copilot; tune via the config below if needed. Over-limit returns a
+// plain JSON 429 before any SSE header is written.
+export default withCors(
+  withAuth(
+    withScope(['mcp.propose.*'])(
+      withRateLimit(
+        {
+          maxRequests: 20,
+          windowSeconds: 60,
+          keyFn: (req) => {
+            const ap = (req as AuthenticatedRequest).authPayload;
+            return ap?.userId ? `chat:${ap.userId}` : 'chat:anon';
+          },
+        },
+        handler,
+      ),
+    ),
+  ),
+);
