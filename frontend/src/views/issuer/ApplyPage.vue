@@ -483,11 +483,14 @@ function goToTokensWithSelect() {
     <!-- Stepper -->
     <section
       data-testid="apply-stepper"
-      class="rounded-xl border border-haze/60 dark:border-white/5 bg-mist/30 dark:bg-[#1c1b1b]/30 backdrop-blur-md py-4 px-6"
+      class="rounded-xl border border-haze/60 dark:border-white/5 bg-mist/30 dark:bg-[#1c1b1b]/30 backdrop-blur-md py-4 px-4 sm:px-6"
     >
       <div class="flex items-center justify-between">
         <template v-for="(s, i) in STEP_LABELS" :key="s.label">
-          <div class="flex flex-col items-center gap-1.5 min-w-[60px]">
+          <!-- Mobile (<sm): no 60px floor + tighter connectors so 5 steps
+               (Welcome…Deploy) fit at 411px without the last pill overflowing.
+               sm+ restores the original spacing. -->
+          <div class="flex flex-col items-center gap-1.5 min-w-0 sm:min-w-[60px]">
             <div
               :class="[
                 'h-7 w-7 rounded-full flex items-center justify-center transition-all duration-300',
@@ -503,7 +506,7 @@ function goToTokensWithSelect() {
             </div>
             <span
               :class="[
-                'font-sans text-[9px] uppercase tracking-[0.22em] text-center font-semibold transition-colors',
+                'font-sans text-[9px] uppercase tracking-[0.22em] text-center font-semibold transition-colors whitespace-nowrap',
                 wizard.step > s.idx
                   ? 'text-compute dark:text-signal'
                   : wizard.step === s.idx
@@ -516,7 +519,7 @@ function goToTokensWithSelect() {
             v-if="i < STEP_LABELS.length - 1"
             aria-hidden="true"
             :class="[
-              'flex-1 h-px mx-2 transition-colors mt-3',
+              'flex-1 h-px mx-1 sm:mx-2 transition-colors mt-3',
               wizard.step > s.idx
                 ? 'bg-gold/40 dark:bg-signal/40'
                 : 'bg-haze dark:bg-white/10',
