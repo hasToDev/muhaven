@@ -962,7 +962,7 @@ const showColdLoader = computed(() => !marketplace.loaded && !marketplaceLoadFai
           :class="mode === 'buy' ? 'bg-gold/8 dark:bg-signal/8' : 'bg-compute/8 dark:bg-signal/6'"
         />
 
-        <div class="p-8 md:p-10 relative">
+        <div class="p-6 md:p-10 relative">
           <!-- Path C deep-link error states. Both banners render BEFORE
                the form so the user sees the failure mode before any
                pre-fill state. Closes Frontend H-1 (silent token swap)

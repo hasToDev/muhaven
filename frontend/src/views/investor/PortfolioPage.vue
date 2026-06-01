@@ -630,7 +630,7 @@ const showBlurredAllocation = computed(() =>
                Allocation tab becomes visible). -->
           <div
             v-show="activeTab === 'value'"
-            class="p-8 md:p-12 flex flex-col md:flex-row items-start md:items-center justify-between gap-8 border-b border-haze dark:border-white/5 relative"
+            class="p-6 md:p-12 flex flex-col md:flex-row items-start md:items-center justify-between gap-6 md:gap-8 border-b border-haze dark:border-white/5 relative"
           >
             <!-- Ambient amber bloom, top-left corner -->
             <div
@@ -661,7 +661,7 @@ const showBlurredAllocation = computed(() =>
               <!-- Locked placeholder -->
               <div
                 v-if="!portfolio.allDecrypted"
-                class="font-sans font-light text-5xl md:text-6xl text-cool/40 dark:text-body-dark/25
+                class="font-sans font-light text-4xl sm:text-5xl md:text-6xl text-cool/40 dark:text-body-dark/25
                        tracking-[0.05em] select-none blur-[2px] leading-none"
                 aria-hidden="true"
               >
@@ -671,7 +671,7 @@ const showBlurredAllocation = computed(() =>
               <!-- Decrypted hero value -->
               <div
                 v-else
-                class="font-accent italic text-5xl md:text-6xl tracking-tight text-midnight dark:text-white leading-none tabular-nums"
+                class="font-accent italic text-4xl sm:text-5xl md:text-6xl tracking-tight text-midnight dark:text-white leading-none tabular-nums"
               >
                 {{ formatUSD(portfolio.totalDecryptedValue) }}
               </div>
@@ -700,7 +700,7 @@ const showBlurredAllocation = computed(() =>
                the donut stays mounted across tab toggles. -->
           <div
             v-show="activeTab === 'allocation'"
-            class="p-8 md:p-10 flex flex-col items-center justify-center border-b border-haze dark:border-white/5 relative min-h-[320px]"
+            class="p-6 md:p-10 flex flex-col items-center justify-center border-b border-haze dark:border-white/5 relative min-h-[320px]"
           >
             <!-- Ambient accent bleeds -->
             <div

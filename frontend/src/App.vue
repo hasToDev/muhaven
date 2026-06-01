@@ -90,7 +90,11 @@ const contentWrapperClass = computed(() => {
   const layout = route.meta.layout
   if (layout === 'landing' || layout === 'login') return ''
   if (layout === 'agent') return 'max-w-7xl mx-auto w-full px-6 sm:px-10 lg:px-12 pt-8 pb-3'
-  return 'max-w-7xl mx-auto w-full px-6 sm:px-10 lg:px-12 pt-8 pb-28 md:pb-16'
+  // Wave 6 Polish (B0): clear the fixed mobile tab bar AND the iPhone home
+  // indicator. `viewport-fit=cover` now makes the tab bar's safe-area pad
+  // resolve to a real inset (~34px), so add it to the base bottom padding.
+  // On non-notched devices `env(...)` is 0 → identical to the old `pb-28`.
+  return 'max-w-7xl mx-auto w-full px-6 sm:px-10 lg:px-12 pt-8 pb-[calc(7rem_+_env(safe-area-inset-bottom))] md:pb-16'
 })
 
 // Wave 5 Option D · C4 re-smoke — the global banner is a normal-flow strip
@@ -113,16 +117,12 @@ const { height: bannerHeight } = useElementSize(bannerWrapEl)
 // items. Removed entirely; the route guard in `router/index.ts`
 // already redirects cross-role pasted URLs.
 //
-// Skeleton-loading on navigation is preserved as a tiny side-effect
-// of every path change.
-watch(
-  () => route.path,
-  () => {
-    store.startLoading()
-    store.stopLoading()
-  },
-  { immediate: true },
-)
+// Wave 6 Polish (A1): the old per-nav `route.path` watcher only called
+// `startLoading()/stopLoading()`, but nothing in the app ever read
+// `appStore.isLoading` — it was pure churn (two reactive writes + a 600ms
+// timer on every navigation, read by no one). Removed along with the dead
+// store members. No skeleton consumed it; the per-page MPageLoader gates
+// own the cold-load UX now.
 
 onMounted(() => {
   store.initDark()

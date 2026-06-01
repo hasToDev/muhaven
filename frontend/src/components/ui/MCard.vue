@@ -16,7 +16,7 @@ defineProps<{
       glow && 'hover:ring-compute/25',
       padding === 'none' ? ''
         : padding === 'sm' ? 'p-5'
-        : padding === 'lg' ? 'p-8'
+        : padding === 'lg' ? 'p-6 md:p-8'
         : 'p-6',
       $attrs.class as string,
     )"

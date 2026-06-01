@@ -1882,7 +1882,7 @@ const successCopy = computed(() =>
              class="absolute -top-24 -right-24 w-72 h-72 rounded-full blur-[90px] pointer-events-none"
              :class="mode === 'cash' ? 'bg-compute/8 dark:bg-signal/8' : 'bg-gold/8 dark:bg-signal/8'" />
 
-        <div class="p-8 md:p-10 relative">
+        <div class="p-6 md:p-10 relative">
           <!-- Wave 5 W3 — Direction toggle (Deposit / Withdraw). Cash mode
                only; hidden during in-flight + success + error states so the
                result card owns the card surface. The Withdraw side calls
@@ -1922,7 +1922,7 @@ const successCopy = computed(() =>
               @click="setDirection(opt.value)"
               :data-testid="`cash-direction-${opt.value}`"
               :class="[
-                'relative z-10 inline-flex items-center justify-center gap-2 px-4 py-2 min-w-[112px] rounded-full',
+                'relative z-10 inline-flex items-center justify-center gap-2 px-4 py-2 min-w-0 sm:min-w-[112px] rounded-full',
                 'font-sans text-[11px] uppercase tracking-[0.18em] font-semibold cursor-pointer',
                 'transition-all duration-200',
                 direction === opt.value

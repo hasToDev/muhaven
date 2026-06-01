@@ -11,6 +11,35 @@ app.use(pinia)
 app.use(router)
 app.use(MotionPlugin)
 
+// Wave 6 Polish (A2) — make `v-motion` honor `prefers-reduced-motion`.
+// @vueuse/motion v3's directive runs a Popmotion requestAnimationFrame loop
+// and never consults the reduced-motion media query (the CSS animations are
+// already gated in global.css; the JS ones were the gap). For reduced-motion
+// users we replace the `motion` directive — registered AFTER MotionPlugin so
+// it wins — with a zero-animation version that simply snaps each element to
+// its final resting variant. The library directive never runs, so the
+// `:initial` (opacity:0) hidden state is never applied → content is always
+// visible. We only read `enter`/`visible(-once)` opacity and never touch
+// `transform`, so no existing CSS transform is clobbered. Gated strictly to
+// reduce-only: the default brand experience is byte-for-byte unchanged. See
+// development/DEV_WAVE_6_POLISH/ADR_LOG.md ADR-002.
+if (
+  typeof window !== 'undefined'
+  && typeof window.matchMedia === 'function'
+  && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+) {
+  app.directive('motion', {
+    mounted(el: HTMLElement, _binding, vnode) {
+      const props = (vnode?.props ?? {}) as Record<string, any>
+      const final =
+        props.enter ?? props.visible ?? props['visible-once'] ?? props.visibleOnce ?? null
+      if (final && typeof final.opacity === 'number') {
+        el.style.opacity = String(final.opacity)
+      }
+    },
+  })
+}
+
 // Hydrate auth state from localStorage and kick off `/users/me` for
 // `issuerStatus` (Phase 9.A · Expansion F2). Wallet address is
 // restored from localStorage without prompting; the wallet provider

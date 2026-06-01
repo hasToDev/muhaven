@@ -306,7 +306,7 @@ const showColdLoader = computed(() => !marketplace.loaded && !marketplace.error)
              bg-white/90 dark:bg-[#1c1b1b]/80 backdrop-blur-lg
              shadow-[0_14px_40px_-12px_rgba(63,46,12,0.08)]
              dark:shadow-[0_20px_60px_-20px_rgba(0,0,0,0.65)]
-             p-8 md:p-10"
+             p-6 md:p-10"
     >
       <div aria-hidden="true"
            class="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-gold/60 dark:via-signal/50 to-transparent" />

@@ -4,7 +4,6 @@ import { ref } from 'vue'
 export const useAppStore = defineStore('app', () => {
   const isDark = ref(false)
   const role = ref<'investor' | 'issuer'>('investor')
-  const isLoading = ref(false)
   const agentPanelOpen = ref(false)
 
   function toggleDark() {
@@ -35,23 +34,9 @@ export const useAppStore = defineStore('app', () => {
     agentPanelOpen.value = false
   }
 
-  let loadingTimer: ReturnType<typeof setTimeout> | null = null
-
-  function startLoading() {
-    if (loadingTimer) clearTimeout(loadingTimer)
-    isLoading.value = true
-  }
-
-  function stopLoading() {
-    loadingTimer = setTimeout(() => {
-      isLoading.value = false
-    }, 600)
-  }
-
   return {
-    isDark, role, isLoading, agentPanelOpen,
+    isDark, role, agentPanelOpen,
     toggleDark, initDark, setRole,
     openAgentPanel, closeAgentPanel,
-    startLoading, stopLoading,
   }
 })
